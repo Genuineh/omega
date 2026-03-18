@@ -1,0 +1,26 @@
+[package]
+name = "omega-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+omega-client = { path = "../omega-client" }
+omega-tools = { path = "../omega-tools" }
+omega-tools-builtin = { path = "../omega-tools-builtin" }
+omega-todo = { path = "../omega-todo" }
+omega-subagent = { path = "../omega-subagent" }
+omega-compression = { path = "../omega-compression" }
+omega-tasks = { path = "../omega-tasks" }
+omega-background = { path = "../omega-background" }
+omega-skills = { path = "../omega-skills" }
+omega-message = { path = "../omega-message" }
+omega-team = { path = "../omega-team" }
+omega-worktree = { path = "../omega-worktree" }
+anyhow.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true

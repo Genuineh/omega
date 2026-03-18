@@ -1,0 +1,32 @@
+---
+status: active
+last_verified_commit: N/A
+owner: omega-team
+version: v1.0
+---
+
+# Omega Documentation Index
+
+## Overview
+
+This directory contains the working documentation set for the Omega Rust project.
+
+## Documents
+
+| Path | Type | Purpose |
+|------|------|---------|
+| `docs/TODO.md` | Tracking | Current priorities and implementation progress |
+| `docs/specs/omega-agent-spec.md` | Specification | Canonical technical specification for the Omega agent |
+| `docs/specs/omega-agent-impl-plan.md` | Plan | Step-by-step implementation plan for the workspace |
+| `docs/guide/omega-dev-guide.md` | Guide | Developer onboarding and local workflow guide |
+| `docs/decisions/README.md` | Index | ADR index |
+| `docs/decisions/001-crate-architecture.md` | ADR | Multi-crate workspace structure |
+| `docs/decisions/002-rust-ratatui.md` | ADR | Rust + ratatui technology choice |
+| `docs/decisions/003-trait-tool-system.md` | ADR | Trait-based tool abstraction |
+| `docs/decisions/004-jsonl-message-store.md` | ADR | JSONL-backed team message storage |
+
+## Notes
+
+- `docs/specs/` contains the current technical source of truth.
+- `docs/guide/` contains contributor-facing usage documentation.
+- `docs/decisions/` records architecture choices and tradeoffs.

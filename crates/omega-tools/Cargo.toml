@@ -1,0 +1,13 @@
+[package]
+name = "omega-tools"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+omega-client = { path = "../omega-client" }

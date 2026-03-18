@@ -1,0 +1,10 @@
+[package]
+name = "omega-subagent"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+omega-client = { path = "../omega-client" }
+anyhow.workspace = true
+tokio.workspace = true
+serde_json.workspace = true

@@ -1,0 +1,10 @@
+[package]
+name = "omega-background"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+tokio.workspace = true
+serde.workspace = true
+uuid.workspace = true

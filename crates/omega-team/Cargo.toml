@@ -1,0 +1,12 @@
+[package]
+name = "omega-team"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+omega-message = { path = "../omega-message" }
+omega-tasks = { path = "../omega-tasks" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true

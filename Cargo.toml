@@ -1,0 +1,40 @@
+[workspace]
+members = [
+    "crates/omega-client",
+    "crates/omega-message",
+    "crates/omega-tasks",
+    "crates/omega-skills",
+    "crates/omega-worktree",
+    "crates/omega-tools",
+    "crates/omega-tools-builtin",
+    "crates/omega-todo",
+    "crates/omega-subagent",
+    "crates/omega-compression",
+    "crates/omega-background",
+    "crates/omega-team",
+    "crates/omega-core",
+    "crates/omega-tui",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Omega Team"]
+license = "MIT"
+
+[workspace.dependencies]
+anyhow = "1"
+async-trait = "0.1"
+crossterm = "0.28"
+ratatui = "0.28"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+dirs = "6"

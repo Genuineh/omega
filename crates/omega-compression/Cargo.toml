@@ -1,0 +1,11 @@
+[package]
+name = "omega-compression"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+omega-client = { path = "../omega-client" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true

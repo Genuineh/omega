@@ -1,0 +1,19 @@
+[package]
+name = "omega-tui"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "omega"
+path = "src/main.rs"
+
+[dependencies]
+omega-core = { path = "../omega-core" }
+ratatui.workspace = true
+crossterm.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+chrono.workspace = true
+dirs.workspace = true
