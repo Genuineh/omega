@@ -162,10 +162,14 @@ related_prds: []
 
 推荐后续交互规则：
 
+- 全局快捷键解析应先经过 `Task 15B-13` 的模态 keymap 层，而不是继续在 `omega-tui` 事件处理中硬编码分支。
+- 默认交互模式至少区分 `Normal` 与 `Insert`；导航、搜索、面板切换、Activity view 切换等行为应主要留在 `Normal`。
 - `Tab` 继续在固定面板间切换，不随着 Activity view 数量增加而增加常驻焦点数量。
-- Activity 内部 view 切换应走单独快捷键或 leader 映射，而不是把每个 view 变成独立焦点面板。
+- Activity 内部 view 切换应走 leader 映射和 mode-aware 快捷键，而不是把每个 view 变成独立焦点面板。
 - `15B-11` 搜索应先面向当前聚焦面板工作；Activity view 只需复用同一搜索框架，不单独设计。
 - `15B-12` 会话统计优先放在状态栏与 Activity 中，不额外创建第四块永久面板。
+
+相关模态与配置规则见 `docs/specs/omega-tui-modal-keymap.md`。
 
 ## Session Boundary Implications
 

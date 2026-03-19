@@ -70,7 +70,6 @@ _将 M11 中基础级体验优化前移，确保在开发后续功能时有可�
 - **Description**: 底部增加快捷键提示栏（Tab=切换面板 | ↑↓=滚动 | Ctrl+C=退出）；状态栏显示 agent 状态（Idle/Running/Error）和连接信息
 - **Complexity**: S
 - **Summary**: 布局增加第 4 个区块 Constraint::Length(1) 作为 hint bar；状态栏 ● Connected 改为动态显示 ◫ Idle / ◌ Running… 反映 is_running 状态；hint bar 显示 Tab=切换面板 ↑↓=滚动 ←→=光标 Ctrl+A/E=行首/尾 Del=删字 Ctrl+C=退出，使用 #646464 暗色文本不干扰主内容；ColorScheme 增加 hint_dim 颜色；cargo build + clippy 零警告
-
 ### Task 15B-5: omega-tui — 布局优化与文本换行
 - **Status**: Completed
 - **Completed**: 2026-03-18
@@ -118,7 +117,8 @@ _将 M11 中基础级体验优化前移，确保在开发后续功能时有可�
 - **Priority**: Medium
 - **Description**: 将当前 `Todos` + `Logs` 组合升级为统一可收起的右侧 `Sidebar`，支持整体收起快捷键、顶部图标轨、section 折叠/切换，以及面向 `skills/subagent/tasks/background/message/team/worktree` 的 `Activity` 面板基础
 - **Complexity**: M
-- **Related**: docs/specs/omega-tui-runtime-experience.md, docs/specs/omega-tui-collapsible-sidebar.md
+- **Related**: docs/specs/omega-tui-runtime-experience.md, docs/specs/omega-tui-collapsible-sidebar.md, docs/specs/omega-tui-modal-keymap.md
+- **Blocked by**: Task 15B-13
 - **Blocks**: Task 15B-12
 
 ### ── M2: 文件工具 (s02) ── ✅
@@ -271,6 +271,7 @@ _基础体验已在 M1.7 完成，此处保留高级特性。_
 - **Status**: Pending
 - **Priority**: Low
 - **Description**: ↑↓键浏览历史输入、持久化到 ~/.omega/history
+- **Blocked by**: Task 15B-13
 
 ### Task 15B-11: omega-tui — 面板内搜索
 - **Status**: Pending
@@ -284,12 +285,12 @@ _基础体验已在 M1.7 完成，此处保留高级特性。_
 - **Description**: 拖拽或快捷键调整面板宽度比例；状态栏显示 token 使用量、对话轮次
 - **Blocked by**: Task 15B-13, Task 15B-16
 
-### Task 15B-13: omega-tui — Leader 键快捷键基础设施
+### Task 15B-13: omega-tui — Leader / 模态快捷键基础设施
 - **Status**: Pending
 - **Priority**: Low
-- **Description**: 引入统一 leader 键作为所有高级快捷键入口，避免与终端/系统级快捷键冲突；实现 leader 状态机、二段组合键路由、超时自动取消、状态栏/提示栏反馈，并为后续搜索、面板调整、历史与命令类功能预留统一映射层
-- **Related**: docs/specs/omega-agent-spec.md
-- **Blocks**: Task 15B-11, Task 15B-12
+- **Description**: 引入统一 leader 键入口，并扩展为类似 Vim 的 `Normal` / `Insert` 模式交互体系；支持仅在特定模式/焦点/可输入上下文下触发的快捷键；默认使用 `leader j` / `leader k` 进行模式切换；快捷键配置从 `.omega/keymap.toml` 启动加载，并新增独立 `omega-keymap` 包负责解析、校验与匹配
+- **Related**: docs/specs/omega-agent-spec.md, docs/specs/omega-tui-modal-keymap.md
+- **Blocks**: Task 15B-10, Task 15B-11, Task 15B-12, Task 15B-16
 
 ### Task 16: 最终整合测试
 - **Status**: Pending

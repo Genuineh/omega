@@ -76,6 +76,10 @@ omega-tui         <- omega-core
 
 > 交互层说明：`Task 15C` 已完成。当前结构为 `omega-tui` 负责 TUI 库与薄 wrapper，`omega-repl` 独立承接行式 REPL，边界见 [docs/specs/omega-interaction-layer-refactor.md](docs/specs/omega-interaction-layer-refactor.md)。
 
+### 计划中的交互基础设施
+
+`Task 15B-13` 已将后续高级 TUI 输入系统规划为独立 keymap 基础设施：未来会新增 `omega-keymap` crate，用于加载 `.omega/keymap.toml`、定义 `Normal` / `Insert` 模式映射、处理 leader 序列与快捷键条件匹配。该 crate 尚未实现，因此不计入上面的“当前实现”列表，但应作为后续 `omega-tui` 高级交互能力的统一输入边界。
+
 ### 数据流
 
 ```text

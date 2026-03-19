@@ -95,8 +95,11 @@ related_prds: []
 
 快捷键绑定策略：
 
-- 在 `Task 15B-13` 之前，可以先给 `toggle_sidebar` 分配一个直接快捷键，例如 `Ctrl+B`。
-- 在引入 leader 键基础设施后，应把这些逻辑动作迁移为统一映射，而不是继续增加全局裸快捷键。
+- 该组动作的目标实现应接入 `Task 15B-13` 的模态 keymap 层，而不是继续增加全局裸快捷键。
+- `toggle_sidebar`、`focus_sidebar_rail`、section 切换与展开动作应默认放在 `Normal` 模式的 leader 命名空间下。
+- 若分阶段实现需要短期直接绑定，应仅作为过渡默认映射存在，并在 `omega-keymap` 接入后统一收口。
+
+相关模式与配置规则见 `docs/specs/omega-tui-modal-keymap.md`。
 
 ### Focus Rules
 
