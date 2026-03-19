@@ -5,6 +5,7 @@ members = [
     "crates/omega-tasks",
     "crates/omega-skills",
     "crates/omega-worktree",
+    "crates/omega-keymap",
     "crates/omega-tools",
     "crates/omega-tools-builtin",
     "crates/omega-todo",
@@ -41,3 +42,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 dirs = "6"
+toml = "0.8"

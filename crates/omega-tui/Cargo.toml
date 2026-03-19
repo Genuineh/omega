@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 omega-core = { path = "../omega-core" }
+omega-keymap = { path = "../omega-keymap" }
 omega-observability = { path = "../omega-observability" }
 omega-session = { path = "../omega-session" }
 ratatui.workspace = true

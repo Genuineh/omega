@@ -22,7 +22,7 @@ _任务编号以 `docs/specs/omega-agent-impl-plan.md` 为准；为支持可运�
 ### Low
 
 - **Task 6**: `omega-worktree` 对后期自治执行很重要，但当前尚未到隔离执行成为主瓶颈的阶段。
-- **Task 15B-8 ~ 15B-13**: 高级 TUI 能力已解除结构阻塞，但主线仍应优先 skills/subagent；高阶交互体验继续保持后移。
+- **Task 15B-8 ~ 15B-12**: 高级 TUI 能力已解除结构阻塞，但主线仍应优先 skills/subagent；高阶交互体验继续保持后移。
 - **Task 16**: 最终整合测试保留为收尾任务，不应提前占用主线优先级。
 
 ---
@@ -118,7 +118,6 @@ _将 M11 中基础级体验优化前移，确保在开发后续功能时有可�
 - **Description**: 将当前 `Todos` + `Logs` 组合升级为统一可收起的右侧 `Sidebar`，支持整体收起快捷键、顶部图标轨、section 折叠/切换，以及面向 `skills/subagent/tasks/background/message/team/worktree` 的 `Activity` 面板基础
 - **Complexity**: M
 - **Related**: docs/specs/omega-tui-runtime-experience.md, docs/specs/omega-tui-collapsible-sidebar.md, docs/specs/omega-tui-modal-keymap.md
-- **Blocked by**: Task 15B-13
 - **Blocks**: Task 15B-12
 
 ### ── M2: 文件工具 (s02) ── ✅
@@ -271,26 +270,25 @@ _基础体验已在 M1.7 完成，此处保留高级特性。_
 - **Status**: Pending
 - **Priority**: Low
 - **Description**: ↑↓键浏览历史输入、持久化到 ~/.omega/history
-- **Blocked by**: Task 15B-13
 
 ### Task 15B-11: omega-tui — 面板内搜索
 - **Status**: Pending
 - **Priority**: Low
 - **Description**: Ctrl+F 触发搜索模式，高亮匹配文本，n/N 跳转
-- **Blocked by**: Task 15B-13
 
 ### Task 15B-12: omega-tui — 可调面板与会话统计
 - **Status**: Pending
 - **Priority**: Low
 - **Description**: 拖拽或快捷键调整面板宽度比例；状态栏显示 token 使用量、对话轮次
-- **Blocked by**: Task 15B-13, Task 15B-16
+- **Blocked by**: Task 15B-16
 
 ### Task 15B-13: omega-tui — Leader / 模态快捷键基础设施
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-03-19
 - **Priority**: Low
-- **Description**: 引入统一 leader 键入口，并扩展为类似 Vim 的 `Normal` / `Insert` 模式交互体系；支持仅在特定模式/焦点/可输入上下文下触发的快捷键；默认使用 `leader j` / `leader k` 进行模式切换；快捷键配置从 `.omega/keymap.toml` 启动加载，并新增独立 `omega-keymap` 包负责解析、校验与匹配
+- **Description**: 引入统一 leader 键入口，并扩展为类似 Vim 的 `Normal` / `Insert` 模式交互体系；支持仅在特定模式/焦点/可输入上下文下触发的快捷键；默认使用 `leader j k` 在两种模式间切换；快捷键配置从 `.omega/keymap.toml` 启动加载，并新增独立 `omega-keymap` 包负责解析、校验与匹配
 - **Related**: docs/specs/omega-agent-spec.md, docs/specs/omega-tui-modal-keymap.md
-- **Blocks**: Task 15B-10, Task 15B-11, Task 15B-12, Task 15B-16
+- **Summary**: 新增独立 `omega-keymap` crate，负责内置默认映射、`.omega/keymap.toml` 加载、绑定校验、leader 序列解析与 `mode/focus/input_capable` 条件匹配；`omega-tui` 新增 `Normal` / `Insert` 模式、leader pending 状态、超时取消与上下文提示栏，并把现有焦点切换、滚动、输入提交、光标编辑与中断/退出快捷键统一改为经 keymap 解析；默认模式切换使用 `leader j k` 在 `Normal` / `Insert` 间来回切换；自由文本输入现在仅在 `Insert` 模式下接受，配置缺失时会自动生成默认 `.omega/keymap.toml`，配置非法时回退到内置默认 keymap，并在 UI/日志中给出提示；`cargo test -p omega-keymap -p omega-tui` 与 `cargo clippy -p omega-keymap -p omega-tui --all-targets -- -D warnings` 通过
 
 ### Task 16: 最终整合测试
 - **Status**: Pending

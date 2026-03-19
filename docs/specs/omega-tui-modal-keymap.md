@@ -70,10 +70,9 @@ related_prds: []
 
 ### Leader-Based Mode Switching
 
-默认模式切换使用 leader 前缀下的 `j` / `k` 映射：
+默认模式切换使用单一 leader 序列 `leader j k`：
 
-- `leader j`：切换到 `Normal`
-- `leader k`：在当前存在可输入上下文时切换到 `Insert`
+- `leader j k`：在 `Normal` / `Insert` 之间来回切换；若目标是进入 `Insert` 且当前上下文不可输入，则切换失败并给出提示
 
 之所以使用 leader 命名空间而不是裸按键，是为了避免与终端快捷键和输入内容冲突，同时保持后续高级操作的一致认知模型。
 
@@ -104,7 +103,7 @@ related_prds: []
 启动行为：
 
 - 若文件存在，则读取并校验
-- 若文件缺失，则使用内置默认 keymap
+- 若文件缺失，则创建默认 `.omega/keymap.toml` 文件并加载它
 - 若文件格式错误，则记录错误、向用户显示提示，并回退到内置默认 keymap
 
 ### Suggested Format
@@ -115,26 +114,38 @@ key = "space"
 timeout_ms = 900
 
 [[bindings]]
-keys = "leader j"
+keys = "leader j k"
 action = "enter_normal_mode"
 mode = "insert"
 
 [[bindings]]
-keys = "leader k"
+keys = "leader j k"
 action = "enter_insert_mode"
 mode = "normal"
 input_capable = true
 
 [[bindings]]
-keys = "leader f"
-action = "panel_search"
+keys = "leader tab"
+action = "focus_next_panel"
 mode = "normal"
 
 [[bindings]]
-keys = "leader h"
-action = "history_previous"
+keys = "leader up"
+action = "scroll_panel_up"
 mode = "normal"
-focus = "response"
+
+[[bindings]]
+keys = "leader down"
+action = "scroll_panel_down"
+mode = "normal"
+
+[[bindings]]
+keys = "leader c"
+action = "interrupt_turn"
+
+[[bindings]]
+keys = "leader q"
+action = "quit"
 ```
 
 ### Validation Rules
@@ -232,14 +243,14 @@ impl KeymapManager {
 | keymap package | new `omega-keymap` crate | 将配置加载、匹配和验证从 `omega-tui` 中剥离 |
 | mode model | `Normal` + `Insert` only | 先解决导航与输入冲突，不提前引入更多模态复杂度 |
 | user config path | `.omega/keymap.toml` | 明确、可发现、与仓库级本地设置目录一致 |
-| mode switch mapping | `leader j` / `leader k` | 与用户要求一致，并避免裸键与输入冲突 |
+| mode switch mapping | `leader j k` | 用单一 leader 序列在 `Normal` / `Insert` 间切换，并避免裸键与输入冲突 |
 | runtime ownership | mode/focus in `omega-tui`, resolution in `omega-keymap` | 保持边界清晰，避免独立 crate 反向依赖 UI |
 
 ## Testing Strategy
 
 - `omega-keymap` 单测：验证默认 keymap 加载、`.omega/keymap.toml` 覆盖、冲突检测、非法 action 拒绝。
 - `omega-keymap` 单测：验证 mode/focus/input_capable 条件匹配优先级。
-- `omega-tui` 单测：验证 `leader j` / `leader k` 的模式切换与不可输入上下文回退。
+- `omega-tui` 单测：验证 `leader j k` 的模式切换、前缀 pending 行为与不可输入上下文回退。
 - `omega-tui` 单测：验证仅在 `Insert` 模式下接受自由文本字符输入。
 - `omega-tui` 单测：验证 leader pending 超时取消后不会错误触发动作。
 - 手动验证：运行 `cargo run -p omega-tui`，确认 `.omega/keymap.toml` 缺失、合法、非法三种场景下都能启动并给出正确提示。

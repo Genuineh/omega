@@ -1,0 +1,10 @@
+[package]
+name = "omega-keymap"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+crossterm.workspace = true
+serde.workspace = true
+toml.workspace = true

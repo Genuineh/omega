@@ -6,6 +6,8 @@ use ratatui::{
     Frame,
 };
 
+use omega_keymap::InteractionMode;
+
 use crate::app::{App, MsgKind, Panel};
 
 pub fn render(frame: &mut Frame, app: &mut App, model_name: &str) {
@@ -53,11 +55,16 @@ pub fn render(frame: &mut Frame, app: &mut App, model_name: &str) {
     app.todo_rect = sidebar_chunks[0];
     app.logs_rect = sidebar_chunks[1];
     app.normalize_focus();
+    app.normalize_mode();
 
     let focus_label = match app.focused_panel {
         Panel::Response => "Response",
         Panel::Todo => "Todos",
         Panel::Logs => "Logs",
+    };
+    let mode_label = match app.interaction_mode {
+        InteractionMode::Normal => "Normal",
+        InteractionMode::Insert => "Insert",
     };
     const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
     let spinner_char = SPINNER_FRAMES[(app.spinner_tick as usize / 2) % SPINNER_FRAMES.len()];
@@ -70,8 +77,8 @@ pub fn render(frame: &mut Frame, app: &mut App, model_name: &str) {
     };
     let todo_status = app.todo_status_text();
     let status_text = format!(
-        " Omega Agent │ {} │ {} │ Focus: {} │ {} ",
-        model_name, agent_state, focus_label, todo_status
+        " Omega Agent │ {} │ {} │ Mode: {} │ Focus: {} │ KM: {} │ {} ",
+        model_name, agent_state, mode_label, focus_label, app.keymap_source, todo_status
     );
     let status =
         Paragraph::new(status_text).style(Style::default().fg(colors.text).bg(colors.status_bar));
@@ -203,29 +210,49 @@ pub fn render(frame: &mut Frame, app: &mut App, model_name: &str) {
 
     let prefix = if scroll_offset > 0 { "◂> " } else { " > " };
     let mut spans = vec![Span::styled(prefix, Style::default().fg(colors.input_text))];
-    if app.input_buffer.is_empty() {
-        spans.push(Span::styled(" ", Style::default().bg(colors.input_text)));
-    } else {
-        for (index, ch) in chars.iter().enumerate().skip(scroll_offset).take(avail_w) {
-            let style = if index == cursor_pos {
-                Style::default()
-                    .fg(colors.input_bg)
-                    .bg(colors.input_text)
-                    .add_modifier(Modifier::BOLD)
+    match app.interaction_mode {
+        InteractionMode::Normal => {
+            if app.input_buffer.is_empty() {
+                spans.push(Span::styled(
+                    "Press Space k to enter insert mode",
+                    Style::default().fg(colors.hint_dim),
+                ));
             } else {
-                Style::default().fg(colors.input_text)
-            };
-            spans.push(Span::styled(ch.to_string(), style));
+                for ch in chars.iter().skip(scroll_offset).take(avail_w) {
+                    spans.push(Span::styled(
+                        ch.to_string(),
+                        Style::default().fg(colors.hint_dim),
+                    ));
+                }
+            }
         }
-        if cursor_pos == char_count && (char_count - scroll_offset) < avail_w {
-            spans.push(Span::styled(" ", Style::default().bg(colors.input_text)));
+        InteractionMode::Insert => {
+            if app.input_buffer.is_empty() {
+                spans.push(Span::styled(" ", Style::default().bg(colors.input_text)));
+            } else {
+                for (index, ch) in chars.iter().enumerate().skip(scroll_offset).take(avail_w) {
+                    let style = if index == cursor_pos {
+                        Style::default()
+                            .fg(colors.input_bg)
+                            .bg(colors.input_text)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(colors.input_text)
+                    };
+                    spans.push(Span::styled(ch.to_string(), style));
+                }
+                if cursor_pos == char_count && (char_count - scroll_offset) < avail_w {
+                    spans.push(Span::styled(" ", Style::default().bg(colors.input_text)));
+                }
+            }
         }
     }
 
-    let input_title = if app.is_running {
-        " Input [Running…] "
-    } else {
-        " Input "
+    let input_title = match (app.interaction_mode, app.is_running) {
+        (InteractionMode::Normal, true) => " Input [Normal | Running…] ",
+        (InteractionMode::Normal, false) => " Input [Normal] ",
+        (InteractionMode::Insert, true) => " Input [Insert | Running…] ",
+        (InteractionMode::Insert, false) => " Input [Insert] ",
     };
     let input = Paragraph::new(Line::from(spans))
         .style(Style::default().bg(colors.input_bg))
@@ -237,10 +264,28 @@ pub fn render(frame: &mut Frame, app: &mut App, model_name: &str) {
         );
     frame.render_widget(input, chunks[2]);
 
-    let hint_text = if main_chunks[1].width == 0 {
-        " Sidebar hidden below 60 cols. Tab=Focus  ↑↓=Scroll  ←→=Cursor  Del=Delete  Ctrl+C=Interrupt  Ctrl+Q=Quit"
+    let hint_text = if app.is_leader_pending() {
+        " Leader pending: jk=Toggle mode  Tab=Focus  ↑/↓=Scroll  c=Interrupt  q=Quit  Esc=Cancel"
+    } else if let Some(notice) = app.status_notice.as_deref() {
+        notice
+    } else if main_chunks[1].width == 0 {
+        match app.interaction_mode {
+            InteractionMode::Normal => {
+                " Sidebar hidden below 60 cols. Space=Leader  Space jk=Toggle mode  Space Tab=Focus  Space ↑/↓=Scroll  Space c=Interrupt  Space q=Quit"
+            }
+            InteractionMode::Insert => {
+                " Sidebar hidden below 60 cols. Enter=Send  Space jk=Toggle mode  ←→/Home/End=Cursor  Del/Backspace=Delete"
+            }
+        }
     } else {
-        " Tab=Focus  ↑↓=Scroll  ←→=Cursor  Del=Delete  Ctrl+C=Interrupt  Ctrl+Q=Quit"
+        match app.interaction_mode {
+            InteractionMode::Normal => {
+                " Space=Leader  Space jk=Toggle mode  Space Tab=Focus  Space ↑/↓=Scroll  Space c=Interrupt  Space q=Quit"
+            }
+            InteractionMode::Insert => {
+                " Enter=Send  Space jk=Toggle mode  ←→/Home/End=Cursor  Del/Backspace=Delete"
+            }
+        }
     };
     let hint =
         Paragraph::new(hint_text).style(Style::default().fg(colors.hint_dim).bg(colors.status_bar));

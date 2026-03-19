@@ -3,9 +3,10 @@ use std::sync::{mpsc, Arc, Mutex};
 
 use crossterm::event;
 use omega_core::DynLlmClient;
+use omega_keymap::KeymapManager;
 use omega_session::{AgentSession, AgentSessionConfig, SessionUpdate};
 use tokio::runtime::Handle;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::app::App;
 use crate::event::handle_event;
@@ -34,6 +35,12 @@ pub fn run(config: TuiLaunchConfig) -> anyhow::Result<()> {
     info!("omega starting with multi-panel TUI");
     info!(model = %model_name, cwd = %cwd.display(), "tui config loaded");
 
+    let loaded_keymap = KeymapManager::load(&cwd);
+    if let Some(warning) = loaded_keymap.warning.as_deref() {
+        warn!(%warning, "keymap config fallback activated");
+    }
+    let keymap = loaded_keymap.manager;
+
     let session = AgentSession::new(AgentSessionConfig {
         client,
         system,
@@ -41,6 +48,14 @@ pub fn run(config: TuiLaunchConfig) -> anyhow::Result<()> {
         runtime_handle,
     })?;
     let app = Arc::new(Mutex::new(App::new()));
+    {
+        let mut app_guard = app.lock().unwrap();
+        app_guard.set_keymap_source(keymap.source_label());
+        if let Some(warning) = loaded_keymap.warning {
+            app_guard.set_status_notice(warning.clone());
+            app_guard.add_log(warning);
+        }
+    }
     let (tx, rx) = mpsc::channel::<SessionUpdate>();
     let mut terminal = TerminalGuard::enter()?;
     let trace_rx = trace_rx;
@@ -64,6 +79,7 @@ pub fn run(config: TuiLaunchConfig) -> anyhow::Result<()> {
 
         {
             let mut app_guard = app.lock().unwrap();
+            app_guard.expire_leader_pending(keymap.leader_timeout());
             app_guard.spinner_tick = app_guard.spinner_tick.wrapping_add(1);
         }
 
@@ -75,7 +91,7 @@ pub fn run(config: TuiLaunchConfig) -> anyhow::Result<()> {
         }
 
         if event::poll(std::time::Duration::from_millis(50))?
-            && handle_event(event::read()?, &app, &session, &tx)?
+            && handle_event(event::read()?, &app, &session, &tx, &keymap)?
         {
             break;
         }

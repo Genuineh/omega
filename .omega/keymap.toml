@@ -1,0 +1,80 @@
+# Default omega-tui keymap
+# Normal-mode commands use the leader prefix to avoid collisions with text input.
+
+[leader]
+key = "space"
+timeout_ms = 900
+
+[[bindings]]
+keys = "leader j k"
+action = "enter_normal_mode"
+mode = "insert"
+
+[[bindings]]
+keys = "leader j k"
+action = "enter_insert_mode"
+mode = "normal"
+input_capable = true
+
+[[bindings]]
+keys = "leader tab"
+action = "focus_next_panel"
+mode = "normal"
+
+[[bindings]]
+keys = "leader up"
+action = "scroll_panel_up"
+mode = "normal"
+
+[[bindings]]
+keys = "leader down"
+action = "scroll_panel_down"
+mode = "normal"
+
+[[bindings]]
+keys = "left"
+action = "move_cursor_left"
+mode = "insert"
+
+[[bindings]]
+keys = "right"
+action = "move_cursor_right"
+mode = "insert"
+
+[[bindings]]
+keys = "home"
+action = "move_cursor_home"
+mode = "insert"
+
+[[bindings]]
+keys = "end"
+action = "move_cursor_end"
+mode = "insert"
+
+[[bindings]]
+keys = "delete"
+action = "delete_char_at"
+mode = "insert"
+
+[[bindings]]
+keys = "backspace"
+action = "delete_char_before"
+mode = "insert"
+
+[[bindings]]
+keys = "enter"
+action = "submit_input"
+mode = "insert"
+input_capable = true
+
+[[bindings]]
+keys = "leader c"
+action = "interrupt_turn"
+
+[[bindings]]
+keys = "leader q"
+action = "quit"
+
+[[bindings]]
+keys = "esc"
+action = "cancel_pending_sequence"

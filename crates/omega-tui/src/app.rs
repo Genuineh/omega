@@ -1,3 +1,7 @@
+use std::time::{Duration, Instant};
+
+use crossterm::event::KeyEvent;
+use omega_keymap::{InteractionMode, KeyFocus};
 use ratatui::{layout::Rect, widgets::ListState};
 
 use omega_observability::strip_ansi;
@@ -56,6 +60,7 @@ pub struct App {
     pub todo_state: ListState,
     pub logs_state: ListState,
     pub focused_panel: Panel,
+    pub interaction_mode: InteractionMode,
     pub response_pinned: bool,
     pub todo_pinned: bool,
     pub logs_pinned: bool,
@@ -64,6 +69,7 @@ pub struct App {
     pub logs_rect: Rect,
     pub input_buffer: String,
     pub cursor_pos: usize,
+    pub input_enabled: bool,
     pub is_running: bool,
     pub active_turn_id: u64,
     pub last_todo_turn_id: Option<u64>,
@@ -71,6 +77,10 @@ pub struct App {
     pub response_displayed_count: usize,
     pub todo_displayed_count: usize,
     pub logs_displayed_count: usize,
+    pub leader_pending_since: Option<Instant>,
+    pub pending_key_events: Vec<KeyEvent>,
+    pub keymap_source: String,
+    pub status_notice: Option<String>,
 }
 
 impl App {
@@ -85,6 +95,7 @@ impl App {
             todo_state: ListState::default(),
             logs_state: ListState::default(),
             focused_panel: Panel::Response,
+            interaction_mode: InteractionMode::Normal,
             response_pinned: false,
             todo_pinned: false,
             logs_pinned: false,
@@ -93,6 +104,7 @@ impl App {
             logs_rect: Rect::default(),
             input_buffer: String::new(),
             cursor_pos: 0,
+            input_enabled: true,
             is_running: false,
             active_turn_id: 0,
             last_todo_turn_id: None,
@@ -100,6 +112,10 @@ impl App {
             response_displayed_count: 0,
             todo_displayed_count: 0,
             logs_displayed_count: 0,
+            leader_pending_since: None,
+            pending_key_events: Vec::new(),
+            keymap_source: "builtin".to_string(),
+            status_notice: None,
         }
     }
 
@@ -297,6 +313,14 @@ impl App {
         }
     }
 
+    pub fn normalize_mode(&mut self) {
+        if self.interaction_mode == InteractionMode::Insert && !self.input_capable() {
+            self.interaction_mode = InteractionMode::Normal;
+            self.status_notice =
+                Some("Insert mode is unavailable in the current context.".to_string());
+        }
+    }
+
     pub fn next_focus_panel(&self) -> Panel {
         let mut panels = vec![Panel::Response];
         if self.todo_visible() {
@@ -315,6 +339,80 @@ impl App {
 
     pub fn todo_refresh_pending(&self) -> bool {
         self.is_running && self.last_todo_turn_id != Some(self.active_turn_id)
+    }
+
+    pub fn key_focus(&self) -> KeyFocus {
+        match self.focused_panel {
+            Panel::Response => KeyFocus::Response,
+            Panel::Todo => KeyFocus::Todo,
+            Panel::Logs => KeyFocus::Logs,
+        }
+    }
+
+    pub fn input_capable(&self) -> bool {
+        self.input_enabled
+    }
+
+    pub fn is_leader_pending(&self) -> bool {
+        self.leader_pending_since.is_some()
+    }
+
+    pub fn pending_key_events(&self) -> &[KeyEvent] {
+        &self.pending_key_events
+    }
+
+    pub fn begin_leader_pending(&mut self, leader_key: KeyEvent) {
+        self.leader_pending_since = Some(Instant::now());
+        self.pending_key_events.clear();
+        self.pending_key_events.push(leader_key);
+        self.status_notice = None;
+    }
+
+    pub fn extend_pending_sequence(&mut self, key: KeyEvent) {
+        self.leader_pending_since = Some(Instant::now());
+        self.pending_key_events.push(key);
+        self.status_notice = None;
+    }
+
+    pub fn clear_leader_pending(&mut self) {
+        self.leader_pending_since = None;
+        self.pending_key_events.clear();
+    }
+
+    pub fn expire_leader_pending(&mut self, timeout: Duration) {
+        if let Some(start) = self.leader_pending_since {
+            if start.elapsed() >= timeout {
+                self.clear_leader_pending();
+                self.status_notice = Some("Leader sequence timed out.".to_string());
+            }
+        }
+    }
+
+    pub fn enter_normal_mode(&mut self) {
+        self.interaction_mode = InteractionMode::Normal;
+        self.clear_leader_pending();
+    }
+
+    pub fn enter_insert_mode(&mut self) -> bool {
+        if !self.input_capable() {
+            return false;
+        }
+
+        self.interaction_mode = InteractionMode::Insert;
+        self.clear_leader_pending();
+        true
+    }
+
+    pub fn set_status_notice(&mut self, notice: impl Into<String>) {
+        self.status_notice = Some(notice.into());
+    }
+
+    pub fn clear_status_notice(&mut self) {
+        self.status_notice = None;
+    }
+
+    pub fn set_keymap_source(&mut self, source: impl Into<String>) {
+        self.keymap_source = source.into();
     }
 
     pub fn todo_status_text(&self) -> String {
@@ -564,5 +662,20 @@ mod tests {
 
         assert_eq!(app.focused_panel, Panel::Response);
         assert_eq!(app.next_focus_panel(), Panel::Response);
+    }
+
+    #[test]
+    fn normalize_mode_returns_to_normal_when_input_is_disabled() {
+        let mut app = App::new();
+        app.interaction_mode = InteractionMode::Insert;
+        app.input_enabled = false;
+
+        app.normalize_mode();
+
+        assert_eq!(app.interaction_mode, InteractionMode::Normal);
+        assert!(app
+            .status_notice
+            .as_deref()
+            .is_some_and(|notice| notice.contains("Insert mode")));
     }
 }
