@@ -21,6 +21,7 @@ _任务编号以 `docs/specs/omega-agent-impl-plan.md` 为准；为支持可运�
 ### Low
 
 - **Task 6**: `omega-worktree` 对后期自治执行很重要，但当前尚未到隔离执行成为主瓶颈的阶段。
+- **Task 15E-1**: `omega-theme` 主题包应在更多视觉微调继续散落到 `omega-tui` 前落地，但仍不应先于主线 agent 能力。
 - **Task 15B-8 ~ 15B-12**: 高级 TUI 能力已解除结构阻塞，但主线仍应优先 skills/subagent；高阶交互体验继续保持后移。
 - **Task 16**: 最终整合测试保留为收尾任务，不应提前占用主线优先级。
 
@@ -130,6 +131,17 @@ _将 M11 中基础级体验优化前移，确保在开发后续功能时有可�
 - **Complexity**: M
 - **Related**: docs/specs/omega-tui-runtime-experience.md, docs/specs/omega-tui-collapsible-sidebar.md, docs/specs/omega-tui-modal-keymap.md, docs/specs/omega-tui-overlay-popups.md
 - **Summary**: `omega-tui` 新增统一 `Sidebar` shell 与本地 `SidebarState`，把右侧辅助区重构为 `Response | Sidebar` 布局，并在侧边栏顶部加入轻量可聚焦 rail；当前 rail 直接以 `Todos | Logs` 呈现，`Logs` 面板不再显示 `Activity[Logs]` 包装标题，支持 `leader b` 整体收起/展开、rail 左右切换、`x` 折叠 section、`Enter` 激活展开内容，同时显式禁止把最后一个 section 收起成空 sidebar；窄终端会自动隐藏侧边栏并回退焦点，状态栏同步增加 sidebar/logs 徽章信息；相关布局、事件和状态单测已覆盖，并以 `cargo test -p omega-tui`、`cargo test -p omega-keymap -p omega-tui`、`cargo clippy -p omega-keymap -p omega-tui --all-targets -- -D warnings` 验证
+
+### Task 15B-17: omega-tui — 输入上下文带与底部状态带重构
+- **Status**: Completed
+- **Completed**: 2026-03-19
+- **Priority**: Low
+- **Description**: 将原输入框下方的提示/短消息区域上移到输入框上方、主体区下方的固定上下文带；将原顶部 header 中真正需要持续展示的模型名与运行态下移到输入框下方固定状态带，并抽象出便于后续扩展的底部状态槽
+- **Complexity**: M
+- **Related**: docs/specs/omega-tui-input-status-layout.md, docs/specs/omega-tui-runtime-experience.md
+- **Blocked by**: Task 15B-16
+- **Blocks**: Task 15B-12
+- **Summary**: `omega-tui` 主布局重排为 `Main content -> Input context bar -> Input box -> Bottom status bar`，原输入框下方的 leader/notice/overlay 提示被统一上移到固定上下文带；原顶部 header 被移除，底部状态带现通过 slot 化 segment 渲染保留模型名与 `Idle / Running` 摘要，为后续会话统计和更多 runtime badge 扩展提供稳定入口；随后又统一引入 rounded 边框、取消输入区与状态条的厚重背景分层，改用线框 / 非线框关系区分结构，并让输入框边框跟随 `NORMAL` / `INSERT` 模式使用语义色联动；补充布局与视觉语义单测，并以 `cargo test -p omega-tui`、`cargo clippy -p omega-tui --all-targets -- -D warnings` 验证通过
 
 ### ── M2: 文件工具 (s02) ── ✅
 
@@ -264,6 +276,15 @@ _基础体验已在 M1.7 完成，此处保留高级特性。_
 - **Description**: 将 `omega-tui` 中不属于 UI 的 turn orchestration 与 observability 逻辑拆为独立 crate；该任务先于剩余主线执行，Phase 1 先实现 `omega-session` 与 `omega-observability`，Phase 2 再按需要评估 `omega-interaction`
 - **Related**: docs/specs/omega-tui-non-ui-extraction.md, docs/decisions/006-omega-tui-ui-boundary.md
 - **Summary**: 新增 `omega-session` 承接 Agent turn orchestration 与 checkpoint/interrupt/update 协议，新增 `omega-observability` 承接 tracing 初始化、UI sink、JSONL 文件日志与 ANSI 清洗；`omega-tui` 改为仅保留 UI 运行时并消费外部 `SessionUpdate`/trace channel，`omega-repl` 也接入统一 tracing 初始化；`cargo test -p omega-session -p omega-observability -p omega-tui -p omega-repl` 通过
+
+### Task 15E-1: omega-theme — 主题与样式令牌包
+- **Status**: Pending
+- **Priority**: Low
+- **Description**: 新增 `omega-theme` crate，集中管理 `omega-tui` 的颜色、边框、状态语义色、间距与后续命名主题，避免样式令牌继续散落在 `render.rs` 与未来多个 widget 模块中
+- **Complexity**: M
+- **Related**: docs/specs/omega-theme-package.md, docs/specs/omega-tui-runtime-experience.md, docs/specs/omega-tui-input-status-layout.md
+- **Blocked by**: Task 15D
+- **Blocks**: Task 15B-8, Task 15B-9, Task 15B-12
 
 ### Task 15B-8: omega-tui — Markdown 渲染
 - **Status**: Pending

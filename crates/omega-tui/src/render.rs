@@ -1,4 +1,4 @@
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph};
 use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
@@ -18,8 +18,8 @@ pub fn render(frame: &mut Frame, app: &mut App, model_name: &str) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),
             Constraint::Min(0),
+            Constraint::Length(1),
             Constraint::Length(3),
             Constraint::Length(1),
         ])
@@ -41,54 +41,24 @@ pub fn render(frame: &mut Frame, app: &mut App, model_name: &str) {
             Constraint::Percentage(resp_pct),
             Constraint::Percentage(sidebar_pct),
         ])
-        .split(chunks[1]);
+        .split(chunks[0]);
 
     app.response_rect = main_chunks[0];
+    app.input_context_rect = chunks[1];
+    app.input_gap_rect = ratatui::layout::Rect::default();
+    app.input_rect = chunks[2];
     app.sidebar_rect = main_chunks[1];
     app.sidebar_rail_rect = ratatui::layout::Rect::default();
     app.todo_rect = ratatui::layout::Rect::default();
     app.logs_rect = ratatui::layout::Rect::default();
+    app.bottom_status_rect = chunks[3];
     app.normalize_focus();
     app.normalize_mode();
 
-    let focus_label = if app.overlay_active() {
-        "Overlay"
-    } else {
-        match app.focused_panel {
-            Panel::Response => "Response",
-            Panel::SidebarRail => "Sidebar rail",
-            Panel::Todo => "Todos",
-            Panel::Logs => "Logs",
-        }
-    };
-    let mode_label = match app.interaction_mode {
-        InteractionMode::Normal => "Normal",
-        InteractionMode::Insert => "Insert",
-    };
     const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-    let spinner_char = SPINNER_FRAMES[(app.spinner_tick as usize / 2) % SPINNER_FRAMES.len()];
-    let agent_state_owned;
-    let agent_state = if app.is_running {
-        agent_state_owned = format!("{spinner_char} Running…");
-        agent_state_owned.as_str()
-    } else {
-        "● Idle"
-    };
-    let todo_status = app.todo_status_text();
-    let sidebar_status = app.sidebar_badge_text();
-    let status_text = format!(
-        " Omega Agent │ {} │ {} │ Mode: {} │ Focus: {} │ KM: {} │ {} │ {} ",
-        model_name,
-        agent_state,
-        mode_label,
-        focus_label,
-        app.keymap_source,
-        todo_status,
-        sidebar_status
-    );
-    let status =
-        Paragraph::new(status_text).style(Style::default().fg(colors.text).bg(colors.status_bar));
-    frame.render_widget(status, chunks[0]);
+    let status = Paragraph::new(bottom_status_line(app, model_name, SPINNER_FRAMES, &colors))
+        .style(Style::default().bg(colors.status_bar_bg));
+    frame.render_widget(status, chunks[3]);
 
     let response_border = if app.focused_panel == Panel::Response {
         Style::default()
@@ -149,6 +119,7 @@ pub fn render(frame: &mut Frame, app: &mut App, model_name: &str) {
     let output_list = List::new(output_items)
         .block(
             Block::default()
+                .border_type(BorderType::Rounded)
                 .title(response_title)
                 .borders(Borders::ALL)
                 .border_style(response_border),
@@ -164,6 +135,7 @@ pub fn render(frame: &mut Frame, app: &mut App, model_name: &str) {
             " Sidebar "
         };
         let sidebar_block = Block::default()
+            .border_type(BorderType::Rounded)
             .title(sidebar_title)
             .borders(Borders::ALL)
             .border_style(sidebar_border);
@@ -237,29 +209,36 @@ pub fn render(frame: &mut Frame, app: &mut App, model_name: &str) {
         }
     }
 
-    let input_title = match (app.interaction_mode, app.is_running) {
-        (InteractionMode::Normal, true) => " Input [Normal | Running…] ",
-        (InteractionMode::Normal, false) => " Input [Normal] ",
-        (InteractionMode::Insert, true) => " Input [Insert | Running…] ",
-        (InteractionMode::Insert, false) => " Input [Insert] ",
+    let input_border_color = match app.interaction_mode {
+        InteractionMode::Normal => colors.mode_normal_fg,
+        InteractionMode::Insert => colors.mode_insert_fg,
     };
+
     let input = Paragraph::new(Line::from(spans))
         .style(Style::default().bg(colors.input_bg))
         .block(
             Block::default()
-                .title(input_title)
+                .border_type(BorderType::Rounded)
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(colors.border)),
+                .border_style(Style::default().fg(input_border_color)),
         );
     frame.render_widget(input, chunks[2]);
 
-    let hint_text = if app.overlay_active() {
+    let context = Paragraph::new(input_context_line(app, main_chunks[1].width == 0, &colors))
+        .style(Style::default().bg(colors.context_bar_bg));
+    frame.render_widget(context, chunks[1]);
+
+    render_overlay(frame, app, &colors);
+}
+
+fn input_context_text(app: &App, sidebar_hidden: bool) -> &str {
+    if app.overlay_active() {
         overlay_hint_text(app)
     } else if app.is_leader_pending() {
         " Leader pending: jk=Toggle mode  Tab=Focus  ↑/↓=Scroll  c=Interrupt  q=Quit  Esc=Cancel"
     } else if let Some(notice) = app.status_notice.as_deref() {
         notice
-    } else if main_chunks[1].width == 0 {
+    } else if sidebar_hidden {
         match app.interaction_mode {
             InteractionMode::Normal => {
                 " Sidebar hidden. Space=Leader  Space jk=Toggle mode  Space Tab=Focus  Space b=Sidebar  Space /=Search  Space ↑/↓=Scroll"
@@ -281,12 +260,121 @@ pub fn render(frame: &mut Frame, app: &mut App, model_name: &str) {
                 " Enter=Send  Space jk=Toggle mode  ←→/Home/End=Cursor  Del/Backspace=Delete"
             }
         }
-    };
-    let hint =
-        Paragraph::new(hint_text).style(Style::default().fg(colors.hint_dim).bg(colors.status_bar));
-    frame.render_widget(hint, chunks[3]);
+    }
+}
 
-    render_overlay(frame, app, &colors);
+fn input_context_line(app: &App, sidebar_hidden: bool, colors: &ColorScheme) -> Line<'static> {
+    let hint_val = input_context_text(app, sidebar_hidden).to_string();
+
+    Line::from(vec![
+        Span::styled(
+            " keys ",
+            Style::default()
+                .fg(colors.status_label)
+                .bg(colors.context_bar_bg),
+        ),
+        Span::styled(
+            hint_val,
+            Style::default()
+                .fg(colors.hint_dim)
+                .bg(colors.context_bar_bg),
+        ),
+    ])
+}
+
+#[cfg(test)]
+fn bottom_status_text(app: &App, model_name: &str, spinner_frames: &[char]) -> String {
+    format!(
+        " {} ",
+        bottom_status_segments(app, model_name, spinner_frames).join(" │ ")
+    )
+}
+
+fn bottom_status_line(
+    app: &App,
+    model_name: &str,
+    spinner_frames: &[char],
+    colors: &ColorScheme,
+) -> Line<'static> {
+    let segments = bottom_status_segments(app, model_name, spinner_frames);
+    let runtime_active = app.is_running;
+    let mode_text = match app.interaction_mode {
+        InteractionMode::Normal => "NORMAL",
+        InteractionMode::Insert => "INSERT",
+    };
+    let mode_color = match app.interaction_mode {
+        InteractionMode::Normal => colors.mode_normal_fg,
+        InteractionMode::Insert => colors.mode_insert_fg,
+    };
+
+    Line::from(vec![
+        Span::styled(
+            " mode ",
+            Style::default()
+                .fg(colors.status_label)
+                .bg(colors.status_bar_bg),
+        ),
+        Span::styled(
+            mode_text,
+            Style::default()
+                .fg(mode_color)
+                .bg(colors.status_bar_bg)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "  ·  ",
+            Style::default()
+                .fg(colors.bar_divider)
+                .bg(colors.status_bar_bg),
+        ),
+        Span::styled(
+            " model ",
+            Style::default()
+                .fg(colors.status_label)
+                .bg(colors.status_bar_bg),
+        ),
+        Span::styled(
+            segments[0].clone(),
+            Style::default()
+                .fg(colors.text)
+                .bg(colors.status_bar_bg)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "  ·  ",
+            Style::default()
+                .fg(colors.bar_divider)
+                .bg(colors.status_bar_bg),
+        ),
+        Span::styled(
+            " state ",
+            Style::default()
+                .fg(colors.status_label)
+                .bg(colors.status_bar_bg),
+        ),
+        Span::styled(
+            segments[1].clone(),
+            Style::default()
+                .fg(if runtime_active {
+                    colors.status_running_fg
+                } else {
+                    colors.status_idle_fg
+                })
+                .bg(colors.status_bar_bg)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ])
+}
+
+fn bottom_status_segments(app: &App, model_name: &str, spinner_frames: &[char]) -> Vec<String> {
+    let spinner_char = spinner_frames[(app.spinner_tick as usize / 2) % spinner_frames.len()];
+    let runtime_state = if app.is_running {
+        format!("{spinner_char} Running…")
+    } else {
+        "● Idle".to_string()
+    };
+
+    vec![model_name.to_string(), runtime_state]
 }
 
 fn render_sidebar_rail(
@@ -371,6 +459,7 @@ fn render_sidebar_body(
         let todo_list = List::new(todo_items)
             .block(
                 Block::default()
+                    .border_type(BorderType::Rounded)
                     .title(todo_title)
                     .borders(Borders::ALL)
                     .border_style(todo_border),
@@ -400,6 +489,7 @@ fn render_sidebar_body(
         let log_list = List::new(log_items)
             .block(
                 Block::default()
+                    .border_type(BorderType::Rounded)
                     .title(logs_title)
                     .borders(Borders::ALL)
                     .border_style(logs_border),
@@ -432,28 +522,40 @@ fn wrap_text(line: &str, width: usize) -> Vec<String> {
 
 struct ColorScheme {
     text: Color,
-    border: Color,
     border_dim: Color,
     focus_border: Color,
-    status_bar: Color,
+    context_bar_bg: Color,
+    status_bar_bg: Color,
     input_bg: Color,
     input_text: Color,
     hint_dim: Color,
     command: Color,
+    status_label: Color,
+    bar_divider: Color,
+    mode_normal_fg: Color,
+    mode_insert_fg: Color,
+    status_idle_fg: Color,
+    status_running_fg: Color,
 }
 
 impl ColorScheme {
     fn dark() -> Self {
         Self {
             text: Color::Rgb(212, 212, 212),
-            border: Color::Rgb(62, 62, 62),
             border_dim: Color::Rgb(48, 48, 48),
             focus_border: Color::Rgb(78, 201, 176),
-            status_bar: Color::Rgb(45, 45, 45),
-            input_bg: Color::Rgb(40, 40, 40),
+            context_bar_bg: Color::Reset,
+            status_bar_bg: Color::Reset,
+            input_bg: Color::Reset,
             input_text: Color::Rgb(86, 156, 214),
-            hint_dim: Color::Rgb(100, 100, 100),
+            hint_dim: Color::Rgb(172, 179, 189),
             command: Color::Rgb(220, 220, 170),
+            status_label: Color::Rgb(116, 126, 140),
+            bar_divider: Color::Rgb(98, 107, 120),
+            mode_normal_fg: Color::Rgb(163, 187, 214),
+            mode_insert_fg: Color::Rgb(78, 201, 176),
+            status_idle_fg: Color::Rgb(123, 199, 143),
+            status_running_fg: Color::Rgb(255, 196, 104),
         }
     }
 }
@@ -468,7 +570,7 @@ fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorScheme) {
     let overlay_rect = overlay_area(full_area, overlay.size());
     app.overlay_rect = overlay_rect;
 
-    let mask = Block::default().style(
+    let mask = Block::default().border_type(BorderType::Rounded).style(
         Style::default()
             .bg(Color::Rgb(12, 12, 12))
             .add_modifier(Modifier::DIM),
@@ -488,6 +590,7 @@ fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorScheme) {
                 ])
                 .split(overlay_rect);
             let block = Block::default()
+                .border_type(BorderType::Rounded)
                 .title(" Search ")
                 .borders(Borders::ALL)
                 .border_style(
@@ -538,6 +641,7 @@ fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorScheme) {
                 ])
                 .split(overlay_rect);
             let block = Block::default()
+                .border_type(BorderType::Rounded)
                 .title(confirm.title.as_str())
                 .borders(Borders::ALL)
                 .border_style(
@@ -570,6 +674,7 @@ fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorScheme) {
         }
         OverlayState::Detail(detail) => {
             let block = Block::default()
+                .border_type(BorderType::Rounded)
                 .title(detail.title.as_str())
                 .borders(Borders::ALL)
                 .border_style(
@@ -593,6 +698,7 @@ fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorScheme) {
         }
         OverlayState::Picker(picker) => {
             let block = Block::default()
+                .border_type(BorderType::Rounded)
                 .title(picker.title.as_str())
                 .borders(Borders::ALL)
                 .border_style(
@@ -638,6 +744,7 @@ fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorScheme) {
                 ])
                 .split(overlay_rect);
             let block = Block::default()
+                .border_type(BorderType::Rounded)
                 .title(prompt.title.as_str())
                 .borders(Borders::ALL)
                 .border_style(
@@ -730,7 +837,10 @@ mod tests {
 
     use crate::app::{App, Panel};
 
-    use super::{render, wrap_text};
+    use super::{
+        bottom_status_line, bottom_status_text, input_context_line, input_context_text, render,
+        wrap_text, ColorScheme,
+    };
 
     #[test]
     fn wraps_unicode_text_by_character_width() {
@@ -788,5 +898,74 @@ mod tests {
 
         assert_eq!(app.focused_panel, Panel::Response);
         assert_eq!(app.sidebar_rect.width, 0);
+    }
+
+    #[test]
+    fn input_context_and_bottom_status_bars_have_stable_heights() {
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new();
+
+        terminal
+            .draw(|frame| render(frame, &mut app, "test-model"))
+            .unwrap();
+
+        assert_eq!(app.response_rect.y, 0);
+        assert_eq!(app.input_context_rect.height, 1);
+        assert_eq!(app.input_gap_rect.height, 0);
+        assert_eq!(app.input_rect.height, 3);
+        assert_eq!(app.bottom_status_rect.height, 1);
+        assert_eq!(
+            app.input_rect.y,
+            app.input_context_rect.y + app.input_context_rect.height
+        );
+        assert!(app.input_context_rect.y < app.bottom_status_rect.y);
+    }
+
+    #[test]
+    fn bottom_status_keeps_model_and_runtime_without_old_header_fields() {
+        let mut app = App::new();
+        app.is_running = true;
+        app.spinner_tick = 3;
+
+        let text = bottom_status_text(&app, "test-model", &['⠋', '⠙']);
+
+        assert!(text.contains("test-model"));
+        assert!(text.contains("Running…"));
+        assert!(!text.contains("Omega Agent"));
+        assert!(!text.contains("Mode:"));
+        assert!(!text.contains("Focus:"));
+        assert!(!text.contains("KM:"));
+    }
+
+    #[test]
+    fn leader_and_notice_text_live_in_input_context_bar() {
+        let mut app = App::new();
+
+        app.set_status_notice("Context notice");
+        assert_eq!(input_context_text(&app, false), "Context notice");
+
+        app.leader_pending_since = Some(std::time::Instant::now());
+        assert!(input_context_text(&app, false).contains("Leader pending"));
+    }
+
+    #[test]
+    fn input_surfaces_use_symmetric_visual_bars() {
+        let mut app = App::new();
+        app.is_running = true;
+
+        let colors = ColorScheme::dark();
+        let context = input_context_line(&app, false, &colors);
+        let status = bottom_status_line(&app, "test-model", &['⠋', '⠙'], &colors);
+
+        assert_eq!(context.spans[0].style.fg, Some(colors.status_label));
+        assert_eq!(context.spans[0].style.bg, Some(colors.context_bar_bg));
+        assert_eq!(context.spans[0].content, " keys ");
+        assert_eq!(status.spans[0].style.bg, Some(colors.status_bar_bg));
+        assert_eq!(status.spans[0].content, " mode ");
+        assert_eq!(status.spans[1].style.fg, Some(colors.mode_normal_fg));
+        assert_eq!(status.spans[7].style.fg, Some(colors.status_running_fg));
+        assert_eq!(colors.context_bar_bg, colors.status_bar_bg);
+        assert_eq!(colors.input_bg, colors.context_bar_bg);
     }
 }

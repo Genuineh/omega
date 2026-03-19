@@ -72,10 +72,14 @@ pub struct App {
     pub todo_pinned: bool,
     pub logs_pinned: bool,
     pub response_rect: Rect,
+    pub input_context_rect: Rect,
+    pub input_gap_rect: Rect,
+    pub input_rect: Rect,
     pub sidebar_rect: Rect,
     pub sidebar_rail_rect: Rect,
     pub todo_rect: Rect,
     pub logs_rect: Rect,
+    pub bottom_status_rect: Rect,
     pub input_buffer: String,
     pub cursor_pos: usize,
     pub input_enabled: bool,
@@ -112,10 +116,14 @@ impl App {
             todo_pinned: false,
             logs_pinned: false,
             response_rect: Rect::default(),
+            input_context_rect: Rect::default(),
+            input_gap_rect: Rect::default(),
+            input_rect: Rect::default(),
             sidebar_rect: Rect::default(),
             sidebar_rail_rect: Rect::default(),
             todo_rect: Rect::default(),
             logs_rect: Rect::default(),
+            bottom_status_rect: Rect::default(),
             input_buffer: String::new(),
             cursor_pos: 0,
             input_enabled: true,
@@ -513,16 +521,6 @@ impl App {
         title
     }
 
-    pub fn sidebar_badge_text(&self) -> String {
-        let shell = if self.sidebar.shell_collapsed {
-            "SB: closed"
-        } else {
-            "SB: open"
-        };
-        let logs = format!("Logs {}", self.log_lines.len());
-        format!("{shell} │ {logs}")
-    }
-
     pub fn rail_badge(&self, section: SidebarSection) -> String {
         match section {
             SidebarSection::Todos => match self.todo_summary {
@@ -644,26 +642,6 @@ impl App {
             Panel::SidebarRail => Vec::new(),
             Panel::Todo => self.todo_lines.iter().map(String::as_str).collect(),
             Panel::Logs => self.log_lines.iter().map(String::as_str).collect(),
-        }
-    }
-
-    pub fn todo_status_text(&self) -> String {
-        let suffix = if self.todo_refresh_pending() {
-            " (stale while running)"
-        } else {
-            ""
-        };
-
-        match self.todo_status {
-            TodoPanelStatus::NeverSynced => format!("Todos: waiting for first snapshot{suffix}"),
-            TodoPanelStatus::Empty => format!("Todos: empty{suffix}"),
-            TodoPanelStatus::Ready => match self.todo_summary {
-                Some(summary) => format!(
-                    "Todos: {}/{} done{}",
-                    summary.completed, summary.total, suffix
-                ),
-                None => format!("Todos: ready{suffix}"),
-            },
         }
     }
 
@@ -869,7 +847,7 @@ mod tests {
         app.begin_turn();
 
         assert!(app.todo_refresh_pending());
-        assert!(app.todo_status_text().contains("stale while running"));
+        assert!(app.todo_panel_title().contains("stale"));
     }
 
     #[test]
