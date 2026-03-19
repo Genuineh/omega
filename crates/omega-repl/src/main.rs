@@ -1,12 +1,11 @@
+use std::io;
 use std::sync::Arc;
 
 use omega_core::{DynLlmClient, MinimaxClient, MinimaxConfig};
-use omega_tui::{init_tracing_channel, run, TuiLaunchConfig};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let config = MinimaxConfig::from_env().map_err(|e| anyhow::anyhow!("{e}"))?;
-    let model_name = config.model.clone();
     let client: DynLlmClient =
         Arc::new(MinimaxClient::new(config).map_err(|e| anyhow::anyhow!("{e}"))?);
 
@@ -15,14 +14,11 @@ async fn main() -> anyhow::Result<()> {
         "You are a coding agent at {}. Use bash to solve tasks. Act, don't explain.",
         cwd.display()
     );
-    let trace_rx = init_tracing_channel()?;
 
-    run(TuiLaunchConfig {
-        client,
-        cwd,
-        model_name,
-        runtime_handle: tokio::runtime::Handle::current(),
-        system,
-        trace_rx,
-    })
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    let mut reader = stdin.lock();
+    let mut writer = stdout.lock();
+
+    omega_repl::run_repl(&mut reader, &mut writer, client, cwd, system).await
 }

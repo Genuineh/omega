@@ -2,13 +2,12 @@
 
 ## Current Priorities
 
-_按当前仓库真实主路径重排。判断依据：`cargo test` 全工作区通过；s02 文件工具与 s03 todo 管理已完成；`omega-subagent`、`omega-skills`、`omega-message` 等后续 crate 仍基本处于 stub 状态；高级 TUI 功能已被 `Task 15C` 的交互层边界问题明确阻塞。_
+_按当前仓库真实主路径重排。判断依据：`cargo test` 全工作区通过；s02 文件工具与 s03 todo 管理已完成；`Task 15C` 已完成并解除交互层结构阻塞；`omega-subagent`、`omega-skills`、`omega-message` 等后续 crate 仍基本处于 stub 状态。_
 
 _任务编号以 `docs/specs/omega-agent-impl-plan.md` 为准；为支持可运行里程碑拆分，`TODO` 中允许使用 `8A/8B`、`15A/15B` 这类子任务后缀。未出现在实现计划中的仓库治理事项，会明确标记为“非计划项”。_
 
 ### High
 
-- **Task 15C**: 先完成交互层重构，把 `omega-tui` 从继续膨胀的 `main.rs` 中收口，并引入独立的 `omega-repl`；这是继续推进高级 TUI 的前置条件。
 - **Task 5**: `omega-skills` 现在应前移到高优先级。仓库工作流本身强依赖 skill 加载，缺失这一层会限制 Agent 在真实仓库任务中的可用性。
 - **Task 10**: `omega-subagent` 维持高优先级，作为后续 team/background/worktree 能力的直接基础。
 
@@ -23,7 +22,7 @@ _任务编号以 `docs/specs/omega-agent-impl-plan.md` 为准；为支持可运�
 ### Low
 
 - **Task 6**: `omega-worktree` 对后期自治执行很重要，但当前尚未到隔离执行成为主瓶颈的阶段。
-- **Task 15B-8 ~ 15B-13**: 高级 TUI 能力整体后移；在 `Task 15C` 完成前，继续堆功能会放大结构债务。
+- **Task 15B-8 ~ 15B-13**: 高级 TUI 能力已解除结构阻塞，但主线仍应优先 skills/subagent；高阶交互体验继续保持后移。
 - **Task 16**: 最终整合测试保留为收尾任务，不应提前占用主线优先级。
 
 ---
@@ -214,11 +213,12 @@ _将 M11 中基础级体验优化前移，确保在开发后续功能时有可�
 _基础体验已在 M1.7 完成，此处保留高级特性。_
 
 ### Task 15C: 交互层重构 — omega-tui 库化 + omega-repl 新包
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-03-19
 - **Priority**: High
 - **Description**: 在继续高阶 TUI 能力前，先将 `omega-tui` 拆为 library-first crate，并新增 `omega-repl` 承接最小 REPL，降低后续功能继续堆叠在单一入口文件中的风险
 - **Related**: docs/specs/omega-interaction-layer-refactor.md
-- **Blocks**: Task 15B-8, Task 15B-9, Task 15B-10, Task 15B-11, Task 15B-12, Task 15B-13
+- **Summary**: `omega-tui` 拆为 library-first crate，`main.rs` 收敛为薄 wrapper，核心职责拆入 `app/render/event/runtime/logging/terminal/agent_session` 模块；新增独立 `omega-repl` crate 承接 stdin/stdout REPL、工具回调预览与退出语义；`omega-core` 仅补充 `Message` 重导出以支持前端 checkpoint 恢复，不引入任何 TUI/REPL 专属概念；新增 REPL 行为测试与 TUI 模块测试，`cargo build -p omega-tui -p omega-repl` + `cargo test` 全通过
 
 ### Task 15B-8: omega-tui — Markdown 渲染
 - **Status**: Pending
@@ -304,7 +304,7 @@ _基础体验已在 M1.7 完成，此处保留高级特性。_
 - **Started**: 2026-03-18
 - **Completed**: 2026-03-18
 - **Description**: stdin/stdout REPL 入口，从环境变量读取配置构造 Agent，可 cargo run 交互
-- **Summary**: MinimaxConfig::from_env 构造客户端、create_default_tools 注册 bash 工具、run_loop_with 回调显示工具调用（命令黄色高亮 + 输出预览 200 字符）、UTF-8 安全截断、EOF/q/exit 退出；该功能当前暂驻 `omega-tui`，后续将按 `docs/specs/omega-interaction-layer-refactor.md` 迁移到独立的 `omega-repl` 包
+- **Summary**: MinimaxConfig::from_env 构造客户端、create_default_tools 注册工具集、run_loop_with 回调显示工具调用（命令预览 + 输出预览）、UTF-8 安全截断、EOF/q/exit 退出；该功能已在 `Task 15C` 中迁移到独立的 `omega-repl` 包
 - **Related**: learn/learn-claude-code/agents/s01_agent_loop.py
 
 ### 非计划项：文档体系建设

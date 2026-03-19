@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};
-use omega_client::{ChatRequest, ContentBlock, Message, ToolDefinition};
+use omega_client::{ChatRequest, ContentBlock, ToolDefinition};
 use omega_todo::{TodoItem, TodoStatus, TodoToolHandler};
 use omega_tools::ToolDispatcher;
 use omega_tools_builtin::{BashHandler, EditHandler, ReadHandler, WriteHandler};
@@ -10,8 +10,8 @@ use uuid::Uuid;
 
 // Re-export construction types for downstream crates (e.g. omega-tui).
 pub use omega_client::{
-    ClientError, DynLlmClient, LlmClient, MinimaxClient, MinimaxConfig, STOP_REASON_END_TURN,
-    STOP_REASON_TOOL_USE,
+    ClientError, DynLlmClient, LlmClient, Message, MinimaxClient, MinimaxConfig,
+    STOP_REASON_END_TURN, STOP_REASON_TOOL_USE,
 };
 pub use omega_todo::{TodoManager, TodoToolHandler as CoreTodoToolHandler};
 
@@ -175,7 +175,10 @@ impl Agent {
                 };
 
                 if rounds_since_todo >= 3 {
-                    results.insert(0, ContentBlock::text("<reminder>Update your todos.</reminder>"));
+                    results.insert(
+                        0,
+                        ContentBlock::text("<reminder>Update your todos.</reminder>"),
+                    );
                 }
             } else if updated_todo {
                 rounds_since_todo = 0;
@@ -381,7 +384,10 @@ mod tests {
             .collect();
         assert_eq!(defs.len(), 5);
         let names: Vec<&str> = defs.iter().map(|def| def.name.as_str()).collect();
-        assert_eq!(names, vec!["bash", "edit_file", "read_file", "todo", "write_file"]);
+        assert_eq!(
+            names,
+            vec!["bash", "edit_file", "read_file", "todo", "write_file"]
+        );
     }
 
     #[tokio::test]

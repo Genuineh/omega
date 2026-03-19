@@ -13,6 +13,7 @@ members = [
     "crates/omega-background",
     "crates/omega-team",
     "crates/omega-core",
+    "crates/omega-repl",
     "crates/omega-tui",
 ]
 resolver = "2"

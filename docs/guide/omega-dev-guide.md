@@ -45,19 +45,22 @@ cargo --version
 ### Step 3: 编译项目
 
 ```bash
-cargo test -p omega-client
+cargo build
 ```
 
 ### Step 4: 运行示例
 
 ```bash
-# 当前先验证首个 crate
-cargo test -p omega-client
+# 最小 REPL
+cargo run -p omega-repl
+
+# Ratatui TUI
+cargo run -p omega-tui
 ```
 
 ## 项目结构
 
-Omega 的目标架构是独立 crate workspace。当前仓库已初始化 workspace，并实现了第一个 crate：`omega-client`。其余 crate 仍处于规划阶段。
+Omega 采用独立 crate workspace。当前工作区已有 15 个 crate，其中 `omega-client`、`omega-tools`、`omega-tools-builtin`、`omega-todo`、`omega-core`、`omega-repl` 与 `omega-tui` 已具备可运行基础，其余 crate 按实现计划继续推进。
 
 | Crate | 功能 |
 |-------|------|
@@ -74,15 +77,16 @@ Omega 的目标架构是独立 crate workspace。当前仓库已初始化 worksp
 | omega-background | 后台任务 |
 | omega-team | 团队协作 |
 | omega-core | 核心 Agent |
+| omega-repl | 最小 stdin/stdout REPL |
 | omega-tui | TUI 界面 |
 
 ## 常见任务
 
 ### 当前可执行任务
 
-1. 在 `omega-client` 中扩展新的 provider 适配器
-2. 为统一消息模型补充更多测试
-3. 按 `docs/specs/omega-agent-impl-plan.md` 继续逐步落地其余 crate
+1. 运行 `cargo run -p omega-repl` 或 `cargo run -p omega-tui` 验证交互层
+2. 按 `docs/TODO.md` 优先推进 `omega-skills` 与 `omega-subagent`
+3. 为新增行为补充测试并保持 `cargo test` 全工作区通过
 
 ### 添加新工具
 
@@ -131,7 +135,9 @@ cargo build
 **Problem**: API Key 未设置
 **Solution**:
 ```bash
-export ANTHROPIC_API_KEY="your-api-key"
+export OMEGA_API_KEY="your-api-key"
+# 或者
+export OMEGA_MINIMAX_API_KEY="your-api-key"
 ```
 
 ## Best Practices
@@ -197,7 +203,7 @@ Omega 定义了四种 span 类型：
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│  Status Bar: Omega Agent │ model-name │ ● Connected    │
+│  Omega Agent │ model-name │ ● Idle │ Focus: Response │
 ├───────────────────────────────┬──────────────────────────┤
 │  Agent Response               │  Logs                   │
 │                               │                          │
@@ -223,7 +229,8 @@ Omega 定义了四种 span 类型：
 | `↑` / `↓` | 滚动当前焦点面板（3 行/次） |
 | `Tab` | 切换 Response ↔ Logs 面板焦点 |
 | 鼠标滚轮 | 滚动对应面板（根据光标列位置判断） |
-| `Ctrl+C` | 退出程序 |
+| `Ctrl+C` | 中断当前正在运行的 agent turn |
+| `Ctrl+Q` | 退出程序 |
 | `q` / `exit` | 回车后退出 |
 
 ### 在代码中使用日志

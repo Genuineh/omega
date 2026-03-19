@@ -176,8 +176,8 @@ terminal events -> omega-tui runtime -> omega-tui::app state
 
 ## Acceptance Criteria
 
-- [ ] `omega-tui` 的主要逻辑从单文件 `main.rs` 拆出为库模块。
-- [ ] `omega-repl` 成为独立 package，承接最小 REPL。
-- [ ] `omega-core` 未新增任何 TUI/REPL 专属概念。
-- [ ] 高级 TUI 任务在新结构上继续推进，而不是继续堆叠在历史入口文件上。
-- [ ] 开发指南、实现计划和 TODO 与新的交互层边界保持一致。
+- [x] `omega-tui` 的主要逻辑从单文件 `main.rs` 拆出为库模块。
+- [x] `omega-repl` 成为独立 package，承接最小 REPL。
+- [x] `omega-core` 未新增任何 TUI/REPL 专属概念。
+- [x] 高级 TUI 任务在新结构上继续推进，而不是继续堆叠在历史入口文件上。
+- [x] 开发指南、实现计划和 TODO 与新的交互层边界保持一致。

@@ -1,0 +1,14 @@
+[package]
+name = "omega-repl"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+omega-core = { path = "../omega-core" }
+anyhow.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true
+omega-client = { path = "../omega-client" }
