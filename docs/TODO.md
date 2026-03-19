@@ -2,9 +2,9 @@
 
 ## Current Priorities
 
-_按当前仓库真实主路径重排。判断依据：`cargo test` 全工作区通过；s02 文件工具与 s03 todo 管理已完成；`Task 15C` 已完成并解除交互层结构阻塞；`omega-subagent`、`omega-skills`、`omega-message` 等后续 crate 仍基本处于 stub 状态。_
+_按当前仓库真实主路径重排。判断依据：`cargo test` 全工作区通过；s02 文件工具与 s03 todo 管理已完成；`Task 15C` 与 `Task 15D` 已完成，交互层主边界已落到 `omega-tui` + `omega-session` + `omega-observability`；`omega-subagent`、`omega-skills`、`omega-message` 等后续 crate 仍基本处于 stub 状态。_
 
-_任务编号以 `docs/specs/omega-agent-impl-plan.md` 为准；为支持可运行里程碑拆分，`TODO` 中允许使用 `8A/8B`、`15A/15B` 这类子任务后缀。未出现在实现计划中的仓库治理事项，会明确标记为“非计划项”。_
+_任务编号以 `docs/specs/omega-agent-impl-plan.md` 为准；为支持可运行里程碑拆分，`TODO` 中允许使用 `8A/8B`、`15A/15B/15C/15D` 这类子任务后缀。_
 
 ### High
 
@@ -218,7 +218,14 @@ _基础体验已在 M1.7 完成，此处保留高级特性。_
 - **Priority**: High
 - **Description**: 在继续高阶 TUI 能力前，先将 `omega-tui` 拆为 library-first crate，并新增 `omega-repl` 承接最小 REPL，降低后续功能继续堆叠在单一入口文件中的风险
 - **Related**: docs/specs/omega-interaction-layer-refactor.md
-- **Summary**: `omega-tui` 拆为 library-first crate，`main.rs` 收敛为薄 wrapper，核心职责拆入 `app/render/event/runtime/logging/terminal/agent_session` 模块；新增独立 `omega-repl` crate 承接 stdin/stdout REPL、工具回调预览与退出语义；`omega-core` 仅补充 `Message` 重导出以支持前端 checkpoint 恢复，不引入任何 TUI/REPL 专属概念；新增 REPL 行为测试与 TUI 模块测试，`cargo build -p omega-tui -p omega-repl` + `cargo test` 全通过
+
+### Task 15D: `omega-tui` 非 UI 职责剥离
+- **Status**: Completed
+- **Completed**: 2026-03-19
+- **Priority**: High
+- **Description**: 将 `omega-tui` 中不属于 UI 的 turn orchestration 与 observability 逻辑拆为独立 crate；该任务先于剩余主线执行，Phase 1 先实现 `omega-session` 与 `omega-observability`，Phase 2 再按需要评估 `omega-interaction`
+- **Related**: docs/specs/omega-tui-non-ui-extraction.md, docs/decisions/006-omega-tui-ui-boundary.md
+- **Summary**: 新增 `omega-session` 承接 Agent turn orchestration 与 checkpoint/interrupt/update 协议，新增 `omega-observability` 承接 tracing 初始化、UI sink、JSONL 文件日志与 ANSI 清洗；`omega-tui` 改为仅保留 UI 运行时并消费外部 `SessionUpdate`/trace channel，`omega-repl` 也接入统一 tracing 初始化；`cargo test -p omega-session -p omega-observability -p omega-tui -p omega-repl` 通过
 
 ### Task 15B-8: omega-tui — Markdown 渲染
 - **Status**: Pending

@@ -6,10 +6,27 @@ use omega_core::{Agent, DynLlmClient, Message};
 use tokio::runtime::Handle;
 use tracing::error;
 
-pub enum LogUpdate {
-    ToolLog { turn_id: u64, log: String },
-    Output { turn_id: u64, text: String },
-    Done { turn_id: u64 },
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionUpdate {
+    ToolCallPreview {
+        turn_id: u64,
+        command: Option<String>,
+        preview: String,
+    },
+    AssistantText {
+        turn_id: u64,
+        text: String,
+    },
+    TurnFinished {
+        turn_id: u64,
+    },
+}
+
+pub struct AgentSessionConfig {
+    pub client: DynLlmClient,
+    pub system: String,
+    pub cwd: PathBuf,
+    pub runtime_handle: Handle,
 }
 
 struct AgentSlot {
@@ -27,16 +44,11 @@ pub struct AgentSession {
 }
 
 impl AgentSession {
-    pub fn new(
-        client: DynLlmClient,
-        system: String,
-        cwd: PathBuf,
-        runtime_handle: Handle,
-    ) -> anyhow::Result<Self> {
+    pub fn new(config: AgentSessionConfig) -> anyhow::Result<Self> {
         let agent = Agent::new(
-            client.clone(),
-            system.clone(),
-            omega_core::create_default_tools(cwd.clone()),
+            config.client.clone(),
+            config.system.clone(),
+            omega_core::create_default_tools(config.cwd.clone()),
         )?;
         let checkpoint = agent.messages().to_vec();
 
@@ -46,10 +58,10 @@ impl AgentSession {
                 agent: Some(agent),
             })),
             turn_checkpoint: Arc::new(Mutex::new(checkpoint)),
-            client,
-            system,
-            cwd,
-            runtime_handle,
+            client: config.client,
+            system: config.system,
+            cwd: config.cwd,
+            runtime_handle: config.runtime_handle,
         })
     }
 
@@ -69,11 +81,7 @@ impl AgentSession {
         *self.turn_checkpoint.lock().unwrap() = current_messages;
     }
 
-    pub fn set_turn_id(&self, turn_id: u64) {
-        self.agent_slot.lock().unwrap().turn_id = turn_id;
-    }
-
-    pub fn interrupt(&self, turn_id: u64) -> anyhow::Result<()> {
+    pub fn interrupt(&self, replacement_turn_id: u64) -> anyhow::Result<()> {
         let checkpoint = self.turn_checkpoint.lock().unwrap().clone();
         let mut replacement = Agent::new(
             self.client.clone(),
@@ -83,7 +91,7 @@ impl AgentSession {
         replacement.set_messages(checkpoint);
 
         let mut slot = self.agent_slot.lock().unwrap();
-        slot.turn_id = turn_id;
+        slot.turn_id = replacement_turn_id;
         slot.agent = Some(replacement);
         Ok(())
     }
@@ -92,9 +100,9 @@ impl AgentSession {
         &self,
         input: String,
         turn_id: u64,
-        tx: mpsc::Sender<LogUpdate>,
+        tx: mpsc::Sender<SessionUpdate>,
     ) -> anyhow::Result<()> {
-        self.set_turn_id(turn_id);
+        self.agent_slot.lock().unwrap().turn_id = turn_id;
 
         let agent_slot = self.agent_slot.clone();
         let mut agent = match self.agent_slot.lock().unwrap().agent.take() {
@@ -109,29 +117,31 @@ impl AgentSession {
             agent.add_user_message(&input);
 
             let result = handle.block_on(agent.run_loop_with(move |name, tool_input, output| {
-                if name == "bash" {
-                    if let Some(cmd) = tool_input["command"].as_str() {
-                        let _ = tx_callback.send(LogUpdate::ToolLog {
-                            turn_id,
-                            log: format!("$ {}", cmd),
-                        });
-                    }
-                }
-                let _ = tx_callback.send(LogUpdate::ToolLog {
+                let command = if name == "bash" {
+                    tool_input
+                        .get("command")
+                        .and_then(|value| value.as_str())
+                        .map(ToOwned::to_owned)
+                } else {
+                    None
+                };
+
+                let _ = tx_callback.send(SessionUpdate::ToolCallPreview {
                     turn_id,
-                    log: preview_text(output, 100),
+                    command,
+                    preview: preview_text(output, 100),
                 });
             }));
 
             match result {
                 Ok(text) => {
                     if !text.is_empty() {
-                        let _ = tx_result.send(LogUpdate::Output { turn_id, text });
+                        let _ = tx_result.send(SessionUpdate::AssistantText { turn_id, text });
                     }
                 }
                 Err(e) => {
                     error!(error = %e, "agent loop error");
-                    let _ = tx_result.send(LogUpdate::Output {
+                    let _ = tx_result.send(SessionUpdate::AssistantText {
                         turn_id,
                         text: format!("Error: {e}"),
                     });
@@ -143,7 +153,7 @@ impl AgentSession {
                 slot.agent = Some(agent);
             }
 
-            let _ = tx_result.send(LogUpdate::Done { turn_id });
+            let _ = tx_result.send(SessionUpdate::TurnFinished { turn_id });
         });
 
         Ok(())
@@ -162,8 +172,6 @@ fn preview_text(text: &str, limit: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::preview_text;
-
     use std::path::PathBuf;
     use std::sync::Arc;
 
@@ -171,7 +179,7 @@ mod tests {
     use omega_client::{ChatRequest, ChatResponse, ClientError};
     use omega_core::{DynLlmClient, LlmClient};
 
-    use super::AgentSession;
+    use super::{preview_text, AgentSession, AgentSessionConfig};
 
     struct IdleClient;
 
@@ -197,9 +205,13 @@ mod tests {
         let root = PathBuf::from(std::env::temp_dir().join("omega-agent-session-test"));
         let _ = std::fs::create_dir_all(&root);
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let session =
-            AgentSession::new(client, "system".to_string(), root, runtime.handle().clone())
-                .unwrap();
+        let session = AgentSession::new(AgentSessionConfig {
+            client,
+            system: "system".to_string(),
+            cwd: root,
+            runtime_handle: runtime.handle().clone(),
+        })
+        .unwrap();
 
         {
             let mut slot = session.agent_slot.lock().unwrap();

@@ -3,10 +3,10 @@ use std::sync::{mpsc, Arc, Mutex};
 
 use crossterm::event;
 use omega_core::DynLlmClient;
+use omega_session::{AgentSession, AgentSessionConfig, SessionUpdate};
 use tokio::runtime::Handle;
 use tracing::info;
 
-use crate::agent_session::{AgentSession, LogUpdate};
 use crate::app::App;
 use crate::event::handle_event;
 use crate::render::render;
@@ -34,16 +34,21 @@ pub fn run(config: TuiLaunchConfig) -> anyhow::Result<()> {
     info!("omega starting with multi-panel TUI");
     info!(model = %model_name, cwd = %cwd.display(), "tui config loaded");
 
-    let session = AgentSession::new(client, system, cwd, runtime_handle)?;
+    let session = AgentSession::new(AgentSessionConfig {
+        client,
+        system,
+        cwd,
+        runtime_handle,
+    })?;
     let app = Arc::new(Mutex::new(App::new()));
-    let (tx, rx) = mpsc::channel::<LogUpdate>();
+    let (tx, rx) = mpsc::channel::<SessionUpdate>();
     let mut terminal = TerminalGuard::enter()?;
     let trace_rx = trace_rx;
 
     loop {
         for _ in 0..20 {
             if let Ok(update) = rx.try_recv() {
-                app.lock().unwrap().apply_log_update(update);
+                app.lock().unwrap().apply_session_update(update);
             } else {
                 break;
             }
@@ -83,8 +88,8 @@ pub fn run(config: TuiLaunchConfig) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use crate::agent_session::LogUpdate;
     use crate::app::App;
+    use omega_session::SessionUpdate;
 
     #[test]
     fn interrupt_turn_invalidates_old_updates() {
@@ -92,11 +97,11 @@ mod tests {
         let turn_id = app.begin_turn();
         app.interrupt_turn();
 
-        app.apply_log_update(LogUpdate::Output {
+        app.apply_session_update(SessionUpdate::AssistantText {
             turn_id,
             text: "stale".to_string(),
         });
-        app.apply_log_update(LogUpdate::Done { turn_id });
+        app.apply_session_update(SessionUpdate::TurnFinished { turn_id });
 
         assert!(app.output_msgs.is_empty());
         assert!(!app.is_running);
@@ -107,17 +112,18 @@ mod tests {
         let mut app = App::new();
         let turn_id = app.begin_turn();
 
-        app.apply_log_update(LogUpdate::ToolLog {
+        app.apply_session_update(SessionUpdate::ToolCallPreview {
             turn_id,
-            log: "$ echo hi".to_string(),
+            command: Some("echo hi".to_string()),
+            preview: "hi".to_string(),
         });
-        app.apply_log_update(LogUpdate::Output {
+        app.apply_session_update(SessionUpdate::AssistantText {
             turn_id,
             text: "hello".to_string(),
         });
-        app.apply_log_update(LogUpdate::Done { turn_id });
+        app.apply_session_update(SessionUpdate::TurnFinished { turn_id });
 
-        assert_eq!(app.output_msgs.len(), 2);
+        assert_eq!(app.output_msgs.len(), 3);
         assert!(!app.is_running);
     }
 }

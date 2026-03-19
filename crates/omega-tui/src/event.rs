@@ -3,16 +3,16 @@ use std::sync::{mpsc, Arc, Mutex};
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
 };
+use omega_session::{AgentSession, SessionUpdate};
 use tracing::info;
 
-use crate::agent_session::{AgentSession, LogUpdate};
 use crate::app::{App, MsgKind, Panel};
 
 pub fn handle_event(
     event: Event,
     app: &Arc<Mutex<App>>,
     session: &AgentSession,
-    tx: &mpsc::Sender<LogUpdate>,
+    tx: &mpsc::Sender<SessionUpdate>,
 ) -> anyhow::Result<bool> {
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => {
@@ -30,7 +30,7 @@ fn handle_key_event(
     key: KeyEvent,
     app: &Arc<Mutex<App>>,
     session: &AgentSession,
-    tx: &mpsc::Sender<LogUpdate>,
+    tx: &mpsc::Sender<SessionUpdate>,
 ) -> anyhow::Result<bool> {
     match key.code {
         KeyCode::Char(c) if key.modifiers == KeyModifiers::CONTROL => match c {
@@ -108,7 +108,7 @@ fn handle_key_event(
 fn handle_submit(
     app: &Arc<Mutex<App>>,
     session: &AgentSession,
-    tx: &mpsc::Sender<LogUpdate>,
+    tx: &mpsc::Sender<SessionUpdate>,
 ) -> anyhow::Result<bool> {
     let agent_ready = session.is_ready();
     let still_running = app.lock().unwrap().is_running;
@@ -197,9 +197,13 @@ mod tests {
         let root = PathBuf::from(std::env::temp_dir().join("omega-event-test"));
         let _ = std::fs::create_dir_all(&root);
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let session =
-            AgentSession::new(client, "system".to_string(), root, runtime.handle().clone())
-                .unwrap();
+        let session = AgentSession::new(omega_session::AgentSessionConfig {
+            client,
+            system: "system".to_string(),
+            cwd: root,
+            runtime_handle: runtime.handle().clone(),
+        })
+        .unwrap();
         let app = Arc::new(Mutex::new(App::new()));
         let (tx, _rx) = mpsc::channel();
 

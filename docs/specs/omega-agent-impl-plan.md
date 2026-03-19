@@ -11,7 +11,7 @@ related_prds: []
 
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 逐步实现当前 15 个独立 crate，其中 `Task 15C` 已引入 `omega-repl` 作为新增交互层 crate，最终组合成完整的 Omega Agent
+**Goal:** 逐步实现并重构当前工作空间；在既有 15 个独立 crate 基础上，先完成 `Task 15D` 交互层继续拆分，规划新增 `omega-session` 与 `omega-observability`，最终组合成完整的 Omega Agent
 
 **Architecture:** 每个 crate 独立实现，通过 Cargo workspace 组合。底层 crate 无依赖，上层依赖下层。
 
@@ -1227,11 +1227,11 @@ git commit -m "feat: add omega-core"
 
 ### Task 15: omega-tui - TUI 界面
 
-**TODO Mapping:** `Task 15A` = 最小 REPL 功能里程碑（M1，现由 `omega-repl` 承接），`Task 15B` = `omega-tui` Ratatui 完整 TUI（M11），`Task 15C` = 交互层重构（`omega-tui` 库化 + `omega-repl` 新包）
+**TODO Mapping:** `Task 15A` = 最小 REPL 功能里程碑（M1，现由 `omega-repl` 承接），`Task 15B` = `omega-tui` Ratatui 完整 TUI（M11），`Task 15C` = 交互层重构（`omega-tui` 库化 + `omega-repl` 新包），`Task 15D` = `omega-tui` 非 UI 职责剥离（新增 `omega-session` + `omega-observability`，必要时预留 `omega-interaction`）
 
-**Refactor Note (2026-03-19):** `Task 15C` 已完成：最小 REPL 已迁移到 `omega-repl`，`omega-tui` 已收敛为 library-first crate。后续 `Task 15B-*` 应直接建立在新的模块边界上推进。
+**Refactor Note (2026-03-19):** `Task 15C` 已完成：最小 REPL 已迁移到 `omega-repl`，`omega-tui` 已收敛为 library-first crate。当前主线先执行 `Task 15D`，继续把非 UI 职责迁出，再推进剩余 `Task 15B-*`。
 
-**Progress:** `Task 15A` 与 `Task 15C` 已完成；`Task 15B` 的高级 TUI 能力仍待在新结构上继续实现
+**Progress:** `Task 15A`、`Task 15C` 与 `Task 15D` 已完成；`omega-session` 与 `omega-observability` 已落地，`Task 15B` 的高级 TUI 能力可在新的边界上继续实现
 
 **Files:**
 - Update: `crates/omega-tui/Cargo.toml`
@@ -1239,6 +1239,10 @@ git commit -m "feat: add omega-core"
 - Update: `crates/omega-tui/src/main.rs` 或迁移为薄 wrapper bin
 - Create: `crates/omega-repl/Cargo.toml`
 - Create: `crates/omega-repl/src/main.rs`
+- Create: `crates/omega-session/Cargo.toml`
+- Create: `crates/omega-session/src/lib.rs`
+- Create: `crates/omega-observability/Cargo.toml`
+- Create: `crates/omega-observability/src/lib.rs`
 
 - [x] **Step 1: 先完成 Task 15C 交互层重构**
 
@@ -1247,23 +1251,33 @@ git commit -m "feat: add omega-core"
     - 已保留极薄 TUI wrapper binary 以维持现有命令与行为
     - 后续高级 TUI 功能应建立在新的模块边界上，而不是继续堆叠在历史 `main.rs` 中
 
-- [ ] **Step 2: 在已完成的库化边界上继续 Task 15B 的 Ratatui TUI**
+- [x] **Step 2: 先执行 Task 15D 非 UI 职责剥离**
+
+    - 新建 `omega-session`，迁移 `agent_session.rs`、checkpoint/interrupt 逻辑与现有单测
+    - 新建 `omega-observability`，迁移 tracing 初始化、ANSI 清洗、文件日志与 UI sink
+    - `omega-tui` 改为依赖 `omega-session` 与 `omega-observability`
+    - 如 `app.rs` / `event.rs` 在实现过程中继续膨胀，则按 `docs/specs/omega-tui-non-ui-extraction.md` 启动 `omega-interaction` 的第二阶段抽离
+    - 验证 `omega-core` 未新增任何 TUI/REPL 专属概念
+
+- [ ] **Step 3: 在完成 Task 15D 的边界上继续 Task 15B 的 Ratatui TUI**
 
   - 将 Markdown 渲染、语法高亮、输入历史、搜索、会话统计等能力放在库化后的结构上实现
   - `omega-core` 仍保持前端无关
 
-- [x] **Step 3: 编译验证**
+- [ ] **Step 4: 编译验证**
 
 ```bash
 cargo build -p omega-tui
 cargo build -p omega-repl
+cargo build -p omega-session
+cargo build -p omega-observability
 ```
 
-- [ ] **Step 4: 提交**
+- [ ] **Step 5: 提交**
 
 ```bash
-git add crates/omega-tui/ crates/omega-repl/
-git commit -m "refactor: split omega-tui and omega-repl"
+git add crates/omega-tui/ crates/omega-repl/ crates/omega-session/ crates/omega-observability/
+git commit -m "refactor: extract omega-tui non-ui crates"
 ```
 
 ---

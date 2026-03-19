@@ -1,7 +1,7 @@
 use ratatui::{layout::Rect, widgets::ListState};
 
-use crate::agent_session::LogUpdate;
-use crate::logging::strip_ansi;
+use omega_observability::strip_ansi;
+use omega_session::SessionUpdate;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Panel {
@@ -79,15 +79,22 @@ impl App {
         self.active_turn_id == turn_id
     }
 
-    pub fn apply_log_update(&mut self, update: LogUpdate) {
+    pub fn apply_session_update(&mut self, update: SessionUpdate) {
         match update {
-            LogUpdate::ToolLog { turn_id, log } if self.is_current_turn(turn_id) => {
-                self.push_msg(MsgKind::Tool, &log);
+            SessionUpdate::ToolCallPreview {
+                turn_id,
+                command,
+                preview,
+            } if self.is_current_turn(turn_id) => {
+                if let Some(command) = command {
+                    self.push_msg(MsgKind::Tool, &format!("$ {}", command));
+                }
+                self.push_msg(MsgKind::Tool, &preview);
             }
-            LogUpdate::Output { turn_id, text } if self.is_current_turn(turn_id) => {
+            SessionUpdate::AssistantText { turn_id, text } if self.is_current_turn(turn_id) => {
                 self.push_msg(MsgKind::Agent, &text);
             }
-            LogUpdate::Done { turn_id } if self.is_current_turn(turn_id) => {
+            SessionUpdate::TurnFinished { turn_id } if self.is_current_turn(turn_id) => {
                 self.is_running = false;
             }
             _ => {}

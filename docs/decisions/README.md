@@ -14,3 +14,4 @@ version: v1.0
 | 003 | 工具系统采用 Trait 接口 | accepted | 2026-03-18 |
 | 004 | 消息系统使用 JSONL 文件存储 | accepted | 2026-03-18 |
 | 005 | 使用 tracing 生态构建可观察性基础设施 | accepted | 2026-03-18 |
+| 006 | `omega-tui` 只拥有 UI 职责 | accepted | 2026-03-19 |

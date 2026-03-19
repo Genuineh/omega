@@ -2,9 +2,12 @@ use std::io;
 use std::sync::Arc;
 
 use omega_core::{DynLlmClient, MinimaxClient, MinimaxConfig};
+use omega_observability::TracingConfig;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    omega_observability::init_tracing(TracingConfig::default())?;
+
     let config = MinimaxConfig::from_env().map_err(|e| anyhow::anyhow!("{e}"))?;
     let client: DynLlmClient =
         Arc::new(MinimaxClient::new(config).map_err(|e| anyhow::anyhow!("{e}"))?);

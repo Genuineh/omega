@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use omega_core::{DynLlmClient, MinimaxClient, MinimaxConfig};
-use omega_tui::{init_tracing_channel, run, TuiLaunchConfig};
+use omega_observability::init_tracing_channel;
+use omega_tui::{run, TuiLaunchConfig};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
