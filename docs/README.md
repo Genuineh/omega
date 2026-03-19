@@ -18,6 +18,8 @@ This directory contains the working documentation set for the Omega Rust project
 | `docs/TODO.md` | Tracking | Current priorities and implementation progress |
 | `docs/specs/omega-agent-spec.md` | Specification | Canonical technical specification for the Omega agent |
 | `docs/specs/omega-agent-impl-plan.md` | Plan | Step-by-step implementation plan for the workspace |
+| `docs/specs/omega-tui-runtime-experience.md` | Specification | Cross-task TUI experience plan for future runtime-visible capabilities |
+| `docs/specs/omega-tui-todo-sidebar-layout.md` | Specification | Todo/Logs split-panel layout for the TUI sidebar |
 | `docs/specs/omega-tui-non-ui-extraction.md` | Specification | Planned extraction of non-UI responsibilities out of `omega-tui` |
 | `docs/guide/omega-dev-guide.md` | Guide | Developer onboarding and local workflow guide |
 | `docs/decisions/README.md` | Index | ADR index |

@@ -113,8 +113,15 @@ When a task is completed or meaningfully advanced, update `docs/TODO.md` in the 
   - `frontend-api-integration`: frontend data fetching and API integration
   - `frontend-design`: UI quality, interaction, and visual design
 - Testing:
+  - `tester`: general testing principles
   - `test-frontend-unit`: frontend unit and component tests
   - `test-e2e`: end-to-end test design and setup
+- Review:
+  - `review`: code review principles
+- Architecture:
+  - `architect`: architecture analysis and design patterns
+- Development:
+  - `developer`: development principles
 - Project management:
   - `project-rust`: Rust workspace and project management
 - Planning and orchestration:
@@ -127,6 +134,11 @@ When a task is completed or meaningfully advanced, update `docs/TODO.md` in the 
 - Frontend work should load the relevant `frontend-*` skill, and visual or UX-heavy tasks should also load `frontend-design`.
 - Frontend testing should load the matching `test-*` skill before writing or changing tests.
 - Rust workspace or package-structure work should load `project-rust`.
+- Architecture analysis or design tasks should load `architect`.
+- General development tasks should load `developer`.
+- Review tasks should load `review`.
+- Planning and orchestration tasks should load `plan`.
+- Testing tasks should load `tester` plus the relevant frontend/backend skill when applicable.
 
 
 ## Style Rules
@@ -177,3 +189,7 @@ If quality is uncertain, raise the bar instead of relaxing acceptance.
 - PRs should include: summary, affected paths, required doc updates, and follow-up work if anything is intentionally deferred.
 - Include screenshots for UI changes.
 - If priorities change, update `docs/TODO.md` in the same PR.
+
+## MUST FOLLOW
+- Follow the documentation structure and hygiene rules.
+- Use skills for every task

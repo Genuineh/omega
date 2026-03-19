@@ -6,7 +6,7 @@ use crossterm::event::{
 use omega_session::{AgentSession, SessionUpdate};
 use tracing::info;
 
-use crate::app::{App, MsgKind, Panel};
+use crate::app::{App, MsgKind};
 
 pub fn handle_event(
     event: Event,
@@ -54,10 +54,7 @@ fn handle_key_event(
         },
         KeyCode::Tab => {
             let mut app_guard = app.lock().unwrap();
-            app_guard.focused_panel = match app_guard.focused_panel {
-                Panel::Response => Panel::Logs,
-                Panel::Logs => Panel::Response,
-            };
+            app_guard.focused_panel = app_guard.next_focus_panel();
             Ok(false)
         }
         KeyCode::Up => {
@@ -157,11 +154,11 @@ fn handle_mouse_event(mouse: MouseEvent, app: &Arc<Mutex<App>>) {
     let mut app_guard = app.lock().unwrap();
     match mouse.kind {
         MouseEventKind::ScrollUp => {
-            let panel = app_guard.panel_at(mouse.column);
+            let panel = app_guard.panel_at(mouse.column, mouse.row);
             app_guard.scroll_panel_up(panel, 3);
         }
         MouseEventKind::ScrollDown => {
-            let panel = app_guard.panel_at(mouse.column);
+            let panel = app_guard.panel_at(mouse.column, mouse.row);
             app_guard.scroll_panel_down(panel, 3);
         }
         _ => {}
@@ -173,8 +170,11 @@ mod tests {
     use std::path::PathBuf;
 
     use async_trait::async_trait;
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
     use omega_client::{ChatRequest, ChatResponse, ClientError};
     use omega_core::{DynLlmClient, LlmClient};
+
+    use crate::app::Panel;
 
     use super::*;
 
@@ -222,5 +222,38 @@ mod tests {
         assert!(app_guard.output_msgs[0]
             .text
             .contains("Previous turn still finishing"));
+    }
+
+    #[test]
+    fn tab_keeps_focus_on_response_when_sidebar_is_hidden() {
+        let client: DynLlmClient = Arc::new(IdleClient);
+        let root = PathBuf::from(std::env::temp_dir().join("omega-event-tab-hidden-test"));
+        let _ = std::fs::create_dir_all(&root);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let session = AgentSession::new(omega_session::AgentSessionConfig {
+            client,
+            system: "system".to_string(),
+            cwd: root,
+            runtime_handle: runtime.handle().clone(),
+        })
+        .unwrap();
+        let app = Arc::new(Mutex::new(App::new()));
+        let (tx, _rx) = mpsc::channel();
+
+        let should_quit = handle_key_event(
+            KeyEvent {
+                code: KeyCode::Tab,
+                modifiers: KeyModifiers::NONE,
+                kind: KeyEventKind::Press,
+                state: crossterm::event::KeyEventState::NONE,
+            },
+            &app,
+            &session,
+            &tx,
+        )
+        .unwrap();
+
+        assert!(!should_quit);
+        assert_eq!(app.lock().unwrap().focused_panel, Panel::Response);
     }
 }

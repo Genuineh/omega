@@ -16,6 +16,7 @@ _任务编号以 `docs/specs/omega-agent-impl-plan.md` 为准；为支持可运�
 - **Task 11**: 在多轮对话和后续 agent 能力继续增长前补上上下文压缩，避免先扩功能、再补 token 控制。
 - **Task 4**: `omega-tasks` 作为持久化任务层，价值明确，但不应先于 skills/subagent。
 - **Task 12**: `omega-background` 排在任务系统附近，属于把 Agent 从同步单轮执行推进到更实用执行模型的下一步。
+- **Task 15B-16**: 为后续 `skills/subagent/background/team/message/worktree` 等能力准备统一的 TUI `Activity` 面板与状态栏徽章承载层，避免运行态体验碎片化。
 - **Task 3**: `omega-message` 仍重要，但它真正释放价值要等到 subagent 与 team 机制接入，因此不再放在最前。
 - **Task 13**: `omega-team` 保持中优先级，但应建立在 `omega-subagent` 与 `omega-message` 之上推进。
 
@@ -95,6 +96,33 @@ _将 M11 中基础级体验优化前移，确保在开发后续功能时有可�
 - **Complexity**: S
 - **Summary**: App 新增 spinner_tick: u8 字段；主循环每帧递增（wrapping_add(1)）；render() 中用 SPINNER_FRAMES[tick/2 % 10] 选取当前帧字符，is_running 时状态栏显示 "⠋ Running…" 动画，否则保持 "● Idle"；每帧约 50 ms，tick/2 使帧率降为 ~10 fps 视觉更平滑；状态栏/输入区不受影响；cargo build 零警告
 
+### Task 15B-14: omega-tui — Todo/Logs 侧栏分栏
+- **Status**: Completed
+- **Completed**: 2026-03-19
+- **Priority**: High
+- **Description**: 将右侧辅助区从单一 Logs 面板改为上方 Todos、下方 Logs；todo 工具成功执行后在 TUI 中持续展示当前任务列表
+- **Complexity**: M
+- **Related**: docs/specs/omega-tui-todo-sidebar-layout.md
+- **Summary**: 该任务已作为剩余高级 TUI 能力之前的最高优先级可见性工作提前落地；`omega-session::SessionUpdate` 新增 `TodoSnapshot`，在 `todo` 工具成功执行后把渲染结果推送到 TUI；`omega-tui` 新增 `Todo` 面板与本地 `todo_lines` 状态，右侧栏改为 `Todos 38% / Logs 62%` 纵向切分，焦点顺序变为 `Response -> Todos -> Logs`，鼠标滚轮与键盘滚动均按新面板命中区域工作；窄终端下仍按原规则隐藏整个右侧栏；相关单测与 `cargo test -p omega-session -p omega-tui` 通过
+
+### Task 15B-15: omega-tui — Todo 面板联调与交互完善
+- **Status**: Completed
+- **Completed**: 2026-03-19
+- **Priority**: High
+- **Description**: 围绕新 Todo 面板补齐真实日常使用所需的交互与联调，包括空状态文案、运行中刷新体验、窄终端退化策略验证，以及与后续搜索/统计类能力的布局兼容性检查
+- **Complexity**: M
+- **Related**: docs/specs/omega-tui-todo-sidebar-layout.md
+- **Blocks**: Task 15B-11, Task 15B-12
+- **Summary**: Todo 面板从“原始字符串列表”补齐为带状态的 UI：未同步时显示可操作引导文案，空列表时显示明确 empty state，运行中新 turn 尚未刷新 todo 时在面板标题和状态栏摘要中标记 stale；同时把 `(x/y completed)` 汇总提炼为紧凑摘要，作为未来搜索/统计能力的兼容基础；窄终端隐藏右侧栏时焦点会自动回落到 `Response`，`Tab` 不再落到不可见面板；新增相关单测并以 `cargo test -p omega-tui` 验证通过
+
+### Task 15B-16: omega-tui — Runtime Activity 面板与状态徽章基础
+- **Status**: Pending
+- **Priority**: Medium
+- **Description**: 将当前右侧下半区从单一 Logs 语义升级为可承载 `skills/subagent/tasks/background/message/team/worktree` 等运行态能力的统一 `Activity` 面板，并为状态栏增加可扩展的紧凑徽章体系
+- **Complexity**: M
+- **Related**: docs/specs/omega-tui-runtime-experience.md
+- **Blocks**: Task 15B-11, Task 15B-12
+
 ### ── M2: 文件工具 (s02) ── ✅
 
 > 验证方式：`cargo run` → 让 Agent 读/写/编辑文件
@@ -130,7 +158,7 @@ _将 M11 中基础级体验优化前移，确保在开发后续功能时有可�
 - **Status**: Pending
 - **Priority**: High
 - **Description**: 实现 SubAgent，独立 message list + run_loop，父 Agent 通过 tool 调度
-- **Related**: docs/specs/omega-agent-impl-plan.md
+- **Related**: docs/specs/omega-agent-impl-plan.md, docs/specs/omega-tui-runtime-experience.md
 
 ### ── M5: Skill 加载 (s05) ──
 
@@ -141,7 +169,7 @@ _将 M11 中基础级体验优化前移，确保在开发后续功能时有可�
 - **Status**: Pending
 - **Priority**: High
 - **Description**: 实现 SkillLoader，扫描 skills 目录，按关键词匹配加载
-- **Related**: docs/specs/omega-agent-impl-plan.md
+- **Related**: docs/specs/omega-agent-impl-plan.md, docs/specs/omega-tui-runtime-experience.md
 
 ### ── M6: 上下文压缩 (s06) ──
 
@@ -152,7 +180,7 @@ _将 M11 中基础级体验优化前移，确保在开发后续功能时有可�
 - **Status**: Pending
 - **Priority**: Medium
 - **Description**: 实现 estimate_tokens 和 microcompact，超阈值时压缩历史消息
-- **Related**: docs/specs/omega-agent-impl-plan.md
+- **Related**: docs/specs/omega-agent-impl-plan.md, docs/specs/omega-tui-runtime-experience.md
 
 ### ── M7: 任务系统 (s07) ──
 
@@ -163,7 +191,7 @@ _将 M11 中基础级体验优化前移，确保在开发后续功能时有可�
 - **Status**: Pending
 - **Priority**: Medium
 - **Description**: 实现 TaskManager 持久化任务系统，支持 CRUD 操作，注册为 tool
-- **Related**: docs/specs/omega-agent-impl-plan.md
+- **Related**: docs/specs/omega-agent-impl-plan.md, docs/specs/omega-tui-runtime-experience.md
 
 ### ── M8: 后台任务 (s08) ──
 
@@ -174,7 +202,7 @@ _将 M11 中基础级体验优化前移，确保在开发后续功能时有可�
 - **Status**: Pending
 - **Priority**: Medium
 - **Description**: 实现 BackgroundManager 后台任务管理，支持 spawn/check/collect
-- **Related**: docs/specs/omega-agent-impl-plan.md
+- **Related**: docs/specs/omega-agent-impl-plan.md, docs/specs/omega-tui-runtime-experience.md
 
 ### ── M9: 团队协作 (s09-s11) ──
 
@@ -185,13 +213,13 @@ _将 M11 中基础级体验优化前移，确保在开发后续功能时有可�
 - **Status**: Pending
 - **Priority**: Medium
 - **Description**: 实现 MessageBus 消息总线，支持 send/read_inbox/broadcast
-- **Related**: docs/specs/omega-agent-impl-plan.md
+- **Related**: docs/specs/omega-agent-impl-plan.md, docs/specs/omega-tui-runtime-experience.md
 
 ### Task 13: omega-team — 团队管理
 - **Status**: Pending
 - **Priority**: Medium
 - **Description**: 实现 TeammateManager 团队管理和自治智能体
-- **Related**: docs/specs/omega-agent-impl-plan.md
+- **Related**: docs/specs/omega-agent-impl-plan.md, docs/specs/omega-tui-runtime-experience.md
 
 ### ── M10: Worktree 隔离 (s12) ──
 
@@ -202,7 +230,7 @@ _将 M11 中基础级体验优化前移，确保在开发后续功能时有可�
 - **Status**: Pending
 - **Priority**: Low
 - **Description**: 实现 WorktreeManager 管理 git worktree
-- **Related**: docs/specs/omega-agent-impl-plan.md
+- **Related**: docs/specs/omega-agent-impl-plan.md, docs/specs/omega-tui-runtime-experience.md
 
 ### ── M11: 完整 TUI (高级功能) ──
 

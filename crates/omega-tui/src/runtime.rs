@@ -117,6 +117,10 @@ mod tests {
             command: Some("echo hi".to_string()),
             preview: "hi".to_string(),
         });
+        app.apply_session_update(SessionUpdate::TodoSnapshot {
+            turn_id,
+            rendered: "[>] #1: Code".to_string(),
+        });
         app.apply_session_update(SessionUpdate::AssistantText {
             turn_id,
             text: "hello".to_string(),
@@ -124,6 +128,7 @@ mod tests {
         app.apply_session_update(SessionUpdate::TurnFinished { turn_id });
 
         assert_eq!(app.output_msgs.len(), 3);
+        assert_eq!(app.todo_lines, vec!["[>] #1: Code"]);
         assert!(!app.is_running);
     }
 }

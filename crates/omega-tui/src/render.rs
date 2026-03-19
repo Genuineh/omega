@@ -39,10 +39,24 @@ pub fn render(frame: &mut Frame, app: &mut App, model_name: &str) {
         .split(chunks[1]);
 
     app.response_rect = main_chunks[0];
-    app.logs_rect = main_chunks[1];
+    let sidebar_chunks = if main_chunks[1].width > 0 {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(38), Constraint::Percentage(62)])
+            .split(main_chunks[1])
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(0), Constraint::Length(0)])
+            .split(main_chunks[1])
+    };
+    app.todo_rect = sidebar_chunks[0];
+    app.logs_rect = sidebar_chunks[1];
+    app.normalize_focus();
 
     let focus_label = match app.focused_panel {
         Panel::Response => "Response",
+        Panel::Todo => "Todos",
         Panel::Logs => "Logs",
     };
     const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -54,15 +68,23 @@ pub fn render(frame: &mut Frame, app: &mut App, model_name: &str) {
     } else {
         "● Idle"
     };
+    let todo_status = app.todo_status_text();
     let status_text = format!(
-        " Omega Agent │ {} │ {} │ Focus: {} ",
-        model_name, agent_state, focus_label
+        " Omega Agent │ {} │ {} │ Focus: {} │ {} ",
+        model_name, agent_state, focus_label, todo_status
     );
     let status =
         Paragraph::new(status_text).style(Style::default().fg(colors.text).bg(colors.status_bar));
     frame.render_widget(status, chunks[0]);
 
     let response_border = if app.focused_panel == Panel::Response {
+        Style::default()
+            .fg(colors.focus_border)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(colors.border_dim)
+    };
+    let todo_border = if app.focused_panel == Panel::Todo {
         Style::default()
             .fg(colors.focus_border)
             .add_modifier(Modifier::BOLD)
@@ -115,12 +137,37 @@ pub fn render(frame: &mut Frame, app: &mut App, model_name: &str) {
         .style(Style::default().fg(colors.text));
     frame.render_stateful_widget(output_list, main_chunks[0], &mut app.response_state);
 
+    let todo_title = app.todo_panel_title();
+    let todo_inner_w = (sidebar_chunks[0].width as usize).saturating_sub(2).max(1);
+    let todo_items: Vec<ListItem> = app
+        .todo_lines
+        .iter()
+        .flat_map(|line| wrap_text(line, todo_inner_w).into_iter().map(ListItem::new))
+        .collect();
+    let todo_total = todo_items.len();
+    app.todo_displayed_count = todo_total;
+    if !app.todo_pinned && todo_total > 0 {
+        app.todo_state.select(Some(todo_total - 1));
+    }
+    let todo_list = List::new(todo_items)
+        .block(
+            Block::default()
+                .title(todo_title)
+                .borders(Borders::ALL)
+                .border_style(todo_border),
+        )
+        .highlight_style(Style::default())
+        .style(Style::default().fg(colors.text));
+    if sidebar_chunks[0].width > 0 && sidebar_chunks[0].height > 0 {
+        frame.render_stateful_widget(todo_list, sidebar_chunks[0], &mut app.todo_state);
+    }
+
     let logs_title = if app.focused_panel == Panel::Logs {
         " Logs ◆ "
     } else {
         " Logs "
     };
-    let logs_inner_w = (main_chunks[1].width as usize).saturating_sub(2).max(1);
+    let logs_inner_w = (sidebar_chunks[1].width as usize).saturating_sub(2).max(1);
     let log_items: Vec<ListItem> = app
         .log_lines
         .iter()
@@ -140,8 +187,8 @@ pub fn render(frame: &mut Frame, app: &mut App, model_name: &str) {
         )
         .highlight_style(Style::default())
         .style(Style::default().fg(colors.text));
-    if main_chunks[1].width > 0 {
-        frame.render_stateful_widget(log_list, main_chunks[1], &mut app.logs_state);
+    if sidebar_chunks[1].width > 0 && sidebar_chunks[1].height > 0 {
+        frame.render_stateful_widget(log_list, sidebar_chunks[1], &mut app.logs_state);
     }
 
     let chars: Vec<char> = app.input_buffer.chars().collect();
@@ -190,7 +237,11 @@ pub fn render(frame: &mut Frame, app: &mut App, model_name: &str) {
         );
     frame.render_widget(input, chunks[2]);
 
-    let hint_text = " Tab=Focus  ↑↓=Scroll  ←→=Cursor  Del=Delete  Ctrl+C=Interrupt  Ctrl+Q=Quit";
+    let hint_text = if main_chunks[1].width == 0 {
+        " Sidebar hidden below 60 cols. Tab=Focus  ↑↓=Scroll  ←→=Cursor  Del=Delete  Ctrl+C=Interrupt  Ctrl+Q=Quit"
+    } else {
+        " Tab=Focus  ↑↓=Scroll  ←→=Cursor  Del=Delete  Ctrl+C=Interrupt  Ctrl+Q=Quit"
+    };
     let hint =
         Paragraph::new(hint_text).style(Style::default().fg(colors.hint_dim).bg(colors.status_bar));
     frame.render_widget(hint, chunks[3]);

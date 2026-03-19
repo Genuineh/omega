@@ -13,6 +13,10 @@ pub enum SessionUpdate {
         command: Option<String>,
         preview: String,
     },
+    TodoSnapshot {
+        turn_id: u64,
+        rendered: String,
+    },
     AssistantText {
         turn_id: u64,
         text: String,
@@ -131,6 +135,13 @@ impl AgentSession {
                     command,
                     preview: preview_text(output, 100),
                 });
+
+                if name == "todo" && !output.starts_with("Error:") {
+                    let _ = tx_callback.send(SessionUpdate::TodoSnapshot {
+                        turn_id,
+                        rendered: output.to_string(),
+                    });
+                }
             }));
 
             match result {
