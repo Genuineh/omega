@@ -7,6 +7,11 @@ use ratatui::{layout::Rect, widgets::ListState};
 use omega_observability::strip_ansi;
 use omega_session::SessionUpdate;
 
+use crate::overlay::{
+    ConfirmChoice, ConfirmIntent, ConfirmOverlay, DetailOverlay, InputPromptOverlay, OverlayState,
+    PickerOverlay, SearchOverlay,
+};
+
 const TODO_UNSYNCED_LINES: &[&str] = &[
     "No todo snapshot yet.",
     "Call the todo tool to track the current task.",
@@ -81,6 +86,8 @@ pub struct App {
     pub pending_key_events: Vec<KeyEvent>,
     pub keymap_source: String,
     pub status_notice: Option<String>,
+    pub overlay: Option<OverlayState>,
+    pub overlay_rect: Rect,
 }
 
 impl App {
@@ -116,6 +123,8 @@ impl App {
             pending_key_events: Vec::new(),
             keymap_source: "builtin".to_string(),
             status_notice: None,
+            overlay: None,
+            overlay_rect: Rect::default(),
         }
     }
 
@@ -415,6 +424,117 @@ impl App {
         self.keymap_source = source.into();
     }
 
+    pub fn overlay_active(&self) -> bool {
+        self.overlay.is_some()
+    }
+
+    pub fn open_search_overlay(&mut self) {
+        self.overlay = Some(OverlayState::Search(SearchOverlay {
+            origin_panel: self.focused_panel,
+            target_panel: self.focused_panel,
+            query: String::new(),
+            cursor_pos: 0,
+        }));
+        self.clear_leader_pending();
+        self.status_notice = Some("Search popup opened for the focused panel.".to_string());
+    }
+
+    pub fn open_interrupt_confirm_overlay(&mut self, turn_id: u64) {
+        self.overlay = Some(OverlayState::Confirm(ConfirmOverlay {
+            origin_panel: self.focused_panel,
+            title: " Confirm interrupt ".to_string(),
+            message: "Stop the running turn and keep the current transcript?".to_string(),
+            confirm_label: "Interrupt".to_string(),
+            cancel_label: "Keep running".to_string(),
+            selected: ConfirmChoice::Cancel,
+            intent: ConfirmIntent::InterruptTurn { turn_id },
+            dismiss_on_backdrop: false,
+        }));
+        self.clear_leader_pending();
+        self.status_notice =
+            Some("Confirm interrupt in the overlay before stopping the turn.".to_string());
+    }
+
+    #[allow(dead_code)]
+    pub fn open_detail_overlay(&mut self, title: impl Into<String>, lines: Vec<String>) {
+        self.overlay = Some(OverlayState::Detail(DetailOverlay {
+            origin_panel: self.focused_panel,
+            title: title.into(),
+            lines,
+            scroll: 0,
+            dismiss_on_backdrop: true,
+        }));
+        self.clear_leader_pending();
+    }
+
+    #[allow(dead_code)]
+    pub fn open_picker_overlay(&mut self, title: impl Into<String>, items: Vec<String>) {
+        self.overlay = Some(OverlayState::Picker(PickerOverlay {
+            origin_panel: self.focused_panel,
+            title: title.into(),
+            items,
+            selected: 0,
+            dismiss_on_backdrop: true,
+        }));
+        self.clear_leader_pending();
+    }
+
+    #[allow(dead_code)]
+    pub fn open_input_prompt_overlay(
+        &mut self,
+        title: impl Into<String>,
+        prompt: impl Into<String>,
+    ) {
+        self.overlay = Some(OverlayState::InputPrompt(InputPromptOverlay {
+            origin_panel: self.focused_panel,
+            title: title.into(),
+            prompt: prompt.into(),
+            value: String::new(),
+            cursor_pos: 0,
+            dismiss_on_backdrop: true,
+        }));
+        self.clear_leader_pending();
+    }
+
+    pub fn close_overlay(&mut self) {
+        if let Some(overlay) = self.overlay.take() {
+            self.focused_panel = overlay.origin_panel();
+            self.normalize_focus();
+        }
+    }
+
+    pub fn panel_search_match_count(&self) -> Option<(Panel, usize)> {
+        let OverlayState::Search(overlay) = self.overlay.as_ref()? else {
+            return None;
+        };
+
+        let query = overlay.query.trim();
+        if query.is_empty() {
+            return Some((overlay.target_panel, 0));
+        }
+
+        let query = query.to_ascii_lowercase();
+        let count = self
+            .panel_lines(overlay.target_panel)
+            .into_iter()
+            .map(|line| line.to_ascii_lowercase().matches(&query).count())
+            .sum();
+
+        Some((overlay.target_panel, count))
+    }
+
+    pub fn panel_lines(&self, panel: Panel) -> Vec<&str> {
+        match panel {
+            Panel::Response => self
+                .output_msgs
+                .iter()
+                .map(|msg| msg.text.as_str())
+                .collect(),
+            Panel::Todo => self.todo_lines.iter().map(String::as_str).collect(),
+            Panel::Logs => self.log_lines.iter().map(String::as_str).collect(),
+        }
+    }
+
     pub fn todo_status_text(&self) -> String {
         let suffix = if self.todo_refresh_pending() {
             " (stale while running)"
@@ -677,5 +797,34 @@ mod tests {
             .status_notice
             .as_deref()
             .is_some_and(|notice| notice.contains("Insert mode")));
+    }
+
+    #[test]
+    fn overlay_close_restores_origin_focus() {
+        let mut app = App::new();
+        app.focused_panel = Panel::Logs;
+        app.logs_rect = Rect::new(60, 10, 20, 8);
+
+        app.open_search_overlay();
+        app.focused_panel = Panel::Response;
+        app.close_overlay();
+
+        assert_eq!(app.focused_panel, Panel::Logs);
+        assert!(!app.overlay_active());
+    }
+
+    #[test]
+    fn search_match_count_uses_overlay_target_panel() {
+        let mut app = App::new();
+        app.log_lines = vec!["alpha beta".to_string(), "alpha".to_string()];
+        app.focused_panel = Panel::Logs;
+        app.open_search_overlay();
+
+        if let Some(OverlayState::Search(overlay)) = app.overlay.as_mut() {
+            overlay.query = "alpha".to_string();
+            overlay.cursor_pos = 5;
+        }
+
+        assert_eq!(app.panel_search_match_count(), Some((Panel::Logs, 2)));
     }
 }

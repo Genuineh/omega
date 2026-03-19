@@ -26,7 +26,7 @@ related_prds: []
 ## Non-Goals
 
 - 不在本规格中直接实现新的 TUI widget 或键位映射。
-- 不在本次设计中引入图形化弹窗、鼠标拖拽编辑、复杂多窗口或树形导航。
+- 不在本次设计中引入操作系统级多窗口、任意层级 modal stack、鼠标拖拽编辑或树形导航。
 - 不要求每个主线任务都必须先做 TUI 才能落地；核心能力仍可先以 REPL/内部协议打通。
 
 ## Affected Roadmap Tasks
@@ -51,6 +51,7 @@ related_prds: []
 | `Response` | 当前主对话、工具输出和最终回答 | turn-primary content |
 | `Todos` | 当前任务的局部执行计划 | short-lived task plan |
 | `Activity` | 与运行时能力相关的可切换详情视图 | runtime secondary state |
+| `Overlay` | 搜索、确认、详情查看等短时浮动交互 | transient focused interaction |
 | status bar | 一眼可见的紧凑摘要与告警 | compact badges |
 
 ## Sidebar Shell
@@ -145,6 +146,17 @@ related_prds: []
 - 展示当前活跃 worktree，以及最近涉及的 worktree 上下文。
 - 只有存在多 worktree 或切换行为时才需要强化显示，避免日常单 worktree 噪音过大。
 
+## Overlay Usage
+
+对短时但需要继续交互的场景，优先使用浮动 overlay，而不是继续扩张常驻面板：
+
+- 搜索输入与搜索结果摘要
+- background / inbox / team / worktree 条目详情
+- 中断、关闭、删除等确认流程
+- 少量候选项的快速选择器
+
+overlay 的职责是“短时聚焦交互”，而不是代替 `Activity` 或 `Response` 这类持续可见信息区。相关规则见 `docs/specs/omega-tui-overlay-popups.md`。
+
 ## Task-to-Surface Mapping
 
 | Capability | Status Bar | Activity View | Response | Todo |
@@ -166,10 +178,11 @@ related_prds: []
 - 默认交互模式至少区分 `Normal` 与 `Insert`；导航、搜索、面板切换、Activity view 切换等行为应主要留在 `Normal`。
 - `Tab` 继续在固定面板间切换，不随着 Activity view 数量增加而增加常驻焦点数量。
 - Activity 内部 view 切换应走 leader 映射和 mode-aware 快捷键，而不是把每个 view 变成独立焦点面板。
+- 若当前存在 overlay，键盘路由应先由 overlay 消费，再决定是否关闭或吞掉事件，而不是继续透传到 panel。
 - `15B-11` 搜索应先面向当前聚焦面板工作；Activity view 只需复用同一搜索框架，不单独设计。
 - `15B-12` 会话统计优先放在状态栏与 Activity 中，不额外创建第四块永久面板。
 
-相关模态与配置规则见 `docs/specs/omega-tui-modal-keymap.md`。
+相关模态与配置规则见 `docs/specs/omega-tui-modal-keymap.md`，overlay 规则见 `docs/specs/omega-tui-overlay-popups.md`。
 
 ## Session Boundary Implications
 
@@ -192,11 +205,12 @@ related_prds: []
 
 ## Task Planning Impact
 
-为避免未来主线任务完成后还要返工 TUI，建议增加一个专门的前置设计/基础设施任务：
+为避免未来主线任务完成后还要返工 TUI，建议在 `Activity` 之前先补上弹窗基础设施：
 
+- `Task 15B-16A`: 为搜索、确认和详情查看建立统一 overlay / popup 基础设施。
 - `Task 15B-16`: 为 `Activity` 面板与状态栏徽章建立统一基础，作为后续 skills/subagent/background/team/worktree 等能力接入 TUI 的统一承载层。
 
-该任务不必先于 `Task 5` / `Task 10` 的核心 crate 实现完成，但应在这些能力正式追求 TUI 可用体验前落地。
+这两项任务都不必先于 `Task 5` / `Task 10` 的核心 crate 实现完成，但应在这些能力正式追求 TUI 可用体验前落地；其中 `Task 15B-16` 应建立在 `Task 15B-16A` 之上。
 
 ## Technical Decisions
 
@@ -218,3 +232,4 @@ related_prds: []
 
 ### Change Log
 - 2026-03-19: 新增跨任务的 TUI 运行态体验规格，统一规划 skills/subagent/compression/tasks/background/message/team/worktree 在 TUI 中的可见落点。
+- 2026-03-19: 补充 overlay / popup 交互层定位，明确其作为短时浮动交互基础设施先于 Activity 详情交互落地。

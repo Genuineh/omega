@@ -139,6 +139,8 @@ related_prds: []
 2. 让 `Logs` 成为第一个可切换的 `Activity` view。
 3. 后续再把 `Skills`、`Delegations`、`Background`、`Inbox` 等视图增量加入同一顶部 rail，而不是新增常驻面板。
 
+需要进一步查看某个 Activity 条目详情、执行确认或做短时选择时，不应继续挤占 rail 或新增固定 section，而应优先通过 overlay / popup 打开浮动详情交互。相关规则见 `docs/specs/omega-tui-overlay-popups.md`。
+
 这样可以确保当前需求不是一次性特例，而是未来运行态信息架构的稳定入口。
 
 ## Technical Decisions
@@ -153,7 +155,9 @@ related_prds: []
 
 ## Task Planning Impact
 
-建议把该需求并入 `Task 15B-16` 的首期范围，分两步推进：
+建议把该需求并入 `Task 15B-16` 的首期范围，但前面应先完成 overlay 基础设施：
+
+0. `Overlay foundation`：由 `Task 15B-16A` 提供统一浮动弹窗能力，承载后续 detail / confirm / picker 交互。
 
 1. `Sidebar shell foundation`：统一右侧侧边栏容器、整体收起快捷键、顶部 rail、`Todos`/`Logs` section state。
 2. `Activity view migration`：把当前 `Logs` 的单一语义升级为可切换 `Activity` 视图容器，并逐步接入后续 crate 的运行态信息。

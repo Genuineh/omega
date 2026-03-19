@@ -112,12 +112,23 @@ _将 M11 中基础级体验优化前移，确保在开发后续功能时有可�
 - **Related**: docs/specs/omega-tui-todo-sidebar-layout.md
 - **Summary**: Todo 面板从“原始字符串列表”补齐为带状态的 UI：未同步时显示可操作引导文案，空列表时显示明确 empty state，运行中新 turn 尚未刷新 todo 时在面板标题和状态栏摘要中标记 stale；同时把 `(x/y completed)` 汇总提炼为紧凑摘要，作为未来搜索/统计能力的兼容基础；窄终端隐藏右侧栏时焦点会自动回落到 `Response`，`Tab` 不再落到不可见面板；新增相关单测并以 `cargo test -p omega-tui` 验证通过
 
+### Task 15B-16A: omega-tui — 浮动弹窗 / Overlay 基础设施
+- **Status**: Completed
+- **Completed**: 2026-03-19
+- **Priority**: Medium
+- **Description**: 引入统一浮动弹窗层，支持搜索框、确认框、详情查看和轻量 picker 等短时交互；建立 overlay 焦点捕获、键盘/鼠标路由、遮罩与尺寸退化规则
+- **Complexity**: M
+- **Related**: docs/specs/omega-tui-overlay-popups.md, docs/specs/omega-tui-modal-keymap.md, docs/specs/omega-tui-runtime-experience.md
+- **Blocked by**: Task 15B-13
+- **Blocks**: Task 15B-11, Task 15B-16
+- **Summary**: `omega-tui` 新增单活动 overlay 基础设施，包含 `Search` / `Confirm` / `Detail` / `Picker` / `InputPrompt` 五类本地弹窗状态、遮罩与居中尺寸退化规则、overlay-first 键盘/鼠标路由以及焦点恢复；默认 keymap 新增 `leader /` 打开搜索弹窗，搜索窗会捕获独立输入并给出当前面板匹配数摘要，中断动作改为先进入确认弹窗再执行；补充相关单测并以 `cargo test -p omega-keymap -p omega-tui` 与 `cargo clippy -p omega-keymap -p omega-tui --all-targets -- -D warnings` 验证
+
 ### Task 15B-16: omega-tui — Runtime Activity 面板与状态徽章基础
 - **Status**: Pending
 - **Priority**: Medium
 - **Description**: 将当前 `Todos` + `Logs` 组合升级为统一可收起的右侧 `Sidebar`，支持整体收起快捷键、顶部图标轨、section 折叠/切换，以及面向 `skills/subagent/tasks/background/message/team/worktree` 的 `Activity` 面板基础
 - **Complexity**: M
-- **Related**: docs/specs/omega-tui-runtime-experience.md, docs/specs/omega-tui-collapsible-sidebar.md, docs/specs/omega-tui-modal-keymap.md
+- **Related**: docs/specs/omega-tui-runtime-experience.md, docs/specs/omega-tui-collapsible-sidebar.md, docs/specs/omega-tui-modal-keymap.md, docs/specs/omega-tui-overlay-popups.md
 - **Blocks**: Task 15B-12
 
 ### ── M2: 文件工具 (s02) ── ✅
@@ -274,7 +285,7 @@ _基础体验已在 M1.7 完成，此处保留高级特性。_
 ### Task 15B-11: omega-tui — 面板内搜索
 - **Status**: Pending
 - **Priority**: Low
-- **Description**: Ctrl+F 触发搜索模式，高亮匹配文本，n/N 跳转
+- **Description**: 触发浮动搜索窗，在当前聚焦面板内高亮匹配文本并支持 n/N 跳转
 
 ### Task 15B-12: omega-tui — 可调面板与会话统计
 - **Status**: Pending

@@ -47,7 +47,7 @@ related_prds: []
 `omega-tui` 应只提供运行时上下文，例如：
 
 - 当前模式：`Normal` / `Insert`
-- 当前焦点：`Response` / `Todo` / `Logs` / `SidebarRail` / 未来 `Activity`
+- 当前焦点：`Response` / `Todo` / `Logs` / `SidebarRail` / 未来 `Activity` / `Overlay`
 - 当前上下文是否允许输入
 - 当前是否处于 leader pending 状态
 
@@ -93,6 +93,8 @@ related_prds: []
 4. 匹配全局 fallback
 
 若存在冲突，加载阶段应直接报配置错误，而不是运行时随机选择。
+
+当 overlay 激活时，键盘路由应遵循 overlay-first 原则：先由 overlay 本地交互消费，再决定是否触发关闭或全局取消；底层 panel 的导航和 leader 动作不应继续生效。相关交互层规则见 `docs/specs/omega-tui-overlay-popups.md`。
 
 ## Keymap File
 
@@ -233,6 +235,7 @@ impl KeymapManager {
 
 - `Task 15B-10`：输入历史，需要明确在哪个模式和焦点下触发
 - `Task 15B-11`：面板内搜索，需要 leader 命名空间与模式约束
+- `Task 15B-16A`：浮动弹窗 / overlay 基础设施，需要统一 leader 路由与 modal 焦点语义
 - `Task 15B-12`：可调面板与会话统计，需要统一映射和模式隔离
 - `Task 15B-16`：可收起 Sidebar 与 Activity 入口，需要依赖统一快捷键解析层
 

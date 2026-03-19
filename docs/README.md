@@ -20,6 +20,7 @@ This directory contains the working documentation set for the Omega Rust project
 | `docs/specs/omega-agent-impl-plan.md` | Plan | Step-by-step implementation plan for the workspace |
 | `docs/specs/omega-tui-collapsible-sidebar.md` | Specification | Collapsible sidebar shell and icon-rail interaction plan for `omega-tui` |
 | `docs/specs/omega-tui-modal-keymap.md` | Specification | Modal keymap, leader routing, and `.omega` keybinding config plan for `omega-tui` |
+| `docs/specs/omega-tui-overlay-popups.md` | Specification | Floating overlay / popup interaction plan for transient `omega-tui` workflows |
 | `docs/specs/omega-tui-runtime-experience.md` | Specification | Cross-task TUI experience plan for future runtime-visible capabilities |
 | `docs/specs/omega-tui-todo-sidebar-layout.md` | Specification | Todo/Logs split-panel layout for the TUI sidebar |
 | `docs/specs/omega-tui-non-ui-extraction.md` | Specification | Planned extraction of non-UI responsibilities out of `omega-tui` |

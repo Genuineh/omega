@@ -32,6 +32,11 @@ action = "scroll_panel_down"
 mode = "normal"
 
 [[bindings]]
+keys = "leader /"
+action = "panel_search"
+mode = "normal"
+
+[[bindings]]
 keys = "left"
 action = "move_cursor_left"
 mode = "insert"
