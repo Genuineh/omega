@@ -3,6 +3,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 
 use omega_core::{Agent, DynLlmClient, Message};
+use omega_skills::SkillLoader;
 use tokio::runtime::Handle;
 use tracing::error;
 
@@ -42,16 +43,19 @@ pub struct AgentSession {
     agent_slot: Arc<Mutex<AgentSlot>>,
     turn_checkpoint: Arc<Mutex<Vec<Message>>>,
     client: DynLlmClient,
-    system: String,
+    base_system: String,
     cwd: PathBuf,
+    skill_loader: SkillLoader,
     runtime_handle: Handle,
 }
 
 impl AgentSession {
     pub fn new(config: AgentSessionConfig) -> anyhow::Result<Self> {
+        let skill_loader = SkillLoader::from_repo_root(&config.cwd)?;
+        let initial_system = skill_loader.build_system_prompt(&config.system, "");
         let agent = Agent::new(
             config.client.clone(),
-            config.system.clone(),
+            initial_system,
             omega_core::create_default_tools(config.cwd.clone()),
         )?;
         let checkpoint = agent.messages().to_vec();
@@ -63,8 +67,9 @@ impl AgentSession {
             })),
             turn_checkpoint: Arc::new(Mutex::new(checkpoint)),
             client: config.client,
-            system: config.system,
+            base_system: config.system,
             cwd: config.cwd,
+            skill_loader,
             runtime_handle: config.runtime_handle,
         })
     }
@@ -87,9 +92,10 @@ impl AgentSession {
 
     pub fn interrupt(&self, replacement_turn_id: u64) -> anyhow::Result<()> {
         let checkpoint = self.turn_checkpoint.lock().unwrap().clone();
+        let system = self.skill_loader.build_system_prompt(&self.base_system, "");
         let mut replacement = Agent::new(
             self.client.clone(),
-            self.system.clone(),
+            system,
             omega_core::create_default_tools(self.cwd.clone()),
         )?;
         replacement.set_messages(checkpoint);
@@ -117,7 +123,11 @@ impl AgentSession {
         let tx_callback = tx.clone();
         let tx_result = tx;
         let handle = self.runtime_handle.clone();
+        let base_system = self.base_system.clone();
+        let skill_loader = self.skill_loader.clone();
         thread::spawn(move || {
+            let system = skill_loader.build_system_prompt(&base_system, &input);
+            agent.set_system(system);
             agent.add_user_message(&input);
 
             let result = handle.block_on(agent.run_loop_with(move |name, tool_input, output| {
@@ -215,6 +225,12 @@ mod tests {
         let client: DynLlmClient = Arc::new(IdleClient);
         let root = PathBuf::from(std::env::temp_dir().join("omega-agent-session-test"));
         let _ = std::fs::create_dir_all(&root);
+        let skills_dir = root.join(".claude/skills/review");
+        let _ = std::fs::create_dir_all(&skills_dir);
+        let _ = std::fs::write(
+            skills_dir.join("SKILL.md"),
+            "---\nname: review\ndescription: Review code\n---\nFind regressions.",
+        );
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let session = AgentSession::new(AgentSessionConfig {
             client,

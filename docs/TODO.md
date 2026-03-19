@@ -8,7 +8,6 @@ _任务编号以 `docs/specs/omega-agent-impl-plan.md` 为准；为支持可运�
 
 ### High
 
-- **Task 5**: `omega-skills` 现在应前移到高优先级。仓库工作流本身强依赖 skill 加载，缺失这一层会限制 Agent 在真实仓库任务中的可用性。
 - **Task 10**: `omega-subagent` 维持高优先级，作为后续 team/background/worktree 能力的直接基础。
 
 ### Medium
@@ -166,10 +165,12 @@ _将 M11 中基础级体验优化前移，确保在开发后续功能时有可�
 > 对标：learn-claude-code s05_skill_loading.py
 
 ### Task 5: omega-skills — SkillLoader
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-03-19
 - **Priority**: High
 - **Description**: 实现 SkillLoader，扫描 skills 目录，按关键词匹配加载
 - **Related**: docs/specs/omega-agent-impl-plan.md, docs/specs/omega-tui-runtime-experience.md
+- **Summary**: `omega-skills` 新增递归扫描 `.claude/skills` 与 `skills/` 的 `SkillLoader`，支持 frontmatter 读取、技能描述汇总、按任务文本做关键词匹配，并提供 `load_skill` 工具按需返回完整 `<skill ...>` 内容；`omega-core::create_default_tools` 已默认注册该工具，`omega-repl` 与 `omega-session` 会在每轮按当前输入把匹配到的 skill 正文预装进 system prompt，同时始终附带低成本的 skills 描述列表；新增 `omega-skills`、`omega-repl` 相关单测，并以定向 cargo test 验证通过
 
 ### ── M6: 上下文压缩 (s06) ──
 

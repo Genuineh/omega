@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};
 use omega_client::{ChatRequest, ContentBlock, ToolDefinition};
+use omega_skills::LoadSkillHandler;
 use omega_todo::{TodoItem, TodoStatus, TodoToolHandler};
 use omega_tools::ToolDispatcher;
 use omega_tools_builtin::{BashHandler, EditHandler, ReadHandler, WriteHandler};
@@ -203,6 +204,10 @@ impl Agent {
     pub fn set_max_iterations(&mut self, max_iterations: u32) {
         self.max_iterations = max_iterations;
     }
+
+    pub fn set_system(&mut self, system: String) {
+        self.system = system;
+    }
 }
 
 /// Create a ToolDispatcher with all built-in tools.
@@ -211,7 +216,10 @@ pub fn create_default_tools(root: PathBuf) -> ToolDispatcher {
     dispatcher.register(Box::new(BashHandler::new(root.clone())));
     dispatcher.register(Box::new(ReadHandler::new(root.clone())));
     dispatcher.register(Box::new(WriteHandler::new(root.clone())));
-    dispatcher.register(Box::new(EditHandler::new(root)));
+    dispatcher.register(Box::new(EditHandler::new(root.clone())));
+    if let Ok(handler) = LoadSkillHandler::from_repo_root(&root) {
+        dispatcher.register(Box::new(handler));
+    }
     dispatcher.register(Box::new(TodoToolHandler::new()));
     dispatcher
 }
@@ -371,6 +379,7 @@ mod tests {
     fn create_default_tools_includes_bash() {
         let dispatcher = create_default_tools(std::env::temp_dir());
         assert!(dispatcher.has_tool("bash"));
+        assert!(dispatcher.has_tool("load_skill"));
         assert!(dispatcher.has_tool("todo"));
     }
 
@@ -382,11 +391,18 @@ mod tests {
             .into_iter()
             .map(|v| serde_json::from_value(v).unwrap())
             .collect();
-        assert_eq!(defs.len(), 5);
+        assert_eq!(defs.len(), 6);
         let names: Vec<&str> = defs.iter().map(|def| def.name.as_str()).collect();
         assert_eq!(
             names,
-            vec!["bash", "edit_file", "read_file", "todo", "write_file"]
+            vec![
+                "bash",
+                "edit_file",
+                "load_skill",
+                "read_file",
+                "todo",
+                "write_file"
+            ]
         );
     }
 

@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 omega-core = { path = "../omega-core" }
 omega-observability = { path = "../omega-observability" }
+omega-skills = { path = "../omega-skills" }
 anyhow.workspace = true
 tokio.workspace = true
 serde_json.workspace = true

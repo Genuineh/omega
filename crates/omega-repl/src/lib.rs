@@ -2,6 +2,7 @@ use std::io::{BufRead, Write};
 use std::path::PathBuf;
 
 use omega_core::{Agent, DynLlmClient};
+use omega_skills::SkillLoader;
 
 pub fn should_exit_input(input: &str) -> bool {
     matches!(input.trim().to_ascii_lowercase().as_str(), "q" | "exit")
@@ -40,7 +41,12 @@ where
     W: Write,
 {
     let dispatcher = omega_core::create_default_tools(cwd.clone());
-    let mut agent = Agent::new(client, system, dispatcher)?;
+    let skill_loader = SkillLoader::from_repo_root(&cwd)?;
+    let mut agent = Agent::new(
+        client,
+        skill_loader.build_system_prompt(&system, ""),
+        dispatcher,
+    )?;
 
     loop {
         write!(writer, "omega >> ")?;
@@ -59,6 +65,8 @@ where
         if query.trim().is_empty() {
             continue;
         }
+
+        agent.set_system(skill_loader.build_system_prompt(&system, query));
 
         agent.add_user_message(query);
         let response = agent
@@ -92,12 +100,14 @@ mod tests {
 
     struct MockLlmClient {
         responses: Mutex<Vec<ChatResponse>>,
+        systems: Mutex<Vec<Option<String>>>,
     }
 
     impl MockLlmClient {
         fn new(responses: Vec<ChatResponse>) -> Self {
             Self {
                 responses: Mutex::new(responses),
+                systems: Mutex::new(Vec::new()),
             }
         }
     }
@@ -105,6 +115,7 @@ mod tests {
     #[async_trait]
     impl LlmClient for MockLlmClient {
         async fn chat(&self, _request: ChatRequest) -> Result<ChatResponse, ClientError> {
+            self.systems.lock().unwrap().push(_request.system.clone());
             let mut responses = self.responses.lock().unwrap();
             assert!(!responses.is_empty(), "MockLlmClient: no more responses");
             Ok(responses.remove(0))
@@ -215,5 +226,39 @@ mod tests {
         let output = String::from_utf8(output).unwrap();
         assert!(output.matches("omega >> ").count() >= 3);
         assert!(output.contains("Handled"));
+    }
+
+    #[tokio::test]
+    async fn repl_preloads_matching_skill_into_system_prompt() {
+        let root = std::env::temp_dir().join("omega-repl-skills-test");
+        let _ = std::fs::remove_dir_all(&root);
+        let skills_dir = root.join(".claude/skills/review");
+        let _ = std::fs::create_dir_all(&skills_dir);
+        std::fs::write(
+            skills_dir.join("SKILL.md"),
+            "---\nname: review\ndescription: Review code changes\n---\nFind regressions first.",
+        )
+        .unwrap();
+
+        let mock = Arc::new(MockLlmClient::new(vec![text_response("Reviewed")]));
+        let client: DynLlmClient = mock.clone();
+        let mut input = Cursor::new(b"please review this diff\nq\n".to_vec());
+        let mut output = Vec::new();
+
+        run_repl(
+            &mut input,
+            &mut output,
+            client,
+            root,
+            "Base system".to_string(),
+        )
+        .await
+        .unwrap();
+
+        let systems = mock.systems.lock().unwrap();
+        let system = systems.first().and_then(|entry| entry.as_deref()).unwrap();
+        assert!(system.contains("Skills available:"));
+        assert!(system.contains("Preloaded skills for this task:"));
+        assert!(system.contains("<skill name=\"review\">"));
     }
 }
