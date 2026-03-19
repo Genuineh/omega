@@ -37,6 +37,11 @@ action = "panel_search"
 mode = "normal"
 
 [[bindings]]
+keys = "leader b"
+action = "toggle_sidebar"
+mode = "normal"
+
+[[bindings]]
 keys = "left"
 action = "move_cursor_left"
 mode = "insert"

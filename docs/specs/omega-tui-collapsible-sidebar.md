@@ -1,9 +1,9 @@
 ---
-status: draft
+status: implemented
 owner: omega-team
 created: 2026-03-19
 updated: 2026-03-19
-version: 0.1
+version: 0.3
 supersedes: []
 related_prds: []
 ---
@@ -37,7 +37,7 @@ related_prds: []
 
 右侧辅助区从“两个固定面板”升级为单一 `Sidebar` 容器，结构分为三层：
 
-- `Header rail`：位于侧边栏顶部，承载 `Todos`、`Logs` 以及未来 `Activity` view 的图标入口与紧凑状态。
+- `Header rail`：位于侧边栏顶部，承载 `Todos`、`Logs` 以及未来运行态视图的轻量入口与紧凑状态。
 - `Body`：显示当前展开的 section 内容；若多个 section 同时展开，则在此区域内垂直弹性排列。
 - `Collapsed shell state`：当整个侧边栏被收起时，仅保留主面板与状态栏摘要，不再渲染右侧内容区域。
 
@@ -63,7 +63,7 @@ related_prds: []
 
 - 左侧仍为 `Response` 主面板。
 - 右侧为单一较大的 `Sidebar` 面板。
-- `Header rail` 固定在 `Sidebar` 顶部，显示 `Todos`、`Logs` 的小图标与摘要。
+- `Header rail` 固定在 `Sidebar` 顶部，使用单行轻量文本入口显示 `Todos`、`Logs` 的图标、名称与摘要，入口之间以 `|` 分隔。
 - `Body` 在 rail 下方渲染已展开的 section。
 
 ### Section Expansion Behavior
@@ -72,7 +72,7 @@ related_prds: []
 - 默认比例保持接近当前体验：`Todos 40% / Logs 60%`。
 - 若其中一个 section 内容明显更短，允许在满足最小高度后把剩余空间让给另一个 section。
 - 当仅有一个 section 展开时，它占据整个 `Body`。
-- 不允许在侧边栏展开时两个 section 同时都被折叠为空白主体；若用户试图折叠最后一个展开 section，则行为改为切换焦点到另一个 section，或保留最后一个 section 展开。
+- 不允许在侧边栏展开时两个 section 同时都被折叠为空白主体；若用户试图折叠最后一个展开 section，则保持该 section 展开，并向状态栏给出提示。
 
 ### Collapsed Sidebar
 
@@ -92,6 +92,12 @@ related_prds: []
 - `focus_sidebar_rail`: 把交互焦点移到侧边栏顶部图标轨。
 - `cycle_sidebar_section`: 在 rail 内切换当前高亮的 section 图标。
 - `activate_sidebar_section`: 展开当前高亮 section，或把焦点跳转到该 section。
+
+当前默认交互：
+
+- `←/→`：在 rail 中切换 `Todos` / `Logs`
+- `Enter`：激活当前 section
+- `x`：折叠或展开当前 section
 
 快捷键绑定策略：
 
@@ -160,7 +166,7 @@ related_prds: []
 0. `Overlay foundation`：由 `Task 15B-16A` 提供统一浮动弹窗能力，承载后续 detail / confirm / picker 交互。
 
 1. `Sidebar shell foundation`：统一右侧侧边栏容器、整体收起快捷键、顶部 rail、`Todos`/`Logs` section state。
-2. `Activity view migration`：把当前 `Logs` 的单一语义升级为可切换 `Activity` 视图容器，并逐步接入后续 crate 的运行态信息。
+2. `Activity view migration`：保持 `Todos`、`Logs` 作为统一 rail 内的运行态入口，并在后续逐步加入 `Skills`、`Delegations`、`Background`、`Inbox` 等更多视图。
 
 如果实现过程中发现交互复杂度明显上升，可以将 `Sidebar shell foundation` 再拆成单独子任务，但不建议把图标 rail 与整体收起能力推迟到 `Activity` 视图全部接入之后。
 
@@ -177,3 +183,4 @@ related_prds: []
 
 ### Change Log
 - 2026-03-19: 新增可收起侧边栏规格，定义统一 `Sidebar` shell、顶部图标轨、section 折叠态与整体收起交互。
+- 2026-03-19: `Task 15B-16` 已落地，`omega-tui` 现支持统一 `Sidebar` shell、轻量单行 rail、`Todos | Logs` 入口、最后一个 section 防空折叠，以及直接显示 `Logs` 标题。

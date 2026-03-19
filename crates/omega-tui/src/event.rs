@@ -7,7 +7,7 @@ use omega_keymap::{InteractionMode, KeyAction, KeyContext, KeyResolution, Keymap
 use omega_session::{AgentSession, SessionUpdate};
 use tracing::info;
 
-use crate::app::{App, MsgKind};
+use crate::app::{App, MsgKind, Panel};
 use crate::overlay::{ConfirmChoice, ConfirmIntent, OverlayState};
 
 pub fn handle_event(
@@ -38,6 +38,33 @@ fn handle_key_event(
 ) -> anyhow::Result<bool> {
     if app.lock().unwrap().overlay_active() {
         return handle_overlay_key_event(key, app, session);
+    }
+
+    {
+        let mut app_guard = app.lock().unwrap();
+        if app_guard.interaction_mode == InteractionMode::Normal
+            && app_guard.focused_panel == Panel::SidebarRail
+        {
+            match key.code {
+                KeyCode::Left => {
+                    app_guard.cycle_sidebar_rail_previous();
+                    return Ok(false);
+                }
+                KeyCode::Right => {
+                    app_guard.cycle_sidebar_rail_next();
+                    return Ok(false);
+                }
+                KeyCode::Enter => {
+                    app_guard.activate_sidebar_selection();
+                    return Ok(false);
+                }
+                KeyCode::Char('x') => {
+                    app_guard.toggle_selected_sidebar_section();
+                    return Ok(false);
+                }
+                _ => {}
+            }
+        }
     }
 
     let resolution = {
@@ -314,10 +341,26 @@ fn cursor_byte_pos(buffer: &str, cursor_pos: usize) -> usize {
 fn handle_unmatched_key(key: KeyEvent, app: &Arc<Mutex<App>>) -> anyhow::Result<bool> {
     let mut app_guard = app.lock().unwrap();
     if app_guard.is_leader_pending() {
-        if key.code == KeyCode::Char('/') && app_guard.interaction_mode == InteractionMode::Normal {
-            app_guard.clear_leader_pending();
-            app_guard.open_search_overlay();
-            return Ok(false);
+        if app_guard.interaction_mode == InteractionMode::Normal {
+            match key.code {
+                KeyCode::Char('/') => {
+                    app_guard.clear_leader_pending();
+                    app_guard.open_search_overlay();
+                    return Ok(false);
+                }
+                KeyCode::Char('b') => {
+                    app_guard.clear_leader_pending();
+                    app_guard.toggle_sidebar_shell();
+                    let notice = if app_guard.sidebar.shell_collapsed {
+                        "Sidebar collapsed."
+                    } else {
+                        "Sidebar expanded."
+                    };
+                    app_guard.set_status_notice(notice);
+                    return Ok(false);
+                }
+                _ => {}
+            }
         }
 
         app_guard.clear_leader_pending();
@@ -439,8 +482,18 @@ fn execute_action(
             app_guard.open_search_overlay();
             Ok(false)
         }
-        KeyAction::ToggleSidebar
-        | KeyAction::HistoryPrevious
+        KeyAction::ToggleSidebar => {
+            let mut app_guard = app.lock().unwrap();
+            app_guard.toggle_sidebar_shell();
+            let notice = if app_guard.sidebar.shell_collapsed {
+                "Sidebar collapsed."
+            } else {
+                "Sidebar expanded."
+            };
+            app_guard.set_status_notice(notice);
+            Ok(false)
+        }
+        KeyAction::HistoryPrevious
         | KeyAction::HistoryNext
         | KeyAction::ResizeSidebarWider
         | KeyAction::ResizeSidebarNarrower => {
@@ -534,6 +587,15 @@ fn handle_mouse_event(mouse: MouseEvent, app: &Arc<Mutex<App>>) {
     }
 
     match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+            let panel = app_guard.panel_at(mouse.column, mouse.row);
+            match panel {
+                Panel::SidebarRail => app_guard.focus_sidebar_rail(),
+                Panel::Todo if app_guard.todo_visible() => app_guard.focused_panel = Panel::Todo,
+                Panel::Logs if app_guard.logs_visible() => app_guard.focused_panel = Panel::Logs,
+                _ => app_guard.focused_panel = Panel::Response,
+            }
+        }
         MouseEventKind::ScrollUp => {
             let panel = app_guard.panel_at(mouse.column, mouse.row);
             app_guard.scroll_panel_up(panel, 3);
@@ -1025,5 +1087,95 @@ mod tests {
         let app_guard = app.lock().unwrap();
         assert_eq!(app_guard.focused_panel, Panel::Response);
         assert!(app_guard.overlay_active());
+    }
+
+    #[test]
+    fn leader_b_toggles_sidebar_shell() {
+        let client: DynLlmClient = Arc::new(IdleClient);
+        let root = std::env::temp_dir().join("omega-event-toggle-sidebar-test");
+        let _ = std::fs::create_dir_all(&root);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let session = AgentSession::new(omega_session::AgentSessionConfig {
+            client,
+            system: "system".to_string(),
+            cwd: root,
+            runtime_handle: runtime.handle().clone(),
+        })
+        .unwrap();
+        let app = Arc::new(Mutex::new(App::new()));
+        let (tx, _rx) = mpsc::channel();
+        let keymap = KeymapManager::default();
+
+        handle_key_event(
+            press_key(KeyCode::Char(' '), KeyModifiers::NONE),
+            &app,
+            &session,
+            &tx,
+            &keymap,
+        )
+        .unwrap();
+        handle_key_event(
+            press_key(KeyCode::Char('b'), KeyModifiers::NONE),
+            &app,
+            &session,
+            &tx,
+            &keymap,
+        )
+        .unwrap();
+
+        let app_guard = app.lock().unwrap();
+        assert!(app_guard.sidebar.shell_collapsed);
+        assert_eq!(app_guard.focused_panel, Panel::Response);
+    }
+
+    #[test]
+    fn sidebar_rail_cycles_and_toggles_selected_section() {
+        let client: DynLlmClient = Arc::new(IdleClient);
+        let root = std::env::temp_dir().join("omega-event-sidebar-rail-test");
+        let _ = std::fs::create_dir_all(&root);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let session = AgentSession::new(omega_session::AgentSessionConfig {
+            client,
+            system: "system".to_string(),
+            cwd: root,
+            runtime_handle: runtime.handle().clone(),
+        })
+        .unwrap();
+        let app = Arc::new(Mutex::new(App::new()));
+        let (tx, _rx) = mpsc::channel();
+        let keymap = KeymapManager::default();
+        {
+            let mut app_guard = app.lock().unwrap();
+            app_guard.sidebar_rect = ratatui::layout::Rect::new(60, 1, 20, 18);
+            app_guard.sidebar_rail_rect = ratatui::layout::Rect::new(61, 2, 18, 3);
+            app_guard.todo_rect = ratatui::layout::Rect::new(61, 5, 18, 6);
+            app_guard.logs_rect = ratatui::layout::Rect::new(61, 11, 18, 7);
+            app_guard.focused_panel = Panel::SidebarRail;
+        }
+
+        handle_key_event(
+            press_key(KeyCode::Right, KeyModifiers::NONE),
+            &app,
+            &session,
+            &tx,
+            &keymap,
+        )
+        .unwrap();
+        handle_key_event(
+            press_key(KeyCode::Char('x'), KeyModifiers::NONE),
+            &app,
+            &session,
+            &tx,
+            &keymap,
+        )
+        .unwrap();
+
+        let app_guard = app.lock().unwrap();
+        assert_eq!(
+            app_guard.sidebar.rail_selection,
+            crate::sidebar::SidebarSection::Logs
+        );
+        assert!(!app_guard.sidebar.logs_expanded);
+        assert_eq!(app_guard.focused_panel, Panel::SidebarRail);
     }
 }

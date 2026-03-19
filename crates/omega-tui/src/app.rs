@@ -11,6 +11,7 @@ use crate::overlay::{
     ConfirmChoice, ConfirmIntent, ConfirmOverlay, DetailOverlay, InputPromptOverlay, OverlayState,
     PickerOverlay, SearchOverlay,
 };
+use crate::sidebar::{SidebarSection, SidebarState};
 
 const TODO_UNSYNCED_LINES: &[&str] = &[
     "No todo snapshot yet.",
@@ -24,6 +25,7 @@ const TODO_EMPTY_LINES: &[&str] = &[
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Panel {
     Response,
+    SidebarRail,
     Todo,
     Logs,
 }
@@ -70,6 +72,8 @@ pub struct App {
     pub todo_pinned: bool,
     pub logs_pinned: bool,
     pub response_rect: Rect,
+    pub sidebar_rect: Rect,
+    pub sidebar_rail_rect: Rect,
     pub todo_rect: Rect,
     pub logs_rect: Rect,
     pub input_buffer: String,
@@ -86,6 +90,7 @@ pub struct App {
     pub pending_key_events: Vec<KeyEvent>,
     pub keymap_source: String,
     pub status_notice: Option<String>,
+    pub sidebar: SidebarState,
     pub overlay: Option<OverlayState>,
     pub overlay_rect: Rect,
 }
@@ -107,6 +112,8 @@ impl App {
             todo_pinned: false,
             logs_pinned: false,
             response_rect: Rect::default(),
+            sidebar_rect: Rect::default(),
+            sidebar_rail_rect: Rect::default(),
             todo_rect: Rect::default(),
             logs_rect: Rect::default(),
             input_buffer: String::new(),
@@ -123,6 +130,7 @@ impl App {
             pending_key_events: Vec::new(),
             keymap_source: "builtin".to_string(),
             status_notice: None,
+            sidebar: SidebarState::default(),
             overlay: None,
             overlay_rect: Rect::default(),
         }
@@ -243,6 +251,7 @@ impl App {
                 });
                 self.logs_state.select(Some(current.saturating_sub(amount)));
             }
+            Panel::SidebarRail => {}
         }
     }
 
@@ -284,11 +293,22 @@ impl App {
                     self.logs_pinned = false;
                 }
             }
+            Panel::SidebarRail => {}
         }
     }
 
     pub fn panel_at(&self, col: u16, row: u16) -> Panel {
-        if self.logs_rect.width > 0
+        if self.sidebar_rail_rect.width > 0
+            && col >= self.sidebar_rail_rect.x
+            && row >= self.sidebar_rail_rect.y
+            && row
+                < self
+                    .sidebar_rail_rect
+                    .y
+                    .saturating_add(self.sidebar_rail_rect.height)
+        {
+            Panel::SidebarRail
+        } else if self.logs_rect.width > 0
             && col >= self.logs_rect.x
             && row >= self.logs_rect.y
             && row < self.logs_rect.y.saturating_add(self.logs_rect.height)
@@ -313,7 +333,14 @@ impl App {
         self.logs_rect.width > 0 && self.logs_rect.height > 0
     }
 
+    pub fn sidebar_visible(&self) -> bool {
+        self.sidebar_rect.width > 0 && self.sidebar_rect.height > 0
+    }
+
     pub fn normalize_focus(&mut self) {
+        if self.focused_panel == Panel::SidebarRail && !self.sidebar_visible() {
+            self.focused_panel = Panel::Response;
+        }
         if self.focused_panel == Panel::Todo && !self.todo_visible() {
             self.focused_panel = Panel::Response;
         }
@@ -332,6 +359,9 @@ impl App {
 
     pub fn next_focus_panel(&self) -> Panel {
         let mut panels = vec![Panel::Response];
+        if self.sidebar_visible() {
+            panels.push(Panel::SidebarRail);
+        }
         if self.todo_visible() {
             panels.push(Panel::Todo);
         }
@@ -353,8 +383,9 @@ impl App {
     pub fn key_focus(&self) -> KeyFocus {
         match self.focused_panel {
             Panel::Response => KeyFocus::Response,
+            Panel::SidebarRail => KeyFocus::SidebarRail,
             Panel::Todo => KeyFocus::Todo,
-            Panel::Logs => KeyFocus::Logs,
+            Panel::Logs => KeyFocus::Activity,
         }
     }
 
@@ -422,6 +453,86 @@ impl App {
 
     pub fn set_keymap_source(&mut self, source: impl Into<String>) {
         self.keymap_source = source.into();
+    }
+
+    pub fn toggle_sidebar_shell(&mut self) {
+        self.sidebar.toggle_shell();
+        if self.sidebar.shell_collapsed {
+            self.focused_panel = Panel::Response;
+        }
+    }
+
+    pub fn focus_sidebar_rail(&mut self) {
+        if self.sidebar_visible() {
+            self.focused_panel = Panel::SidebarRail;
+        }
+    }
+
+    pub fn cycle_sidebar_rail_next(&mut self) {
+        self.sidebar.cycle_next();
+    }
+
+    pub fn cycle_sidebar_rail_previous(&mut self) {
+        self.sidebar.cycle_previous();
+    }
+
+    pub fn toggle_selected_sidebar_section(&mut self) {
+        if !self.sidebar.toggle_selected_section() {
+            self.set_status_notice("At least one sidebar section must remain open.");
+        }
+        self.normalize_focus();
+    }
+
+    pub fn activate_sidebar_selection(&mut self) {
+        match self.sidebar.rail_selection {
+            SidebarSection::Todos => {
+                if !self.sidebar.todos_expanded {
+                    self.sidebar.todos_expanded = true;
+                }
+                if self.todo_visible() {
+                    self.focused_panel = Panel::Todo;
+                }
+            }
+            SidebarSection::Logs => {
+                if !self.sidebar.logs_expanded {
+                    self.sidebar.logs_expanded = true;
+                }
+                if self.logs_visible() {
+                    self.focused_panel = Panel::Logs;
+                }
+            }
+        }
+    }
+
+    pub fn logs_panel_title(&self) -> String {
+        let mut title = " Logs ".to_string();
+        if self.focused_panel == Panel::Logs {
+            title.push('◆');
+            title.push(' ');
+        }
+        title
+    }
+
+    pub fn sidebar_badge_text(&self) -> String {
+        let shell = if self.sidebar.shell_collapsed {
+            "SB: closed"
+        } else {
+            "SB: open"
+        };
+        let logs = format!("Logs {}", self.log_lines.len());
+        format!("{shell} │ {logs}")
+    }
+
+    pub fn rail_badge(&self, section: SidebarSection) -> String {
+        match section {
+            SidebarSection::Todos => match self.todo_summary {
+                Some(summary) => format!("T {}/{}", summary.completed, summary.total),
+                None => "T --".to_string(),
+            },
+            SidebarSection::Logs => {
+                format!("{}", self.log_lines.len())
+            }
+        }
     }
 
     pub fn overlay_active(&self) -> bool {
@@ -530,6 +641,7 @@ impl App {
                 .iter()
                 .map(|msg| msg.text.as_str())
                 .collect(),
+            Panel::SidebarRail => Vec::new(),
             Panel::Todo => self.todo_lines.iter().map(String::as_str).collect(),
             Panel::Logs => self.log_lines.iter().map(String::as_str).collect(),
         }

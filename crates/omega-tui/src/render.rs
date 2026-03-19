@@ -10,6 +10,7 @@ use omega_keymap::InteractionMode;
 
 use crate::app::{App, MsgKind, Panel};
 use crate::overlay::{overlay_area, ConfirmChoice, OverlayState};
+use crate::sidebar::SidebarSection;
 
 pub fn render(frame: &mut Frame, app: &mut App, model_name: &str) {
     let colors = ColorScheme::dark();
@@ -25,36 +26,28 @@ pub fn render(frame: &mut Frame, app: &mut App, model_name: &str) {
         .split(frame.area());
 
     let term_width = frame.area().width;
-    let (resp_pct, logs_pct): (u16, u16) = if term_width < 60 {
-        (100, 0)
+    let sidebar_pct: u16 = if term_width < 60 || app.sidebar.shell_collapsed {
+        0
     } else if term_width < 100 {
-        (70, 30)
+        34
     } else {
-        (60, 40)
+        40
     };
+    let resp_pct = 100 - sidebar_pct;
 
     let main_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Percentage(resp_pct),
-            Constraint::Percentage(logs_pct),
+            Constraint::Percentage(sidebar_pct),
         ])
         .split(chunks[1]);
 
     app.response_rect = main_chunks[0];
-    let sidebar_chunks = if main_chunks[1].width > 0 {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(38), Constraint::Percentage(62)])
-            .split(main_chunks[1])
-    } else {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(0), Constraint::Length(0)])
-            .split(main_chunks[1])
-    };
-    app.todo_rect = sidebar_chunks[0];
-    app.logs_rect = sidebar_chunks[1];
+    app.sidebar_rect = main_chunks[1];
+    app.sidebar_rail_rect = ratatui::layout::Rect::default();
+    app.todo_rect = ratatui::layout::Rect::default();
+    app.logs_rect = ratatui::layout::Rect::default();
     app.normalize_focus();
     app.normalize_mode();
 
@@ -63,6 +56,7 @@ pub fn render(frame: &mut Frame, app: &mut App, model_name: &str) {
     } else {
         match app.focused_panel {
             Panel::Response => "Response",
+            Panel::SidebarRail => "Sidebar rail",
             Panel::Todo => "Todos",
             Panel::Logs => "Logs",
         }
@@ -81,15 +75,29 @@ pub fn render(frame: &mut Frame, app: &mut App, model_name: &str) {
         "● Idle"
     };
     let todo_status = app.todo_status_text();
+    let sidebar_status = app.sidebar_badge_text();
     let status_text = format!(
-        " Omega Agent │ {} │ {} │ Mode: {} │ Focus: {} │ KM: {} │ {} ",
-        model_name, agent_state, mode_label, focus_label, app.keymap_source, todo_status
+        " Omega Agent │ {} │ {} │ Mode: {} │ Focus: {} │ KM: {} │ {} │ {} ",
+        model_name,
+        agent_state,
+        mode_label,
+        focus_label,
+        app.keymap_source,
+        todo_status,
+        sidebar_status
     );
     let status =
         Paragraph::new(status_text).style(Style::default().fg(colors.text).bg(colors.status_bar));
     frame.render_widget(status, chunks[0]);
 
     let response_border = if app.focused_panel == Panel::Response {
+        Style::default()
+            .fg(colors.focus_border)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(colors.border_dim)
+    };
+    let sidebar_border = if app.focused_panel == Panel::SidebarRail {
         Style::default()
             .fg(colors.focus_border)
             .add_modifier(Modifier::BOLD)
@@ -149,58 +157,34 @@ pub fn render(frame: &mut Frame, app: &mut App, model_name: &str) {
         .style(Style::default().fg(colors.text));
     frame.render_stateful_widget(output_list, main_chunks[0], &mut app.response_state);
 
-    let todo_title = app.todo_panel_title();
-    let todo_inner_w = (sidebar_chunks[0].width as usize).saturating_sub(2).max(1);
-    let todo_items: Vec<ListItem> = app
-        .todo_lines
-        .iter()
-        .flat_map(|line| wrap_text(line, todo_inner_w).into_iter().map(ListItem::new))
-        .collect();
-    let todo_total = todo_items.len();
-    app.todo_displayed_count = todo_total;
-    if !app.todo_pinned && todo_total > 0 {
-        app.todo_state.select(Some(todo_total - 1));
-    }
-    let todo_list = List::new(todo_items)
-        .block(
-            Block::default()
-                .title(todo_title)
-                .borders(Borders::ALL)
-                .border_style(todo_border),
-        )
-        .highlight_style(Style::default())
-        .style(Style::default().fg(colors.text));
-    if sidebar_chunks[0].width > 0 && sidebar_chunks[0].height > 0 {
-        frame.render_stateful_widget(todo_list, sidebar_chunks[0], &mut app.todo_state);
-    }
+    if app.sidebar_rect.width > 0 && app.sidebar_rect.height > 0 {
+        let sidebar_title = if app.focused_panel == Panel::SidebarRail {
+            " Sidebar ◆ "
+        } else {
+            " Sidebar "
+        };
+        let sidebar_block = Block::default()
+            .title(sidebar_title)
+            .borders(Borders::ALL)
+            .border_style(sidebar_border);
+        let sidebar_inner = sidebar_block.inner(app.sidebar_rect);
+        frame.render_widget(sidebar_block, app.sidebar_rect);
 
-    let logs_title = if app.focused_panel == Panel::Logs {
-        " Logs ◆ "
-    } else {
-        " Logs "
-    };
-    let logs_inner_w = (sidebar_chunks[1].width as usize).saturating_sub(2).max(1);
-    let log_items: Vec<ListItem> = app
-        .log_lines
-        .iter()
-        .flat_map(|line| wrap_text(line, logs_inner_w).into_iter().map(ListItem::new))
-        .collect();
-    let logs_total = log_items.len();
-    app.logs_displayed_count = logs_total;
-    if !app.logs_pinned && logs_total > 0 {
-        app.logs_state.select(Some(logs_total - 1));
-    }
-    let log_list = List::new(log_items)
-        .block(
-            Block::default()
-                .title(logs_title)
-                .borders(Borders::ALL)
-                .border_style(logs_border),
-        )
-        .highlight_style(Style::default())
-        .style(Style::default().fg(colors.text));
-    if sidebar_chunks[1].width > 0 && sidebar_chunks[1].height > 0 {
-        frame.render_stateful_widget(log_list, sidebar_chunks[1], &mut app.logs_state);
+        let sidebar_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(0)])
+            .split(sidebar_inner);
+        app.sidebar_rail_rect = sidebar_chunks[0];
+
+        render_sidebar_rail(frame, app, &colors, sidebar_chunks[0]);
+        render_sidebar_body(
+            frame,
+            app,
+            &colors,
+            sidebar_chunks[1],
+            todo_border,
+            logs_border,
+        );
     }
 
     let chars: Vec<char> = app.input_buffer.chars().collect();
@@ -278,7 +262,7 @@ pub fn render(frame: &mut Frame, app: &mut App, model_name: &str) {
     } else if main_chunks[1].width == 0 {
         match app.interaction_mode {
             InteractionMode::Normal => {
-                " Sidebar hidden below 60 cols. Space=Leader  Space jk=Toggle mode  Space Tab=Focus  Space ↑/↓=Scroll  Space c=Interrupt  Space q=Quit"
+                " Sidebar hidden. Space=Leader  Space jk=Toggle mode  Space Tab=Focus  Space b=Sidebar  Space /=Search  Space ↑/↓=Scroll"
             }
             InteractionMode::Insert => {
                 " Sidebar hidden below 60 cols. Enter=Send  Space jk=Toggle mode  ←→/Home/End=Cursor  Del/Backspace=Delete"
@@ -287,7 +271,11 @@ pub fn render(frame: &mut Frame, app: &mut App, model_name: &str) {
     } else {
         match app.interaction_mode {
             InteractionMode::Normal => {
-                " Space=Leader  Space jk=Toggle mode  Space Tab=Focus  Space ↑/↓=Scroll  Space c=Interrupt  Space q=Quit"
+                if app.focused_panel == Panel::SidebarRail {
+                    " Sidebar rail: ←/→ cycle  Enter focus  x collapse  Space b=Toggle sidebar  Space Tab=Next focus"
+                } else {
+                    " Space=Leader  Space jk=Toggle mode  Space Tab=Focus  Space b=Sidebar  Space /=Search  Space ↑/↓=Scroll"
+                }
             }
             InteractionMode::Insert => {
                 " Enter=Send  Space jk=Toggle mode  ←→/Home/End=Cursor  Del/Backspace=Delete"
@@ -299,6 +287,129 @@ pub fn render(frame: &mut Frame, app: &mut App, model_name: &str) {
     frame.render_widget(hint, chunks[3]);
 
     render_overlay(frame, app, &colors);
+}
+
+fn render_sidebar_rail(
+    frame: &mut Frame,
+    app: &mut App,
+    colors: &ColorScheme,
+    area: ratatui::layout::Rect,
+) {
+    let sections = [SidebarSection::Todos, SidebarSection::Logs];
+    let mut spans = Vec::new();
+
+    for (index, section) in sections.into_iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::styled(" | ", Style::default().fg(colors.border_dim)));
+        }
+
+        let selected = app.sidebar.rail_selection == section;
+        let expanded = app.sidebar.is_expanded(section);
+        let marker = if expanded { "▾" } else { "▸" };
+        let style = if selected {
+            Style::default()
+                .fg(colors.focus_border)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(colors.text)
+        };
+        spans.push(Span::styled(
+            format!("{marker} {} {}", section.label(), app.rail_badge(section)),
+            style,
+        ));
+    }
+
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+fn render_sidebar_body(
+    frame: &mut Frame,
+    app: &mut App,
+    colors: &ColorScheme,
+    area: ratatui::layout::Rect,
+    todo_border: Style,
+    logs_border: Style,
+) {
+    app.todo_rect = ratatui::layout::Rect::default();
+    app.logs_rect = ratatui::layout::Rect::default();
+
+    let sections = match (app.sidebar.todos_expanded, app.sidebar.logs_expanded) {
+        (true, true) => Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+            .split(area)
+            .iter()
+            .copied()
+            .collect::<Vec<_>>(),
+        (true, false) | (false, true) => Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(100)])
+            .split(area)
+            .iter()
+            .copied()
+            .collect::<Vec<_>>(),
+        (false, false) => Vec::new(),
+    };
+
+    let mut next_index = 0;
+    if app.sidebar.todos_expanded {
+        let rect = sections.get(next_index).copied().unwrap_or_default();
+        next_index += 1;
+        app.todo_rect = rect;
+        let todo_title = app.todo_panel_title();
+        let todo_inner_w = (rect.width as usize).saturating_sub(2).max(1);
+        let todo_items: Vec<ListItem> = app
+            .todo_lines
+            .iter()
+            .flat_map(|line| wrap_text(line, todo_inner_w).into_iter().map(ListItem::new))
+            .collect();
+        let todo_total = todo_items.len();
+        app.todo_displayed_count = todo_total;
+        if !app.todo_pinned && todo_total > 0 {
+            app.todo_state.select(Some(todo_total - 1));
+        }
+        let todo_list = List::new(todo_items)
+            .block(
+                Block::default()
+                    .title(todo_title)
+                    .borders(Borders::ALL)
+                    .border_style(todo_border),
+            )
+            .highlight_style(Style::default())
+            .style(Style::default().fg(colors.text));
+        frame.render_stateful_widget(todo_list, rect, &mut app.todo_state);
+    } else {
+        app.todo_displayed_count = 0;
+    }
+
+    if app.sidebar.logs_expanded {
+        let rect = sections.get(next_index).copied().unwrap_or_default();
+        app.logs_rect = rect;
+        let logs_title = app.logs_panel_title();
+        let logs_inner_w = (rect.width as usize).saturating_sub(2).max(1);
+        let log_items: Vec<ListItem> = app
+            .log_lines
+            .iter()
+            .flat_map(|line| wrap_text(line, logs_inner_w).into_iter().map(ListItem::new))
+            .collect();
+        let logs_total = log_items.len();
+        app.logs_displayed_count = logs_total;
+        if !app.logs_pinned && logs_total > 0 {
+            app.logs_state.select(Some(logs_total - 1));
+        }
+        let log_list = List::new(log_items)
+            .block(
+                Block::default()
+                    .title(logs_title)
+                    .borders(Borders::ALL)
+                    .border_style(logs_border),
+            )
+            .highlight_style(Style::default())
+            .style(Style::default().fg(colors.text));
+        frame.render_stateful_widget(log_list, rect, &mut app.logs_state);
+    } else {
+        app.logs_displayed_count = 0;
+    }
 }
 
 fn wrap_text(line: &str, width: usize) -> Vec<String> {
@@ -400,6 +511,7 @@ fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorScheme) {
                 .unwrap_or((search.target_panel, 0));
             let panel_name = match panel {
                 Panel::Response => "Response",
+                Panel::SidebarRail => "Sidebar",
                 Panel::Todo => "Todos",
                 Panel::Logs => "Logs",
             };
@@ -614,10 +726,67 @@ fn overlay_hint_text(app: &App) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::wrap_text;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    use crate::app::{App, Panel};
+
+    use super::{render, wrap_text};
 
     #[test]
     fn wraps_unicode_text_by_character_width() {
         assert_eq!(wrap_text("你好世界", 2), vec!["你好", "世界"]);
+    }
+
+    #[test]
+    fn collapsed_sidebar_hides_sections_and_restores_response_focus() {
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new();
+        app.sidebar.shell_collapsed = true;
+        app.focused_panel = Panel::SidebarRail;
+
+        terminal
+            .draw(|frame| render(frame, &mut app, "test-model"))
+            .unwrap();
+
+        assert_eq!(app.focused_panel, Panel::Response);
+        assert_eq!(app.sidebar_rect.width, 0);
+        assert_eq!(app.todo_rect.width, 0);
+        assert_eq!(app.logs_rect.width, 0);
+    }
+
+    #[test]
+    fn single_activity_section_occupies_sidebar_body() {
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new();
+        app.sidebar.todos_expanded = false;
+        app.sidebar.logs_expanded = true;
+
+        terminal
+            .draw(|frame| render(frame, &mut app, "test-model"))
+            .unwrap();
+
+        assert_eq!(app.todo_rect.height, 0);
+        assert!(app.logs_rect.height > 0);
+        assert_eq!(
+            app.logs_rect.height + app.sidebar_rail_rect.height,
+            app.sidebar_rect.height - 2
+        );
+    }
+
+    #[test]
+    fn narrow_terminal_forces_sidebar_hidden() {
+        let backend = TestBackend::new(58, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new();
+        app.focused_panel = Panel::Todo;
+
+        terminal
+            .draw(|frame| render(frame, &mut app, "test-model"))
+            .unwrap();
+
+        assert_eq!(app.focused_panel, Panel::Response);
+        assert_eq!(app.sidebar_rect.width, 0);
     }
 }

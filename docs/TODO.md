@@ -15,7 +15,6 @@ _任务编号以 `docs/specs/omega-agent-impl-plan.md` 为准；为支持可运�
 - **Task 11**: 在多轮对话和后续 agent 能力继续增长前补上上下文压缩，避免先扩功能、再补 token 控制。
 - **Task 4**: `omega-tasks` 作为持久化任务层，价值明确，但不应先于 skills/subagent。
 - **Task 12**: `omega-background` 排在任务系统附近，属于把 Agent 从同步单轮执行推进到更实用执行模型的下一步。
-- **Task 15B-16**: 为后续 `skills/subagent/background/team/message/worktree` 等能力准备统一的 TUI `Activity` 面板与状态栏徽章承载层，避免运行态体验碎片化。
 - **Task 3**: `omega-message` 仍重要，但它真正释放价值要等到 subagent 与 team 机制接入，因此不再放在最前。
 - **Task 13**: `omega-team` 保持中优先级，但应建立在 `omega-subagent` 与 `omega-message` 之上推进。
 
@@ -124,12 +123,13 @@ _将 M11 中基础级体验优化前移，确保在开发后续功能时有可�
 - **Summary**: `omega-tui` 新增单活动 overlay 基础设施，包含 `Search` / `Confirm` / `Detail` / `Picker` / `InputPrompt` 五类本地弹窗状态、遮罩与居中尺寸退化规则、overlay-first 键盘/鼠标路由以及焦点恢复；默认 keymap 新增 `leader /` 打开搜索弹窗，搜索窗会捕获独立输入并给出当前面板匹配数摘要，中断动作改为先进入确认弹窗再执行；补充相关单测并以 `cargo test -p omega-keymap -p omega-tui` 与 `cargo clippy -p omega-keymap -p omega-tui --all-targets -- -D warnings` 验证
 
 ### Task 15B-16: omega-tui — Runtime Activity 面板与状态徽章基础
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-03-19
 - **Priority**: Medium
 - **Description**: 将当前 `Todos` + `Logs` 组合升级为统一可收起的右侧 `Sidebar`，支持整体收起快捷键、顶部图标轨、section 折叠/切换，以及面向 `skills/subagent/tasks/background/message/team/worktree` 的 `Activity` 面板基础
 - **Complexity**: M
 - **Related**: docs/specs/omega-tui-runtime-experience.md, docs/specs/omega-tui-collapsible-sidebar.md, docs/specs/omega-tui-modal-keymap.md, docs/specs/omega-tui-overlay-popups.md
-- **Blocks**: Task 15B-12
+- **Summary**: `omega-tui` 新增统一 `Sidebar` shell 与本地 `SidebarState`，把右侧辅助区重构为 `Response | Sidebar` 布局，并在侧边栏顶部加入轻量可聚焦 rail；当前 rail 直接以 `Todos | Logs` 呈现，`Logs` 面板不再显示 `Activity[Logs]` 包装标题，支持 `leader b` 整体收起/展开、rail 左右切换、`x` 折叠 section、`Enter` 激活展开内容，同时显式禁止把最后一个 section 收起成空 sidebar；窄终端会自动隐藏侧边栏并回退焦点，状态栏同步增加 sidebar/logs 徽章信息；相关布局、事件和状态单测已覆盖，并以 `cargo test -p omega-tui`、`cargo test -p omega-keymap -p omega-tui`、`cargo clippy -p omega-keymap -p omega-tui --all-targets -- -D warnings` 验证
 
 ### ── M2: 文件工具 (s02) ── ✅
 
