@@ -210,6 +210,7 @@ overlay 的职责是“短时聚焦交互”，而不是代替 `Activity` 或 `R
 为避免未来继续在 `render.rs` 中直接堆叠 RGB 常量与局部样式判断，视觉系统应新增独立的 `omega-theme` crate，承担以下职责：
 
 - 提供命名主题与默认主题入口，例如 `dark`、未来可能的 `light` 或 `high-contrast`。
+- 提供用户主题配置加载入口，默认读取 `.omega/theme.toml`，并将其解析为对内置主题的安全覆盖。
 - 提供语义令牌，而不是零散的“某个 widget 专用颜色常量”，例如 `mode.insert_border_fg`、`panel.focus_border_fg`、`status.warning_fg`、`input_context.label_fg`。
 - 为 `omega-tui` 提供可组合的组件级主题片段，例如输入框、底部状态带、overlay、sidebar rail。
 
@@ -217,6 +218,7 @@ overlay 的职责是“短时聚焦交互”，而不是代替 `Activity` 或 `R
 
 - `omega-theme` 可以依赖 `ratatui` 暴露面向当前 TUI 的样式令牌，但不拥有运行态状态或布局逻辑。
 - `omega-tui` 继续负责根据 `App` 状态选择语义样式，不把 `InteractionMode`、焦点、overlay 状态等状态机逻辑下沉到主题包。
+- `omega-theme` 负责 `.omega/theme.toml` 的发现、默认文件生成、解析、校验和回退策略；`omega-tui` 只消费解析后的主题对象与错误摘要。
 - 新的视觉调整若只是改 token，应优先落到 `omega-theme`；只有涉及布局、交互或状态映射时才修改 `omega-tui`。
 
 ## Responsive Degradation

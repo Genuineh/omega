@@ -12,6 +12,7 @@ omega-core = { path = "../omega-core" }
 omega-keymap = { path = "../omega-keymap" }
 omega-observability = { path = "../omega-observability" }
 omega-session = { path = "../omega-session" }
+omega-theme = { path = "../omega-theme" }
 ratatui.workspace = true
 crossterm.workspace = true
 anyhow.workspace = true

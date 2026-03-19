@@ -5,6 +5,7 @@ use crossterm::event;
 use omega_core::DynLlmClient;
 use omega_keymap::KeymapManager;
 use omega_session::{AgentSession, AgentSessionConfig, SessionUpdate};
+use omega_theme::OmegaTheme;
 use tokio::runtime::Handle;
 use tracing::{info, warn};
 
@@ -39,7 +40,12 @@ pub fn run(config: TuiLaunchConfig) -> anyhow::Result<()> {
     if let Some(warning) = loaded_keymap.warning.as_deref() {
         warn!(%warning, "keymap config fallback activated");
     }
+    let loaded_theme = OmegaTheme::load(&cwd);
+    for warning in &loaded_theme.warnings {
+        warn!(%warning, source = %loaded_theme.source_label(), "theme config fallback activated");
+    }
     let keymap = loaded_keymap.manager;
+    let theme = loaded_theme.theme;
 
     let session = AgentSession::new(AgentSessionConfig {
         client,
@@ -51,9 +57,20 @@ pub fn run(config: TuiLaunchConfig) -> anyhow::Result<()> {
     {
         let mut app_guard = app.lock().unwrap();
         app_guard.set_keymap_source(keymap.source_label());
+        let mut startup_warnings = Vec::new();
+
         if let Some(warning) = loaded_keymap.warning {
-            app_guard.set_status_notice(warning.clone());
+            startup_warnings.push(warning.clone());
             app_guard.add_log(warning);
+        }
+
+        for warning in loaded_theme.warnings {
+            startup_warnings.push(warning.clone());
+            app_guard.add_log(warning);
+        }
+
+        if !startup_warnings.is_empty() {
+            app_guard.set_status_notice(startup_warnings.join(" | "));
         }
     }
     let (tx, rx) = mpsc::channel::<SessionUpdate>();
@@ -87,7 +104,7 @@ pub fn run(config: TuiLaunchConfig) -> anyhow::Result<()> {
             let mut app_guard = app.lock().unwrap();
             terminal
                 .terminal_mut()
-                .draw(|frame| render(frame, &mut app_guard, &model_name))?;
+                .draw(|frame| render(frame, &mut app_guard, &model_name, &theme))?;
         }
 
         if event::poll(std::time::Duration::from_millis(50))?

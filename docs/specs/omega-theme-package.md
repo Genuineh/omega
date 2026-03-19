@@ -1,9 +1,9 @@
 ---
-status: draft
+status: implemented
 owner: omega-team
 created: 2026-03-19
 updated: 2026-03-19
-version: 0.1
+version: 0.2
 supersedes: []
 related_prds: []
 ---
@@ -21,12 +21,13 @@ related_prds: []
 - 为 `omega-tui` 提供单一的主题来源，集中管理颜色、边框、语义状态色、间距和组件视觉槽。
 - 让输入框、上下状态条、sidebar、overlay、Markdown/代码块等后续视觉扩展使用同一套命名令牌，而不是继续堆叠局部常量。
 - 保持 `omega-tui` 只负责状态到视觉语义的映射，不负责维护整套样式常量表。
+- 支持通过用户可编辑的 `.omega/theme.toml` 对默认主题做仓库级或工作目录级覆盖，并在非法配置下安全回退。
 - 为未来命名主题或高对比度主题预留结构，而不要求首期就实现多主题切换。
 
 ## Non-Goals
 
 - 不在本任务中重构 `omega-tui` 的布局结构或事件模型。
-- 不要求首期支持用户可配置主题文件、热切换主题或主题市场。
+- 不要求首期支持运行时热重载 `.omega/theme.toml` 或主题市场。
 - 不把运行时状态机逻辑下沉到主题包，例如 `InteractionMode`、焦点、overlay 生命周期仍属于 `omega-tui`。
 - 不要求一开始就覆盖仓库内所有 crate；首个消费者仅为 `omega-tui`。
 
@@ -46,6 +47,7 @@ related_prds: []
 职责：
 
 - 定义命名主题，例如 `OmegaTheme::dark()`。
+- 定义默认用户主题文件模板与 `.omega/theme.toml` 加载入口。
 - 定义语义令牌，例如 `status.running_fg`、`mode.insert_fg`、`surface.panel_border_dim`。
 - 定义组件级主题片段，例如 `InputTheme`、`StatusBarTheme`、`SidebarTheme`、`OverlayTheme`。
 - 暴露 `omega-tui` 可直接消费的样式结构。
@@ -68,6 +70,7 @@ related_prds: []
 
 - `omega-tui` -> `omega-theme`
 - `omega-theme` -> `ratatui`（允许首期直接依赖，降低适配层复杂度）
+- `omega-theme` -> `toml` / `serde`（用于解析 `.omega/theme.toml`）
 - 其他运行态 crate 不应依赖 `omega-theme`
 
 ### Architectural Rule
@@ -77,6 +80,64 @@ related_prds: []
 - 如果只是改颜色、边框、divider、强调色、组件默认外观，优先改 `omega-theme`。
 - 如果需要根据运行态选择某个组件主题，决策逻辑留在 `omega-tui`。
 - 如果需要新组件的视觉抽象，先在 `omega-theme` 增加组件级主题结构，再让 `omega-tui` 接线。
+
+## Theme File
+
+### Location
+
+默认路径：`.omega/theme.toml`
+
+设计沿用 `.omega/keymap.toml` 的本地配置目录约定，保持用户在工作目录下查找配置时的可发现性一致。
+
+### Startup Behavior
+
+- 若文件存在，则读取、解析并校验，再应用到内置默认主题之上。
+- 若文件缺失，则创建默认 `.omega/theme.toml` 文件并加载它。
+- 若文件格式错误或字段非法，则记录错误、向用户显示提示，并回退到内置默认主题。
+
+### Merge Model
+
+`.omega/theme.toml` 不要求声明完整主题，而是作为对内置主题的覆盖层：
+
+- 未提供的字段继续使用默认主题值。
+- 只允许覆盖公开的语义令牌和组件级主题字段。
+- 不允许在配置文件中表达运行时状态判断、条件逻辑或布局控制。
+
+这样可以避免用户配置因主题版本演进而频繁失效，也可以降低首次编辑门槛。
+
+## Configuration Format
+
+建议使用语义分段，而不是平铺颜色表：
+
+```toml
+theme = "dark"
+
+[input]
+border_type = "rounded"
+text_fg = "#569cd6"
+normal_border_fg = "#a3bbd6"
+insert_border_fg = "#4ec9b0"
+
+[context_bar]
+label_fg = "#747e8c"
+hint_fg = "#acb3bd"
+
+[status_bar]
+label_fg = "#747e8c"
+divider_fg = "#626b78"
+idle_fg = "#7bc78f"
+running_fg = "#ffc468"
+
+[surfaces]
+focus_border_fg = "#4ec9b0"
+border_dim_fg = "#303030"
+```
+
+格式要求：
+
+- 颜色优先支持 `#RRGGBB`；是否支持命名色可后续再议。
+- 枚举型字段如 `border_type` 只接受受控值，例如 `plain`、`rounded`。
+- 配置键名应与主题模型的语义字段一致，而不是直接暴露底层渲染实现的临时字段名。
 
 ## API Shape
 
@@ -96,6 +157,7 @@ pub struct OmegaTheme {
 
 impl OmegaTheme {
     pub fn dark() -> Self;
+    pub fn load_or_create_default(path: &Path) -> Result<LoadedTheme>;
 }
 
 pub struct InputTheme {
@@ -106,6 +168,18 @@ pub struct InputTheme {
     pub cursor_fg: Color,
     pub cursor_bg: Color,
 }
+
+pub struct LoadedTheme {
+    pub theme: OmegaTheme,
+    pub source: ThemeSource,
+    pub warnings: Vec<String>,
+}
+
+pub enum ThemeSource {
+    BuiltinDefault,
+    File(PathBuf),
+    FileWithFallback(PathBuf),
+}
 ```
 
 设计原则：
@@ -113,6 +187,14 @@ pub struct InputTheme {
 - API 按语义和组件分组，不按“当前文件里有哪些字段”分组。
 - 避免 `input_border`, `input_border_insert`, `input_border_normal`, `status_label_dim_2` 这类平铺扩张式字段。
 - 保持名称稳定，使后续视觉重构尽量不影响调用方结构。
+- 加载 API 返回主题来源和警告，便于 `omega-tui` 在状态栏、日志或 notice 中向用户解释当前主题状态。
+
+## Validation Rules
+
+- 未知字段默认视为错误，避免用户误以为配置已生效。
+- 非法颜色值应给出精确错误信息，例如字段路径和原始值。
+- 枚举值非法时应拒绝该配置并回退，而不是静默忽略。
+- 配置迁移期若出现已弃用字段，可先产出 warning，再在后续版本删除。
 
 ## Migration Plan
 
@@ -120,12 +202,14 @@ pub struct InputTheme {
 
 - 创建 `omega-theme` crate。
 - 迁移 `ColorScheme` 中通用视觉令牌与组件级配置。
+- 增加 `.omega/theme.toml` 默认模板、解析模型和加载入口。
 - 保持 `omega-tui` 外部行为不变，只替换样式来源。
 
 ### Phase 2: Component Theming
 
 - 为输入框、输入上下文带、底部状态带、sidebar、overlay 建立独立主题片段。
 - 把当前 `render.rs` 中散落的 `Style::default().fg(...).bg(...)` 聚合为可复用的组件级方法或字段。
+- 让 `omega-tui` 在启动时消费 `LoadedTheme`，并把加载失败或 fallback 信息转成用户可见 notice / log。
 
 ### Phase 3: Advanced Consumers
 
@@ -155,6 +239,8 @@ pub struct InputTheme {
 |---------|--------|-----------|
 | crate name | `omega-theme` | 与现有 workspace 命名一致，语义直接 |
 | ratatui dependency | allow in `omega-theme` | 当前唯一消费者是 TUI，先降低抽象成本 |
+| user config path | `.omega/theme.toml` | 与 `.omega/keymap.toml` 保持一致，明确且可发现 |
+| config merge model | overlay on builtin theme | 减少用户配置体积，并降低版本演进时的破坏性 |
 | token granularity | semantic + component-level | 避免只有原始颜色表，也避免 widget 逻辑下沉 |
 | theme count in phase 1 | one named theme (`dark`) | 先解决所有权，再扩展多主题 |
 | runtime mapping | keep in `omega-tui` | 主题包不拥有应用状态机 |
@@ -164,10 +250,14 @@ pub struct InputTheme {
 - 如果过早把 API 抽得太细，会演变成新的样式样板代码负担。
 - 如果只迁颜色表、不迁组件级主题，调用端仍会残留大量局部样式拼装。
 - 如果把运行态判断也塞进 `omega-theme`，会破坏 UI 边界并降低可测试性。
+- 如果配置文件字段直接暴露底层实现细节，后续重构会把用户配置格式也锁死。
+- 如果校验与 fallback 不清晰，用户会难以判断当前看到的是配置主题还是默认主题。
 
 ## Testing Strategy
 
 - `omega-theme` 单测：验证默认主题能构造出完整令牌集。
+- `omega-theme` 单测：验证 `.omega/theme.toml` 缺失、合法、非法三种场景下的创建、加载、校验与回退。
+- `omega-theme` 单测：验证覆盖式合并不会清空未声明字段。
 - `omega-tui` 回归测试：迁移到 `omega-theme` 后，现有输入区、状态带、sidebar 和 overlay 的视觉语义测试保持通过。
 - 针对未来 Markdown / 高亮接入，优先增加“语义样式选择正确”的测试，而不是依赖截图式验证。
 
@@ -175,3 +265,4 @@ pub struct InputTheme {
 
 ### Change Log
 - 2026-03-19: 初版规格，规划新增 `omega-theme` crate，集中管理 `omega-tui` 的共享视觉令牌与组件级主题定义。
+- 2026-03-19: 补充 `.omega/theme.toml` 用户配置加载设计，明确默认文件生成、覆盖合并、校验与回退策略。

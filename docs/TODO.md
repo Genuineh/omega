@@ -21,7 +21,6 @@ _任务编号以 `docs/specs/omega-agent-impl-plan.md` 为准；为支持可运�
 ### Low
 
 - **Task 6**: `omega-worktree` 对后期自治执行很重要，但当前尚未到隔离执行成为主瓶颈的阶段。
-- **Task 15E-1**: `omega-theme` 主题包应在更多视觉微调继续散落到 `omega-tui` 前落地，但仍不应先于主线 agent 能力。
 - **Task 15B-8 ~ 15B-12**: 高级 TUI 能力已解除结构阻塞，但主线仍应优先 skills/subagent；高阶交互体验继续保持后移。
 - **Task 16**: 最终整合测试保留为收尾任务，不应提前占用主线优先级。
 
@@ -278,13 +277,15 @@ _基础体验已在 M1.7 完成，此处保留高级特性。_
 - **Summary**: 新增 `omega-session` 承接 Agent turn orchestration 与 checkpoint/interrupt/update 协议，新增 `omega-observability` 承接 tracing 初始化、UI sink、JSONL 文件日志与 ANSI 清洗；`omega-tui` 改为仅保留 UI 运行时并消费外部 `SessionUpdate`/trace channel，`omega-repl` 也接入统一 tracing 初始化；`cargo test -p omega-session -p omega-observability -p omega-tui -p omega-repl` 通过
 
 ### Task 15E-1: omega-theme — 主题与样式令牌包
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-03-19
 - **Priority**: Low
-- **Description**: 新增 `omega-theme` crate，集中管理 `omega-tui` 的颜色、边框、状态语义色、间距与后续命名主题，避免样式令牌继续散落在 `render.rs` 与未来多个 widget 模块中
+- **Description**: 新增 `omega-theme` crate，集中管理 `omega-tui` 的颜色、边框、状态语义色、间距与后续命名主题，并支持通过 `.omega/theme.toml` 加载用户主题覆盖，避免样式令牌继续散落在 `render.rs` 与未来多个 widget 模块中
 - **Complexity**: M
 - **Related**: docs/specs/omega-theme-package.md, docs/specs/omega-tui-runtime-experience.md, docs/specs/omega-tui-input-status-layout.md
 - **Blocked by**: Task 15D
 - **Blocks**: Task 15B-8, Task 15B-9, Task 15B-12
+- **Summary**: 新增 `omega-theme` crate，提供内建 `dark` 主题、语义/组件级主题结构、`.omega/theme.toml` 默认模板写入、TOML 解析与覆盖式合并、非法配置告警与安全回退；`omega-tui` 启动时现与 keymap 一样加载主题，并将所有主要面板、输入框、状态带、消息样式和 overlay 视觉令牌统一改为消费 `omega-theme`，为后续 Markdown/高亮/统计类视觉扩展提供集中入口
 
 ### Task 15B-8: omega-tui — Markdown 渲染
 - **Status**: Pending

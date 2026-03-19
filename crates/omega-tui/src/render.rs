@@ -1,19 +1,20 @@
-use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 use ratatui::{
     layout::{Constraint, Direction, Layout},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     Frame,
 };
 
 use omega_keymap::InteractionMode;
+use omega_theme::{OmegaTheme, RenderPalette as ColorScheme};
 
 use crate::app::{App, MsgKind, Panel};
 use crate::overlay::{overlay_area, ConfirmChoice, OverlayState};
 use crate::sidebar::SidebarSection;
 
-pub fn render(frame: &mut Frame, app: &mut App, model_name: &str) {
-    let colors = ColorScheme::dark();
+pub fn render(frame: &mut Frame, app: &mut App, model_name: &str, theme: &OmegaTheme) {
+    let colors = theme.render_palette();
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -100,11 +101,11 @@ pub fn render(frame: &mut Frame, app: &mut App, model_name: &str) {
         .iter()
         .flat_map(|msg| {
             let style = match msg.kind {
-                MsgKind::User => Style::default().fg(Color::Green),
-                MsgKind::Agent => Style::default().fg(colors.text),
-                MsgKind::Tool => Style::default().fg(colors.command),
-                MsgKind::Error => Style::default().fg(Color::Red),
-                MsgKind::Separator => Style::default().fg(colors.border_dim),
+                MsgKind::User => Style::default().fg(colors.user_message),
+                MsgKind::Agent => Style::default().fg(colors.agent_message),
+                MsgKind::Tool => Style::default().fg(colors.tool_message),
+                MsgKind::Error => Style::default().fg(colors.error_message),
+                MsgKind::Separator => Style::default().fg(colors.separator_message),
             };
             wrap_text(&msg.text, resp_inner_w)
                 .into_iter()
@@ -119,7 +120,7 @@ pub fn render(frame: &mut Frame, app: &mut App, model_name: &str) {
     let output_list = List::new(output_items)
         .block(
             Block::default()
-                .border_type(BorderType::Rounded)
+                .border_type(colors.panel_border_type)
                 .title(response_title)
                 .borders(Borders::ALL)
                 .border_style(response_border),
@@ -135,7 +136,7 @@ pub fn render(frame: &mut Frame, app: &mut App, model_name: &str) {
             " Sidebar "
         };
         let sidebar_block = Block::default()
-            .border_type(BorderType::Rounded)
+            .border_type(colors.panel_border_type)
             .title(sidebar_title)
             .borders(Borders::ALL)
             .border_style(sidebar_border);
@@ -176,13 +177,13 @@ pub fn render(frame: &mut Frame, app: &mut App, model_name: &str) {
             if app.input_buffer.is_empty() {
                 spans.push(Span::styled(
                     "Press Space jk to enter insert mode",
-                    Style::default().fg(colors.hint_dim),
+                    Style::default().fg(colors.input_placeholder),
                 ));
             } else {
                 for ch in chars.iter().skip(scroll_offset).take(avail_w) {
                     spans.push(Span::styled(
                         ch.to_string(),
-                        Style::default().fg(colors.hint_dim),
+                        Style::default().fg(colors.input_placeholder),
                     ));
                 }
             }
@@ -218,7 +219,7 @@ pub fn render(frame: &mut Frame, app: &mut App, model_name: &str) {
         .style(Style::default().bg(colors.input_bg))
         .block(
             Block::default()
-                .border_type(BorderType::Rounded)
+                .border_type(colors.input_border_type)
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(input_border_color)),
         );
@@ -270,13 +271,13 @@ fn input_context_line(app: &App, sidebar_hidden: bool, colors: &ColorScheme) -> 
         Span::styled(
             " keys ",
             Style::default()
-                .fg(colors.status_label)
+                .fg(colors.context_label)
                 .bg(colors.context_bar_bg),
         ),
         Span::styled(
             hint_val,
             Style::default()
-                .fg(colors.hint_dim)
+                .fg(colors.context_hint)
                 .bg(colors.context_bar_bg),
         ),
     ])
@@ -459,7 +460,7 @@ fn render_sidebar_body(
         let todo_list = List::new(todo_items)
             .block(
                 Block::default()
-                    .border_type(BorderType::Rounded)
+                    .border_type(colors.panel_border_type)
                     .title(todo_title)
                     .borders(Borders::ALL)
                     .border_style(todo_border),
@@ -489,7 +490,7 @@ fn render_sidebar_body(
         let log_list = List::new(log_items)
             .block(
                 Block::default()
-                    .border_type(BorderType::Rounded)
+                    .border_type(colors.panel_border_type)
                     .title(logs_title)
                     .borders(Borders::ALL)
                     .border_style(logs_border),
@@ -520,46 +521,6 @@ fn wrap_text(line: &str, width: usize) -> Vec<String> {
     result
 }
 
-struct ColorScheme {
-    text: Color,
-    border_dim: Color,
-    focus_border: Color,
-    context_bar_bg: Color,
-    status_bar_bg: Color,
-    input_bg: Color,
-    input_text: Color,
-    hint_dim: Color,
-    command: Color,
-    status_label: Color,
-    bar_divider: Color,
-    mode_normal_fg: Color,
-    mode_insert_fg: Color,
-    status_idle_fg: Color,
-    status_running_fg: Color,
-}
-
-impl ColorScheme {
-    fn dark() -> Self {
-        Self {
-            text: Color::Rgb(212, 212, 212),
-            border_dim: Color::Rgb(48, 48, 48),
-            focus_border: Color::Rgb(78, 201, 176),
-            context_bar_bg: Color::Reset,
-            status_bar_bg: Color::Reset,
-            input_bg: Color::Reset,
-            input_text: Color::Rgb(86, 156, 214),
-            hint_dim: Color::Rgb(172, 179, 189),
-            command: Color::Rgb(220, 220, 170),
-            status_label: Color::Rgb(116, 126, 140),
-            bar_divider: Color::Rgb(98, 107, 120),
-            mode_normal_fg: Color::Rgb(163, 187, 214),
-            mode_insert_fg: Color::Rgb(78, 201, 176),
-            status_idle_fg: Color::Rgb(123, 199, 143),
-            status_running_fg: Color::Rgb(255, 196, 104),
-        }
-    }
-}
-
 fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorScheme) {
     let Some(overlay) = app.overlay.as_ref() else {
         app.overlay_rect = ratatui::layout::Rect::default();
@@ -570,11 +531,13 @@ fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorScheme) {
     let overlay_rect = overlay_area(full_area, overlay.size());
     app.overlay_rect = overlay_rect;
 
-    let mask = Block::default().border_type(BorderType::Rounded).style(
-        Style::default()
-            .bg(Color::Rgb(12, 12, 12))
-            .add_modifier(Modifier::DIM),
-    );
+    let mask = Block::default()
+        .border_type(colors.overlay_border_type)
+        .style(
+            Style::default()
+                .bg(colors.overlay_mask_bg)
+                .add_modifier(Modifier::DIM),
+        );
     frame.render_widget(mask, full_area);
     frame.render_widget(Clear, overlay_rect);
 
@@ -590,7 +553,7 @@ fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorScheme) {
                 ])
                 .split(overlay_rect);
             let block = Block::default()
-                .border_type(BorderType::Rounded)
+                .border_type(colors.overlay_border_type)
                 .title(" Search ")
                 .borders(Borders::ALL)
                 .border_style(
@@ -598,7 +561,7 @@ fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorScheme) {
                         .fg(colors.focus_border)
                         .add_modifier(Modifier::BOLD),
                 )
-                .style(Style::default().bg(colors.input_bg));
+                .style(Style::default().bg(colors.overlay_bg));
             frame.render_widget(block, overlay_rect);
 
             let input = Paragraph::new(Line::from(render_overlay_input(
@@ -606,7 +569,7 @@ fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorScheme) {
                 search.cursor_pos,
                 colors,
             )))
-            .style(Style::default().fg(colors.input_text).bg(colors.input_bg));
+            .style(Style::default().fg(colors.input_text).bg(colors.overlay_bg));
             frame.render_widget(input, inner[0]);
 
             let (panel, count) = app
@@ -620,14 +583,18 @@ fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorScheme) {
             };
             frame.render_widget(
                 Paragraph::new(format!(" Panel: {panel_name}"))
-                    .style(Style::default().fg(colors.text).bg(colors.input_bg)),
+                    .style(Style::default().fg(colors.text).bg(colors.overlay_bg)),
                 inner[1],
             );
             frame.render_widget(
                 Paragraph::new(format!(
                     " Matches: {count} (highlight/jump lands in Task 15B-11)"
                 ))
-                .style(Style::default().fg(colors.hint_dim).bg(colors.input_bg)),
+                .style(
+                    Style::default()
+                        .fg(colors.context_hint)
+                        .bg(colors.overlay_bg),
+                ),
                 inner[2],
             );
         }
@@ -641,7 +608,7 @@ fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorScheme) {
                 ])
                 .split(overlay_rect);
             let block = Block::default()
-                .border_type(BorderType::Rounded)
+                .border_type(colors.overlay_border_type)
                 .title(confirm.title.as_str())
                 .borders(Borders::ALL)
                 .border_style(
@@ -649,11 +616,11 @@ fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorScheme) {
                         .fg(colors.focus_border)
                         .add_modifier(Modifier::BOLD),
                 )
-                .style(Style::default().bg(colors.input_bg));
+                .style(Style::default().bg(colors.overlay_bg));
             frame.render_widget(block, overlay_rect);
             frame.render_widget(
                 Paragraph::new(confirm.message.as_str())
-                    .style(Style::default().fg(colors.text).bg(colors.input_bg)),
+                    .style(Style::default().fg(colors.text).bg(colors.overlay_bg)),
                 inner[0],
             );
             frame.render_widget(
@@ -661,20 +628,22 @@ fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorScheme) {
                     button_span(
                         confirm.selected == ConfirmChoice::Cancel,
                         &confirm.cancel_label,
+                        colors,
                     ),
                     Span::raw("  "),
                     button_span(
                         confirm.selected == ConfirmChoice::Confirm,
                         &confirm.confirm_label,
+                        colors,
                     ),
                 ]))
-                .style(Style::default().bg(colors.input_bg)),
+                .style(Style::default().bg(colors.overlay_bg)),
                 inner[2],
             );
         }
         OverlayState::Detail(detail) => {
             let block = Block::default()
-                .border_type(BorderType::Rounded)
+                .border_type(colors.overlay_border_type)
                 .title(detail.title.as_str())
                 .borders(Borders::ALL)
                 .border_style(
@@ -682,7 +651,7 @@ fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorScheme) {
                         .fg(colors.focus_border)
                         .add_modifier(Modifier::BOLD),
                 )
-                .style(Style::default().bg(colors.input_bg));
+                .style(Style::default().bg(colors.overlay_bg));
             let inner = block.inner(overlay_rect);
             frame.render_widget(block, overlay_rect);
             let items: Vec<ListItem> = detail
@@ -692,13 +661,13 @@ fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorScheme) {
                 .map(|line| ListItem::new(line.clone()))
                 .collect();
             frame.render_widget(
-                List::new(items).style(Style::default().fg(colors.text).bg(colors.input_bg)),
+                List::new(items).style(Style::default().fg(colors.text).bg(colors.overlay_bg)),
                 inner,
             );
         }
         OverlayState::Picker(picker) => {
             let block = Block::default()
-                .border_type(BorderType::Rounded)
+                .border_type(colors.overlay_border_type)
                 .title(picker.title.as_str())
                 .borders(Borders::ALL)
                 .border_style(
@@ -706,7 +675,7 @@ fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorScheme) {
                         .fg(colors.focus_border)
                         .add_modifier(Modifier::BOLD),
                 )
-                .style(Style::default().bg(colors.input_bg));
+                .style(Style::default().bg(colors.overlay_bg));
             let inner = block.inner(overlay_rect);
             frame.render_widget(block, overlay_rect);
             let items: Vec<ListItem> = picker
@@ -730,7 +699,7 @@ fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorScheme) {
                 })
                 .collect();
             frame.render_widget(
-                List::new(items).style(Style::default().bg(colors.input_bg)),
+                List::new(items).style(Style::default().bg(colors.overlay_bg)),
                 inner,
             );
         }
@@ -744,7 +713,7 @@ fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorScheme) {
                 ])
                 .split(overlay_rect);
             let block = Block::default()
-                .border_type(BorderType::Rounded)
+                .border_type(colors.overlay_border_type)
                 .title(prompt.title.as_str())
                 .borders(Borders::ALL)
                 .border_style(
@@ -752,11 +721,11 @@ fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorScheme) {
                         .fg(colors.focus_border)
                         .add_modifier(Modifier::BOLD),
                 )
-                .style(Style::default().bg(colors.input_bg));
+                .style(Style::default().bg(colors.overlay_bg));
             frame.render_widget(block, overlay_rect);
             frame.render_widget(
                 Paragraph::new(prompt.prompt.as_str())
-                    .style(Style::default().fg(colors.text).bg(colors.input_bg)),
+                    .style(Style::default().fg(colors.text).bg(colors.overlay_bg)),
                 inner[0],
             );
             frame.render_widget(
@@ -765,7 +734,7 @@ fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorScheme) {
                     prompt.cursor_pos,
                     colors,
                 )))
-                .style(Style::default().fg(colors.input_text).bg(colors.input_bg)),
+                .style(Style::default().fg(colors.input_text).bg(colors.overlay_bg)),
                 inner[1],
             );
         }
@@ -804,14 +773,14 @@ fn render_overlay_input(
     spans
 }
 
-fn button_span(selected: bool, label: &str) -> Span<'static> {
+fn button_span(selected: bool, label: &str, colors: &ColorScheme) -> Span<'static> {
     let style = if selected {
         Style::default()
-            .fg(Color::Rgb(30, 30, 30))
-            .bg(Color::Rgb(78, 201, 176))
+            .fg(colors.overlay_button_selected_fg)
+            .bg(colors.overlay_button_selected_bg)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::Rgb(212, 212, 212))
+        Style::default().fg(colors.overlay_button_fg)
     };
     Span::styled(format!("[ {label} ]"), style)
 }
@@ -833,13 +802,14 @@ fn overlay_hint_text(app: &App) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use omega_theme::OmegaTheme;
     use ratatui::{backend::TestBackend, Terminal};
 
     use crate::app::{App, Panel};
 
     use super::{
         bottom_status_line, bottom_status_text, input_context_line, input_context_text, render,
-        wrap_text, ColorScheme,
+        wrap_text,
     };
 
     #[test]
@@ -852,11 +822,12 @@ mod tests {
         let backend = TestBackend::new(120, 30);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new();
+        let theme = OmegaTheme::dark();
         app.sidebar.shell_collapsed = true;
         app.focused_panel = Panel::SidebarRail;
 
         terminal
-            .draw(|frame| render(frame, &mut app, "test-model"))
+            .draw(|frame| render(frame, &mut app, "test-model", &theme))
             .unwrap();
 
         assert_eq!(app.focused_panel, Panel::Response);
@@ -870,11 +841,12 @@ mod tests {
         let backend = TestBackend::new(120, 30);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new();
+        let theme = OmegaTheme::dark();
         app.sidebar.todos_expanded = false;
         app.sidebar.logs_expanded = true;
 
         terminal
-            .draw(|frame| render(frame, &mut app, "test-model"))
+            .draw(|frame| render(frame, &mut app, "test-model", &theme))
             .unwrap();
 
         assert_eq!(app.todo_rect.height, 0);
@@ -890,10 +862,11 @@ mod tests {
         let backend = TestBackend::new(58, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new();
+        let theme = OmegaTheme::dark();
         app.focused_panel = Panel::Todo;
 
         terminal
-            .draw(|frame| render(frame, &mut app, "test-model"))
+            .draw(|frame| render(frame, &mut app, "test-model", &theme))
             .unwrap();
 
         assert_eq!(app.focused_panel, Panel::Response);
@@ -905,9 +878,10 @@ mod tests {
         let backend = TestBackend::new(120, 30);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new();
+        let theme = OmegaTheme::dark();
 
         terminal
-            .draw(|frame| render(frame, &mut app, "test-model"))
+            .draw(|frame| render(frame, &mut app, "test-model", &theme))
             .unwrap();
 
         assert_eq!(app.response_rect.y, 0);
@@ -954,11 +928,11 @@ mod tests {
         let mut app = App::new();
         app.is_running = true;
 
-        let colors = ColorScheme::dark();
+        let colors = OmegaTheme::dark().render_palette();
         let context = input_context_line(&app, false, &colors);
         let status = bottom_status_line(&app, "test-model", &['⠋', '⠙'], &colors);
 
-        assert_eq!(context.spans[0].style.fg, Some(colors.status_label));
+        assert_eq!(context.spans[0].style.fg, Some(colors.context_label));
         assert_eq!(context.spans[0].style.bg, Some(colors.context_bar_bg));
         assert_eq!(context.spans[0].content, " keys ");
         assert_eq!(status.spans[0].style.bg, Some(colors.status_bar_bg));

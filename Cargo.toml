@@ -6,6 +6,7 @@ members = [
     "crates/omega-skills",
     "crates/omega-worktree",
     "crates/omega-keymap",
+    "crates/omega-theme",
     "crates/omega-tools",
     "crates/omega-tools-builtin",
     "crates/omega-todo",
