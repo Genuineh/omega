@@ -111,16 +111,15 @@ _将 M11 中基础级体验优化前移，确保在开发后续功能时有可�
 - **Description**: 围绕新 Todo 面板补齐真实日常使用所需的交互与联调，包括空状态文案、运行中刷新体验、窄终端退化策略验证，以及与后续搜索/统计类能力的布局兼容性检查
 - **Complexity**: M
 - **Related**: docs/specs/omega-tui-todo-sidebar-layout.md
-- **Blocks**: Task 15B-11, Task 15B-12
 - **Summary**: Todo 面板从“原始字符串列表”补齐为带状态的 UI：未同步时显示可操作引导文案，空列表时显示明确 empty state，运行中新 turn 尚未刷新 todo 时在面板标题和状态栏摘要中标记 stale；同时把 `(x/y completed)` 汇总提炼为紧凑摘要，作为未来搜索/统计能力的兼容基础；窄终端隐藏右侧栏时焦点会自动回落到 `Response`，`Tab` 不再落到不可见面板；新增相关单测并以 `cargo test -p omega-tui` 验证通过
 
 ### Task 15B-16: omega-tui — Runtime Activity 面板与状态徽章基础
 - **Status**: Pending
 - **Priority**: Medium
-- **Description**: 将当前右侧下半区从单一 Logs 语义升级为可承载 `skills/subagent/tasks/background/message/team/worktree` 等运行态能力的统一 `Activity` 面板，并为状态栏增加可扩展的紧凑徽章体系
+- **Description**: 将当前 `Todos` + `Logs` 组合升级为统一可收起的右侧 `Sidebar`，支持整体收起快捷键、顶部图标轨、section 折叠/切换，以及面向 `skills/subagent/tasks/background/message/team/worktree` 的 `Activity` 面板基础
 - **Complexity**: M
-- **Related**: docs/specs/omega-tui-runtime-experience.md
-- **Blocks**: Task 15B-11, Task 15B-12
+- **Related**: docs/specs/omega-tui-runtime-experience.md, docs/specs/omega-tui-collapsible-sidebar.md
+- **Blocks**: Task 15B-12
 
 ### ── M2: 文件工具 (s02) ── ✅
 
@@ -277,11 +276,13 @@ _基础体验已在 M1.7 完成，此处保留高级特性。_
 - **Status**: Pending
 - **Priority**: Low
 - **Description**: Ctrl+F 触发搜索模式，高亮匹配文本，n/N 跳转
+- **Blocked by**: Task 15B-13
 
 ### Task 15B-12: omega-tui — 可调面板与会话统计
 - **Status**: Pending
 - **Priority**: Low
 - **Description**: 拖拽或快捷键调整面板宽度比例；状态栏显示 token 使用量、对话轮次
+- **Blocked by**: Task 15B-13, Task 15B-16
 
 ### Task 15B-13: omega-tui — Leader 键快捷键基础设施
 - **Status**: Pending

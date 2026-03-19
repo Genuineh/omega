@@ -53,6 +53,18 @@ related_prds: []
 | `Activity` | 与运行时能力相关的可切换详情视图 | runtime secondary state |
 | status bar | 一眼可见的紧凑摘要与告警 | compact badges |
 
+## Sidebar Shell
+
+右侧区域不应继续演进为多个彼此独立的小面板，而应收敛为单一可收起的 `Sidebar` shell。`Todos` 与 `Activity` 共享同一个右侧容器；容器顶部保留稳定的图标/状态 rail，用于展示折叠 section 与未来的 Activity view 入口。
+
+对当前阶段，这意味着：
+
+- 整个右侧辅助区可以被快捷键整体收起或展开。
+- `Todos` 与 `Logs` 可以在侧边栏内部折叠为顶部图标入口。
+- 展开状态下，多个 section 在侧边栏主体区域做垂直弹性排列。
+
+具体交互与布局规则见 `docs/specs/omega-tui-collapsible-sidebar.md`。
+
 ### Core Rule
 
 不要为 `skills`、`subagent`、`background`、`team`、`message`、`worktree` 分别新增固定常驻面板。未来右侧下半区应从当前 `Logs` 的单一角色演进为可切换的 `Activity` 面板，日志只是其中一个 view。
@@ -60,8 +72,10 @@ related_prds: []
 推荐结构：
 
 - 左侧：`Response`
-- 右侧上方：`Todos`
-- 右侧下方：`Activity`，其内部可切换 `Logs / Skills / Delegations / Tasks / Background / Inbox / Team / Worktree`
+- 右侧：统一 `Sidebar`
+- `Sidebar` 顶部：section/view rail
+- `Sidebar` 主体：`Todos` + `Activity` 的一个或多个展开 section
+- `Activity` 内部可切换 `Logs / Skills / Delegations / Tasks / Background / Inbox / Team / Worktree`
 
 这样可以保持固定的空间结构，同时容纳后续运行态能力。
 
@@ -184,7 +198,7 @@ related_prds: []
 
 | Decision | Choice | Rationale |
 |---------|--------|-----------|
-| future sidebar model | `Todos` + `Activity` | 避免每个运行态能力都要求独立常驻面板 |
+| future sidebar model | collapsible `Sidebar` with `Todos` + `Activity` | 避免每个运行态能力都要求独立常驻面板，并让专注模式下可让出主空间 |
 | logs placement | fold into `Activity` | 日志仍保留，但不再垄断整个下半侧栏 |
 | status visibility | badges first | 紧凑摘要比长文本更适合持续可见 |
 | task visibility split | `Todo` vs `Tasks` 分离 | turn-local 计划与持久化任务语义不同 |
