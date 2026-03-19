@@ -9,6 +9,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use omega_core::{Agent, DynLlmClient, MinimaxClient, MinimaxConfig};
+use ratatui::widgets::ListState;
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
@@ -17,7 +18,6 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph},
     Frame, Terminal,
 };
-use ratatui::widgets::ListState;
 use tokio::runtime::Handle;
 use tracing::{error, info};
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -48,6 +48,11 @@ struct Msg {
     text: String,
 }
 
+struct AgentSlot {
+    turn_id: u64,
+    agent: Option<Agent>,
+}
+
 /// Application state for multi-panel TUI
 struct App {
     // Left panel: Agent response output (typed messages for color layering)
@@ -71,9 +76,9 @@ struct App {
     cursor_pos: usize,
     // Whether we're waiting for agent response
     is_running: bool,
-    // When true, incoming LogUpdate::ToolLog/Output are discarded until Done arrives
-    // (set by Ctrl+C interrupt while running)
-    discard_results: bool,
+    // Monotonic turn id. Every new turn or interrupt advances it so stale
+    // worker-thread updates can be ignored without blocking the next send.
+    active_turn_id: u64,
     // Spinner animation frame counter (incremented every render frame, wraps at 10)
     spinner_tick: u8,
     // Rendered (wrapped) line counts from the last frame — used by scroll_panel_down for max bounds
@@ -96,10 +101,40 @@ impl App {
             input_buffer: String::new(),
             cursor_pos: 0,
             is_running: false,
-            discard_results: false,
+            active_turn_id: 0,
             spinner_tick: 0,
             response_displayed_count: 0,
             logs_displayed_count: 0,
+        }
+    }
+
+    fn begin_turn(&mut self) -> u64 {
+        self.active_turn_id = self.active_turn_id.wrapping_add(1);
+        self.is_running = true;
+        self.active_turn_id
+    }
+
+    fn interrupt_turn(&mut self) {
+        self.active_turn_id = self.active_turn_id.wrapping_add(1);
+        self.is_running = false;
+    }
+
+    fn is_current_turn(&self, turn_id: u64) -> bool {
+        self.active_turn_id == turn_id
+    }
+
+    fn apply_log_update(&mut self, update: LogUpdate) {
+        match update {
+            LogUpdate::ToolLog { turn_id, log } if self.is_current_turn(turn_id) => {
+                self.push_msg(MsgKind::Tool, &log);
+            }
+            LogUpdate::Output { turn_id, text } if self.is_current_turn(turn_id) => {
+                self.push_msg(MsgKind::Agent, &text);
+            }
+            LogUpdate::Done { turn_id } if self.is_current_turn(turn_id) => {
+                self.is_running = false;
+            }
+            _ => {}
         }
     }
 
@@ -113,11 +148,17 @@ impl App {
     fn push_msg(&mut self, kind: MsgKind, text: &str) {
         let clean = strip_ansi(text);
         for line in clean.lines() {
-            self.output_msgs.push(Msg { kind, text: line.to_string() });
+            self.output_msgs.push(Msg {
+                kind,
+                text: line.to_string(),
+            });
         }
         // For empty text, push a blank line so callers don't need to special-case.
         if clean.is_empty() {
-            self.output_msgs.push(Msg { kind, text: String::new() });
+            self.output_msgs.push(Msg {
+                kind,
+                text: String::new(),
+            });
         }
     }
 
@@ -126,24 +167,21 @@ impl App {
         match panel {
             Panel::Response => {
                 self.response_pinned = true;
-                let current = self.response_state
-                    .selected()
-                    .unwrap_or_else(|| {
-                        self.response_displayed_count
-                            .max(self.output_msgs.len())
-                            .saturating_sub(1)
-                    });
-                self.response_state.select(Some(current.saturating_sub(amount)));
+                let current = self.response_state.selected().unwrap_or_else(|| {
+                    self.response_displayed_count
+                        .max(self.output_msgs.len())
+                        .saturating_sub(1)
+                });
+                self.response_state
+                    .select(Some(current.saturating_sub(amount)));
             }
             Panel::Logs => {
                 self.logs_pinned = true;
-                let current = self.logs_state
-                    .selected()
-                    .unwrap_or_else(|| {
-                        self.logs_displayed_count
-                            .max(self.log_lines.len())
-                            .saturating_sub(1)
-                    });
+                let current = self.logs_state.selected().unwrap_or_else(|| {
+                    self.logs_displayed_count
+                        .max(self.log_lines.len())
+                        .saturating_sub(1)
+                });
                 self.logs_state.select(Some(current.saturating_sub(amount)));
             }
         }
@@ -155,7 +193,8 @@ impl App {
         match panel {
             Panel::Response => {
                 // Use the rendered (wrapped) count from last frame; fall back to source len.
-                let last = self.response_displayed_count
+                let last = self
+                    .response_displayed_count
                     .max(self.output_msgs.len())
                     .saturating_sub(1);
                 let current = self.response_state.selected().unwrap_or(last);
@@ -166,7 +205,8 @@ impl App {
                 }
             }
             Panel::Logs => {
-                let last = self.logs_displayed_count
+                let last = self
+                    .logs_displayed_count
                     .max(self.log_lines.len())
                     .saturating_sub(1);
                 let current = self.logs_state.selected().unwrap_or(last);
@@ -226,10 +266,21 @@ impl App {
         }
     }
 
-    fn move_cursor_left(&mut self)  { self.cursor_pos = self.cursor_pos.saturating_sub(1); }
-    fn move_cursor_right(&mut self) { let m = self.char_count(); if self.cursor_pos < m { self.cursor_pos += 1; } }
-    fn move_cursor_home(&mut self)  { self.cursor_pos = 0; }
-    fn move_cursor_end(&mut self)   { self.cursor_pos = self.char_count(); }
+    fn move_cursor_left(&mut self) {
+        self.cursor_pos = self.cursor_pos.saturating_sub(1);
+    }
+    fn move_cursor_right(&mut self) {
+        let m = self.char_count();
+        if self.cursor_pos < m {
+            self.cursor_pos += 1;
+        }
+    }
+    fn move_cursor_home(&mut self) {
+        self.cursor_pos = 0;
+    }
+    fn move_cursor_end(&mut self) {
+        self.cursor_pos = self.char_count();
+    }
 
     /// Take the current input, clear the buffer, and reset the cursor. Used on Enter.
     fn take_input(&mut self) -> String {
@@ -242,9 +293,9 @@ impl App {
 
 /// Log update message from agent thread
 enum LogUpdate {
-    ToolLog(String),
-    Output(String),
-    Done,
+    ToolLog { turn_id: u64, log: String },
+    Output { turn_id: u64, text: String },
+    Done { turn_id: u64 },
 }
 
 /// Custom writer that sends log lines to the UI channel for the Logs panel.
@@ -275,8 +326,8 @@ impl Write for UiWriter {
 /// 2. File layer: JSON format → `~/.omega/logs/omega-YYYY-MM-DD.jsonl`
 /// 3. UI layer: sends compact lines to the Logs panel
 fn init_tracing(tx: Mutex<Option<mpsc::SyncSender<String>>>) -> anyhow::Result<()> {
-    let env_filter = EnvFilter::try_from_env("OMEGA_LOG")
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let env_filter =
+        EnvFilter::try_from_env("OMEGA_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
 
     // UI layer: sends compact lines to the Logs panel (ANSI disabled — UiWriter is not a TTY)
     let ui_layer = tracing_subscriber::fmt::layer()
@@ -358,7 +409,9 @@ fn strip_ansi(s: &str) -> String {
                 while i < bytes.len() && !bytes[i].is_ascii_alphabetic() {
                     i += 1;
                 }
-                if i < bytes.len() { i += 1; }
+                if i < bytes.len() {
+                    i += 1;
+                }
             } else if i + 1 < bytes.len() && bytes[i + 1] == b']' {
                 // OSC sequence: ESC ] ... BEL (0x07) or ESC \
                 i += 2;
@@ -414,21 +467,21 @@ fn render(frame: &mut Frame, app: &mut App, model_name: &str) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),  // Status bar (no border, color separates)
-            Constraint::Min(0),     // Main content area
-            Constraint::Length(3),  // Input area
-            Constraint::Length(1),  // Hint bar
+            Constraint::Length(1), // Status bar (no border, color separates)
+            Constraint::Min(0),    // Main content area
+            Constraint::Length(3), // Input area
+            Constraint::Length(1), // Hint bar
         ])
         .split(frame.area());
 
     // Responsive horizontal split: shrink or hide Logs panel on narrow terminals
     let term_width = frame.area().width;
     let (resp_pct, logs_pct): (u16, u16) = if term_width < 60 {
-        (100, 0)   // very narrow: full-width Response, Logs hidden
+        (100, 0) // very narrow: full-width Response, Logs hidden
     } else if term_width < 100 {
-        (70, 30)   // narrow: shrink Logs to 30 %
+        (70, 30) // narrow: shrink Logs to 30 %
     } else {
-        (60, 40)   // normal: 60 / 40 split
+        (60, 40) // normal: 60 / 40 split
     };
 
     // Split main content into left (output) and right (logs)
@@ -451,7 +504,7 @@ fn render(frame: &mut Frame, app: &mut App, model_name: &str) {
     };
     const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
     let spinner_char = SPINNER_FRAMES[(app.spinner_tick as usize / 2) % SPINNER_FRAMES.len()];
-    let agent_state_str;  // storage for the formatted string below
+    let agent_state_str; // storage for the formatted string below
     let agent_state = if app.is_running {
         agent_state_str = format!("{spinner_char} Running…");
         agent_state_str.as_str()
@@ -462,18 +515,22 @@ fn render(frame: &mut Frame, app: &mut App, model_name: &str) {
         " Omega Agent │ {} │ {} │ Focus: {} ",
         model_name, agent_state, focus_label
     );
-    let status = Paragraph::new(status_text)
-        .style(Style::default().fg(colors.text).bg(colors.status_bar));
+    let status =
+        Paragraph::new(status_text).style(Style::default().fg(colors.text).bg(colors.status_bar));
     frame.render_widget(status, chunks[0]);
 
     // ── Panel border styles based on focus ──
     let response_border = if app.focused_panel == Panel::Response {
-        Style::default().fg(colors.focus_border).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(colors.focus_border)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(colors.border_dim)
     };
     let logs_border = if app.focused_panel == Panel::Logs {
-        Style::default().fg(colors.focus_border).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(colors.focus_border)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(colors.border_dim)
     };
@@ -491,10 +548,10 @@ fn render(frame: &mut Frame, app: &mut App, model_name: &str) {
         .iter()
         .flat_map(|msg| {
             let style = match msg.kind {
-                MsgKind::User      => Style::default().fg(Color::Green),
-                MsgKind::Agent     => Style::default().fg(colors.text),
-                MsgKind::Tool      => Style::default().fg(colors.command),
-                MsgKind::Error     => Style::default().fg(Color::Red),
+                MsgKind::User => Style::default().fg(Color::Green),
+                MsgKind::Agent => Style::default().fg(colors.text),
+                MsgKind::Tool => Style::default().fg(colors.command),
+                MsgKind::Error => Style::default().fg(Color::Red),
                 MsgKind::Separator => Style::default().fg(colors.border_dim),
             };
             wrap_text(&msg.text, resp_inner_w)
@@ -509,10 +566,12 @@ fn render(frame: &mut Frame, app: &mut App, model_name: &str) {
         app.response_state.select(Some(resp_total - 1));
     }
     let output_list = List::new(output_items)
-        .block(Block::default()
-            .title(response_title)
-            .borders(Borders::ALL)
-            .border_style(response_border))
+        .block(
+            Block::default()
+                .title(response_title)
+                .borders(Borders::ALL)
+                .border_style(response_border),
+        )
         .highlight_style(Style::default())
         .style(Style::default().fg(colors.text));
     frame.render_stateful_widget(output_list, main_chunks[0], &mut app.response_state);
@@ -528,11 +587,7 @@ fn render(frame: &mut Frame, app: &mut App, model_name: &str) {
     let log_items: Vec<ListItem> = app
         .log_lines
         .iter()
-        .flat_map(|line| {
-            wrap_text(line, logs_inner_w)
-                .into_iter()
-                .map(ListItem::new)
-        })
+        .flat_map(|line| wrap_text(line, logs_inner_w).into_iter().map(ListItem::new))
         .collect();
     // Update rendered count and auto-scroll to bottom when not pinned
     let logs_total = log_items.len();
@@ -541,10 +596,12 @@ fn render(frame: &mut Frame, app: &mut App, model_name: &str) {
         app.logs_state.select(Some(logs_total - 1));
     }
     let log_list = List::new(log_items)
-        .block(Block::default()
-            .title(logs_title)
-            .borders(Borders::ALL)
-            .border_style(logs_border))
+        .block(
+            Block::default()
+                .title(logs_title)
+                .borders(Borders::ALL)
+                .border_style(logs_border),
+        )
         .highlight_style(Style::default())
         .style(Style::default().fg(colors.text));
     if main_chunks[1].width > 0 {
@@ -561,10 +618,18 @@ fn render(frame: &mut Frame, app: &mut App, model_name: &str) {
     let avail_w = (chunks[2].width as usize).saturating_sub(5).max(1);
 
     // Horizontal scroll: keep cursor always inside the visible window.
-    let scroll_offset = if cursor_pos < avail_w { 0 } else { cursor_pos - avail_w + 1 };
+    let scroll_offset = if cursor_pos < avail_w {
+        0
+    } else {
+        cursor_pos - avail_w + 1
+    };
 
     // ◂>  prefix signals hidden text to the left; normal " > " otherwise.
-    let prefix = if scroll_offset > 0 { "\u{25c2}> " } else { " > " };
+    let prefix = if scroll_offset > 0 {
+        "\u{25c2}> "
+    } else {
+        " > "
+    };
     let prefix_span = Span::styled(prefix, Style::default().fg(colors.input_text));
 
     let mut spans: Vec<Span> = vec![prefix_span];
@@ -591,19 +656,25 @@ fn render(frame: &mut Frame, app: &mut App, model_name: &str) {
     }
 
     // Show running state in the block title to avoid obscuring the cursor.
-    let input_title = if app.is_running { " Input [Running…] " } else { " Input " };
+    let input_title = if app.is_running {
+        " Input [Running…] "
+    } else {
+        " Input "
+    };
     let input = Paragraph::new(Line::from(spans))
         .style(Style::default().bg(colors.input_bg))
-        .block(Block::default()
-            .title(input_title)
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(colors.border)));
+        .block(
+            Block::default()
+                .title(input_title)
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(colors.border)),
+        );
     frame.render_widget(input, chunks[2]);
 
     // ── Hint Bar ──
     let hint_text = " Tab=Focus  ↑↓=Scroll  ←→=Cursor  Del=Delete  Ctrl+C=Interrupt  Ctrl+Q=Quit";
-    let hint = Paragraph::new(hint_text)
-        .style(Style::default().fg(colors.hint_dim).bg(colors.status_bar));
+    let hint =
+        Paragraph::new(hint_text).style(Style::default().fg(colors.hint_dim).bg(colors.status_bar));
     frame.render_widget(hint, chunks[3]);
 }
 
@@ -628,10 +699,10 @@ struct ColorScheme {
 impl ColorScheme {
     fn dark() -> Self {
         Self {
-            bg: Color::Rgb(30, 30, 30),           // #1e1e1e
-            text: Color::Rgb(212, 212, 212),      // #d4d4d4
-            border: Color::Rgb(62, 62, 62),       // #3e3e3e
-            border_dim: Color::Rgb(48, 48, 48),   // #303030 — unfocused panels
+            bg: Color::Rgb(30, 30, 30),             // #1e1e1e
+            text: Color::Rgb(212, 212, 212),        // #d4d4d4
+            border: Color::Rgb(62, 62, 62),         // #3e3e3e
+            border_dim: Color::Rgb(48, 48, 48),     // #303030 — unfocused panels
             focus_border: Color::Rgb(78, 201, 176), // #4ec9b0 — focused panel
             status_bar: Color::Rgb(45, 45, 45),
             input_bg: Color::Rgb(40, 40, 40),
@@ -655,7 +726,8 @@ async fn main() -> anyhow::Result<()> {
     let model_name = config.model.clone();
     info!(model = %model_name, base_url = %config.base_url, "llm config loaded");
 
-    let client: DynLlmClient = Arc::new(MinimaxClient::new(config).map_err(|e| anyhow::anyhow!("{e}"))?);
+    let client: DynLlmClient =
+        Arc::new(MinimaxClient::new(config).map_err(|e| anyhow::anyhow!("{e}"))?);
 
     let cwd = std::env::current_dir()?;
     let dispatcher = omega_core::create_default_tools(cwd.clone());
@@ -666,7 +738,20 @@ async fn main() -> anyhow::Result<()> {
         cwd.display()
     );
 
-    let agent = Arc::new(Mutex::new(Some(Agent::new(client, system, dispatcher)?)));
+    let agent = Arc::new(Mutex::new(AgentSlot {
+        turn_id: 0,
+        agent: Some(Agent::new(client.clone(), system.clone(), dispatcher)?),
+    }));
+    let turn_checkpoint = Arc::new(Mutex::new(
+        agent
+            .lock()
+            .unwrap()
+            .agent
+            .as_ref()
+            .unwrap()
+            .messages()
+            .to_vec(),
+    ));
 
     // Initialize terminal
     enable_raw_mode()?;
@@ -680,31 +765,13 @@ async fn main() -> anyhow::Result<()> {
     // Channel for sending log updates from agent thread
     let (tx, rx) = mpsc::channel::<LogUpdate>();
 
-    // Track if agent is currently running
-    let agent_running = Arc::new(Mutex::new(false));
-
     // Main event loop
     loop {
         // Process agent events (max 20 per frame to keep UI responsive)
         for _ in 0..20 {
             if let Ok(update) = rx.try_recv() {
                 let mut app = app.lock().unwrap();
-                match update {
-                    LogUpdate::ToolLog(log) => {
-                        if !app.discard_results {
-                            app.push_msg(MsgKind::Tool, &log);
-                        }
-                    }
-                    LogUpdate::Output(text) => {
-                        if !app.discard_results {
-                            app.push_msg(MsgKind::Agent, &text);
-                        }
-                    }
-                    LogUpdate::Done => {
-                        app.is_running = false;
-                        app.discard_results = false;
-                    }
-                }
+                app.apply_log_update(update);
             } else {
                 break;
             }
@@ -737,7 +804,9 @@ async fn main() -> anyhow::Result<()> {
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     match key.code {
-                        KeyCode::Char(c) if key.modifiers == crossterm::event::KeyModifiers::CONTROL => {
+                        KeyCode::Char(c)
+                            if key.modifiers == crossterm::event::KeyModifiers::CONTROL =>
+                        {
                             match c {
                                 'q' => {
                                     info!("user exit via Ctrl+Q");
@@ -746,11 +815,24 @@ async fn main() -> anyhow::Result<()> {
                                 'c' => {
                                     let mut app = app.lock().unwrap();
                                     if app.is_running {
-                                        // Soft-interrupt: discard pending results, unlock UI
-                                        app.is_running = false;
-                                        app.discard_results = true;
+                                        // Interrupt immediately by invalidating the current
+                                        // turn id and restoring a fresh agent from the last
+                                        // checkpoint before the interrupted user turn.
+                                        app.interrupt_turn();
                                         app.push_msg(MsgKind::Error, "⚠ Interrupted");
                                         info!("user interrupted running task via Ctrl+C");
+
+                                        let checkpoint = turn_checkpoint.lock().unwrap().clone();
+                                        let turn_id = app.active_turn_id;
+                                        let mut replacement = Agent::new(
+                                            client.clone(),
+                                            system.clone(),
+                                            omega_core::create_default_tools(cwd.clone()),
+                                        )?;
+                                        replacement.set_messages(checkpoint);
+                                        let mut slot = agent.lock().unwrap();
+                                        slot.turn_id = turn_id;
+                                        slot.agent = Some(replacement);
                                     }
                                     // Ctrl+C when idle is a no-op (use Ctrl+Q to quit)
                                 }
@@ -775,11 +857,21 @@ async fn main() -> anyhow::Result<()> {
                             let panel = app.focused_panel;
                             app.scroll_panel_down(panel, 3);
                         }
-                        KeyCode::Left  => { app.lock().unwrap().move_cursor_left(); }
-                        KeyCode::Right => { app.lock().unwrap().move_cursor_right(); }
-                        KeyCode::Home  => { app.lock().unwrap().move_cursor_home(); }
-                        KeyCode::End   => { app.lock().unwrap().move_cursor_end(); }
-                        KeyCode::Delete => { app.lock().unwrap().delete_char_at(); }
+                        KeyCode::Left => {
+                            app.lock().unwrap().move_cursor_left();
+                        }
+                        KeyCode::Right => {
+                            app.lock().unwrap().move_cursor_right();
+                        }
+                        KeyCode::Home => {
+                            app.lock().unwrap().move_cursor_home();
+                        }
+                        KeyCode::End => {
+                            app.lock().unwrap().move_cursor_end();
+                        }
+                        KeyCode::Delete => {
+                            app.lock().unwrap().delete_char_at();
+                        }
                         KeyCode::Char(c) => {
                             app.lock().unwrap().insert_char(c);
                         }
@@ -787,6 +879,19 @@ async fn main() -> anyhow::Result<()> {
                             app.lock().unwrap().delete_char_before();
                         }
                         KeyCode::Enter => {
+                            // Peek agent availability BEFORE consuming input, so
+                            // we never lose the user's text when the background
+                            // thread from an interrupted turn hasn't finished yet.
+                            let agent_ready = agent.lock().unwrap().agent.is_some();
+                            let still_running = app.lock().unwrap().is_running;
+                            if !agent_ready || still_running {
+                                app.lock().unwrap().push_msg(
+                                    MsgKind::Error,
+                                    "⚠ Previous turn still finishing — please wait…",
+                                );
+                                continue;
+                            }
+
                             let input = {
                                 let mut app = app.lock().unwrap();
                                 app.take_input()
@@ -798,25 +903,38 @@ async fn main() -> anyhow::Result<()> {
                             }
 
                             if !input.is_empty() {
-                                // Add separator + user message, then mark as running
-                                {
+                                let turn_id = {
+                                    let current_messages = agent
+                                        .lock()
+                                        .unwrap()
+                                        .agent
+                                        .as_ref()
+                                        .map(|agent| agent.messages().to_vec())
+                                        .unwrap_or_default();
+                                    *turn_checkpoint.lock().unwrap() = current_messages;
+
                                     let mut app = app.lock().unwrap();
                                     if !app.output_msgs.is_empty() {
                                         app.push_msg(MsgKind::Separator, &"─".repeat(40));
                                     }
                                     app.push_msg(MsgKind::User, &format!("> {}", input));
-                                    app.is_running = true;
+                                    app.begin_turn()
+                                };
+
+                                {
+                                    let mut slot = agent.lock().unwrap();
+                                    slot.turn_id = turn_id;
                                 }
 
-                                // Take agent out of the Arc<Mutex<Option<Agent>>>.
+                                // Take agent out of the shared slot.
                                 // We pass the Arc itself into the thread so the agent
                                 // can be put back when the turn completes, enabling
                                 // subsequent turns to work correctly.
                                 let agent_slot = agent.clone();
-                                let mut agent_val = match agent.lock().unwrap().take() {
+                                let mut agent_val = match agent.lock().unwrap().agent.take() {
                                     Some(a) => a,
                                     None => {
-                                        // Should not happen, but if it does reset UI state
+                                        // agent_ready check above should prevent this
                                         app.lock().unwrap().is_running = false;
                                         continue;
                                     }
@@ -825,52 +943,61 @@ async fn main() -> anyhow::Result<()> {
                                 // Two separate tx clones: one for the callback, one for results/done
                                 let tx_callback = tx.clone();
                                 let tx_result = tx.clone();
-                                let agent_running_clone = agent_running.clone();
-
                                 // Capture the tokio Handle from the current async context,
                                 // then run the future in a plain thread using block_on.
                                 let handle = Handle::current();
                                 thread::spawn(move || {
-                                    *agent_running_clone.lock().unwrap() = true;
-
                                     // Add user message
                                     agent_val.add_user_message(&input);
 
                                     // Run the async future using the captured handle
-                                    let result = handle.block_on(agent_val.run_loop_with(move |name, tool_input, output| {
-                                        if name == "bash" {
-                                            if let Some(cmd) = tool_input["command"].as_str() {
-                                                let log = format!("$ {}", cmd);
-                                                let _ = tx_callback.send(LogUpdate::ToolLog(log));
+                                    let result = handle.block_on(agent_val.run_loop_with(
+                                        move |name, tool_input, output| {
+                                            if name == "bash" {
+                                                if let Some(cmd) = tool_input["command"].as_str() {
+                                                    let log = format!("$ {}", cmd);
+                                                    let _ = tx_callback
+                                                        .send(LogUpdate::ToolLog { turn_id, log });
+                                                }
                                             }
-                                        }
-                                        // Send tool output
-                                        let preview = if output.len() > 100 {
-                                            format!("{}...", &output[..100])
-                                        } else {
-                                            output.to_string()
-                                        };
-                                        let _ = tx_callback.send(LogUpdate::ToolLog(preview));
-                                    }));
-
-                                    *agent_running_clone.lock().unwrap() = false;
+                                            // Send tool output
+                                            let preview = if output.len() > 100 {
+                                                format!("{}...", &output[..100])
+                                            } else {
+                                                output.to_string()
+                                            };
+                                            let _ = tx_callback.send(LogUpdate::ToolLog {
+                                                turn_id,
+                                                log: preview,
+                                            });
+                                        },
+                                    ));
 
                                     match result {
                                         Ok(text) => {
                                             if !text.is_empty() {
-                                                let _ = tx_result.send(LogUpdate::Output(text));
+                                                let _ = tx_result
+                                                    .send(LogUpdate::Output { turn_id, text });
                                             }
                                         }
                                         Err(e) => {
                                             error!(error = %e, "agent loop error");
-                                            let _ = tx_result.send(LogUpdate::Output(format!("Error: {e}")));
+                                            let _ = tx_result.send(LogUpdate::Output {
+                                                turn_id,
+                                                text: format!("Error: {e}"),
+                                            });
                                         }
                                     }
 
-                                    // Put the agent back so the next turn can use it
-                                    *agent_slot.lock().unwrap() = Some(agent_val);
+                                    // Only restore the agent if this worker still belongs to the
+                                    // active turn. Interrupted/stale workers must never overwrite
+                                    // the fresh checkpoint-restored agent or a newer running turn.
+                                    let mut slot = agent_slot.lock().unwrap();
+                                    if slot.turn_id == turn_id {
+                                        slot.agent = Some(agent_val);
+                                    }
 
-                                    let _ = tx_result.send(LogUpdate::Done);
+                                    let _ = tx_result.send(LogUpdate::Done { turn_id });
                                 });
                             }
                         }
@@ -911,4 +1038,44 @@ async fn main() -> anyhow::Result<()> {
 
     info!("omega exiting");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn interrupt_turn_invalidates_old_updates() {
+        let mut app = App::new();
+        let turn_id = app.begin_turn();
+        app.interrupt_turn();
+
+        app.apply_log_update(LogUpdate::Output {
+            turn_id,
+            text: "stale".to_string(),
+        });
+        app.apply_log_update(LogUpdate::Done { turn_id });
+
+        assert!(app.output_msgs.is_empty());
+        assert!(!app.is_running);
+    }
+
+    #[test]
+    fn current_turn_updates_are_applied() {
+        let mut app = App::new();
+        let turn_id = app.begin_turn();
+
+        app.apply_log_update(LogUpdate::ToolLog {
+            turn_id,
+            log: "$ echo hi".to_string(),
+        });
+        app.apply_log_update(LogUpdate::Output {
+            turn_id,
+            text: "hello".to_string(),
+        });
+        app.apply_log_update(LogUpdate::Done { turn_id });
+
+        assert_eq!(app.output_msgs.len(), 2);
+        assert!(!app.is_running);
+    }
 }

@@ -153,10 +153,7 @@ mod tests {
         }
 
         fn execute(&self, input: Value) -> Result<String> {
-            let text = input["text"]
-                .as_str()
-                .unwrap_or("(no text)")
-                .to_string();
+            let text = input["text"].as_str().unwrap_or("(no text)").to_string();
             Ok(text)
         }
     }

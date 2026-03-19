@@ -2,7 +2,7 @@
 status: active
 owner: omega-team
 created: 2026-03-18
-updated: 2026-03-18
+updated: 2026-03-19
 version: 1.0
 related_prds: []
 ---
@@ -28,7 +28,7 @@ Omega 是一个用 Rust + ratatui 实现的 AI Agent，完整复刻 learn-claude
 
 ## Architecture
 
-### Crate 结构
+### Crate 结构（当前实现，Task 15C 前）
 
 ```
 omega/
@@ -72,16 +72,22 @@ omega-core        <- omega-client + omega-tools + omega-todo + omega-subagent
 omega-tui         <- omega-core
 ```
 
+> 交互层重构说明：当前实现仍由 `omega-tui` 同时承载 TUI 逻辑与历史最小 REPL。计划中的目标边界见 [docs/specs/omega-interaction-layer-refactor.md](docs/specs/omega-interaction-layer-refactor.md)：`omega-tui` 收敛为库，`omega-repl` 在 `Task 15C` 中新增并独立承接行式 REPL。
+
 ### 数据流
 
-```
-User Input -> omega-tui -> omega-core -> omega-client -> LLM API
-                                            ↓
-                                      omega-tools
-                                            ↓
-                                      执行工具返回结果
-                                            ↓
-                                      循环直到 stop_reason != "tool_use"
+```text
+Current: User Input -> omega-tui -> omega-core -> omega-client -> LLM API
+                                ↓
+                            omega-tools
+                                ↓
+                            执行工具返回结果
+                                ↓
+                            循环直到 stop_reason != "tool_use"
+
+Target (after Task 15C):
+REPL Input -> omega-repl -> omega-core -> omega-client -> LLM API
+TUI Events -> omega-tui  -> omega-core -> omega-client -> LLM API
 ```
 
 ## API Specification
@@ -328,7 +334,7 @@ pub enum TaskStatus {
 | s10 | s10_team_protocols.py | omega-team | 团队协议 |
 | s11 | s11_autonomous_agents.py | omega-team | 自治智能体 |
 | s12 | s12_worktree_*.py | omega-worktree | Worktree 隔离 |
-| full | s_full.py | omega-core + omega-tui | 完整整合 |
+| full | s_full.py | omega-core + omega-tui | 完整整合（Task 15C 后交互层拆分为 omega-tui + omega-repl） |
 
 ## Security Considerations
 
@@ -367,4 +373,4 @@ pub enum TaskStatus {
 12. **Task 12**: omega-background - 后台任务
 13. **Task 13**: omega-team - 团队协作
 14. **Task 14**: omega-core - 核心 Agent
-15. **Task 15**: omega-tui - TUI 界面
+15. **Task 15**: 交互层（当前为 omega-tui；Task 15C 后拆分为 omega-tui + omega-repl）

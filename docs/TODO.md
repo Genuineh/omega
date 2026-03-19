@@ -2,71 +2,35 @@
 
 ## Current Priorities
 
-_按可运行里程碑排序。每个里程碑完成后可 `cargo run` 验证效果。_
+_按当前仓库真实主路径重排。判断依据：`cargo test` 全工作区通过；s02 文件工具与 s03 todo 管理已完成；`omega-subagent`、`omega-skills`、`omega-message` 等后续 crate 仍基本处于 stub 状态；高级 TUI 功能已被 `Task 15C` 的交互层边界问题明确阻塞。_
 
 _任务编号以 `docs/specs/omega-agent-impl-plan.md` 为准；为支持可运行里程碑拆分，`TODO` 中允许使用 `8A/8B`、`15A/15B` 这类子任务后缀。未出现在实现计划中的仓库治理事项，会明确标记为“非计划项”。_
 
----
+### High
 
-## Current Priorities
+- **Task 15C**: 先完成交互层重构，把 `omega-tui` 从继续膨胀的 `main.rs` 中收口，并引入独立的 `omega-repl`；这是继续推进高级 TUI 的前置条件。
+- **Task 5**: `omega-skills` 现在应前移到高优先级。仓库工作流本身强依赖 skill 加载，缺失这一层会限制 Agent 在真实仓库任务中的可用性。
+- **Task 10**: `omega-subagent` 维持高优先级，作为后续 team/background/worktree 能力的直接基础。
 
-### ── M1.5: 可观察性与日志系统 ──
+### Medium
 
-> 验证方式：`OMEGA_LOG=debug cargo run -p omega-tui` → TUI Logs 面板实时显示日志 + `~/.omega/logs/` 出现 JSONL 文件
-> 对标：生产级可观察性基础设施
-> PRD: docs/prds/observability-logging.md | ADR: docs/decisions/005-tracing-observability.md
+- **Task 11**: 在多轮对话和后续 agent 能力继续增长前补上上下文压缩，避免先扩功能、再补 token 控制。
+- **Task 4**: `omega-tasks` 作为持久化任务层，价值明确，但不应先于 skills/subagent。
+- **Task 12**: `omega-background` 排在任务系统附近，属于把 Agent 从同步单轮执行推进到更实用执行模型的下一步。
+- **Task 3**: `omega-message` 仍重要，但它真正释放价值要等到 subagent 与 team 机制接入，因此不再放在最前。
+- **Task 13**: `omega-team` 保持中优先级，但应建立在 `omega-subagent` 与 `omega-message` 之上推进。
 
-### Task O1: omega-tui — 初始化 tracing subscriber
-- **Status**: Completed
-- **Completed**: 2026-03-18
-- **Priority**: High
-- **Description**: 配置 tracing-subscriber registry：终端层 (compact + EnvFilter via OMEGA_LOG) + 文件层 (JSON → ~/.omega/logs/)，移除裸 eprintln
-- **Summary**: 双层 subscriber（UI 面板 compact + JSONL 文件）、OMEGA_LOG 控制级别、OMEGA_LOG_DIR/OMEGA_LOG_FILE 控制文件输出、chrono 日期轮转文件名、mpsc::sync_channel + 自定义 MakeWriter 路由日志到 TUI Logs 面板、每帧最多 20 条防止 UI 卡顿、ratatui ListState 双面板滚动支持（Tab 切换焦点、↑↓ 滚动、鼠标滚轮）、Ctrl+C 退出、workspace 零警告、74 项测试全通过
-- **Related**: docs/prds/observability-logging.md
+### Low
 
-### Task O2: omega-client — LLM 调用追踪
-- **Status**: Completed
-- **Completed**: 2026-03-18
-- **Priority**: High
-- **Description**: MinimaxClient::chat() 添加 llm_call span，记录 model/max_tokens/token_usage/stop_reason/duration_ms，TRACE 级记录原始 JSON
-- **Summary**: 使用 #[instrument] 宏添加 llm_call span，通过 fields 记录 model/max_tokens/provider/duration_ms/input_tokens/output_tokens/stop_reason，trace! 记录原始 request JSON，debug! 记录 response JSON，Span::current().record() 在返回前填充动态字段，29 项测试全通过，clippy 零警告
-- **Related**: docs/prds/observability-logging.md
-
-### Task O3: omega-tools — 工具执行追踪
-- **Status**: Completed
-- **Completed**: 2026-03-18
-- **Priority**: High
-- **Description**: ToolDispatcher::dispatch() 添加 tool_exec span，记录 tool_name/duration_ms/success
-- **Summary**: 使用 #[instrument] 宏添加 tool_exec span，通过 fields 记录 tool_name/duration_ms/success，Span::current().record() 在返回前填充动态字段，12 项测试全通过，clippy 零警告
-- **Related**: docs/prds/observability-logging.md
-
-### Task O4: omega-tools-builtin — BashHandler 追踪
-- **Status**: Completed
-- **Completed**: 2026-03-18
-- **Priority**: High
-- **Description**: BashHandler::execute() 添加结构化日志，命令 info、安全拦截 warn、超时 error、输出截断 debug
-- **Summary**: 命令执行使用 info!(bash.command)、安全拦截使用 warn!(bash.blocked_reason)、超时使用 error!(bash.timeout_seconds)、输出截断使用 debug!(bash.output_truncated)，21 项测试全通过，clippy 零警告
-- **Related**: docs/prds/observability-logging.md
-
-### Task O5: omega-core — Agent Loop 追踪
-- **Status**: Completed
-- **Completed**: 2026-03-18
-- **Priority**: High
-- **Description**: run_loop_with 中创建 session span (uuid) + 每次迭代 agent_loop span，记录 iteration/message_count/stop_reason
-- **Summary**: session_id (uuid) 在外层 span 记录，每次迭代创建 agent_loop 子 span 记录 iteration/message_count，stop_reason 在返回时记录，info! 记录 started/completed 事件，error! 记录超过最大迭代次数，12 项测试全通过，clippy 零警告
-- **Related**: docs/prds/observability-logging.md
-
-### Task O6: 验证与文档
-- **Status**: Completed
-- **Completed**: 2026-03-18
-- **Priority**: High
-- **Description**: 端到端验证日志输出，更新开发指南中的日志使用说明
-- **Summary**: 74 项测试全通过（omega-client 29 + omega-core 12 + omega-tools 12 + omega-tools-builtin 21），无 println/eprintln 残留（REPL 交互输出除外），更新开发指南添加日志系统使用说明（环境变量、日志级别、Span 结构、代码示例）
-- **Related**: docs/prds/observability-logging.md
+- **Task 6**: `omega-worktree` 对后期自治执行很重要，但当前尚未到隔离执行成为主瓶颈的阶段。
+- **Task 15B-8 ~ 15B-13**: 高级 TUI 能力整体后移；在 `Task 15C` 完成前，继续堆功能会放大结构债务。
+- **Task 16**: 最终整合测试保留为收尾任务，不应提前占用主线优先级。
 
 ---
 
-## Backlog
+## Detailed Tasks
+
+_以下保留详细里程碑与历史记录；待办项的 `Priority` 字段已按上面的新顺序同步更新。_
 
 ### ── M1.7: TUI 基础美化 ──
 
@@ -132,15 +96,17 @@ _将 M11 中基础级体验优化前移，确保在开发后续功能时有可�
 - **Complexity**: S
 - **Summary**: App 新增 spinner_tick: u8 字段；主循环每帧递增（wrapping_add(1)）；render() 中用 SPINNER_FRAMES[tick/2 % 10] 选取当前帧字符，is_running 时状态栏显示 "⠋ Running…" 动画，否则保持 "● Idle"；每帧约 50 ms，tick/2 使帧率降为 ~10 fps 视觉更平滑；状态栏/输入区不受影响；cargo build 零警告
 
-### ── M2: 文件工具 (s02) ──
+### ── M2: 文件工具 (s02) ── ✅
 
 > 验证方式：`cargo run` → 让 Agent 读/写/编辑文件
 > 对标：learn-claude-code s02_tool_use.py
 
 ### Task 8B: omega-tools-builtin — ReadHandler + WriteHandler + EditHandler
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-03-18
 - **Priority**: High
 - **Description**: 新增文件读取、写入、编辑三个 handler，含路径安全校验（不允许逃逸工作目录）
+- **Summary**: ReadHandler (read_file) 支持 path + 可选 limit，截断 50,000 字符，路径安全检验；WriteHandler (write_file) 支持 path + content，自动创建父目录；EditHandler (edit_file) 支持 path + old_text + new_text，替换第一次出现；三个 handler 共享 safe_path_within_root 安全辅助函数；create_default_tools 注册全部四个 handler（bash/read/write/edit）；新增 23 项测试，总计 44 项测试全通过；clippy 零警告
 - **Related**: learn/learn-claude-code/agents/s02_tool_use.py
 
 ### ── M3: Todo 管理 (s03) ──
@@ -149,9 +115,11 @@ _将 M11 中基础级体验优化前移，确保在开发后续功能时有可�
 > 对标：learn-claude-code s03_todo_write.py
 
 ### Task 9: omega-todo — TodoManager
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-03-19
 - **Priority**: Medium
 - **Description**: 实现 TodoManager，支持 update/render/has_open_items，注册为 tool
+- **Summary**: 实现 `TodoManager`（`update/render/has_open_items/should_nag`）和共享 `TodoToolHandler`，支持 todo 项校验（最多 20 项、同一时间仅 1 个 `in_progress`、`id/text/status` 必填、空文本拒绝）、状态渲染和 reminder 状态跟踪；`omega-core` 默认工具集新增 `todo` 工具，agent loop 仅在存在未完成 todo 且连续 3 轮未成功调用 todo 时注入 `<reminder>Update your todos.</reminder>`，成功调用 todo 后重置计数；新增 9 项 `omega-todo` 单测和 5 项 `omega-core` 集成测试，`cargo test` 全工作区通过
 - **Related**: docs/specs/omega-agent-impl-plan.md
 
 ### ── M4: 子智能体 (s04) ──
@@ -161,7 +129,7 @@ _将 M11 中基础级体验优化前移，确保在开发后续功能时有可�
 
 ### Task 10: omega-subagent — SubAgent
 - **Status**: Pending
-- **Priority**: Medium
+- **Priority**: High
 - **Description**: 实现 SubAgent，独立 message list + run_loop，父 Agent 通过 tool 调度
 - **Related**: docs/specs/omega-agent-impl-plan.md
 
@@ -172,7 +140,7 @@ _将 M11 中基础级体验优化前移，确保在开发后续功能时有可�
 
 ### Task 5: omega-skills — SkillLoader
 - **Status**: Pending
-- **Priority**: Medium
+- **Priority**: High
 - **Description**: 实现 SkillLoader，扫描 skills 目录，按关键词匹配加载
 - **Related**: docs/specs/omega-agent-impl-plan.md
 
@@ -233,7 +201,7 @@ _将 M11 中基础级体验优化前移，确保在开发后续功能时有可�
 
 ### Task 6: omega-worktree — WorktreeManager
 - **Status**: Pending
-- **Priority**: Medium
+- **Priority**: Low
 - **Description**: 实现 WorktreeManager 管理 git worktree
 - **Related**: docs/specs/omega-agent-impl-plan.md
 
@@ -245,21 +213,28 @@ _将 M11 中基础级体验优化前移，确保在开发后续功能时有可�
 
 _基础体验已在 M1.7 完成，此处保留高级特性。_
 
+### Task 15C: 交互层重构 — omega-tui 库化 + omega-repl 新包
+- **Status**: Pending
+- **Priority**: High
+- **Description**: 在继续高阶 TUI 能力前，先将 `omega-tui` 拆为 library-first crate，并新增 `omega-repl` 承接最小 REPL，降低后续功能继续堆叠在单一入口文件中的风险
+- **Related**: docs/specs/omega-interaction-layer-refactor.md
+- **Blocks**: Task 15B-8, Task 15B-9, Task 15B-10, Task 15B-11, Task 15B-12, Task 15B-13
+
 ### Task 15B-8: omega-tui — Markdown 渲染
 - **Status**: Pending
-- **Priority**: Medium
+- **Priority**: Low
 - **Description**: Agent 回复中解析 Markdown，标题加粗、列表缩进、行内代码反色、代码块区分背景色
 - **Related**: docs/specs/omega-agent-spec.md
 
 ### Task 15B-9: omega-tui — 代码语法高亮
 - **Status**: Pending
-- **Priority**: Medium
+- **Priority**: Low
 - **Description**: 代码块内按语言做语法高亮（syntect 或 tree-sitter），至少支持 Rust/Python/Shell
 - **Related**: docs/specs/omega-agent-spec.md
 
 ### Task 15B-10: omega-tui — 输入历史
 - **Status**: Pending
-- **Priority**: Medium
+- **Priority**: Low
 - **Description**: ↑↓键浏览历史输入、持久化到 ~/.omega/history
 
 ### Task 15B-11: omega-tui — 面板内搜索
@@ -272,9 +247,16 @@ _基础体验已在 M1.7 完成，此处保留高级特性。_
 - **Priority**: Low
 - **Description**: 拖拽或快捷键调整面板宽度比例；状态栏显示 token 使用量、对话轮次
 
+### Task 15B-13: omega-tui — Leader 键快捷键基础设施
+- **Status**: Pending
+- **Priority**: Low
+- **Description**: 引入统一 leader 键作为所有高级快捷键入口，避免与终端/系统级快捷键冲突；实现 leader 状态机、二段组合键路由、超时自动取消、状态栏/提示栏反馈，并为后续搜索、面板调整、历史与命令类功能预留统一映射层
+- **Related**: docs/specs/omega-agent-spec.md
+- **Blocks**: Task 15B-11, Task 15B-12
+
 ### Task 16: 最终整合测试
 - **Status**: Pending
-- **Priority**: High
+- **Priority**: Low
 - **Description**: 完整编译、运行测试并做最终联调验证，确认全部 crate 可以作为完整系统协同工作
 - **Related**: docs/specs/omega-agent-impl-plan.md
 
@@ -322,7 +304,7 @@ _基础体验已在 M1.7 完成，此处保留高级特性。_
 - **Started**: 2026-03-18
 - **Completed**: 2026-03-18
 - **Description**: stdin/stdout REPL 入口，从环境变量读取配置构造 Agent，可 cargo run 交互
-- **Summary**: MinimaxConfig::from_env 构造客户端、create_default_tools 注册 bash 工具、run_loop_with 回调显示工具调用（命令黄色高亮 + 输出预览 200 字符）、UTF-8 安全截断、EOF/q/exit 退出
+- **Summary**: MinimaxConfig::from_env 构造客户端、create_default_tools 注册 bash 工具、run_loop_with 回调显示工具调用（命令黄色高亮 + 输出预览 200 字符）、UTF-8 安全截断、EOF/q/exit 退出；该功能当前暂驻 `omega-tui`，后续将按 `docs/specs/omega-interaction-layer-refactor.md` 迁移到独立的 `omega-repl` 包
 - **Related**: learn/learn-claude-code/agents/s01_agent_loop.py
 
 ### 非计划项：文档体系建设

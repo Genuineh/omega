@@ -2,8 +2,9 @@ use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};
 use omega_client::{ChatRequest, ContentBlock, Message, ToolDefinition};
+use omega_todo::{TodoItem, TodoStatus, TodoToolHandler};
 use omega_tools::ToolDispatcher;
-use omega_tools_builtin::BashHandler;
+use omega_tools_builtin::{BashHandler, EditHandler, ReadHandler, WriteHandler};
 use tracing::{error, info, instrument};
 use uuid::Uuid;
 
@@ -12,11 +13,22 @@ pub use omega_client::{
     ClientError, DynLlmClient, LlmClient, MinimaxClient, MinimaxConfig, STOP_REASON_END_TURN,
     STOP_REASON_TOOL_USE,
 };
+pub use omega_todo::{TodoManager, TodoToolHandler as CoreTodoToolHandler};
 
 /// Core agent that implements the LLM ↔ tool execution loop.
 ///
 /// Mirrors the Python reference: `learn-claude-code/agents/s01_agent_loop.py`
 const DEFAULT_MAX_ITERATIONS: u32 = 100;
+
+fn todo_input_has_open_items(input: &serde_json::Value) -> Option<bool> {
+    let items = input.get("items")?.clone();
+    let items: Vec<TodoItem> = serde_json::from_value(items).ok()?;
+    Some(
+        items
+            .iter()
+            .any(|item| item.status != TodoStatus::Completed),
+    )
+}
 
 pub struct Agent {
     client: DynLlmClient,
@@ -33,9 +45,7 @@ impl Agent {
         let tool_definitions: Vec<ToolDefinition> = dispatcher
             .to_schemas()
             .into_iter()
-            .map(|v| {
-                serde_json::from_value(v).map_err(|e| anyhow!("invalid tool schema: {e}"))
-            })
+            .map(|v| serde_json::from_value(v).map_err(|e| anyhow!("invalid tool schema: {e}")))
             .collect::<Result<Vec<_>>>()?;
 
         Ok(Self {
@@ -74,6 +84,9 @@ impl Agent {
         F: FnMut(&str, &serde_json::Value, &str),
     {
         let session_id = Uuid::new_v4().to_string();
+        let todo_enabled = self.dispatcher.has_tool("todo");
+        let mut rounds_since_todo = 0usize;
+        let mut todo_has_open_items = false;
         tracing::Span::current().record("agent_loop.session_id", &session_id);
 
         info!(agent_loop.started = true, agent_loop.session_id = %session_id);
@@ -102,7 +115,11 @@ impl Agent {
                 .with_tools(self.tool_definitions.clone())
                 .with_max_tokens(self.max_tokens);
 
-            let response = self.client.chat(request).await.map_err(|e| anyhow!("{e}"))?;
+            let response = self
+                .client
+                .chat(request)
+                .await
+                .map_err(|e| anyhow!("{e}"))?;
 
             // Record stop_reason
             if let Some(ref stop_reason) = response.stop_reason {
@@ -126,10 +143,17 @@ impl Agent {
 
             // Execute each tool call, collect results
             let mut results = Vec::new();
+            let mut updated_todo = false;
             for block in &response.content {
                 if let ContentBlock::ToolUse { id, name, input } = block {
                     let result = match self.dispatcher.dispatch(name, input.clone()) {
                         Ok(output) => {
+                            if name == "todo" && !output.starts_with("Error:") {
+                                updated_todo = true;
+                                if let Some(has_open_items) = todo_input_has_open_items(input) {
+                                    todo_has_open_items = has_open_items;
+                                }
+                            }
                             on_tool_call(name, input, &output);
                             ContentBlock::tool_result(id, &output)
                         }
@@ -143,12 +167,30 @@ impl Agent {
                 }
             }
 
+            if todo_enabled && todo_has_open_items {
+                rounds_since_todo = if updated_todo {
+                    0
+                } else {
+                    rounds_since_todo.saturating_add(1)
+                };
+
+                if rounds_since_todo >= 3 {
+                    results.insert(0, ContentBlock::text("<reminder>Update your todos.</reminder>"));
+                }
+            } else if updated_todo {
+                rounds_since_todo = 0;
+            }
+
             self.messages.push(Message::tool_results(results));
         }
     }
 
     pub fn messages(&self) -> &[Message] {
         &self.messages
+    }
+
+    pub fn set_messages(&mut self, messages: Vec<Message>) {
+        self.messages = messages;
     }
 
     pub fn set_max_tokens(&mut self, max_tokens: u32) {
@@ -160,10 +202,14 @@ impl Agent {
     }
 }
 
-/// Create a ToolDispatcher with all M1 built-in tools.
+/// Create a ToolDispatcher with all built-in tools.
 pub fn create_default_tools(root: PathBuf) -> ToolDispatcher {
     let mut dispatcher = ToolDispatcher::new();
-    dispatcher.register(Box::new(BashHandler::new(root)));
+    dispatcher.register(Box::new(BashHandler::new(root.clone())));
+    dispatcher.register(Box::new(ReadHandler::new(root.clone())));
+    dispatcher.register(Box::new(WriteHandler::new(root.clone())));
+    dispatcher.register(Box::new(EditHandler::new(root)));
+    dispatcher.register(Box::new(TodoToolHandler::new()));
     dispatcher
 }
 
@@ -171,7 +217,10 @@ pub fn create_default_tools(root: PathBuf) -> ToolDispatcher {
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use omega_client::{ChatResponse, ClientError, Usage, STOP_REASON_END_TURN, STOP_REASON_TOOL_USE};
+    use omega_client::{
+        ChatResponse, ClientError, MessageContent, Usage, STOP_REASON_END_TURN,
+        STOP_REASON_TOOL_USE,
+    };
     use std::sync::{Arc, Mutex};
 
     // ── Mock LLM client ───────────────────────────────────────────────
@@ -286,14 +335,17 @@ mod tests {
         let calls_clone = calls.clone();
 
         let client: DynLlmClient = Arc::new(MockLlmClient::new(vec![
-            tool_use_response("t1", "bash", serde_json::json!({"command": "echo callback_test"})),
+            tool_use_response(
+                "t1",
+                "bash",
+                serde_json::json!({"command": "echo callback_test"}),
+            ),
             text_response("ok"),
         ]));
         let tmp = std::env::temp_dir().join("omega-core-cb-test");
         let _ = std::fs::create_dir_all(&tmp);
         let dispatcher = create_default_tools(tmp);
-        let mut agent =
-            Agent::new(client, "Test".to_string(), dispatcher).unwrap();
+        let mut agent = Agent::new(client, "Test".to_string(), dispatcher).unwrap();
         agent.add_user_message("go");
 
         agent
@@ -316,6 +368,7 @@ mod tests {
     fn create_default_tools_includes_bash() {
         let dispatcher = create_default_tools(std::env::temp_dir());
         assert!(dispatcher.has_tool("bash"));
+        assert!(dispatcher.has_tool("todo"));
     }
 
     #[test]
@@ -326,8 +379,179 @@ mod tests {
             .into_iter()
             .map(|v| serde_json::from_value(v).unwrap())
             .collect();
-        assert_eq!(defs.len(), 1);
-        assert_eq!(defs[0].name, "bash");
+        assert_eq!(defs.len(), 5);
+        let names: Vec<&str> = defs.iter().map(|def| def.name.as_str()).collect();
+        assert_eq!(names, vec!["bash", "edit_file", "read_file", "todo", "write_file"]);
+    }
+
+    #[tokio::test]
+    async fn injects_todo_reminder_after_three_rounds_without_todo() {
+        let mut agent = make_agent(vec![
+            tool_use_response(
+                "t0",
+                "todo",
+                serde_json::json!({
+                    "items": [
+                        {"id": "1", "text": "Plan", "status": "completed"},
+                        {"id": "2", "text": "Code", "status": "in_progress", "activeForm": "coding"}
+                    ]
+                }),
+            ),
+            tool_use_response("t1", "bash", serde_json::json!({"command": "echo step1"})),
+            tool_use_response("t2", "bash", serde_json::json!({"command": "echo step2"})),
+            tool_use_response("t3", "bash", serde_json::json!({"command": "echo step3"})),
+            text_response("Done."),
+        ]);
+        agent.add_user_message("multi step");
+
+        let result = agent.run_loop().await.unwrap();
+
+        assert_eq!(result, "Done.");
+        assert_eq!(agent.messages().len(), 10);
+
+        let reminder_message = &agent.messages()[8];
+        let MessageContent::Blocks(blocks) = &reminder_message.content else {
+            panic!("expected tool result blocks");
+        };
+
+        assert!(matches!(
+            &blocks[0],
+            ContentBlock::Text { text } if text == "<reminder>Update your todos.</reminder>"
+        ));
+        assert!(matches!(&blocks[1], ContentBlock::ToolResult { .. }));
+    }
+
+    #[tokio::test]
+    async fn todo_tool_resets_reminder_counter() {
+        let mut agent = make_agent(vec![
+            tool_use_response("t1", "bash", serde_json::json!({"command": "echo step1"})),
+            tool_use_response("t2", "bash", serde_json::json!({"command": "echo step2"})),
+            tool_use_response(
+                "t3",
+                "todo",
+                serde_json::json!({
+                    "items": [
+                        {"id": "1", "text": "Plan", "status": "completed"},
+                        {"id": "2", "text": "Code", "status": "in_progress", "activeForm": "coding"}
+                    ]
+                }),
+            ),
+            text_response("Done."),
+        ]);
+        agent.add_user_message("multi step");
+
+        let result = agent.run_loop().await.unwrap();
+
+        assert_eq!(result, "Done.");
+
+        let todo_message = &agent.messages()[6];
+        let MessageContent::Blocks(blocks) = &todo_message.content else {
+            panic!("expected tool result blocks");
+        };
+
+        assert_eq!(blocks.len(), 1);
+        assert!(matches!(&blocks[0], ContentBlock::ToolResult { .. }));
+    }
+
+    #[tokio::test]
+    async fn does_not_inject_reminder_before_any_todo_exists() {
+        let mut agent = make_agent(vec![
+            tool_use_response("t1", "bash", serde_json::json!({"command": "echo step1"})),
+            tool_use_response("t2", "bash", serde_json::json!({"command": "echo step2"})),
+            tool_use_response("t3", "bash", serde_json::json!({"command": "echo step3"})),
+            text_response("Done."),
+        ]);
+        agent.add_user_message("multi step");
+
+        let result = agent.run_loop().await.unwrap();
+
+        assert_eq!(result, "Done.");
+
+        let last_tool_message = &agent.messages()[6];
+        let MessageContent::Blocks(blocks) = &last_tool_message.content else {
+            panic!("expected tool result blocks");
+        };
+
+        assert_eq!(blocks.len(), 1);
+        assert!(matches!(&blocks[0], ContentBlock::ToolResult { .. }));
+    }
+
+    #[tokio::test]
+    async fn completed_todos_do_not_trigger_reminders() {
+        let mut agent = make_agent(vec![
+            tool_use_response(
+                "t0",
+                "todo",
+                serde_json::json!({
+                    "items": [
+                        {"id": "1", "text": "Done", "status": "completed"}
+                    ]
+                }),
+            ),
+            tool_use_response("t1", "bash", serde_json::json!({"command": "echo step1"})),
+            tool_use_response("t2", "bash", serde_json::json!({"command": "echo step2"})),
+            tool_use_response("t3", "bash", serde_json::json!({"command": "echo step3"})),
+            text_response("Done."),
+        ]);
+        agent.add_user_message("multi step");
+
+        let result = agent.run_loop().await.unwrap();
+
+        assert_eq!(result, "Done.");
+
+        let last_tool_message = &agent.messages()[8];
+        let MessageContent::Blocks(blocks) = &last_tool_message.content else {
+            panic!("expected tool result blocks");
+        };
+
+        assert_eq!(blocks.len(), 1);
+        assert!(matches!(&blocks[0], ContentBlock::ToolResult { .. }));
+    }
+
+    #[tokio::test]
+    async fn failed_todo_update_does_not_reset_open_todo_reminder_counter() {
+        let mut agent = make_agent(vec![
+            tool_use_response(
+                "t0",
+                "todo",
+                serde_json::json!({
+                    "items": [
+                        {"id": "1", "text": "Plan", "status": "completed"},
+                        {"id": "2", "text": "Code", "status": "in_progress", "activeForm": "coding"}
+                    ]
+                }),
+            ),
+            tool_use_response(
+                "t1",
+                "todo",
+                serde_json::json!({
+                    "items": [
+                        {"id": "1", "text": "Broken 1", "status": "in_progress"},
+                        {"id": "2", "text": "Broken 2", "status": "in_progress"}
+                    ]
+                }),
+            ),
+            tool_use_response("t2", "bash", serde_json::json!({"command": "echo step1"})),
+            tool_use_response("t3", "bash", serde_json::json!({"command": "echo step2"})),
+            text_response("Done."),
+        ]);
+        agent.add_user_message("multi step");
+
+        let result = agent.run_loop().await.unwrap();
+
+        assert_eq!(result, "Done.");
+
+        let last_tool_message = &agent.messages()[8];
+        let MessageContent::Blocks(blocks) = &last_tool_message.content else {
+            panic!("expected tool result blocks");
+        };
+
+        assert_eq!(blocks.len(), 2);
+        assert!(matches!(
+            &blocks[0],
+            ContentBlock::Text { text } if text == "<reminder>Update your todos.</reminder>"
+        ));
+        assert!(matches!(&blocks[1], ContentBlock::ToolResult { .. }));
     }
 
     #[tokio::test]

@@ -96,9 +96,7 @@ pub enum ContentBlock {
 
 impl ContentBlock {
     pub fn text<S: Into<String>>(text: S) -> Self {
-        Self::Text {
-            text: text.into(),
-        }
+        Self::Text { text: text.into() }
     }
 
     pub fn tool_use<S: Into<String>>(id: S, name: S, input: Value) -> Self {
@@ -272,9 +270,7 @@ impl MinimaxConfig {
         let api_key = env::var("OMEGA_API_KEY")
             .or_else(|_| env::var("OMEGA_MINIMAX_API_KEY"))
             .map_err(|_| {
-                ClientError::Config(
-                    "OMEGA_API_KEY or OMEGA_MINIMAX_API_KEY must be set".into(),
-                )
+                ClientError::Config("OMEGA_API_KEY or OMEGA_MINIMAX_API_KEY must be set".into())
             })?;
         let model =
             env::var("OMEGA_MODEL_ID").unwrap_or_else(|_| MINIMAX_DEFAULT_MODEL.to_string());
@@ -387,9 +383,7 @@ impl LlmClient for MinimaxClient {
         }
 
         let chat_response = serde_json::from_str::<ChatResponse>(&body).map_err(|e| {
-            ClientError::Config(format!(
-                "failed to parse response: {e}\nraw body: {body}"
-            ))
+            ClientError::Config(format!("failed to parse response: {e}\nraw body: {body}"))
         })?;
 
         let duration_ms = start.elapsed().as_millis() as u64;
@@ -437,8 +431,7 @@ mod tests {
 
     #[test]
     fn minimax_client_new_returns_ok() {
-        let result =
-            MinimaxClient::new(MinimaxConfig::international("key", MINIMAX_DEFAULT_MODEL));
+        let result = MinimaxClient::new(MinimaxConfig::international("key", MINIMAX_DEFAULT_MODEL));
         assert!(result.is_ok());
     }
 
@@ -455,9 +448,12 @@ mod tests {
 
     #[test]
     fn minimax_client_messages_endpoint_strips_trailing_slash() {
-        let client =
-            MinimaxClient::new(MinimaxConfig::with_base_url("k", "m", "https://example.com/"))
-                .expect("client should build");
+        let client = MinimaxClient::new(MinimaxConfig::with_base_url(
+            "k",
+            "m",
+            "https://example.com/",
+        ))
+        .expect("client should build");
 
         assert_eq!(
             client.messages_endpoint(),
@@ -552,7 +548,10 @@ mod tests {
         assert_eq!(json["type"], "tool_result");
         assert_eq!(json["tool_use_id"], "id-1");
         assert_eq!(json["content"], "output");
-        assert!(json.get("is_error").is_none(), "is_error should be skipped when None");
+        assert!(
+            json.get("is_error").is_none(),
+            "is_error should be skipped when None"
+        );
 
         let back: ContentBlock = serde_json::from_value(json).unwrap();
         assert_eq!(back, block);
@@ -670,10 +669,7 @@ mod tests {
         let resp = ChatResponse {
             id: "msg_05".into(),
             model: None,
-            content: vec![
-                ContentBlock::text("hello "),
-                ContentBlock::text("world"),
-            ],
+            content: vec![ContentBlock::text("hello "), ContentBlock::text("world")],
             stop_reason: Some(STOP_REASON_END_TURN.into()),
             usage: None,
         };

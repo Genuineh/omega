@@ -2,7 +2,7 @@
 status: active
 owner: omega-team
 created: 2026-03-18
-updated: 2026-03-18
+updated: 2026-03-19
 version: 1.0
 related_prds: []
 ---
@@ -11,7 +11,7 @@ related_prds: []
 
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 逐步实现 14 个独立 crate，最终组合成完整的 Omega Agent
+**Goal:** 逐步实现当前 14 个独立 crate，并在 `Task 15C` 中引入 `omega-repl` 作为新增交互层 crate，最终组合成完整的 Omega Agent
 
 **Architecture:** 每个 crate 独立实现，通过 Cargo workspace 组合。底层 crate 无依赖，上层依赖下层。
 
@@ -1226,113 +1226,44 @@ git commit -m "feat: add omega-core"
 
 ### Task 15: omega-tui - TUI 界面
 
-**TODO Mapping:** `Task 15A` = 最小 REPL（M1），`Task 15B` = Ratatui 完整 TUI（M11）
+**TODO Mapping:** `Task 15A` = 最小 REPL 功能里程碑（M1，当前实现暂驻 `omega-tui`），`Task 15B` = `omega-tui` Ratatui 完整 TUI（M11），`Task 15C` = 交互层重构（`omega-tui` 库化 + `omega-repl` 新包）
 
-**Progress:** `Task 15A` 已完成（2026-03-18）：stdin/stdout REPL、run_loop_with 回调显示工具调用、UTF-8 安全截断；`Task 15B` 仍待实现
+**Refactor Note (2026-03-19):** 当前已完成的最小 REPL 功能暂驻 `omega-tui/src/main.rs`，满足可运行里程碑，但不满足目标包边界。继续推进 `Task 15B-*` 前，应先按 [docs/specs/omega-interaction-layer-refactor.md](docs/specs/omega-interaction-layer-refactor.md) 将 REPL 迁移到 `omega-repl`，并将 `omega-tui` 收敛为 library-first crate。
+
+**Progress:** `Task 15A` 的功能里程碑已完成（stdin/stdout REPL、run_loop_with 回调显示工具调用、UTF-8 安全截断），但包结构迁移尚未完成；`Task 15B` 仍待实现
 
 **Files:**
-- Create: `crates/omega-tui/Cargo.toml`
-- Create: `crates/omega-tui/src/main.rs`
-- Create: `crates/omega-tui/src/app.rs`
+- Update: `crates/omega-tui/Cargo.toml`
+- Create: `crates/omega-tui/src/lib.rs`
+- Update: `crates/omega-tui/src/main.rs` 或迁移为薄 wrapper bin
+- Create: `crates/omega-repl/Cargo.toml`
+- Create: `crates/omega-repl/src/main.rs`
 
-- [ ] **Step 1: 创建 Cargo.toml**
+- [ ] **Step 1: 先完成 Task 15C 交互层重构**
 
-```toml
-[package]
-name = "omega-tui"
-version.workspace = true
-edition.workspace = true
+  - 将当前最小 REPL 从 `omega-tui` 迁移到 `omega-repl`
+  - 将 `omega-tui` 收敛为 library-first crate，并拆出 `src/lib.rs`
+  - 保留极薄 TUI wrapper binary 以维持现有命令与行为
+  - 将高级 TUI 功能建立在新的模块边界上，而不是继续堆叠在历史 `main.rs` 中
 
-[[bin]]
-name = "omega"
-path = "src/main.rs"
+- [ ] **Step 2: 在新边界上继续 Task 15B 的 Ratatui TUI**
 
-[dependencies]
-omega-core = { path = "../omega-core" }
-ratatui.workspace = true
-crossterm.workspace = true
-anyhow.workspace = true
-tokio.workspace = true
-```
-
-- [ ] **Step 2: 实现 TUI**
-
-```rust
-// crates/omega-tui/src/main.rs
-mod app;
-
-use app::OmegaApp;
-use omega_core::{DynLlmClient, MinimaxClient, MinimaxConfig};
-use std::sync::Arc;
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let config = MinimaxConfig::from_env()?;
-    let client: DynLlmClient = Arc::new(MinimaxClient::new(config));
-
-    let cwd = std::env::current_dir()?;
-    let tools = omega_core::create_default_tools(&cwd);
-    let system = format!("You are Omega, a coding agent at {}.", cwd.display());
-
-    let app = OmegaApp::new(client, system, tools);
-
-    println!("Omega Agent - Type 'quit' to exit\n");
-    loop {
-        print!("> ");
-        std::io::Write::flush(&mut std::io::stdout())?;
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input)?;
-        let input = input.trim();
-        if input == "quit" || input.is_empty() { break; }
-        app.run(input).await?;
-        println!();
-    }
-    Ok(())
-}
-```
-
-```rust
-// crates/omega-tui/src/app.rs
-use omega_core::{Agent, DynLlmClient, ToolDispatcher};
-
-pub struct OmegaApp {
-    agent: Agent,
-    tools: ToolDispatcher,
-}
-
-impl OmegaApp {
-    pub fn new(client: DynLlmClient, system: String, tools: ToolDispatcher) -> Self {
-        let schemas = tools.to_schemas();
-        let agent = Agent::new(client, system, schemas);
-        Self { agent, tools }
-    }
-
-    pub async fn run(&self, input: &str) -> anyhow::Result<()> {
-        self.agent.add_message("user", input);
-        self.agent.run_loop(|name, input| self.tools.dispatch(name, input)).await?;
-
-        for msg in self.agent.get_messages().iter().rev() {
-            if msg.role == "assistant" && !msg.content.is_empty() {
-                println!("{}", msg.content);
-                break;
-            }
-        }
-        Ok(())
-    }
-}
-```
+  - 将 `App` 状态、render、event、runtime、terminal、logging 等职责拆入 `omega-tui` 库模块
+  - 将 Markdown 渲染、语法高亮、输入历史、搜索、会话统计等能力放在库化后的结构上实现
+  - `omega-core` 仍保持前端无关
 
 - [ ] **Step 3: 编译验证**
 
 ```bash
 cargo build -p omega-tui
+cargo build -p omega-repl
 ```
 
 - [ ] **Step 4: 提交**
 
 ```bash
-git add crates/omega-tui/
-git commit -m "feat: add omega-tui"
+git add crates/omega-tui/ crates/omega-repl/
+git commit -m "refactor: split omega-tui and omega-repl"
 ```
 
 ---
