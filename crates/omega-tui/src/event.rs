@@ -4,7 +4,7 @@ use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use omega_keymap::{InteractionMode, KeyAction, KeyContext, KeyResolution, KeymapManager};
-use omega_session::{AgentSession, SessionUpdate};
+use omega_session::{AgentSession, RuntimeUiEnvelope};
 use tracing::info;
 
 use crate::app::{App, MsgKind, Panel};
@@ -14,7 +14,7 @@ pub fn handle_event(
     event: Event,
     app: &Arc<Mutex<App>>,
     session: &AgentSession,
-    tx: &mpsc::Sender<SessionUpdate>,
+    tx: &mpsc::Sender<RuntimeUiEnvelope>,
     keymap: &KeymapManager,
 ) -> anyhow::Result<bool> {
     match event {
@@ -33,7 +33,7 @@ fn handle_key_event(
     key: KeyEvent,
     app: &Arc<Mutex<App>>,
     session: &AgentSession,
-    tx: &mpsc::Sender<SessionUpdate>,
+    tx: &mpsc::Sender<RuntimeUiEnvelope>,
     keymap: &KeymapManager,
 ) -> anyhow::Result<bool> {
     if app.lock().unwrap().overlay_active() {
@@ -385,7 +385,7 @@ fn execute_action(
     action: KeyAction,
     app: &Arc<Mutex<App>>,
     session: &AgentSession,
-    tx: &mpsc::Sender<SessionUpdate>,
+    tx: &mpsc::Sender<RuntimeUiEnvelope>,
 ) -> anyhow::Result<bool> {
     match action {
         KeyAction::Quit => {
@@ -509,7 +509,7 @@ fn execute_action(
 fn handle_submit(
     app: &Arc<Mutex<App>>,
     session: &AgentSession,
-    tx: &mpsc::Sender<SessionUpdate>,
+    tx: &mpsc::Sender<RuntimeUiEnvelope>,
 ) -> anyhow::Result<bool> {
     let agent_ready = session.is_ready();
     let still_running = app.lock().unwrap().is_running;

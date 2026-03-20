@@ -24,6 +24,8 @@ This directory contains the working documentation set for the Omega Rust project
 | `docs/specs/omega-tui-runtime-experience.md` | Specification | Active TUI-only experience plan for the richer `omega-tui` runtime path |
 | `docs/specs/omega-tui-todo-sidebar-layout.md` | Specification | Todo/Logs split-panel layout for the TUI sidebar |
 | `docs/specs/omega-tui-non-ui-extraction.md` | Specification | Historical Task 15D extraction baseline; keep for boundary rationale, not as the latest runtime-path source of truth |
+| `docs/specs/omega-app-package.md` | Specification | Implemented `omega-app` assembly package and main-entry boundary |
+| `docs/specs/omega-scene-routing.md` | Specification | Planned scene-aware routing layer above execution workflows |
 | `docs/specs/omega-runtime-ui-message-contract.md` | Specification | Current source of truth for `omega-tui` / `omega-session` / `omega-core` runtime-path relations and unified UI contract planning |
 | `docs/specs/omega-step-session-asset-model.md` | Specification | Planned step model and session asset management boundary for workflow execution |
 | `docs/specs/omega-workflow-package.md` | Specification | Configurable four-step workflow package and TUI phase visibility plan |
@@ -41,5 +43,5 @@ This directory contains the working documentation set for the Omega Rust project
 - `docs/specs/` contains the current technical source of truth.
 - `docs/guide/` contains contributor-facing usage documentation.
 - `docs/decisions/` records architecture choices and tradeoffs.
-- Interaction-layer note: use `omega-runtime-ui-message-contract.md` for the current TUI/session/core runtime path; treat `omega-tui-non-ui-extraction.md` as the completed Task 15D baseline rather than the newest planning source.
+- Interaction-layer note: use `omega-runtime-ui-message-contract.md` for the current runtime path and `omega-app-package.md` for the implemented app-entry boundary; treat `omega-tui-non-ui-extraction.md` as the completed Task 15D baseline rather than the newest planning source.
 - Historical note: the earlier `omega-repl` split plan has been archived to `docs/archive/omega-interaction-layer-refactor.md`; it is no longer an active architecture target.

@@ -22,6 +22,7 @@ Accepted
 做出以下边界决策：
 
 - `omega-tui` 只保留 terminal UI 直接相关的职责：ratatui 渲染、crossterm 事件适配、terminal 生命周期、TUI 专属状态。
+- 顶层应用入口与装配职责不应长期停留在 `omega-tui`；后续应迁移到独立的 `omega-app`。
 - `agent_session` 从 `omega-tui` 剥离为新 crate `omega-session`。
 - `logging` 从 `omega-tui` 剥离为新 crate `omega-observability`。
 - `app.rs` / `event.rs` 中剩余的前端无关交互状态，不要求在第一步全部迁走，但必须以后续候选 crate `omega-interaction` 的边界来约束新增实现。
@@ -34,6 +35,7 @@ Accepted
 - `omega-session` 保持前端无关边界，必要时可被未来前端复用。
 - `omega-observability` 成为跨前端基础设施，符合 `005` 的设计意图。
 - `omega-tui` 后续迭代时，变更面会明显缩小，测试边界更清晰。
+- `omega-app` 可承接 provider/config/bootstrap/wiring，避免这些代码重新回流到 UI crate。
 - 交互层继续演进时，有明确的“哪些逻辑不能再写进 TUI crate”的判断标准。
 
 ### Negative
@@ -59,4 +61,4 @@ Accepted
 ## Notes
 
 - 详细设计见 [docs/specs/omega-tui-non-ui-extraction.md](../specs/omega-tui-non-ui-extraction.md)
-- 本决策的历史来源见 `docs/archive/omega-interaction-layer-refactor.md`；当前活跃边界以 `docs/specs/omega-tui-non-ui-extraction.md` 与 `docs/specs/omega-runtime-ui-message-contract.md` 为准
+- 本决策的历史来源见 `docs/archive/omega-interaction-layer-refactor.md`；当前活跃边界以 `docs/specs/omega-tui-non-ui-extraction.md`、`docs/specs/omega-runtime-ui-message-contract.md` 与 `docs/specs/omega-app-package.md` 为准

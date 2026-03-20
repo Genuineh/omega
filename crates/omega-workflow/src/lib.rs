@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -6,18 +6,85 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
 pub const DEFAULT_WORKFLOW_PATH: &str = ".omega/workflow.toml";
+pub const DEFAULT_SCENES_PATH: &str = ".omega/scenes.toml";
+pub const DEFAULT_WORKFLOWS_DIR: &str = ".omega/workflows";
+pub const DEFAULT_ROOT_WORKFLOW_PATH: &str = ".omega/workflows/root.toml";
+pub const DEFAULT_CHAT_WORKFLOW_PATH: &str = ".omega/workflows/chat.toml";
+pub const DEFAULT_FEATURE_WORKFLOW_PATH: &str = ".omega/workflows/feature.toml";
 pub const DEFAULT_STEP_PROMPT_DIR: &str = ".omega/prompt/step";
+
+pub const ROOT_WORKFLOW_ID: &str = "root";
+pub const CHAT_WORKFLOW_ID: &str = "chat";
+pub const FEATURE_WORKFLOW_ID: &str = "feature";
+
+pub const CHAT_SCENE_ID: &str = "chat";
+pub const FEATURE_SCENE_ID: &str = "feature";
+
+pub const SCENE_RECOGNITION_STEP_ID: &str = "scene-recognition";
+pub const SELECT_WORKFLOW_STEP_ID: &str = "select-workflow";
+pub const CHAT_STEP_ID: &str = "chat";
 pub const ANALYSIS_STEP_ID: &str = "analysis";
 pub const PLAN_STEP_ID: &str = "plan";
 pub const EXECUTE_STEP_ID: &str = "execute";
 pub const REPORT_STEP_ID: &str = "report";
+
+pub const DEFAULT_SCENE_RECOGNITION_PROMPT_PATH: &str = ".omega/prompt/step/scene-recognition.md";
+pub const DEFAULT_SELECT_WORKFLOW_PROMPT_PATH: &str = ".omega/prompt/step/select-workflow.md";
+pub const DEFAULT_CHAT_PROMPT_PATH: &str = ".omega/prompt/step/chat.md";
 pub const DEFAULT_ANALYSIS_PROMPT_PATH: &str = ".omega/prompt/step/analysis.md";
 pub const DEFAULT_PLAN_PROMPT_PATH: &str = ".omega/prompt/step/plan.md";
 pub const DEFAULT_EXECUTE_PROMPT_PATH: &str = ".omega/prompt/step/execute.md";
 pub const DEFAULT_REPORT_PROMPT_PATH: &str = ".omega/prompt/step/report.md";
 
-const DEFAULT_WORKFLOW_TOML: &str = r#"# Default omega-session workflow
-name = "default"
+const DEFAULT_SCENES_TOML: &str = r#"# Default omega scene routing
+root_workflow = "root"
+default_scene = "feature"
+
+[[scenes]]
+id = "chat"
+label = "Chat"
+workflow = "chat"
+
+[[scenes]]
+id = "feature"
+label = "Feature"
+workflow = "feature"
+"#;
+
+const DEFAULT_ROOT_WORKFLOW_TOML: &str = r#"# Default root workflow
+name = "root"
+
+[[steps]]
+id = "scene-recognition"
+label = "Scene Recognition"
+prompt = ".omega/prompt/step/scene-recognition.md"
+loop_mode = "single_response"
+skill_request = { mode = "match_task" }
+enabled = true
+
+[[steps]]
+id = "select-workflow"
+label = "Select Workflow"
+prompt = ".omega/prompt/step/select-workflow.md"
+loop_mode = "single_response"
+skill_request = { mode = "match_task" }
+enabled = true
+"#;
+
+const DEFAULT_CHAT_WORKFLOW_TOML: &str = r#"# Default chat workflow
+name = "chat"
+
+[[steps]]
+id = "chat"
+label = "Chat"
+prompt = ".omega/prompt/step/chat.md"
+loop_mode = "single_response"
+skill_request = { mode = "match_task" }
+enabled = true
+"#;
+
+const DEFAULT_FEATURE_WORKFLOW_TOML: &str = r#"# Default feature workflow
+name = "feature"
 
 [[steps]]
 id = "analysis"
@@ -51,6 +118,71 @@ prompt = ".omega/prompt/step/report.md"
 loop_mode = "single_response"
 skill_request = { mode = "match_task" }
 enabled = true
+"#;
+
+const DEFAULT_WORKFLOW_TOML: &str = r#"# Legacy compatibility workflow
+# This file is kept for backward compatibility.
+# The active scene-aware config lives under .omega/scenes.toml and .omega/workflows/*.toml.
+name = "feature"
+
+[[steps]]
+id = "analysis"
+label = "Analyze"
+prompt = ".omega/prompt/step/analysis.md"
+loop_mode = "single_response"
+skill_request = { mode = "match_task" }
+enabled = true
+
+[[steps]]
+id = "plan"
+label = "Plan"
+prompt = ".omega/prompt/step/plan.md"
+loop_mode = "single_response"
+skill_request = { mode = "match_task" }
+enabled = true
+
+[[steps]]
+id = "execute"
+label = "Execute"
+prompt = ".omega/prompt/step/execute.md"
+loop_mode = "tool_loop"
+tool_request = { mode = "inherit" }
+skill_request = { mode = "match_task" }
+enabled = true
+
+[[steps]]
+id = "report"
+label = "Report"
+prompt = ".omega/prompt/step/report.md"
+loop_mode = "single_response"
+skill_request = { mode = "match_task" }
+enabled = true
+"#;
+
+const DEFAULT_SCENE_RECOGNITION_PROMPT: &str = r#"You are in the scene recognition phase.
+
+Classify the user's request into the most appropriate work scene.
+Prefer `chat` for conversational, clarifying, explanatory, or lightweight requests.
+Prefer `feature` for requests that likely require structured analysis, planning, execution, or reporting.
+Produce only the internal scene judgment needed for the next phase.
+Do not call tools.
+Do not produce the final user-facing answer.
+"#;
+
+const DEFAULT_SELECT_WORKFLOW_PROMPT: &str = r#"You are in the workflow selection phase.
+
+Based on the recognized scene, choose the workflow that should run next.
+Prefer `chat` for the `chat` scene and `feature` for the `feature` scene unless explicit configuration says otherwise.
+Produce only the internal routing decision needed for execution.
+Do not call tools.
+Do not produce the final user-facing answer.
+"#;
+
+const DEFAULT_CHAT_PROMPT: &str = r#"You are in the chat workflow.
+
+Respond conversationally and directly to the user's request.
+Use a lightweight interaction style unless the conversation clearly requires a more structured execution workflow.
+Do not force an analysis/plan/execute/report structure when a direct answer is sufficient.
 "#;
 
 const DEFAULT_ANALYSIS_PROMPT: &str = r#"You are in the analysis phase.
@@ -107,6 +239,175 @@ pub enum StepSkillRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SceneDefinition {
+    pub id: String,
+    pub label: String,
+    pub workflow_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SceneCatalog {
+    pub root_workflow_id: String,
+    pub default_scene_id: String,
+    pub scenes: Vec<SceneDefinition>,
+}
+
+impl SceneCatalog {
+    pub fn default_builtin() -> Self {
+        Self {
+            root_workflow_id: ROOT_WORKFLOW_ID.to_string(),
+            default_scene_id: FEATURE_SCENE_ID.to_string(),
+            scenes: vec![
+                SceneDefinition {
+                    id: CHAT_SCENE_ID.to_string(),
+                    label: "Chat".to_string(),
+                    workflow_id: CHAT_WORKFLOW_ID.to_string(),
+                },
+                SceneDefinition {
+                    id: FEATURE_SCENE_ID.to_string(),
+                    label: "Feature".to_string(),
+                    workflow_id: FEATURE_WORKFLOW_ID.to_string(),
+                },
+            ],
+        }
+    }
+
+    pub fn default_scenes_toml() -> &'static str {
+        DEFAULT_SCENES_TOML
+    }
+
+    pub fn scene(&self, scene_id: &str) -> Option<&SceneDefinition> {
+        self.scenes.iter().find(|scene| scene.id == scene_id)
+    }
+
+    pub fn referenced_workflow_ids(&self) -> BTreeSet<String> {
+        let mut ids = BTreeSet::new();
+        ids.insert(self.root_workflow_id.clone());
+        for scene in &self.scenes {
+            ids.insert(scene.workflow_id.clone());
+        }
+        ids
+    }
+
+    pub fn load(root: &Path, warnings: &mut Vec<String>) -> Self {
+        let path = root.join(DEFAULT_SCENES_PATH);
+        if !path.exists() {
+            return match Self::write_default_file(&path) {
+                Ok(()) => match Self::load_from_file(&path) {
+                    Ok(catalog) => catalog,
+                    Err(error) => {
+                        warnings.push(format!(
+                            "Default scene config at {} was created but failed to load: {error}. Falling back to built-in scenes.",
+                            path.display()
+                        ));
+                        Self::default_builtin()
+                    }
+                },
+                Err(error) => {
+                    warnings.push(format!(
+                        "Failed to create default scene config at {}: {error}. Falling back to built-in scenes.",
+                        path.display()
+                    ));
+                    Self::default_builtin()
+                }
+            };
+        }
+
+        match Self::load_from_file(&path) {
+            Ok(catalog) => catalog,
+            Err(error) => {
+                warnings.push(format!(
+                    "Scene config at {} is invalid: {error}. Falling back to built-in scenes.",
+                    path.display()
+                ));
+                Self::default_builtin()
+            }
+        }
+    }
+
+    fn load_from_file(path: &Path) -> Result<Self> {
+        let raw = fs::read_to_string(path)
+            .with_context(|| format!("failed to read scene config {}", path.display()))?;
+        let config = toml::from_str::<SceneCatalogConfig>(&raw)
+            .with_context(|| format!("failed to parse scene config {}", path.display()))?;
+        Self::from_config(config)
+            .with_context(|| format!("failed to apply scene config {}", path.display()))
+    }
+
+    fn from_config(config: SceneCatalogConfig) -> Result<Self> {
+        if config.scenes.is_empty() {
+            bail!("scene catalog must declare at least one scene");
+        }
+
+        let root_workflow_id = config
+            .root_workflow
+            .unwrap_or_else(|| ROOT_WORKFLOW_ID.to_string())
+            .trim()
+            .to_string();
+        if root_workflow_id.is_empty() {
+            bail!("scene catalog must declare a non-empty root_workflow");
+        }
+
+        let default_scene_id = config
+            .default_scene
+            .unwrap_or_else(|| FEATURE_SCENE_ID.to_string())
+            .trim()
+            .to_string();
+        if default_scene_id.is_empty() {
+            bail!("scene catalog must declare a non-empty default_scene");
+        }
+
+        let mut seen = HashSet::new();
+        let mut scenes = Vec::with_capacity(config.scenes.len());
+        for scene in config.scenes {
+            let id = scene.id.trim().to_string();
+            if id.is_empty() {
+                bail!("scene id must be non-empty");
+            }
+            if !seen.insert(id.clone()) {
+                bail!("scene '{id}' is duplicated");
+            }
+
+            let label = scene
+                .label
+                .unwrap_or_else(|| id.clone())
+                .trim()
+                .to_string();
+            if label.is_empty() {
+                bail!("scene '{id}' must have a non-empty label");
+            }
+
+            let workflow_id = scene.workflow.trim().to_string();
+            if workflow_id.is_empty() {
+                bail!("scene '{id}' must bind a non-empty workflow id");
+            }
+
+            scenes.push(SceneDefinition {
+                id,
+                label,
+                workflow_id,
+            });
+        }
+
+        if !scenes.iter().any(|scene| scene.id == default_scene_id) {
+            bail!(
+                "default_scene '{default_scene_id}' must refer to a declared scene"
+            );
+        }
+
+        Ok(Self {
+            root_workflow_id,
+            default_scene_id,
+            scenes,
+        })
+    }
+
+    fn write_default_file(path: &Path) -> Result<()> {
+        write_default_text_file(path, Self::default_scenes_toml())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkflowPrompts {
     prompts: BTreeMap<String, String>,
 }
@@ -114,7 +415,7 @@ pub struct WorkflowPrompts {
 impl WorkflowPrompts {
     pub fn builtin_defaults() -> Self {
         let mut prompts = BTreeMap::new();
-        for step in CanonicalWorkflowStepId::all() {
+        for step in BuiltinWorkflowStepId::all() {
             prompts.insert(
                 step.as_str().to_string(),
                 step.default_prompt_content().to_string(),
@@ -135,8 +436,8 @@ impl WorkflowPrompts {
         let mut prompts = BTreeMap::new();
 
         for step in &definition.steps {
-            let default_content = canonical_step_for_id(&step.id)
-                .map(CanonicalWorkflowStepId::default_prompt_content)
+            let default_content = builtin_step_for_id(&step.id)
+                .map(BuiltinWorkflowStepId::default_prompt_content)
                 .unwrap_or_default();
             let content = load_prompt_file(
                 root,
@@ -171,12 +472,44 @@ pub struct WorkflowDefinition {
 
 impl WorkflowDefinition {
     pub fn default_linear() -> Self {
+        Self::default_feature()
+    }
+
+    pub fn default_root() -> Self {
         Self {
-            name: "default".to_string(),
-            steps: CanonicalWorkflowStepId::all()
+            name: ROOT_WORKFLOW_ID.to_string(),
+            steps: [
+                BuiltinWorkflowStepId::SceneRecognition,
+                BuiltinWorkflowStepId::SelectWorkflow,
+            ]
+            .into_iter()
+            .map(WorkflowStep::from_builtin)
+            .collect(),
+        }
+    }
+
+    pub fn default_chat() -> Self {
+        Self {
+            name: CHAT_WORKFLOW_ID.to_string(),
+            steps: [BuiltinWorkflowStepId::Chat]
                 .into_iter()
-                .map(WorkflowStep::from_canonical)
+                .map(WorkflowStep::from_builtin)
                 .collect(),
+        }
+    }
+
+    pub fn default_feature() -> Self {
+        Self {
+            name: FEATURE_WORKFLOW_ID.to_string(),
+            steps: [
+                BuiltinWorkflowStepId::Analysis,
+                BuiltinWorkflowStepId::Plan,
+                BuiltinWorkflowStepId::Execute,
+                BuiltinWorkflowStepId::Report,
+            ]
+            .into_iter()
+            .map(WorkflowStep::from_builtin)
+            .collect(),
         }
     }
 
@@ -185,15 +518,27 @@ impl WorkflowDefinition {
     }
 
     pub fn load(root: &Path) -> LoadedWorkflow {
-        let mut warnings = Vec::new();
-        let (definition, source) = Self::load_definition(root, &mut warnings);
-        let prompts = WorkflowPrompts::load(root, &definition, &mut warnings);
+        let loaded_catalog = LoadedWorkflowCatalog::load(root);
+        let definition = loaded_catalog
+            .workflow_catalog
+            .workflow(FEATURE_WORKFLOW_ID)
+            .cloned()
+            .unwrap_or_else(Self::default_feature);
+        let prompts = loaded_catalog
+            .prompt_catalog
+            .prompts_for_workflow(FEATURE_WORKFLOW_ID)
+            .cloned()
+            .unwrap_or_else(WorkflowPrompts::builtin_defaults);
+        let source = loaded_catalog
+            .workflow_source(FEATURE_WORKFLOW_ID)
+            .cloned()
+            .unwrap_or(WorkflowSource::BuiltinDefault);
 
         LoadedWorkflow {
             definition,
             prompts,
             source,
-            warnings,
+            warnings: loaded_catalog.warnings,
         }
     }
 
@@ -216,16 +561,6 @@ impl WorkflowDefinition {
 
     pub fn start_run(&self) -> WorkflowRun {
         WorkflowRun::new(self)
-    }
-
-    fn write_default_file(path: &Path) -> Result<()> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).with_context(|| {
-                format!("failed to create workflow config dir {}", parent.display())
-            })?;
-        }
-        fs::write(path, Self::default_workflow_toml())
-            .with_context(|| format!("failed to write workflow file {}", path.display()))
     }
 
     fn from_config(config: WorkflowConfig) -> Result<Self> {
@@ -303,47 +638,92 @@ impl WorkflowDefinition {
             steps,
         })
     }
+}
 
-    fn load_definition(root: &Path, warnings: &mut Vec<String>) -> (Self, WorkflowSource) {
-        let path = root.join(DEFAULT_WORKFLOW_PATH);
-        if !path.exists() {
-            return match Self::write_default_file(&path) {
-                Ok(()) => match Self::load_from_file(&path) {
-                    Ok(definition) => (definition, WorkflowSource::File(path)),
-                    Err(error) => {
-                        warnings.push(format!(
-                            "Default workflow file at {} was created but failed to load: {error}. Falling back to built-in defaults.",
-                            path.display()
-                        ));
-                        (
-                            Self::default_linear(),
-                            WorkflowSource::FileWithFallback(path),
-                        )
-                    }
-                },
-                Err(error) => {
-                    warnings.push(format!(
-                        "Failed to create default workflow file at {}: {error}. Falling back to built-in defaults.",
-                        path.display()
-                    ));
-                    (Self::default_linear(), WorkflowSource::BuiltinDefault)
-                }
-            };
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowCatalog {
+    workflows: BTreeMap<String, WorkflowDefinition>,
+}
+
+impl WorkflowCatalog {
+    pub fn default_builtin() -> Self {
+        let mut workflows = BTreeMap::new();
+        workflows.insert(ROOT_WORKFLOW_ID.to_string(), WorkflowDefinition::default_root());
+        workflows.insert(CHAT_WORKFLOW_ID.to_string(), WorkflowDefinition::default_chat());
+        workflows.insert(
+            FEATURE_WORKFLOW_ID.to_string(),
+            WorkflowDefinition::default_feature(),
+        );
+        Self { workflows }
+    }
+
+    pub fn workflow(&self, workflow_id: &str) -> Option<&WorkflowDefinition> {
+        self.workflows.get(workflow_id)
+    }
+
+    pub fn workflow_ids(&self) -> Vec<&str> {
+        self.workflows.keys().map(String::as_str).collect()
+    }
+
+    fn load(root: &Path, scene_catalog: &SceneCatalog) -> Result<(Self, BTreeMap<String, WorkflowSource>)> {
+        let mut workflows = BTreeMap::new();
+        let mut sources = BTreeMap::new();
+
+        for workflow_id in scene_catalog.referenced_workflow_ids() {
+            let (definition, source) = Self::load_single(root, &workflow_id)?;
+            workflows.insert(workflow_id.clone(), definition);
+            sources.insert(workflow_id, source);
         }
 
-        match Self::load_from_file(&path) {
-            Ok(definition) => (definition, WorkflowSource::File(path)),
-            Err(error) => {
-                warnings.push(format!(
-                    "Workflow config at {} is invalid: {error}. Falling back to built-in defaults.",
-                    path.display()
-                ));
-                (
-                    Self::default_linear(),
-                    WorkflowSource::FileWithFallback(path),
-                )
+        Ok((Self { workflows }, sources))
+    }
+
+    fn load_single(root: &Path, workflow_id: &str) -> Result<(WorkflowDefinition, WorkflowSource)> {
+        let workflow_path = workflow_path_for_id(root, workflow_id);
+        if workflow_path.exists() {
+            let definition = WorkflowDefinition::load_from_file(&workflow_path)?;
+            return Ok((definition, WorkflowSource::File(workflow_path)));
+        }
+
+        if workflow_id == FEATURE_WORKFLOW_ID {
+            let legacy_path = root.join(DEFAULT_WORKFLOW_PATH);
+            if legacy_path.exists() {
+                let definition = WorkflowDefinition::load_from_file(&legacy_path)?;
+                return Ok((definition, WorkflowSource::File(legacy_path)));
             }
         }
+
+        if let Some(default_toml) = default_workflow_toml_for_id(workflow_id) {
+            write_default_text_file(&workflow_path, default_toml)?;
+            let definition = WorkflowDefinition::load_from_file(&workflow_path)?;
+            return Ok((definition, WorkflowSource::File(workflow_path)));
+        }
+
+        bail!("workflow '{workflow_id}' is missing and has no built-in preset")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowPromptCatalog {
+    prompts: BTreeMap<String, WorkflowPrompts>,
+}
+
+impl WorkflowPromptCatalog {
+    pub fn prompts_for_workflow(&self, workflow_id: &str) -> Option<&WorkflowPrompts> {
+        self.prompts.get(workflow_id)
+    }
+
+    fn load(root: &Path, workflow_catalog: &WorkflowCatalog, warnings: &mut Vec<String>) -> Self {
+        let mut prompts = BTreeMap::new();
+        for workflow_id in workflow_catalog.workflow_ids() {
+            if let Some(definition) = workflow_catalog.workflow(workflow_id) {
+                prompts.insert(
+                    workflow_id.to_string(),
+                    WorkflowPrompts::load(root, definition, warnings),
+                );
+            }
+        }
+        Self { prompts }
     }
 }
 
@@ -364,11 +744,7 @@ pub struct WorkflowRun {
 impl WorkflowRun {
     pub fn new(definition: &WorkflowDefinition) -> Self {
         let enabled_steps = definition.enabled_steps().cloned().collect::<Vec<_>>();
-        let current_index = if enabled_steps.is_empty() {
-            None
-        } else {
-            Some(0)
-        };
+        let current_index = if enabled_steps.is_empty() { None } else { Some(0) };
         Self {
             enabled_steps,
             current_index,
@@ -412,6 +788,49 @@ pub struct LoadedWorkflow {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadedWorkflowCatalog {
+    pub scene_catalog: SceneCatalog,
+    pub workflow_catalog: WorkflowCatalog,
+    pub prompt_catalog: WorkflowPromptCatalog,
+    pub warnings: Vec<String>,
+    workflow_sources: BTreeMap<String, WorkflowSource>,
+}
+
+impl LoadedWorkflowCatalog {
+    pub fn load(root: &Path) -> Self {
+        let mut warnings = Vec::new();
+        let mut scene_catalog = SceneCatalog::load(root, &mut warnings);
+        let (workflow_catalog, workflow_sources) = match WorkflowCatalog::load(root, &scene_catalog)
+        {
+            Ok(loaded) => loaded,
+            Err(error) => {
+                warnings.push(format!(
+                    "Scene/workflow catalog is invalid: {error}. Falling back to built-in scene and workflow presets."
+                ));
+                scene_catalog = SceneCatalog::default_builtin();
+                (
+                    WorkflowCatalog::default_builtin(),
+                    builtin_workflow_sources(),
+                )
+            }
+        };
+        let prompt_catalog = WorkflowPromptCatalog::load(root, &workflow_catalog, &mut warnings);
+
+        Self {
+            scene_catalog,
+            workflow_catalog,
+            prompt_catalog,
+            warnings,
+            workflow_sources,
+        }
+    }
+
+    pub fn workflow_source(&self, workflow_id: &str) -> Option<&WorkflowSource> {
+        self.workflow_sources.get(workflow_id)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkflowSource {
     BuiltinDefault,
     File(PathBuf),
@@ -435,6 +854,22 @@ impl LoadedWorkflow {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct SceneCatalogConfig {
+    root_workflow: Option<String>,
+    default_scene: Option<String>,
+    scenes: Vec<SceneDefinitionConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SceneDefinitionConfig {
+    id: String,
+    label: Option<String>,
+    workflow: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct WorkflowConfig {
     name: Option<String>,
     steps: Vec<WorkflowStepConfig>,
@@ -443,7 +878,7 @@ struct WorkflowConfig {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WorkflowStepConfig {
-    id: CanonicalWorkflowStepId,
+    id: BuiltinWorkflowStepId,
     label: Option<String>,
     prompt: Option<PathBuf>,
     loop_mode: Option<StepLoopModeConfig>,
@@ -453,21 +888,35 @@ struct WorkflowStepConfig {
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum CanonicalWorkflowStepId {
+#[serde(rename_all = "kebab-case")]
+enum BuiltinWorkflowStepId {
+    SceneRecognition,
+    SelectWorkflow,
+    Chat,
     Analysis,
     Plan,
     Execute,
     Report,
 }
 
-impl CanonicalWorkflowStepId {
-    fn all() -> [Self; 4] {
-        [Self::Analysis, Self::Plan, Self::Execute, Self::Report]
+impl BuiltinWorkflowStepId {
+    fn all() -> [Self; 7] {
+        [
+            Self::SceneRecognition,
+            Self::SelectWorkflow,
+            Self::Chat,
+            Self::Analysis,
+            Self::Plan,
+            Self::Execute,
+            Self::Report,
+        ]
     }
 
     fn as_str(self) -> &'static str {
         match self {
+            Self::SceneRecognition => SCENE_RECOGNITION_STEP_ID,
+            Self::SelectWorkflow => SELECT_WORKFLOW_STEP_ID,
+            Self::Chat => CHAT_STEP_ID,
             Self::Analysis => ANALYSIS_STEP_ID,
             Self::Plan => PLAN_STEP_ID,
             Self::Execute => EXECUTE_STEP_ID,
@@ -477,6 +926,9 @@ impl CanonicalWorkflowStepId {
 
     fn default_label(self) -> &'static str {
         match self {
+            Self::SceneRecognition => "Scene Recognition",
+            Self::SelectWorkflow => "Select Workflow",
+            Self::Chat => "Chat",
             Self::Analysis => "Analyze",
             Self::Plan => "Plan",
             Self::Execute => "Execute",
@@ -486,6 +938,9 @@ impl CanonicalWorkflowStepId {
 
     fn default_prompt_path(self) -> &'static str {
         match self {
+            Self::SceneRecognition => DEFAULT_SCENE_RECOGNITION_PROMPT_PATH,
+            Self::SelectWorkflow => DEFAULT_SELECT_WORKFLOW_PROMPT_PATH,
+            Self::Chat => DEFAULT_CHAT_PROMPT_PATH,
             Self::Analysis => DEFAULT_ANALYSIS_PROMPT_PATH,
             Self::Plan => DEFAULT_PLAN_PROMPT_PATH,
             Self::Execute => DEFAULT_EXECUTE_PROMPT_PATH,
@@ -495,6 +950,9 @@ impl CanonicalWorkflowStepId {
 
     fn default_prompt_content(self) -> &'static str {
         match self {
+            Self::SceneRecognition => DEFAULT_SCENE_RECOGNITION_PROMPT,
+            Self::SelectWorkflow => DEFAULT_SELECT_WORKFLOW_PROMPT,
+            Self::Chat => DEFAULT_CHAT_PROMPT,
             Self::Analysis => DEFAULT_ANALYSIS_PROMPT,
             Self::Plan => DEFAULT_PLAN_PROMPT,
             Self::Execute => DEFAULT_EXECUTE_PROMPT,
@@ -505,7 +963,12 @@ impl CanonicalWorkflowStepId {
     fn default_loop_mode(self) -> StepLoopMode {
         match self {
             Self::Execute => StepLoopMode::ToolLoop,
-            Self::Analysis | Self::Plan | Self::Report => StepLoopMode::SingleResponse,
+            Self::SceneRecognition
+            | Self::SelectWorkflow
+            | Self::Chat
+            | Self::Analysis
+            | Self::Plan
+            | Self::Report => StepLoopMode::SingleResponse,
         }
     }
 
@@ -519,7 +982,7 @@ impl CanonicalWorkflowStepId {
 }
 
 impl WorkflowStep {
-    fn from_canonical(step: CanonicalWorkflowStepId) -> Self {
+    fn from_builtin(step: BuiltinWorkflowStepId) -> Self {
         Self {
             id: step.as_str().to_string(),
             label: step.default_label().to_string(),
@@ -532,12 +995,15 @@ impl WorkflowStep {
     }
 }
 
-fn canonical_step_for_id(step_id: &str) -> Option<CanonicalWorkflowStepId> {
+fn builtin_step_for_id(step_id: &str) -> Option<BuiltinWorkflowStepId> {
     match step_id {
-        ANALYSIS_STEP_ID => Some(CanonicalWorkflowStepId::Analysis),
-        PLAN_STEP_ID => Some(CanonicalWorkflowStepId::Plan),
-        EXECUTE_STEP_ID => Some(CanonicalWorkflowStepId::Execute),
-        REPORT_STEP_ID => Some(CanonicalWorkflowStepId::Report),
+        SCENE_RECOGNITION_STEP_ID => Some(BuiltinWorkflowStepId::SceneRecognition),
+        SELECT_WORKFLOW_STEP_ID => Some(BuiltinWorkflowStepId::SelectWorkflow),
+        CHAT_STEP_ID => Some(BuiltinWorkflowStepId::Chat),
+        ANALYSIS_STEP_ID => Some(BuiltinWorkflowStepId::Analysis),
+        PLAN_STEP_ID => Some(BuiltinWorkflowStepId::Plan),
+        EXECUTE_STEP_ID => Some(BuiltinWorkflowStepId::Execute),
+        REPORT_STEP_ID => Some(BuiltinWorkflowStepId::Report),
         _ => None,
     }
 }
@@ -625,6 +1091,28 @@ enum StepSkillRequestMode {
     Disable,
 }
 
+fn default_workflow_toml_for_id(workflow_id: &str) -> Option<&'static str> {
+    match workflow_id {
+        ROOT_WORKFLOW_ID => Some(DEFAULT_ROOT_WORKFLOW_TOML),
+        CHAT_WORKFLOW_ID => Some(DEFAULT_CHAT_WORKFLOW_TOML),
+        FEATURE_WORKFLOW_ID => Some(DEFAULT_FEATURE_WORKFLOW_TOML),
+        _ => None,
+    }
+}
+
+fn workflow_path_for_id(root: &Path, workflow_id: &str) -> PathBuf {
+    root.join(DEFAULT_WORKFLOWS_DIR)
+        .join(format!("{workflow_id}.toml"))
+}
+
+fn builtin_workflow_sources() -> BTreeMap<String, WorkflowSource> {
+    let mut sources = BTreeMap::new();
+    sources.insert(ROOT_WORKFLOW_ID.to_string(), WorkflowSource::BuiltinDefault);
+    sources.insert(CHAT_WORKFLOW_ID.to_string(), WorkflowSource::BuiltinDefault);
+    sources.insert(FEATURE_WORKFLOW_ID.to_string(), WorkflowSource::BuiltinDefault);
+    sources
+}
+
 fn load_prompt_file(
     root: &Path,
     prompt_path: &Path,
@@ -666,10 +1154,10 @@ fn resolve_prompt_path(root: &Path, prompt_path: &Path) -> PathBuf {
 fn write_default_text_file(path: &Path, content: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create prompt dir {}", parent.display()))?;
+            .with_context(|| format!("failed to create parent dir {}", parent.display()))?;
     }
     fs::write(path, content)
-        .with_context(|| format!("failed to write prompt file {}", path.display()))
+        .with_context(|| format!("failed to write file {}", path.display()))
 }
 
 #[cfg(test)]
@@ -678,15 +1166,18 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        LoadedWorkflow, StepLoopMode, StepSkillRequest, StepToolRequest, WorkflowDefinition,
-        WorkflowPrompts, WorkflowSource, ANALYSIS_STEP_ID, EXECUTE_STEP_ID, REPORT_STEP_ID,
+        LoadedWorkflow, LoadedWorkflowCatalog, SceneCatalog, StepLoopMode, StepSkillRequest,
+        StepToolRequest, WorkflowDefinition, WorkflowPrompts, WorkflowSource,
+        ANALYSIS_STEP_ID, CHAT_WORKFLOW_ID, DEFAULT_SCENES_PATH, DEFAULT_WORKFLOW_PATH,
+        EXECUTE_STEP_ID, FEATURE_SCENE_ID, FEATURE_WORKFLOW_ID, REPORT_STEP_ID,
+        ROOT_WORKFLOW_ID, SCENE_RECOGNITION_STEP_ID,
     };
 
     #[test]
     fn default_linear_workflow_has_four_enabled_steps() {
         let workflow = WorkflowDefinition::default_linear();
 
-        assert_eq!(workflow.name, "default");
+        assert_eq!(workflow.name, FEATURE_WORKFLOW_ID);
         assert_eq!(workflow.enabled_step_count(), 4);
         assert_eq!(
             workflow
@@ -698,48 +1189,103 @@ mod tests {
     }
 
     #[test]
-    fn missing_workflow_file_is_created_and_loaded() {
-        let root = unique_test_root("missing-workflow");
+    fn missing_scene_and_workflow_catalog_is_created_and_loaded() {
+        let root = unique_test_root("missing-scene-catalog");
 
-        let loaded = WorkflowDefinition::load(&root);
+        let loaded = LoadedWorkflowCatalog::load(&root);
 
-        assert!(root.join(".omega/workflow.toml").exists());
+        assert!(root.join(DEFAULT_SCENES_PATH).exists());
+        assert!(root.join(".omega/workflows/root.toml").exists());
+        assert!(root.join(".omega/workflows/chat.toml").exists());
+        assert!(root.join(".omega/workflows/feature.toml").exists());
+        assert!(root.join(".omega/prompt/step/scene-recognition.md").exists());
+        assert!(root.join(".omega/prompt/step/select-workflow.md").exists());
+        assert!(root.join(".omega/prompt/step/chat.md").exists());
         assert!(root.join(".omega/prompt/step/analysis.md").exists());
-        assert!(root.join(".omega/prompt/step/plan.md").exists());
-        assert!(root.join(".omega/prompt/step/execute.md").exists());
-        assert!(root.join(".omega/prompt/step/report.md").exists());
         assert!(loaded.warnings.is_empty());
-        assert_eq!(loaded.definition.enabled_step_count(), 4);
-        assert!(matches!(loaded.source, WorkflowSource::File(_)));
+        assert_eq!(loaded.scene_catalog.default_scene_id, FEATURE_SCENE_ID);
+        assert_eq!(loaded.scene_catalog.root_workflow_id, ROOT_WORKFLOW_ID);
+        assert!(loaded.workflow_catalog.workflow(ROOT_WORKFLOW_ID).is_some());
+        assert!(loaded.workflow_catalog.workflow(CHAT_WORKFLOW_ID).is_some());
+        assert!(loaded.workflow_catalog.workflow(FEATURE_WORKFLOW_ID).is_some());
         assert!(loaded
-            .prompts
-            .prompt_for(ANALYSIS_STEP_ID)
-            .is_some_and(|prompt| prompt.contains("analysis phase")));
+            .prompt_catalog
+            .prompts_for_workflow(ROOT_WORKFLOW_ID)
+            .and_then(|prompts| prompts.prompt_for(SCENE_RECOGNITION_STEP_ID))
+            .is_some_and(|prompt| prompt.contains("scene recognition phase")));
     }
 
     #[test]
-    fn invalid_workflow_file_falls_back_to_builtin() {
-        let root = unique_test_root("invalid-workflow");
-        let workflow_path = root.join(".omega/workflow.toml");
-        std::fs::create_dir_all(workflow_path.parent().unwrap()).unwrap();
+    fn workflow_definition_load_prefers_feature_workflow_catalog() {
+        let root = unique_test_root("prefer-feature-catalog");
+        let scenes_path = root.join(DEFAULT_SCENES_PATH);
+        std::fs::create_dir_all(scenes_path.parent().unwrap()).unwrap();
+        std::fs::write(&scenes_path, SceneCatalog::default_scenes_toml()).unwrap();
+        std::fs::create_dir_all(root.join(".omega/workflows")).unwrap();
         std::fs::write(
-            &workflow_path,
-            "name = \"broken\"\n\n[[steps]]\nid = \"report\"\nenabled = true\n\n[[steps]]\nid = \"execute\"\nenabled = true\n",
+            root.join(".omega/workflows/feature.toml"),
+            "name = \"feature\"\n\n[[steps]]\nid = \"analysis\"\nlabel = \"Scope\"\nenabled = true\n\n[[steps]]\nid = \"execute\"\nlabel = \"Ship\"\nenabled = true\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join(DEFAULT_WORKFLOW_PATH),
+            "name = \"legacy\"\n\n[[steps]]\nid = \"analysis\"\nlabel = \"Legacy\"\nenabled = true\n",
         )
         .unwrap();
 
         let loaded = WorkflowDefinition::load(&root);
 
-        assert_eq!(loaded.definition, WorkflowDefinition::default_linear());
-        assert_eq!(loaded.definition.enabled_step_count(), 4);
-        assert_eq!(loaded.warnings.len(), 1);
-        assert!(matches!(loaded.source, WorkflowSource::FileWithFallback(_)));
+        let steps = loaded.definition.enabled_steps().collect::<Vec<_>>();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0].label, "Scope");
+        assert_eq!(steps[1].label, "Ship");
+        assert!(matches!(loaded.source, WorkflowSource::File(path) if path.ends_with(".omega/workflows/feature.toml")));
+    }
+
+    #[test]
+    fn legacy_workflow_file_is_used_for_feature_compatibility() {
+        let root = unique_test_root("legacy-feature");
+        let workflow_path = root.join(DEFAULT_WORKFLOW_PATH);
+        std::fs::create_dir_all(workflow_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &workflow_path,
+            "name = \"trimmed\"\n\n[[steps]]\nid = \"analysis\"\nlabel = \"Scope\"\nprompt = \".omega/prompt/step/analysis.md\"\nloop_mode = \"single_response\"\nskill_request = { mode = \"append\", items = [\"review\"] }\nenabled = true\n\n[[steps]]\nid = \"plan\"\nenabled = false\n\n[[steps]]\nid = \"execute\"\nlabel = \"Build\"\nprompt = \".omega/prompt/step/execute.md\"\nloop_mode = \"tool_loop\"\ntool_request = { mode = \"extend\", items = [\"todo\"] }\nenabled = true\n",
+        )
+        .unwrap();
+
+        let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+        let feature = loaded_catalog
+            .workflow_catalog
+            .workflow(FEATURE_WORKFLOW_ID)
+            .unwrap();
+
+        assert_eq!(feature.name, "trimmed");
+        assert_eq!(feature.enabled_step_count(), 2);
+        assert!(matches!(loaded_catalog.workflow_source(FEATURE_WORKFLOW_ID), Some(WorkflowSource::File(path)) if path.ends_with(DEFAULT_WORKFLOW_PATH)));
+    }
+
+    #[test]
+    fn invalid_scene_file_falls_back_to_builtin_catalog() {
+        let root = unique_test_root("invalid-scenes");
+        let scenes_path = root.join(DEFAULT_SCENES_PATH);
+        std::fs::create_dir_all(scenes_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &scenes_path,
+            "root_workflow = \"root\"\ndefault_scene = \"missing\"\n\n[[scenes]]\nid = \"chat\"\nworkflow = \"chat\"\n",
+        )
+        .unwrap();
+
+        let loaded = LoadedWorkflowCatalog::load(&root);
+
+        assert_eq!(loaded.scene_catalog.default_scene_id, FEATURE_SCENE_ID);
+        assert!(loaded.workflow_catalog.workflow(ROOT_WORKFLOW_ID).is_some());
+        assert!(!loaded.warnings.is_empty());
     }
 
     #[test]
     fn workflow_file_supports_labels_disabled_steps_and_requests() {
         let root = unique_test_root("custom-workflow");
-        let workflow_path = root.join(".omega/workflow.toml");
+        let workflow_path = root.join(DEFAULT_WORKFLOW_PATH);
         std::fs::create_dir_all(workflow_path.parent().unwrap()).unwrap();
         std::fs::write(
             &workflow_path,
@@ -777,12 +1323,8 @@ mod tests {
     }
 
     #[test]
-    fn unreadable_prompt_file_falls_back_to_builtin_prompt() {
+    fn missing_prompt_file_is_created_from_builtin_prompt() {
         let root = unique_test_root("prompt-fallback");
-        let prompt_path = root.join(".omega/prompt/step/execute.md");
-        std::fs::create_dir_all(prompt_path.parent().unwrap()).unwrap();
-        std::fs::write(&prompt_path, "custom execute prompt").unwrap();
-        std::fs::remove_file(&prompt_path).unwrap();
 
         let loaded = WorkflowDefinition::load(&root);
 

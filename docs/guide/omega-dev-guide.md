@@ -2,7 +2,7 @@
 status: active
 owner: omega-team
 created: 2026-03-18
-updated: 2026-03-18
+updated: 2026-03-20
 audience: developers
 level: intermediate
 ---
@@ -52,12 +52,12 @@ cargo build
 
 ```bash
 # Ratatui TUI
-cargo run -p omega-tui
+cargo run -p omega-app
 ```
 
 ## 项目结构
 
-Omega 采用独立 crate workspace。当前工作区已有 18 个 crate，其中 `omega-client`、`omega-tools`、`omega-tools-builtin`、`omega-todo`、`omega-core`、`omega-session`、`omega-workflow` 与 `omega-tui` 已具备可运行基础，其余 crate 按实现计划继续推进。
+Omega 采用独立 crate workspace。当前工作区已有 19 个 crate，其中 `omega-app`、`omega-client`、`omega-tools`、`omega-tools-builtin`、`omega-todo`、`omega-core`、`omega-session`、`omega-workflow` 与 `omega-tui` 已具备可运行基础，其余 crate 按实现计划继续推进。
 
 | Crate | 功能 |
 |-------|------|
@@ -74,13 +74,14 @@ Omega 采用独立 crate workspace。当前工作区已有 18 个 crate，其中
 | omega-background | 后台任务 |
 | omega-team | 团队协作 |
 | omega-core | 核心 Agent |
+| omega-app | 应用装配入口 |
 | omega-tui | TUI 界面 |
 
 ## 常见任务
 
 ### 当前可执行任务
 
-1. 运行 `cargo run -p omega-tui` 验证当前唯一用户交互入口
+1. 运行 `cargo run -p omega-app` 验证当前用户交互入口
 2. 按 `docs/TODO.md` 优先推进 `omega-skills` 与 `omega-subagent`
 3. 为新增行为补充测试并保持 `cargo test` 全工作区通过
 

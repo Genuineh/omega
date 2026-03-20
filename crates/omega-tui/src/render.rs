@@ -289,6 +289,9 @@ fn bottom_status_text(app: &App, model_name: &str, spinner_frames: &[char]) -> S
     if let Some(flow) = segments.flow {
         rendered.push(flow);
     }
+    if let Some(session) = segments.session {
+        rendered.push(session);
+    }
 
     format!(" {} ", rendered.join(" │ "))
 }
@@ -390,6 +393,28 @@ fn bottom_status_line(
         ));
     }
 
+    if let Some(session) = segments.session {
+        spans.push(Span::styled(
+            "  ·  ",
+            Style::default()
+                .fg(colors.bar_divider)
+                .bg(colors.status_bar_bg),
+        ));
+        spans.push(Span::styled(
+            " session ",
+            Style::default()
+                .fg(colors.status_label)
+                .bg(colors.status_bar_bg),
+        ));
+        spans.push(Span::styled(
+            session,
+            Style::default()
+                .fg(colors.text)
+                .bg(colors.status_bar_bg)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+
     Line::from(spans)
 }
 
@@ -397,6 +422,7 @@ struct BottomStatusSegments {
     model: String,
     state: String,
     flow: Option<String>,
+    session: Option<String>,
 }
 
 fn bottom_status_segments(
@@ -407,6 +433,12 @@ fn bottom_status_segments(
     let spinner_char = spinner_frames[(app.spinner_tick as usize / 2) % spinner_frames.len()];
     let state = if app.is_running {
         format!("{spinner_char} Running…")
+    } else if let Some(label) = app.agent_status_label.as_deref() {
+        if label == "Idle" {
+            "● Idle".to_string()
+        } else {
+            label.to_string()
+        }
     } else {
         "● Idle".to_string()
     };
@@ -423,6 +455,7 @@ fn bottom_status_segments(
         model: model_name.to_string(),
         state,
         flow,
+        session: app.session_status_label.clone(),
     }
 }
 
@@ -1012,5 +1045,15 @@ mod tests {
 
         assert!(!text.contains("Report 4/4"));
         assert!(text.contains("● Idle"));
+    }
+
+    #[test]
+    fn bottom_status_renders_session_slot_when_present() {
+        let mut app = App::new();
+        app.session_status_label = Some("Workspace ready".to_string());
+
+        let text = bottom_status_text(&app, "test-model", &['⠋', '⠙']);
+
+        assert!(text.contains("Workspace ready"));
     }
 }

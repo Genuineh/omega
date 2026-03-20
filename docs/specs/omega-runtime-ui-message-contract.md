@@ -1,9 +1,9 @@
 ---
-status: draft
+status: implemented
 owner: omega-team
 created: 2026-03-20
 updated: 2026-03-20
-version: 0.3
+version: 0.4
 supersedes: []
 related_prds: []
 ---
@@ -12,7 +12,7 @@ related_prds: []
 
 ## Overview
 
-当前 `omega-workflow` 的 `step` 正文结果、workflow phase、tool preview、todo 刷新与 tracing 日志，已经开始同时影响 `Response`、`Activity & Logs`、底部状态带与右侧栏状态。这些信息目前主要通过 `SessionUpdate` 的逐项枚举变体向 `omega-tui` 暴露，短期内能工作，但随着 `skills`、`subagent`、`background`、`message`、`team`、`worktree` 继续接入，前端协议会很快退化为 feature-by-feature 的补丁集合。
+当前 `omega-workflow` 的 `step` 正文结果、workflow phase、tool preview、todo 刷新与 tracing 日志，已经开始同时影响 `Response`、`Activity & Logs`、底部状态带与右侧栏状态。该通道现在已通过 `RuntimeUiEnvelope` 落地到 `omega-session` 与 `omega-tui` 主路径中，替代继续扩张 `SessionUpdate` 特例。当前顶层应用入口已经迁移到 `omega-app` 装配包，因此本规格同时固定了两件事：UI 协议消费者可以是 `omega-tui`，而 bridge/sink wiring 与应用 bootstrap 由 `omega-app` 持有。
 
 本规格提出一个统一的运行态 UI 协议层，让各个非 UI 模块不再直接“适配 TUI”，而是向一个稳定的 runtime UI bridge 发送结构化消息和效果请求。`omega-tui` 只是这个协议的一个消费者，负责把协议映射为具体视图状态和渲染结果。这样既能改善当前 workflow 在 `Response` 的输出体验，也能为后续多种样式和多模块运行态信息建立统一扩展面。
 
@@ -43,8 +43,10 @@ related_prds: []
 
 在继续定义 `omega-session` 与 `omega-tui` 的协议之前，必须先固定当前唯一的用户交互主路径：
 
-- `omega-tui` 已经通过 `omega-session` 走 workflow-aware 的 turn orchestration 路径，并且现在是唯一保留的用户入口。
+- `omega-tui` 已经通过 `omega-session` 走 workflow-aware 的 turn orchestration 路径，并且当前作为由 `omega-app` 装配的唯一终端 UI consumer。
 - `omega-core` 的 `Cargo.toml` 声明了 `omega-subagent`、`omega-compression`、`omega-tasks`、`omega-background`、`omega-message`、`omega-team`、`omega-worktree` 等未来 crate 依赖，但当前主路径里并没有实际引用这些 crate；`create_default_tools()` 当前只注册 `bash`、`read_file`、`write_file`、`edit_file`、`load_skill`、`todo`。
+
+补充一个新的实现前提：当前真实入口已经是 `omega-app bin`。因此本规格必须同时区分“当前消费者是谁”和“由谁完成 bridge/sink wiring”。
 
 这意味着后续规划不能把“仓库里已经有这些 crate”误判为“主交互路径已经接通这些能力”。当前真正需要固定的是：谁是交互壳层，谁拥有 turn orchestration，谁拥有 agent runtime，谁只是未来的 runtime-visible producer。
 
@@ -52,9 +54,10 @@ related_prds: []
 
 ```mermaid
 flowchart LR
-    User[User] --> TuiBin[omega-tui bin]
-    TuiBin --> Obs[omega-observability]
-    TuiBin --> TuiShell[omega-tui runtime shell\nruntime.rs + app.rs + event.rs + render.rs]
+    User[User] --> App[omega-app bin + assembly]
+    App --> Obs[omega-observability]
+    App --> TuiShell[omega-tui runtime shell\nruntime.rs + app.rs + event.rs + render.rs]
+    App --> Session
     TuiShell --> Keymap[omega-keymap]
     TuiShell --> Theme[omega-theme]
     TuiShell --> Session[omega-session\nAgentSession + WorkflowTurnRunner]
@@ -63,7 +66,7 @@ flowchart LR
     Session --> Core[omega-core\nAgent + ToolDispatcher]
     Core --> Client[omega-client]
     Core --> WiredTools[wired tools today\nbash / read / write / edit / load_skill / todo]
-    Session -- SessionUpdate --> TuiShell
+    Session -- RuntimeUiEnvelope --> TuiShell
     Obs -- trace lines --> TuiShell
 ```
 
@@ -71,7 +74,8 @@ flowchart LR
 
 以业务视角看，当前真正成立的是：
 
-- `omega-tui` 已经是一个带 workflow、todo、logs 和 tracing 的 richer shell，同时也是当前唯一的用户入口。
+- `omega-tui` 已经是一个带 workflow、todo、logs 和 tracing 的 richer shell，但当前只作为由 `omega-app` 装配的 UI consumer。
+- `omega-app` 是当前唯一的用户入口，并持有 bootstrap 与 channel wiring。
 - `omega-session` 当前是 TUI shell 与 agent runtime 之间的会话编排边界。
 
 因此，后续规划不再需要围绕双入口做协调；合理方向是保持 `omega-session` 作为 TUI shell 与 agent runtime 之间唯一的会话编排边界。
@@ -138,13 +142,15 @@ pub trait RuntimeUiSink {
 
 ### Ownership
 
-- `omega-session`: 拥有 bridge 的生命周期与 runtime-visible 事件归一逻辑。
+- `omega-session`: 拥有 runtime-visible 事件归一逻辑，并产出 bridge 所需 envelope。
+- `omega-app`: 拥有 bridge/sink 的 concrete wiring 与应用启动生命周期。
 - `omega-workflow` / future runtime modules: 只产出领域事件或通过 session context 调用 bridge，不理解 TUI 细节。
 - `omega-tui`: 只实现 sink/reducer/render，不拥有上游 runtime orchestration。
 
 ### Dependency Direction
 
 - runtime producers -> `omega-session` bridge/context
+- `omega-app` -> concrete bridge/sink wiring
 - `omega-session` -> runtime UI contract types
 - `omega-tui` -> runtime UI contract types
 - runtime UI contract types must not depend on `ratatui`
@@ -155,9 +161,10 @@ pub trait RuntimeUiSink {
 
 ```mermaid
 flowchart LR
-    User[User] --> TuiShell[omega-tui shell\ninput / focus / render / keymap / theme]
-    Obs[omega-observability] --> TuiShell
-    TuiShell --> Session[omega-session\nturn orchestration + runtime UI bridge]
+    User[User] --> App[omega-app\nbootstrap / wiring / main]
+    App --> TuiShell[omega-tui shell\ninput / focus / render / keymap / theme]
+    App --> Obs[omega-observability]
+    App --> Session[omega-session\nturn orchestration + runtime UI bridge]
     Session --> Workflow[omega-workflow\nstep definition + run state]
     Session --> Skills[omega-skills\nsession-owned skill resolution]
     Session --> Core[omega-core\nAgent runtime + ToolDispatcher]
@@ -170,6 +177,7 @@ flowchart LR
 这里需要固定的关系是：
 
 - `omega-tui` 是交互壳层，不是业务 runtime 的协调中心。
+- `omega-app` 是应用装配壳层，负责把 session、observability 和 UI consumer 连接起来。
 - `omega-session` 是会话编排与 runtime-visible 归一边界，不是 widget owner。
 - `omega-core` 继续保持 agent runtime 和工具分发层，不感知 TUI surface。
 - future runtime-visible 模块接入时，应先接到 `omega-session`，再由 session 统一对接 UI 协议，而不是各自直连 `omega-tui`。
@@ -481,12 +489,12 @@ pub struct SessionRuntimeContext {
 
 ## Migration Plan
 
-### Phase 1: 协议层 (Task 15F-3)
+### Phase 1: 协议层 (Task 15F-3, implemented)
 
-- 在 `omega-session` 附近抽出 runtime UI contract types（`RuntimeUiEnvelope`、`RuntimeUiMessage`、`RuntimeUiEffect` 及所有子类型）
-- 定义 `RuntimeUiBridge` trait 与基于 `mpsc` 的首轮实现
-- 先覆盖 workflow 的 step 正文结果、phase change、tool preview、todo snapshot、final reply
-- **`SessionUpdate` 消退策略**：一步替换，不保留双通道过渡期。现有 7 个 `SessionUpdate` variant 全部一对一映射为 `RuntimeUiEnvelope`，映射完成后废弃 `SessionUpdate` enum。`omega-tui` 直接消费 `RuntimeUiEnvelope`，不同时兼容旧 channel。
+- 已在 `omega-session` 抽出 runtime UI contract types（`RuntimeUiEnvelope`、`RuntimeUiMessage`、`RuntimeUiEffect` 及所有子类型）
+- 已定义 `RuntimeUiBridge` / `RuntimeUiSink` trait 与基于 `mpsc` 的首轮实现
+- 当前已覆盖 workflow 的 step 正文结果、phase change、tool preview、todo snapshot、final reply 与 turn finish
+- **`SessionUpdate` 消退策略**：已一步替换，不保留双通道过渡期。现有主路径中的 `SessionUpdate` 已移除，`omega-tui` 直接消费 `RuntimeUiEnvelope`。
 
 ### Phase 2: TUI 对接层 (Task 15B-18)
 
@@ -542,3 +550,5 @@ pub struct SessionRuntimeContext {
 - 2026-03-20: v0.2 — 根据审查反馈补齐协议类型定义（`UiContent`、`UiPriority`、`StatusSlot`、`StatusValue`、`ActivityTarget`、`OverlayTarget`、`OverlayRequest`）；新增 `RuntimeUiBridge` / `RuntimeUiSink` trait 签名；移除 `AppendMessage` effect 消除双路径歧义；移除 `Invalidate` effect（当前 TUI 无可观测行为）；`UiPriority` 改为 `Option` 延迟消费；`SessionRuntimeContext` 首轮仅包含 `ui_bridge`，推迟 phantom 依赖；Migration Plan 新增 `SessionUpdate` 全量一步替换策略与 variant→envelope 映射表。
 - 2026-03-20: v0.3 — 补充以业务路径为中心的现状依赖图，明确当前主线应以 `omega-tui shell -> omega-session -> omega-core` 为准；新增 current/target mermaid 图与 runtime connectivity matrix，用于后续规划。
 - 2026-03-20: `omega-repl` 路径已移除，current-state 描述收敛为单一用户路径。
+- 2026-03-20: 补充 `omega-app` 目标装配层，明确后续 bridge/sink wiring 与应用 bootstrap 应从 `omega-tui` 迁移到 `omega-app`。
+- 2026-03-20: v0.4 — `Task 15F-3` 落地实现；`omega-session` 已引入 `RuntimeUiEnvelope`/`RuntimeUiMessage`/`RuntimeUiEffect` typed contract 与 `RuntimeUiBridge`/`RuntimeUiSink` trait，主路径中的 `SessionUpdate` 已移除，`omega-tui` 现直接消费统一协议。

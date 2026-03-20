@@ -11,7 +11,7 @@ related_prds:
 
 # Omega TUI 非 UI 职责剥离规格
 
-> Status note (2026-03-20): `Task 15D` 的首轮目标已完成，`omega-session` 与 `omega-observability` 已落地。本文件保留为该次剥离的设计基线，但后续交互入口已经进一步收敛为 `omega-tui` 单入口；文中涉及 `omega-repl` 的表述仅保留为阶段性历史。后续活跃规划以 `docs/specs/omega-runtime-ui-message-contract.md` 为主。
+> Status note (2026-03-20): `Task 15D` 的首轮目标已完成，`omega-session` 与 `omega-observability` 已落地，应用入口也已迁到 `omega-app`。本文件保留为该次剥离的设计基线；文中涉及 `omega-repl` 的表述仅保留为阶段性历史。后续活跃规划以 `docs/specs/omega-runtime-ui-message-contract.md` 与 `docs/specs/omega-app-package.md` 为主。
 
 ## Overview
 
@@ -30,7 +30,7 @@ related_prds:
 ## Non-Goals
 
 - 不在本次规划中重写 `omega-core::Agent` 的运行模型。
-- 不新增统一 launcher crate；当前继续保留 `omega-tui` 作为唯一用户入口。
+- 不在本规格中直接实现新的 launcher 模式；`omega-app` 仅作为单一应用装配入口，而不是多模式前端框架。
 - 不为了“每个模块都成 crate”而把 `render`、`terminal` 这类纯 TUI 模块强行拆出去。
 - 不在本次文档中承诺 Web UI、GUI 或 MCP 前端的实现。
 
@@ -68,7 +68,7 @@ related_prds:
 | `src/logging.rs` | tracing subscriber、UI sink、文件日志、ANSI 清洗 | 必须剥离 | 新 crate `omega-observability` |
 | `src/app.rs` | TUI 状态 + 交互状态混合 | 拆分后保留部分 | 引入 `omega-interaction` 后仅保留 TUI 专属字段 |
 | `src/event.rs` | crossterm 事件适配 + 命令语义 | 拆分后保留部分 | UI 层保留事件解码，命令语义下沉到 `omega-interaction` |
-| `src/main.rs` | 前端装配 | 保留薄入口 | 仅做 config/client/bootstrap |
+| `src/main.rs` | 前端装配 | 迁出 `omega-tui` | 后续迁往 `omega-app`，避免 UI crate 持有应用入口 |
 
 ## Target Architecture
 
@@ -87,6 +87,24 @@ omega-tui
 ```
 
 Phase 1 的目标不是一次性把所有交互状态都清空，而是先把“明显不属于 UI 的部分”迁走，优先打掉最强耦合点。
+
+### Post-Phase 1 Packaging Target
+
+```text
+omega-core
+  ↑
+omega-session
+  ↑
+omega-app
+  ↓
+omega-tui
+
+omega-observability
+  ↑
+omega-app
+```
+
+在 `omega-session` 与 `omega-observability` 已经落地之后，下一步不应再让 `omega-tui` 保留应用装配入口，而应由 `omega-app` 接手 bootstrap 与 wiring。
 
 ### Phase 2 目标分层
 
@@ -259,19 +277,20 @@ pub fn strip_ansi(text: &str) -> String;
 
 ## `omega-tui` After Extraction
 
-Phase 1 完成后，`omega-tui` 应只保留以下责任：
+Phase 1 完成且入口迁移完成后，`omega-tui` 应只保留以下责任：
 
 - ratatui 渲染
 - crossterm 事件读取和 terminal 生命周期
 - TUI 专属状态，例如面板焦点、滚动位置、视图布局缓存
 - 将 `SessionUpdate` 和 tracing 行映射到 TUI 展示模型
-- 启动 `AgentSession` 与消费日志/会话更新通道
+- 消费由 `omega-app` 注入的日志/会话更新通道
 
 对应地，`omega-tui` 不再包含：
 
 - `AgentSession` 的定义
 - tracing subscriber 配置细节
 - ANSI 清洗工具
+- 应用 `main` 入口
 
 ## Migration Plan
 
@@ -343,3 +362,4 @@ Phase 1 完成后，`omega-tui` 应只保留以下责任：
 
 - 2026-03-19: 初版规格，定义 `omega-session`、`omega-observability` 和候选 `omega-interaction` 的职责边界与迁移顺序。
 - 2026-03-20: v1.1 — 补充 Task 15D 完成后的状态说明，明确本文件保留为历史设计基线；后续交互入口已进一步收敛为 `omega-tui -> omega-session -> omega-core` 单一路径。
+- 2026-03-20: 补充 `omega-app` 目标装配层，明确 `omega-tui` 的 `main` 应迁出 UI crate。

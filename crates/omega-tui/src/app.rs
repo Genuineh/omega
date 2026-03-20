@@ -5,12 +5,13 @@ use omega_keymap::{InteractionMode, KeyFocus};
 use ratatui::{layout::Rect, widgets::ListState};
 
 use omega_observability::strip_ansi;
-use omega_session::SessionUpdate;
+use omega_session::{OverlayTarget, RuntimeUiEnvelope, StatusSlot, StatusValue};
 
 use crate::overlay::{
     ConfirmChoice, ConfirmIntent, ConfirmOverlay, DetailOverlay, InputPromptOverlay, OverlayState,
     PickerOverlay, SearchOverlay,
 };
+use crate::reducer::{workflow_summary_from_status, TuiUpdateReducer};
 use crate::sidebar::{SidebarSection, SidebarState};
 
 const TODO_UNSYNCED_LINES: &[&str] = &[
@@ -94,6 +95,8 @@ pub struct App {
     pub is_running: bool,
     pub active_turn_id: u64,
     pub workflow_summary: Option<WorkflowSummary>,
+    pub agent_status_label: Option<String>,
+    pub session_status_label: Option<String>,
     pub last_todo_turn_id: Option<u64>,
     pub spinner_tick: u8,
     pub response_displayed_count: usize,
@@ -139,6 +142,8 @@ impl App {
             is_running: false,
             active_turn_id: 0,
             workflow_summary: None,
+            agent_status_label: None,
+            session_status_label: None,
             last_todo_turn_id: None,
             spinner_tick: 0,
             response_displayed_count: 0,
@@ -158,6 +163,7 @@ impl App {
         self.active_turn_id = self.active_turn_id.wrapping_add(1);
         self.is_running = true;
         self.workflow_summary = None;
+        self.agent_status_label = Some("Running".to_string());
         self.active_turn_id
     }
 
@@ -165,59 +171,60 @@ impl App {
         self.active_turn_id = self.active_turn_id.wrapping_add(1);
         self.is_running = false;
         self.workflow_summary = None;
+        self.agent_status_label = Some("Idle".to_string());
     }
 
     pub fn is_current_turn(&self, turn_id: u64) -> bool {
         self.active_turn_id == turn_id
     }
 
-    pub fn apply_session_update(&mut self, update: SessionUpdate) {
-        match update {
-            SessionUpdate::ToolCallPreview {
-                turn_id,
-                command,
-                preview,
-            } if self.is_current_turn(turn_id) => {
-                if let Some(command) = command {
-                    self.add_log(format!("[tool] $ {}", command));
+    pub fn apply_runtime_envelope(&mut self, envelope: RuntimeUiEnvelope) {
+        TuiUpdateReducer::apply(self, envelope);
+    }
+
+    pub fn set_status_slot(&mut self, slot: StatusSlot, value: StatusValue) {
+        match slot {
+            StatusSlot::Workflow => {
+                self.workflow_summary = workflow_summary_from_status(value);
+            }
+            StatusSlot::Agent => match value {
+                StatusValue::Label(label) => {
+                    self.is_running = label != "Idle";
+                    self.agent_status_label = Some(label);
                 }
-                self.add_log(format!("[tool] {}", preview));
-            }
-            SessionUpdate::TodoSnapshot { turn_id, rendered } if self.is_current_turn(turn_id) => {
-                self.set_todo_snapshot(turn_id, &rendered);
-            }
-            SessionUpdate::WorkflowStepChanged {
-                turn_id,
-                step_id,
-                step_label,
-                index,
-                total,
-            } if self.is_current_turn(turn_id) => {
-                self.add_log(format!(
-                    "[flow {}/{}] {} ({})",
-                    index, total, step_label, step_id
-                ));
-                self.workflow_summary = Some(WorkflowSummary {
-                    id: step_id,
-                    label: step_label,
-                    index,
-                    total,
-                });
-            }
-            SessionUpdate::StepText {
-                turn_id,
-                step_label,
-                text,
-                ..
-            } if self.is_current_turn(turn_id) => {
-                self.push_step_result(&step_label, &text);
-            }
-            SessionUpdate::AssistantText { turn_id, text } if self.is_current_turn(turn_id) => {
-                self.push_msg(MsgKind::Agent, &text);
-            }
-            SessionUpdate::TurnFinished { turn_id } if self.is_current_turn(turn_id) => {
+                StatusValue::Hidden => {
+                    self.is_running = false;
+                    self.agent_status_label = None;
+                }
+                StatusValue::WorkflowStep { .. } => {}
+            },
+            StatusSlot::Session => match value {
+                StatusValue::Label(label) => self.session_status_label = Some(label),
+                StatusValue::Hidden => self.session_status_label = None,
+                StatusValue::WorkflowStep { .. } => {}
+            },
+        }
+    }
+
+    pub fn clear_status_slot(&mut self, slot: StatusSlot) {
+        match slot {
+            StatusSlot::Workflow => self.workflow_summary = None,
+            StatusSlot::Agent => {
                 self.is_running = false;
-                self.workflow_summary = None;
+                self.agent_status_label = None;
+            }
+            StatusSlot::Session => self.session_status_label = None,
+        }
+    }
+
+    pub fn hide_overlay_target(&mut self, target: OverlayTarget) {
+        match (target, self.overlay.as_ref()) {
+            (OverlayTarget::Search, Some(OverlayState::Search(_)))
+            | (OverlayTarget::Confirm, Some(OverlayState::Confirm(_)))
+            | (OverlayTarget::Detail, Some(OverlayState::Detail(_)))
+            | (OverlayTarget::Picker, Some(OverlayState::Picker(_)))
+            | (OverlayTarget::InputPrompt, Some(OverlayState::InputPrompt(_))) => {
+                self.close_overlay();
             }
             _ => {}
         }
@@ -840,6 +847,10 @@ fn summarize_todo_lines(lines: &[String]) -> Option<TodoSummary> {
 mod tests {
     use super::*;
     use ratatui::layout::Rect;
+    use omega_session::{
+        ActivityTarget, OverlayRequest, RuntimeUiEffect, RuntimeUiMessage, UiContent,
+        UiMessageKind, UiSource, UiTarget,
+    };
 
     #[test]
     fn input_editing_uses_character_indices() {
@@ -897,9 +908,13 @@ mod tests {
         let mut app = App::new();
         let first_turn = app.begin_turn();
         app.set_todo_snapshot(first_turn, "[>] #1: Code\n\n(0/1 completed)");
-        app.apply_session_update(SessionUpdate::TurnFinished {
-            turn_id: first_turn,
-        });
+        app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+            first_turn,
+            RuntimeUiEffect::SetStatusSlot {
+                slot: StatusSlot::Agent,
+                value: StatusValue::Label("Idle".to_string()),
+            },
+        ));
 
         app.begin_turn();
 
@@ -912,13 +927,33 @@ mod tests {
         let mut app = App::new();
         let turn_id = app.begin_turn();
 
-        app.apply_session_update(SessionUpdate::WorkflowStepChanged {
+        app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
             turn_id,
-            step_id: "plan".to_string(),
-            step_label: "Plan".to_string(),
-            index: 2,
-            total: 4,
-        });
+            RuntimeUiEffect::SetStatusSlot {
+                slot: StatusSlot::Workflow,
+                value: StatusValue::WorkflowStep {
+                    step_id: "plan".to_string(),
+                    step_label: "Plan".to_string(),
+                    index: 2,
+                    total: 4,
+                },
+            },
+        ));
+        app.apply_runtime_envelope(RuntimeUiEnvelope::message(
+            turn_id,
+            RuntimeUiMessage {
+                target: UiTarget::Activity(ActivityTarget::Log),
+                source: UiSource::WorkflowStep {
+                    step_id: "plan".to_string(),
+                    step_label: "Plan".to_string(),
+                    index: 2,
+                    total: 4,
+                },
+                kind: UiMessageKind::Summary,
+                content: UiContent::Text("Plan".to_string()),
+                priority: None,
+            },
+        ));
 
         assert_eq!(
             app.workflow_summary,
@@ -931,7 +966,12 @@ mod tests {
         );
         assert_eq!(app.log_lines, vec!["[flow 2/4] Plan (plan)"]);
 
-        app.apply_session_update(SessionUpdate::TurnFinished { turn_id });
+        app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+            turn_id,
+            RuntimeUiEffect::ClearStatusSlot {
+                slot: StatusSlot::Workflow,
+            },
+        ));
 
         assert!(app.workflow_summary.is_none());
     }
@@ -941,11 +981,30 @@ mod tests {
         let mut app = App::new();
         let turn_id = app.begin_turn();
 
-        app.apply_session_update(SessionUpdate::ToolCallPreview {
+        app.apply_runtime_envelope(RuntimeUiEnvelope::message(
             turn_id,
-            command: Some("echo hi".to_string()),
-            preview: "hi".to_string(),
-        });
+            RuntimeUiMessage {
+                target: UiTarget::Activity(ActivityTarget::Log),
+                source: UiSource::Tool {
+                    tool_name: "bash".to_string(),
+                },
+                kind: UiMessageKind::Log,
+                content: UiContent::Text("$ echo hi".to_string()),
+                priority: None,
+            },
+        ));
+        app.apply_runtime_envelope(RuntimeUiEnvelope::message(
+            turn_id,
+            RuntimeUiMessage {
+                target: UiTarget::Activity(ActivityTarget::Log),
+                source: UiSource::Tool {
+                    tool_name: "bash".to_string(),
+                },
+                kind: UiMessageKind::Log,
+                content: UiContent::Text("hi".to_string()),
+                priority: None,
+            },
+        ));
 
         assert!(app.output_msgs.is_empty());
         assert_eq!(app.log_lines, vec!["[tool] $ echo hi", "[tool] hi"]);
@@ -956,12 +1015,21 @@ mod tests {
         let mut app = App::new();
         let turn_id = app.begin_turn();
 
-        app.apply_session_update(SessionUpdate::StepText {
+        app.apply_runtime_envelope(RuntimeUiEnvelope::message(
             turn_id,
-            step_id: "plan".to_string(),
-            step_label: "Plan".to_string(),
-            text: "Line one\nLine two".to_string(),
-        });
+            RuntimeUiMessage {
+                target: UiTarget::Response,
+                source: UiSource::WorkflowStep {
+                    step_id: "plan".to_string(),
+                    step_label: "Plan".to_string(),
+                    index: 0,
+                    total: 0,
+                },
+                kind: UiMessageKind::Narrative,
+                content: UiContent::Text("Line one\nLine two".to_string()),
+                priority: None,
+            },
+        ));
 
         assert_eq!(
             app.output_msgs,
@@ -977,6 +1045,68 @@ mod tests {
             ]
         );
         assert!(app.log_lines.is_empty());
+    }
+
+    #[test]
+    fn status_bar_session_target_updates_session_slot() {
+        let mut app = App::new();
+        let turn_id = app.begin_turn();
+
+        app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+            turn_id,
+            RuntimeUiEffect::SetStatusSlot {
+                slot: StatusSlot::Session,
+                value: StatusValue::Label("Workspace ready".to_string()),
+            },
+        ));
+
+        assert_eq!(app.session_status_label.as_deref(), Some("Workspace ready"));
+    }
+
+    #[test]
+    fn focus_hint_routes_to_visible_logs_panel() {
+        let mut app = App::new();
+        let turn_id = app.begin_turn();
+        app.logs_rect = Rect::new(60, 10, 20, 8);
+
+        app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+            turn_id,
+            RuntimeUiEffect::FocusHint {
+                target: UiTarget::Activity(ActivityTarget::Log),
+            },
+        ));
+
+        assert_eq!(app.focused_panel, Panel::Logs);
+    }
+
+    #[test]
+    fn detail_overlay_target_can_be_shown_and_hidden() {
+        let mut app = App::new();
+        let turn_id = app.begin_turn();
+
+        app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+            turn_id,
+            RuntimeUiEffect::ShowOverlay(OverlayRequest {
+                target: OverlayTarget::Detail,
+                content: UiContent::Text("first\nsecond".to_string()),
+            }),
+        ));
+
+        match app.overlay.as_ref() {
+            Some(OverlayState::Detail(detail)) => {
+                assert_eq!(detail.lines, vec!["first".to_string(), "second".to_string()]);
+            }
+            other => panic!("expected detail overlay, got {other:?}"),
+        }
+
+        app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+            turn_id,
+            RuntimeUiEffect::HideOverlay {
+                target: OverlayTarget::Detail,
+            },
+        ));
+
+        assert!(app.overlay.is_none());
     }
 
     #[test]

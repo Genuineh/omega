@@ -1226,16 +1226,19 @@ git commit -m "feat: add omega-core"
 
 ### Task 15: omega-tui - TUI 界面
 
-**TODO Mapping:** `Task 15A` = 最小终端交互里程碑（M1，历史上曾实现为 REPL），`Task 15B` = `omega-tui` Ratatui 完整 TUI（M11），`Task 15C` = 交互层重构（`omega-tui` 库化并最终收敛为单入口），`Task 15D` = `omega-tui` 非 UI 职责剥离（新增 `omega-session` + `omega-observability`，必要时预留 `omega-interaction`），`Task 15E` = 视觉与主题基础，`Task 15F` = 可见执行工作流与运行态状态摘要基础
+**TODO Mapping:** `Task 15A` = 最小终端交互里程碑（M1，历史上曾实现为 REPL），`Task 15B` = `omega-tui` Ratatui 完整 TUI（M11），`Task 15C` = 交互层重构（`omega-tui` 库化与 UI 边界收敛），`Task 15C-2` = `omega-app` 单入口应用装配包，`Task 15D` = `omega-tui` 非 UI 职责剥离（新增 `omega-session` + `omega-observability`，必要时预留 `omega-interaction`），`Task 15E` = 视觉与主题基础，`Task 15F` = 可见执行工作流与运行态状态摘要基础
 
-**Refactor Note (2026-03-20):** `Task 15C` 的阶段性拆分已结束；当前用户入口收敛为 `omega-tui`，`omega-repl` 已退役。`omega-tui` 继续保持 library-first crate，主线先执行 `Task 15D/15F` 的边界与协议收敛，再推进剩余 `Task 15B-*`。
+**Refactor Note (2026-03-20):** `Task 15C` 与 `Task 15C-2` 已完成；`omega-repl` 已退役，`omega-tui` 已成为 library-first 的 UI crate，唯一应用入口已迁移到 `omega-app`。后续主线应直接在 `omega-app -> omega-tui + omega-session + omega-observability` 的装配边界上推进。
 
-**Progress:** `Task 15A`、`Task 15C` 与 `Task 15D` 已完成；`omega-session` 与 `omega-observability` 已落地，交互入口也已统一到 `omega-tui`，`Task 15B` 的高级 TUI 能力可在新的边界上继续实现
+**Progress:** `Task 15A`、`Task 15C`、`Task 15C-2` 与 `Task 15D` 已完成；`omega-session` 与 `omega-observability` 已落地，`omega-app` 也已接手唯一应用入口。剩余 `Task 15B` 与 `Task 15F` 应以“`omega-tui` 只负责 UI、`omega-app` 负责装配”作为稳定边界。
 
 **Files:**
+- Create: `crates/omega-app/Cargo.toml`
+- Create: `crates/omega-app/src/lib.rs`
+- Create: `crates/omega-app/src/main.rs`
 - Update: `crates/omega-tui/Cargo.toml`
 - Create: `crates/omega-tui/src/lib.rs`
-- Update: `crates/omega-tui/src/main.rs` 或迁移为薄 wrapper bin
+- Update: `crates/omega-tui/src/main.rs` 或迁移后删除 binary target
 - Create: `crates/omega-session/Cargo.toml`
 - Create: `crates/omega-session/src/lib.rs`
 - Create: `crates/omega-observability/Cargo.toml`
@@ -1245,8 +1248,15 @@ git commit -m "feat: add omega-core"
 
     - 历史上的最小 REPL 已完成独立拆分并在后续收敛阶段退役
     - 已将 `omega-tui` 收敛为 library-first crate，并拆出 `src/lib.rs`
-    - 当前仅保留极薄 TUI wrapper binary 作为唯一用户入口
+    - 当前仍保留极薄 TUI wrapper binary 作为临时入口，等待迁移到 `omega-app`
     - 后续高级 TUI 功能应建立在新的模块边界上，而不是继续堆叠在历史 `main.rs` 中
+
+- [x] **Step 1B: 执行 Task 15C-2，新增 `omega-app` 装配包**
+
+    - 已新建 `omega-app` 作为唯一 `main` 所在 crate
+    - 已将 provider/config/cwd/runtime/tracing/session wiring 从 `omega-tui` 迁移到 `omega-app`
+    - `omega-tui` 已仅保留 UI runtime、reducer、event/render 与 terminal 生命周期
+    - 默认运行命令已切换为 `cargo run -p omega-app`
 
 - [x] **Step 2: 先执行 Task 15D 非 UI 职责剥离**
 
@@ -1256,7 +1266,7 @@ git commit -m "feat: add omega-core"
     - 如 `app.rs` / `event.rs` 在实现过程中继续膨胀，则按 `docs/specs/omega-tui-non-ui-extraction.md` 启动 `omega-interaction` 的第二阶段抽离
     - 验证 `omega-core` 未新增任何 TUI 专属概念
 
-- [ ] **Step 3: 在完成 Task 15D 的边界上继续 Task 15B 的 Ratatui TUI**
+- [ ] **Step 3: 在完成 Task 15C-2 / 15D 的边界上继续 Task 15B 的 Ratatui TUI**
 
   - 将 Markdown 渲染、语法高亮、输入历史、搜索、会话统计等能力放在库化后的结构上实现
   - `omega-core` 仍保持前端无关
@@ -1264,6 +1274,7 @@ git commit -m "feat: add omega-core"
 - [ ] **Step 4: 编译验证**
 
 ```bash
+cargo build -p omega-app
 cargo build -p omega-tui
 cargo build -p omega-session
 cargo build -p omega-observability
@@ -1272,8 +1283,8 @@ cargo build -p omega-observability
 - [ ] **Step 5: 提交**
 
 ```bash
-git add crates/omega-tui/ crates/omega-session/ crates/omega-observability/
-git commit -m "refactor: extract omega-tui non-ui crates"
+git add crates/omega-app/ crates/omega-tui/ crates/omega-session/ crates/omega-observability/
+git commit -m "Refine app entry and tui boundaries"
 ```
 
 ---
@@ -1453,7 +1464,7 @@ cargo clippy -p omega-workflow -p omega-session -p omega-tui -p omega-core -p om
 
 ### Task 15F-3: omega-session - 统一 runtime UI 消息与效果协议
 
-**Status:** Pending
+**Status:** Completed
 
 **Files:**
 - Planned: `crates/omega-session/src/runtime_ui.rs`
@@ -1461,14 +1472,14 @@ cargo clippy -p omega-workflow -p omega-session -p omega-tui -p omega-core -p om
 - Planned: `docs/specs/omega-runtime-ui-message-contract.md`
 - Planned: `docs/specs/omega-tui-runtime-experience.md`
 
-- [ ] **Step 1: 定义统一 runtime UI envelope 与所有子类型**
+- [x] **Step 1: 定义统一 runtime UI envelope 与所有子类型**
 
     - 新增 `RuntimeUiEnvelope = Message | Effect`
     - `RuntimeUiMessage` 包含 `target: UiTarget`、`source: UiSource`、`kind: UiMessageKind`、`content: UiContent`、`priority: Option<UiPriority>`
     - `RuntimeUiEffect` 包含 `SetStatusSlot`、`ClearStatusSlot`、`ReplacePanel`、`ShowOverlay`、`HideOverlay`、`FocusHint`（不含 `AppendMessage` 和 `Invalidate`）
     - 补齐所有子类型定义：`UiContent(Text)`、`UiPriority(Normal/Low/High)`、`ActivityTarget(Log)`、`StatusSlot(Workflow/Agent/Session)`、`StatusValue(Label/Hidden)`、`OverlayTarget`、`OverlayRequest`
 
-- [ ] **Step 2: 定义 bridge / sink trait 与 session context**
+- [x] **Step 2: 定义 bridge / sink trait 与 session context**
 
     - 新增 `RuntimeUiBridge` trait（`fn send(&self, envelope: RuntimeUiEnvelope)`）
     - 新增 `RuntimeUiSink` trait（`fn try_recv(&self) -> Option<RuntimeUiEnvelope>`）
@@ -1476,7 +1487,7 @@ cargo clippy -p omega-workflow -p omega-session -p omega-tui -p omega-core -p om
     - `SessionRuntimeContext` 首轮仅包含 `ui_bridge: Arc<dyn RuntimeUiBridge>`
     - 保持显式注入，不引入隐藏式全局 singleton / service locator
 
-- [ ] **Step 3: 一步替换 `SessionUpdate` → `RuntimeUiEnvelope`**
+- [x] **Step 3: 一步替换 `SessionUpdate` → `RuntimeUiEnvelope`**
 
     - 按映射表将 7 个 `SessionUpdate` variant 逐一转为 envelope 发送
     - `ToolCallPreview` → `Message { target: Activity(Log), source: Tool, kind: Log }`
@@ -1488,22 +1499,154 @@ cargo clippy -p omega-workflow -p omega-session -p omega-tui -p omega-core -p om
     - 废弃 `SessionUpdate` enum，不保留双通道过渡期
     - `omega-tui` 直接消费 `RuntimeUiEnvelope`
 
-- [ ] **Step 4: 文档与验证**
+- [x] **Step 4: 文档与验证**
 
 ```bash
 cargo test -p omega-session -p omega-tui
 cargo clippy -p omega-session -p omega-tui --all-targets -- -D warnings
 ```
 
-**Summary:** 该任务用于把当前 workflow 的 Response 输出与 future runtime-visible 模块的前端对接统一到一套 message/effect contract 中，避免 `SessionUpdate` 随 feature 数量继续膨胀，并为 `omega-tui` 的统一 reducer/sink 设计建立稳定上游边界。
+**Summary:** 该任务已完成：`omega-session` 新增 `RuntimeUiEnvelope`、`RuntimeUiMessage`、`RuntimeUiEffect`、`UiTarget`、`UiSource`、`UiMessageKind` 等 typed contract，以及 `RuntimeUiBridge` / `RuntimeUiSink` trait 和 `SessionRuntimeContext` 边界；workflow phase、step text、tool preview、todo snapshot、assistant reply 与 turn finish 已全部一步迁移出 `SessionUpdate`，`omega-tui` 现直接消费 envelope 通道。验证已通过 `cargo test -p omega-session -p omega-tui -p omega-app`。
 
-**Current Path Note:** 本任务应以当前真实主链路 `omega-tui shell -> omega-session -> omega-core` 为准推进；当前用户入口已统一为 `omega-tui`，不再以双路径并存为前提。
+**Current Path Note:** 本任务应以当前真实主链路 `omega-tui shell -> omega-session -> omega-core` 为准推进；同时文档与 API 设计要为目标装配路径 `omega-app -> omega-tui + omega-session + omega-observability` 预留稳定边界。
+
+---
+
+### Task 15F-4: omega-workflow - scene catalog 与 workflow routing 模型
+
+**Status:** Completed
+
+**Completed:** 2026-03-20
+
+**Files:**
+- Updated: `crates/omega-workflow/src/lib.rs`
+- Added: `.omega/scenes.toml`
+- Added: `.omega/workflows/root.toml`
+- Added: `.omega/workflows/chat.toml`
+- Added: `.omega/workflows/feature.toml`
+- Added: `.omega/prompt/step/scene-recognition.md`
+- Added: `.omega/prompt/step/select-workflow.md`
+- Added: `.omega/prompt/step/chat.md`
+- Updated: `.omega/workflow.toml`
+
+- [x] **Step 1: 定义 scene 与 workflow catalog 模型**
+
+    - 新增 `SceneDefinition`，至少包含 `id`、`label`、`workflow_id`
+    - 新增 root workflow / child workflow 的 catalog 结构
+    - 固定内建 `root`、`chat`、`feature` 三个 workflow preset
+
+- [x] **Step 2: 定义配置布局与兼容迁移策略**
+
+    - 推荐新增 `.omega/scenes.toml` 与 `.omega/workflows/*.toml`
+    - 旧 `.omega/workflow.toml` 在迁移期继续作为 `feature` workflow 的兼容来源
+    - scene/workflow 配置非法时回退到内建 `feature` scene + `feature` workflow
+
+- [x] **Step 3: 新增主路由 workflow 默认 step**
+
+    - 新增 `scene-recognition` step prompt
+    - 新增 `select-workflow` step prompt
+    - 新增 `chat` workflow 默认单 step prompt
+
+- [x] **Step 4: 为 future step-level delegation 预留模型**
+
+    - 当前先不开放任意 step 触发 child workflow
+    - 但 workflow model 必须为 `StartWorkflow { workflow_id }` 之类的过渡语义预留稳定接口
+    - 当前通过显式 `SceneCatalog` / `WorkflowCatalog` / `LoadedWorkflowCatalog` 边界先把 root router workflow 与 child workflow catalog 独立出来，为 `omega-session` 下一步维护 routing state 与 workflow stack 留出稳定输入面
+
+- [x] **Step 5: 验证**
+
+```bash
+cargo test -p omega-workflow
+cargo clippy -p omega-workflow --all-targets -- -D warnings
+```
+
+**Summary:** 已在 `omega-workflow` 中落地 `SceneCatalog`、`WorkflowCatalog`、`WorkflowPromptCatalog` 与 `LoadedWorkflowCatalog`，把 `root/chat/feature` workflow preset 和 `chat/feature` scene preset 收敛为稳定模型；默认配置文件已补齐到 `.omega/scenes.toml`、`.omega/workflows/*.toml` 与新增 step prompt，旧 `.omega/workflow.toml` 继续作为 `feature` workflow 的兼容来源。`WorkflowDefinition::load()` 目前仍返回 `feature` workflow，确保 `omega-app` 与 `omega-session` 可在不破坏现有调用面的前提下继续推进 `Task 15F-5`。
+
+---
+
+### Task 15F-5: omega-session - scene recognition 与 child workflow delegation
+
+**Status:** Completed
+
+**Completed:** 2026-03-20
+
+**Files:**
+- Updated: `crates/omega-session/src/lib.rs`
+- Updated: `crates/omega-app/src/lib.rs`
+- Updated: `docs/TODO.md`
+
+- [x] **Step 1: 在 session 中执行 root workflow**
+
+    - turn 开始后先运行 `scene-recognition`
+    - 再运行 `select-workflow`
+    - 不把 scene recognition 写成 session 外围的预处理特例
+
+- [x] **Step 2: 实现 child workflow delegation**
+
+    - `select-workflow` 根据 recognized scene 选择 child workflow
+    - session 启动 child workflow run，并把它作为当前稳定执行流
+    - child workflow 完成后 turn 才结束
+
+- [x] **Step 3: 维护 workflow routing runtime state**
+
+    - 显式跟踪 current scene、selected workflow 与 active child workflow
+    - 为 future nested workflow / workflow stack 预留状态结构
+
+- [x] **Step 4: 对接 runtime-visible 路由状态**
+
+    - 向 runtime UI contract 发出 scene / workflow selection 的可见状态
+    - 区分 root workflow step 与 child workflow step 的可见语义
+
+- [x] **Step 5: 验证**
+
+```bash
+cargo test -p omega-session -p omega-workflow -p omega-app
+cargo clippy -p omega-session -p omega-app -p omega-workflow --all-targets -- -D warnings
+```
+
+**Summary:** `omega-session` 已改为从 `SceneCatalog` / `WorkflowCatalog` 驱动 scene-aware turn orchestration：turn 先执行 `root` workflow 的 `scene-recognition` 与 `select-workflow`，再把选中的 child workflow 作为真正的稳定执行流。实现中还补上了 routing runtime state、scene/workflow fallback、root routing step 输出回滚，以及通过 `StatusSlot::Session` 与 Activity 日志发出的 scene / workflow 可见状态，为后续 `Task 15B-19` 的 TUI 明确化展示提供了稳定输入面。
+
+---
+
+### Task 15B-19: omega-tui - scene / workflow routing 可见性
+
+**Status:** Pending
+
+**Files:**
+- Planned: `crates/omega-tui/src/app.rs`
+- Planned: `crates/omega-tui/src/reducer.rs`
+- Planned: `crates/omega-tui/src/render.rs`
+- Planned: `docs/specs/omega-tui-runtime-experience.md`
+
+- [ ] **Step 1: 增加 scene / workflow 状态展示**
+
+    - 在底部状态带展示当前 scene 与 active workflow 摘要
+    - 保持窄终端可退化为短格式
+
+- [ ] **Step 2: 区分 root workflow 与 child workflow 可见性**
+
+    - 用户需要看见当前在 `scene-recognition` / `select-workflow`
+    - 也需要看见真正执行中的 child workflow
+
+- [ ] **Step 3: 收敛到现有 reducer / runtime UI contract**
+
+    - 继续沿 `RuntimeUiEnvelope` + `TuiUpdateReducer` 扩展
+    - 不重新引入 feature-specific UI 分支
+
+- [ ] **Step 4: 验证**
+
+```bash
+cargo test -p omega-tui -p omega-session -p omega-app
+cargo clippy -p omega-tui --all-targets -- -D warnings
+```
+
+**Summary:** 该任务用于把 scene-aware routing 从“后台路由逻辑”变成用户可确认的运行态信息，并保持可见性继续通过统一 reducer 与状态槽位扩展，而不是重新退回零散特例映射。
 
 ---
 
 ### Task 15B-18: omega-tui - 统一 runtime UI sink / reducer
 
-**Status:** Pending
+**Status:** Completed
 
 **Files:**
 - Planned: `crates/omega-tui/src/app.rs`
@@ -1511,29 +1654,29 @@ cargo clippy -p omega-session -p omega-tui --all-targets -- -D warnings
 - Planned: `crates/omega-tui/src/render.rs`
 - Planned: `docs/specs/omega-tui-runtime-experience.md`
 
-- [ ] **Step 1: 建立 TUI runtime UI reducer**
+- [x] **Step 1: 建立 TUI runtime UI reducer**
 
-    - 由 reducer 按 `target` / `kind` / `source` 把 envelope 映射到 `App`
-    - 减少 feature-by-feature 的 `match SessionUpdate::*` 特例分支
+    - 已新增 `TuiUpdateReducer`，按 `target` / `kind` / `source` 把 envelope 映射到 `App`
+    - 已消除原先分散在 `App` 中的 feature-by-feature envelope 分支
 
-- [ ] **Step 2: 收敛固定 surface 路由规则**
+- [x] **Step 2: 收敛固定 surface 路由规则**
 
-    - `Response`、`Activity`、`Todo`、`StatusBar`、`Overlay` 的落点规则集中化
-    - workflow step 正文结果、assistant reply、tool preview、warning、summary 等样式映射集中化
+    - `Response`、`Activity`、`Todo`、`StatusBar`、`Overlay` 的落点规则已集中到 reducer
+    - workflow step 正文结果、assistant reply、tool preview、warning、summary 等当前已接通样式映射已集中化
 
-- [ ] **Step 3: 为 future style variants 预留扩展点**
+- [x] **Step 3: 为 future style variants 预留扩展点**
 
-    - 支持按 `source` / `kind` 做不同 rendering preset
-    - 为 step block、markdown-aware rendering、theme-driven variant 预留稳定接口
+    - 当前 reducer 已按 `source` / `kind` 保留映射层，为后续不同 rendering preset 提供稳定入口
+    - `StatusSlot` / `OverlayTarget` / `UiTarget` 与 reducer helper 已为 step block、markdown-aware rendering、theme-driven variant 预留稳定接口
 
-- [ ] **Step 4: 验证**
+- [x] **Step 4: 验证**
 
 ```bash
 cargo test -p omega-tui
 cargo clippy -p omega-tui --all-targets -- -D warnings
 ```
 
-**Summary:** 该任务用于让 `omega-tui` 作为统一 runtime UI 协议的 consumer/sink，而不是继续为 workflow、skills、subagent、background 等能力逐个补 UI 特例，从而为更好的 Response 输出体验与后续多样式扩展建立稳定 reducer 架构。
+**Summary:** 该任务已完成：`omega-tui` 新增 `reducer.rs` 与 `TuiUpdateReducer`，把 `RuntimeUiEnvelope` 对 `Response`、`Activity(Log)`、`Todo`、`StatusBar`、`Overlay` 的当前落点规则集中到单一 reducer；`App` 只保留通用状态变更 helper 与 UI 状态本身，底部状态带已支持额外 `Session` slot，overlay show/hide 与 focus hint 也通过统一 effect 路由处理。验证已通过 `cargo test -p omega-tui -p omega-session -p omega-app` 与 `cargo clippy -p omega-tui --all-targets -- -D warnings`。
 
 ---
 

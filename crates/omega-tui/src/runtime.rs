@@ -1,14 +1,10 @@
-use std::path::PathBuf;
 use std::sync::{mpsc, Arc, Mutex};
 
 use crossterm::event;
-use omega_core::DynLlmClient;
 use omega_keymap::KeymapManager;
-use omega_session::{AgentSession, AgentSessionConfig, SessionUpdate};
+use omega_session::{AgentSession, RuntimeUiEnvelope};
 use omega_theme::OmegaTheme;
-use omega_workflow::WorkflowDefinition;
-use tokio::runtime::Handle;
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::app::App;
 use crate::event::handle_event;
@@ -16,85 +12,48 @@ use crate::render::render;
 use crate::terminal::TerminalGuard;
 
 pub struct TuiLaunchConfig {
-    pub client: DynLlmClient,
-    pub cwd: PathBuf,
     pub model_name: String,
-    pub runtime_handle: Handle,
-    pub system: String,
+    pub session: AgentSession,
+    pub keymap: KeymapManager,
+    pub theme: OmegaTheme,
+    pub keymap_source: String,
+    pub startup_warnings: Vec<String>,
     pub trace_rx: mpsc::Receiver<String>,
 }
 
 pub fn run(config: TuiLaunchConfig) -> anyhow::Result<()> {
     let TuiLaunchConfig {
-        client,
-        cwd,
         model_name,
-        runtime_handle,
-        system,
+        session,
+        keymap,
+        theme,
+        keymap_source,
+        startup_warnings,
         trace_rx,
     } = config;
 
     info!("omega starting with multi-panel TUI");
-    info!(model = %model_name, cwd = %cwd.display(), "tui config loaded");
+    info!(model = %model_name, "tui config loaded");
 
-    let loaded_keymap = KeymapManager::load(&cwd);
-    if let Some(warning) = loaded_keymap.warning.as_deref() {
-        warn!(%warning, "keymap config fallback activated");
-    }
-    let loaded_theme = OmegaTheme::load(&cwd);
-    for warning in &loaded_theme.warnings {
-        warn!(%warning, source = %loaded_theme.source_label(), "theme config fallback activated");
-    }
-    let loaded_workflow = WorkflowDefinition::load(&cwd);
-    for warning in &loaded_workflow.warnings {
-        warn!(%warning, source = %loaded_workflow.source_label(), "workflow config fallback activated");
-    }
-    let keymap = loaded_keymap.manager;
-    let theme = loaded_theme.theme;
-    let workflow_definition = loaded_workflow.definition;
-    let workflow_prompts = loaded_workflow.prompts;
-
-    let session = AgentSession::new(AgentSessionConfig {
-        client,
-        system,
-        cwd,
-        runtime_handle,
-        workflow_definition,
-        workflow_prompts,
-    })?;
     let app = Arc::new(Mutex::new(App::new()));
     {
         let mut app_guard = app.lock().unwrap();
-        app_guard.set_keymap_source(keymap.source_label());
-        let mut startup_warnings = Vec::new();
-
-        if let Some(warning) = loaded_keymap.warning {
-            startup_warnings.push(warning.clone());
-            app_guard.add_log(warning);
+        app_guard.set_keymap_source(keymap_source);
+        for warning in &startup_warnings {
+            app_guard.add_log(warning.clone());
         }
-
-        for warning in loaded_theme.warnings {
-            startup_warnings.push(warning.clone());
-            app_guard.add_log(warning);
-        }
-
-        for warning in loaded_workflow.warnings {
-            startup_warnings.push(warning.clone());
-            app_guard.add_log(warning);
-        }
-
         if !startup_warnings.is_empty() {
             app_guard.set_status_notice(startup_warnings.join(" | "));
         }
     }
-    let (tx, rx) = mpsc::channel::<SessionUpdate>();
+    let (tx, rx) = mpsc::channel::<RuntimeUiEnvelope>();
     let mut terminal = TerminalGuard::enter()?;
     let trace_rx = trace_rx;
 
     loop {
         for _ in 0..20 {
             if let Ok(update) = rx.try_recv() {
-                app.lock().unwrap().apply_session_update(update);
+                app.lock().unwrap().apply_runtime_envelope(update);
             } else {
                 break;
             }
@@ -136,7 +95,10 @@ pub fn run(config: TuiLaunchConfig) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use crate::app::App;
-    use omega_session::SessionUpdate;
+    use omega_session::{
+        ActivityTarget, RuntimeUiEffect, RuntimeUiEnvelope, RuntimeUiMessage, StatusSlot,
+        StatusValue, UiContent, UiMessageKind, UiSource, UiTarget,
+    };
 
     #[test]
     fn interrupt_turn_invalidates_old_updates() {
@@ -144,11 +106,23 @@ mod tests {
         let turn_id = app.begin_turn();
         app.interrupt_turn();
 
-        app.apply_session_update(SessionUpdate::AssistantText {
+        app.apply_runtime_envelope(RuntimeUiEnvelope::message(
             turn_id,
-            text: "stale".to_string(),
-        });
-        app.apply_session_update(SessionUpdate::TurnFinished { turn_id });
+            RuntimeUiMessage {
+                target: UiTarget::Response,
+                source: UiSource::Assistant,
+                kind: UiMessageKind::Result,
+                content: UiContent::Text("stale".to_string()),
+                priority: None,
+            },
+        ));
+        app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+            turn_id,
+            RuntimeUiEffect::SetStatusSlot {
+                slot: StatusSlot::Agent,
+                value: StatusValue::Label("Idle".to_string()),
+            },
+        ));
 
         assert!(app.output_msgs.is_empty());
         assert!(!app.is_running);
@@ -159,33 +133,102 @@ mod tests {
         let mut app = App::new();
         let turn_id = app.begin_turn();
 
-        app.apply_session_update(SessionUpdate::ToolCallPreview {
+        app.apply_runtime_envelope(RuntimeUiEnvelope::message(
             turn_id,
-            command: Some("echo hi".to_string()),
-            preview: "hi".to_string(),
-        });
-        app.apply_session_update(SessionUpdate::TodoSnapshot {
+            RuntimeUiMessage {
+                target: UiTarget::Activity(ActivityTarget::Log),
+                source: UiSource::Tool {
+                    tool_name: "bash".to_string(),
+                },
+                kind: UiMessageKind::Log,
+                content: UiContent::Text("$ echo hi".to_string()),
+                priority: None,
+            },
+        ));
+        app.apply_runtime_envelope(RuntimeUiEnvelope::message(
             turn_id,
-            rendered: "[>] #1: Code".to_string(),
-        });
-        app.apply_session_update(SessionUpdate::WorkflowStepChanged {
+            RuntimeUiMessage {
+                target: UiTarget::Activity(ActivityTarget::Log),
+                source: UiSource::Tool {
+                    tool_name: "bash".to_string(),
+                },
+                kind: UiMessageKind::Log,
+                content: UiContent::Text("hi".to_string()),
+                priority: None,
+            },
+        ));
+        app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
             turn_id,
-            step_id: "execute".to_string(),
-            step_label: "Execute".to_string(),
-            index: 3,
-            total: 4,
-        });
-        app.apply_session_update(SessionUpdate::StepText {
+            RuntimeUiEffect::ReplacePanel {
+                target: UiTarget::Todo,
+                content: UiContent::Text("[>] #1: Code".to_string()),
+            },
+        ));
+        app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
             turn_id,
-            step_id: "plan".to_string(),
-            step_label: "Plan".to_string(),
-            text: "draft patch".to_string(),
-        });
-        app.apply_session_update(SessionUpdate::AssistantText {
+            RuntimeUiEffect::SetStatusSlot {
+                slot: StatusSlot::Workflow,
+                value: StatusValue::WorkflowStep {
+                    step_id: "execute".to_string(),
+                    step_label: "Execute".to_string(),
+                    index: 3,
+                    total: 4,
+                },
+            },
+        ));
+        app.apply_runtime_envelope(RuntimeUiEnvelope::message(
             turn_id,
-            text: "hello".to_string(),
-        });
-        app.apply_session_update(SessionUpdate::TurnFinished { turn_id });
+            RuntimeUiMessage {
+                target: UiTarget::Activity(ActivityTarget::Log),
+                source: UiSource::WorkflowStep {
+                    step_id: "execute".to_string(),
+                    step_label: "Execute".to_string(),
+                    index: 3,
+                    total: 4,
+                },
+                kind: UiMessageKind::Summary,
+                content: UiContent::Text("Execute".to_string()),
+                priority: None,
+            },
+        ));
+        app.apply_runtime_envelope(RuntimeUiEnvelope::message(
+            turn_id,
+            RuntimeUiMessage {
+                target: UiTarget::Response,
+                source: UiSource::WorkflowStep {
+                    step_id: "plan".to_string(),
+                    step_label: "Plan".to_string(),
+                    index: 0,
+                    total: 0,
+                },
+                kind: UiMessageKind::Narrative,
+                content: UiContent::Text("draft patch".to_string()),
+                priority: None,
+            },
+        ));
+        app.apply_runtime_envelope(RuntimeUiEnvelope::message(
+            turn_id,
+            RuntimeUiMessage {
+                target: UiTarget::Response,
+                source: UiSource::Assistant,
+                kind: UiMessageKind::Result,
+                content: UiContent::Text("hello".to_string()),
+                priority: None,
+            },
+        ));
+        app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+            turn_id,
+            RuntimeUiEffect::ClearStatusSlot {
+                slot: StatusSlot::Workflow,
+            },
+        ));
+        app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+            turn_id,
+            RuntimeUiEffect::SetStatusSlot {
+                slot: StatusSlot::Agent,
+                value: StatusValue::Label("Idle".to_string()),
+            },
+        ));
 
         assert_eq!(app.output_msgs.len(), 2);
         assert_eq!(app.output_msgs[0].text, "[Plan] draft patch");

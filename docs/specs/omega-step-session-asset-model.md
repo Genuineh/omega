@@ -16,6 +16,8 @@ related_prds: []
 
 本规格的目标，是在保持 `step` 术语不变的前提下，把当前固定四阶段 step 提升为通用 step definition，并引入 session 级资产管理边界。`omega-session` 统一管理 tools 与 skills 这类会话内资产，workflow step、后续 subagent、team 等执行体只从 session 的资产管理层申请、继承、扩展或屏蔽自己需要的能力；`context` 本轮仅保留为未来能力，不进入首轮实现范围。
 
+下一阶段还会在此基础上加入 scene-aware routing：`scene-recognition` 与 `select-workflow` 也将被建模为 step，而不是 session 外围的特殊预处理逻辑；未来个别 step 也可能触发 child workflow delegation。相关规划见 [docs/specs/omega-scene-routing.md](omega-scene-routing.md)。
+
 截至 2026-03-20，Task 15F-2B 已完成首轮落地：`omega-workflow` 内部模型已从 enum-centric 四阶段切换为 string-keyed `WorkflowStep`，`WorkflowPrompts` 已改为按 `step_id` 查找的映射结构，`omega-session` 已基于 `WorkflowRun` + `StepLoopMode` 驱动通用 step 编排，`SessionUpdate::WorkflowStepChanged` 也已补齐稳定的 `step_id` 字段。
 
 ## Goals
@@ -25,12 +27,13 @@ related_prds: []
 - 让 `omega-session` 成为 tools 与 skills 的统一资产管理入口。
 - 让 step 运行时默认继承 session 资产，并支持增补、屏蔽和按需加载。
 - 为未来的 subagent、team 等会话内执行体复用同一套资产管理机制。
+- 为 future scene-aware child workflow delegation 预留稳定的 step-level 扩展点。
 
 ## Non-Goals
 
 - 本次规划不要求实现 DAG、条件分支或循环回边。
 - 本次规划不要求立即实现 `context` 的结构化读写与 artifact schema。
-- 本次规划不要求把 `omega-tui` 变成 step 运行器；TUI 仍然只消费状态更新。
+- 本次规划不要求把 `omega-tui` 变成 step 运行器；TUI 仍然只消费状态更新。未来若引入 `omega-app` 装配层，也由 app 负责 session/tui wiring，而不是改变 step 领域所有权。
 - 本次规划不要求现在拆出新的 crate；优先在现有 `omega-workflow`、`omega-session`、`omega-core` 边界内演进。
 
 ## Terminology
@@ -61,8 +64,9 @@ related_prds: []
 - `omega-session`: 拥有 `SessionToolCatalog`、`SessionSkillCatalog`、step 进入/退出、step 资产解析与状态更新协议。
 - `omega-core`: 拥有底层 `Agent`、single-response、tool-loop、工具执行，不理解 workflow 结构。
 - `omega-tui`: 只消费结构化 step 更新，不持有 workflow 运行逻辑。
+- `omega-app`: 负责把 `omega-session` 产出的 step/update channel 装配到具体前端，不拥有 step policy。
 
-这与当前仓库的交互层边界一致，避免把非 UI 运行态重新塞回 `omega-tui`。
+这与当前仓库的交互层边界一致，避免把非 UI 运行态重新塞回 `omega-tui`，也避免未来把 session 资产策略错误塞进 `omega-app`。
 
 ## Proposed Model
 
@@ -214,6 +218,15 @@ impl ToolDispatcher {
 - `ToolLoop`: 进入标准 agent tool loop。先调用 `agent.set_visible_tools(Some(&resolved_names))` 设置该 step 的工具子集。
 
 这意味着当前 `analysis`、`plan`、`report` 仍然可以走无工具单响应，而 `execute` 走工具循环，但这个行为将来自 step 定义与 session 资产解析，而不是硬编码 if/else。
+
+## Forward Direction: Scene-Aware Workflow Delegation
+
+scene-aware routing 的下一阶段要求是：workflow selection 本身也被表达为 step，而不是额外平行机制。这带来两个边界要求：
+
+- `scene-recognition` 与 `select-workflow` 作为 root workflow step，仍然由 `omega-session` 用通用 step runner 执行。
+- 当某个 step 需要触发 child workflow 时，session 应维护 workflow stack / active workflow state，而不是把 delegation 逻辑散落到 UI 或 app shell。
+
+因此，后续模型应允许 step completion 保留类似 `StartWorkflow { workflow_id }` 的通用过渡语义。首轮 scene routing 只要求 `select-workflow` 使用它，但不应把它设计成不可复用的专用分支。
 
 ## Step Identity Model: Enum → String Migration
 
@@ -368,6 +381,7 @@ SessionUpdate::WorkflowStepChanged {
 | primary term | `step` | 与当前实现一致，避免再引入第二套并行名词 |
 | asset owner | `omega-session` | tools/skills 是会话内共享资产，应统一分配 |
 | workflow owner | `omega-workflow` | step definition 与 prompt/config 仍属于 workflow 领域 |
+| workflow delegation owner | `omega-session` | scene route 与 child workflow stack 仍然属于会话编排，而不是 UI / app shell |
 | context scope | reserved only | 先避免把未来 artifact 设计绑进当前任务 |
 | extensibility path | add step + resolve assets from session | 新增执行流程时，不再复制装配逻辑 |
 
@@ -377,3 +391,4 @@ SessionUpdate::WorkflowStepChanged {
 - 2026-03-20: 初版规划，将当前固定四阶段 workflow 演进为由 `FlowDefinition` 组成的 ordered flow sequence，并预留 flow context、tool policy 与 skill policy。
 - 2026-03-20: 根据进一步架构收敛，明确以 `step` 为正式术语，由 `omega-session` 统一管理 tools/skills 资产，`context` 延后单独设计。
 - 2026-03-20: 15F-2A 首轮实现完成：`SessionToolCatalog` / `SessionSkillCatalog` 已落地，`omega-core::Agent` 已支持 `set_visible_tools`，当前固定四阶段 runner 已通过 session 资产层切换工具可见性并保持既有行为稳定。
+- 2026-03-20: 补充下一阶段方向：scene-aware routing 仍以 step 和 session 编排为核心，`select-workflow` 只是首个 child workflow delegation step，而不是例外机制。

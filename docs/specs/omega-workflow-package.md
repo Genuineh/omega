@@ -16,10 +16,12 @@ related_prds: []
 
 本规格规划新增独立 crate `omega-workflow`，把单轮执行过程收敛为一个可配置、可观测的工作流系统。当前实现仍保持四个 canonical steps：`analysis -> plan -> execute -> report`，但内部模型已提升为 string-keyed step definition，并在 step 上显式承载 `prompt_path`、`loop_mode`、`tool_request`、`skill_request`。工作流定义从外部 `.omega/workflow.toml` 加载；阶段提示词从 `.omega/prompt/step/*.md` 加载；`omega-session` 负责驱动阶段推进并向前端发出 typed update；`omega-tui` 只负责在底部状态栏显示当前阶段。
 
+截至当前实现，这四个 canonical steps 实际上对应内建的 `feature` execution workflow。下一阶段若要在其之上加入 `scene`、`chat` workflow 与主路由 workflow，应以 [docs/specs/omega-scene-routing.md](omega-scene-routing.md) 为规划基线，而不是直接改写本规格中的“当前已实现状态”。
+
 ## Goals
 
 - 新增独立 `omega-workflow` crate，集中承载工作流定义、默认阶段、配置加载、校验与运行时阶段状态模型。
-- 为单轮执行提供稳定的四阶段语义：`analysis`、`plan`、`execute`、`report`。
+- 为单轮执行提供稳定的四阶段语义：`analysis`、`plan`、`execute`、`report`，作为当前内建 `feature` workflow。
 - 支持通过用户可编辑的 `.omega/workflow.toml` 对默认工作流做外部配置。
 - 支持通过 `.omega/prompt/step/analysis.md`、`plan.md`、`execute.md`、`report.md` 独立配置四阶段提示词。
 - 让 `omega-tui` 底部状态栏可以显示当前工作流阶段，而不是只显示 `Idle / Running`。
@@ -27,7 +29,7 @@ related_prds: []
 
 ## Non-Goals
 
-- 首期不实现任意 DAG、条件分支、循环回边、并行 step 或多工作流切换。
+- 当前已实现版本不实现任意 DAG、条件分支、循环回边、并行 step 或 scene-aware 多工作流切换；后者的下一阶段规划见 [docs/specs/omega-scene-routing.md](omega-scene-routing.md)。
 - 当前阶段仍不开放任意自定义 step id；仅允许在四个 canonical steps 上做顺序、标签和启用控制，内部模型泛化已先完成。
 - 首期不要求运行时热重载 `.omega/workflow.toml`。
 - 不把具体的 UI 样式逻辑塞进 `omega-workflow`。
@@ -83,7 +85,7 @@ related_prds: []
 
 ## Workflow Model
 
-首期固定 canonical steps：
+当前内建 `feature` workflow 固定 canonical steps：
 
 1. `analysis`
 2. `plan`

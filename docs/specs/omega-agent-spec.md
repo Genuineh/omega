@@ -2,7 +2,7 @@
 status: active
 owner: omega-team
 created: 2026-03-18
-updated: 2026-03-19
+updated: 2026-03-20
 version: 1.0
 related_prds: []
 ---
@@ -34,6 +34,7 @@ Omega 是一个用 Rust + ratatui 实现的 AI Agent，完整复刻 learn-claude
 omega/
 ├── Cargo.toml                    # 工作空间根配置
 ├── crates/
+│   ├── omega-app/               # 应用装配入口与唯一 main
 │   ├── omega-client/            # LLM 抽象接口与 provider 适配器
 │   ├── omega-message/            # 消息系统 (s09)
 │   ├── omega-tasks/             # 任务系统 (s07)
@@ -47,7 +48,7 @@ omega/
 │   ├── omega-background/        # 后台任务 (s08)
 │   ├── omega-team/              # 团队协作 (s09-s11)
 │   ├── omega-core/              # 核心 agent (组合所有)
-│   └── omega-tui/               # Ratatui TUI 界面库 + 薄 wrapper
+│   └── omega-tui/               # Ratatui TUI 界面库
 ```
 
 ### 依赖关系图
@@ -70,9 +71,10 @@ omega-core        <- omega-client + omega-tools + omega-todo + omega-subagent
                   + omega-compression + omega-tasks + omega-background + omega-skills
                   + omega-message + omega-team + omega-worktree
 omega-tui         <- omega-core
+omega-app         <- omega-core + omega-observability + omega-tui
 ```
 
-> 交互层说明：当前用户入口已收敛为 `omega-tui`。交互主路径为 `omega-tui -> omega-session -> omega-core`；较早阶段的 `omega-repl` 拆分方案已归档，不再作为当前结构目标。
+> 交互层说明：当前真实入口已迁移为 `omega-app`，运行时主路径为 `omega-app -> omega-tui -> omega-session -> omega-core`；`omega-tui` 现只保留 UI 库角色。较早阶段的 `omega-repl` 拆分方案已归档，不再作为当前结构目标。
 
 ### 计划中的交互基础设施
 
@@ -81,7 +83,7 @@ omega-tui         <- omega-core
 ### 数据流
 
 ```text
-TUI Events -> omega-tui -> omega-session -> omega-core -> omega-client -> LLM API
+App bootstrap -> omega-app -> omega-tui + omega-session -> omega-core -> omega-client -> LLM API
 ```
 
 ## API Specification

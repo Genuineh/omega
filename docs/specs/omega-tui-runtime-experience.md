@@ -16,7 +16,7 @@ related_prds: []
 
 本规格定义一套统一的 TUI 体验策略：把未来运行态能力收敛为底部状态徽章、可切换的 Activity 面板，以及少量持续可见的固定面板，避免每个 crate 各自发明一套 UI。
 
-当前事实补充：本规格讨论的是当前唯一用户入口 `omega-tui` 的体验边界。与现行主路径有关的依赖图与模块接通状态，以 `docs/specs/omega-runtime-ui-message-contract.md` 为最新基线。
+当前事实补充：本规格讨论的是当前由 `omega-tui` 消费的体验边界。当前真实入口已经迁移到 `omega-app`，由其完成装配并驱动 `omega-tui`；与现行主路径和装配路径有关的依赖图，以 `docs/specs/omega-runtime-ui-message-contract.md` 与 `docs/specs/omega-app-package.md` 为最新基线。当前 `omega-tui` 也已落地统一的 `TuiUpdateReducer`，作为 `RuntimeUiEnvelope` 的稳定 consumer/sink。
 
 ## Goals
 
@@ -99,7 +99,9 @@ related_prds: []
 底部状态带只承载“摘要”，不承载长文本细节。推荐后续统一追加如下徽章：
 
 - `Skills: N`：本轮已加载 skill 数量
+- `Scene: chat`：当前识别出的工作场景
 - `Flow: Analyze`：当前工作流阶段
+- `WF: feature/report`：当前 active workflow 或其关键阶段
 - `Ctx: 72%` 或 `Ctx: compacted`：上下文压力与压缩事件
 - `Subagents: 2 running`：委派中的子智能体数量
 - `Bg: 1 failed` / `Bg: idle`：后台任务总览
@@ -253,7 +255,9 @@ overlay 的职责是“短时聚焦交互”，而不是代替 `Activity` 或 `R
 - `Task 15E-1`: 为 `omega-tui` 抽离 `omega-theme` 主题包，把共享颜色、边框和组件视觉令牌集中管理，为后续 Markdown、高亮和会话统计等能力的视觉扩展提供稳定入口。
 - `Task 15F-1`: 为 `omega-session` 引入可配置 `omega-workflow` 执行阶段模型，并把当前阶段接入底部状态栏。
 - `Task 15F-3`: 为 workflow 与 future runtime-visible 模块建立统一 runtime UI message/effect contract。
-- `Task 15B-18`: 为 `omega-tui` 建立统一的 runtime UI sink/reducer，按协议 target/kind/source 消费上游消息，而不是继续 feature-by-feature 增加特例分支。
+- `Task 15B-18`: 已为 `omega-tui` 建立统一的 runtime UI sink/reducer，当前按协议 target/kind/source 消费上游消息，后续新能力应继续沿该 reducer 扩展，而不是重新回到 feature-by-feature 特例分支。
+- `Task 15F-4 / 15F-5`: 为 scene-aware routing 建立 `scene-recognition -> select-workflow -> child workflow` 主路径，并把 scene / workflow routing 收敛到 `omega-session`。
+- `Task 15B-19`: 为当前 scene、selected workflow 与 root/child workflow 切换结果提供稳定的底部状态带与 Activity 可见性。
 
 这些任务都不必先于 `Task 5` / `Task 10` 的核心 crate 实现完成，但应在这些能力正式追求 TUI 可用体验前落地；其中 `Task 15B-16` 应建立在 `Task 15B-16A` 之上，`Task 15B-17` 应建立在 `Task 15B-16` 之上，`Task 15E-1` 应建立在 `Task 15D` 与 `Task 15B-17` 已明确 UI 边界和底部布局之后，`Task 15F-1` 应建立在 `Task 15D` 提供的 `omega-session` 更新边界之上。
 

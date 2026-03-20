@@ -62,5 +62,6 @@ Omega 项目需要复刻 learn-claude-code 的 12 阶段教程，每个阶段有
 
 ## Notes
 - 依赖关系：底层 crate 无依赖，上层依赖下层
-- 2026-03-20: 交互层当前收敛为 `omega-tui` 单一用户入口；早期 `omega-repl` 路径已退役，不再计入当前 crate 结构基线
+- 2026-03-20: 交互层当前真实入口已迁移为 `omega-app`；早期 `omega-repl` 路径已退役，不再计入当前 crate 结构基线
+- 2026-03-20: `omega-app` 已作为应用装配入口落地，并计入当前已实现 crate 基线
 - 详见: docs/specs/omega-agent-impl-plan.md

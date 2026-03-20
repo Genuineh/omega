@@ -1,7 +1,11 @@
 [package]
-name = "omega-tui"
+name = "omega-app"
 version.workspace = true
 edition.workspace = true
+
+[[bin]]
+name = "omega"
+path = "src/main.rs"
 
 [dependencies]
 omega-core = { path = "../omega-core" }
@@ -9,13 +13,8 @@ omega-keymap = { path = "../omega-keymap" }
 omega-observability = { path = "../omega-observability" }
 omega-session = { path = "../omega-session" }
 omega-theme = { path = "../omega-theme" }
+omega-tui = { path = "../omega-tui" }
 omega-workflow = { path = "../omega-workflow" }
-ratatui.workspace = true
-crossterm.workspace = true
 anyhow.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-
-[dev-dependencies]
-async-trait.workspace = true
-omega-client = { path = "../omega-client" }
