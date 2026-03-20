@@ -95,6 +95,36 @@ impl ToolDispatcher {
         schemas
     }
 
+    /// Generate the `tools` array for a subset of tool names.
+    ///
+    /// Unknown names are ignored. The output remains sorted by tool name for
+    /// deterministic prompts and tests.
+    pub fn to_schemas_filtered(&self, names: &[&str]) -> Vec<Value> {
+        let name_set = names
+            .iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>();
+        let mut schemas: Vec<_> = self
+            .handlers
+            .values()
+            .filter(|handler| name_set.contains(handler.name()))
+            .map(|handler| {
+                json!({
+                    "name": handler.name(),
+                    "description": handler.description(),
+                    "input_schema": handler.input_schema(),
+                })
+            })
+            .collect();
+        schemas.sort_by(|a, b| {
+            a["name"]
+                .as_str()
+                .unwrap_or("")
+                .cmp(b["name"].as_str().unwrap_or(""))
+        });
+        schemas
+    }
+
     /// Returns the number of registered tool handlers.
     pub fn len(&self) -> usize {
         self.handlers.len()
@@ -175,6 +205,26 @@ mod tests {
 
         fn execute(&self, _input: Value) -> Result<String> {
             anyhow::bail!("intentional failure")
+        }
+    }
+
+    struct SecondTool;
+
+    impl ToolHandler for SecondTool {
+        fn name(&self) -> &str {
+            "second"
+        }
+
+        fn description(&self) -> &str {
+            "Second tool"
+        }
+
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+
+        fn execute(&self, _input: Value) -> Result<String> {
+            Ok("second".to_string())
         }
     }
 
@@ -266,6 +316,23 @@ mod tests {
         let schemas = d.to_schemas();
         assert_eq!(schemas[0]["name"], "echo");
         assert_eq!(schemas[1]["name"], "fail");
+    }
+
+    #[test]
+    fn to_schemas_filtered_returns_sorted_subset() {
+        let mut d = ToolDispatcher::new();
+        d.register(Box::new(EchoTool));
+        d.register(Box::new(SecondTool));
+
+        let schemas = d.to_schemas_filtered(&["second", "echo", "missing"]);
+        let defs: Vec<ToolDefinition> = schemas
+            .into_iter()
+            .map(|value| serde_json::from_value(value).unwrap())
+            .collect();
+
+        assert_eq!(defs.len(), 2);
+        assert_eq!(defs[0].name, "echo");
+        assert_eq!(defs[1].name, "second");
     }
 
     #[test]

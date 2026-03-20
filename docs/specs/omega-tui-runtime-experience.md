@@ -2,8 +2,8 @@
 status: draft
 owner: omega-team
 created: 2026-03-19
-updated: 2026-03-19
-version: 1.0
+updated: 2026-03-20
+version: 1.1
 supersedes: []
 related_prds: []
 ---
@@ -16,12 +16,15 @@ related_prds: []
 
 本规格定义一套统一的 TUI 体验策略：把未来运行态能力收敛为底部状态徽章、可切换的 Activity 面板，以及少量持续可见的固定面板，避免每个 crate 各自发明一套 UI。
 
+当前事实补充：本规格讨论的是 `omega-tui` 这条 richer shell 路径的体验边界，而不是所有前端的统一体验边界。截至当前，`omega-repl` 仍然是直接面向 `omega-core::Agent` 的 thin shell，不消费 `omega-session` 的 workflow/update 协议。与当前主路径有关的依赖图与模块接通状态，以 `docs/specs/omega-runtime-ui-message-contract.md` 为最新基线。
+
 ## Goals
 
 - 为后续主线任务提供统一的 TUI 落点，避免面板数量失控。
 - 明确哪些信息应该进入状态栏、Activity 面板、Todo 面板、日志流和 Response 主面板。
 - 保持 `omega-core` / `omega-session` 前端无关，不把 widget 语义或布局决策回灌到核心 crate。
 - 为未来 `15B-11` 搜索、`15B-12` 会话统计与可调面板预留稳定的信息架构。
+- 为未来统一 runtime UI message/effect contract 预留稳定 target 与 surface 语义。
 
 ## Non-Goals
 
@@ -33,6 +36,7 @@ related_prds: []
 
 | Task | Crate | Why TUI Needs a UX Plan |
 |------|-------|-------------------------|
+| Task 15F-1 | `omega-workflow` | 用户需要看到当前 turn 处于分析、计划、执行还是报告阶段 |
 | Task 5 | `omega-skills` | 用户需要知道本轮实际加载了哪些 skills，避免“看不见的 prompt 变化” |
 | Task 10 | `omega-subagent` | 委派是否发生、子任务是否仍在运行、结果是否回收，需要前端可见 |
 | Task 11 | `omega-compression` | 历史是否被压缩、当前上下文压力如何，必须有轻量反馈 |
@@ -48,7 +52,7 @@ related_prds: []
 
 | Surface | Purpose | Data Class |
 |---------|---------|-----------|
-| `Response` | 当前主对话、工具输出和最终回答 | turn-primary content |
+| `Response` | 当前主对话、各 step 的文本结果与最终用户可见回答 | turn-primary content |
 | `Todos` | 当前任务的局部执行计划 | short-lived task plan |
 | `Activity` | 与运行时能力相关的可切换详情视图 | runtime secondary state |
 | `Overlay` | 搜索、确认、详情查看等短时浮动交互 | transient focused interaction |
@@ -95,6 +99,7 @@ related_prds: []
 底部状态带只承载“摘要”，不承载长文本细节。推荐后续统一追加如下徽章：
 
 - `Skills: N`：本轮已加载 skill 数量
+- `Flow: Analyze`：当前工作流阶段
 - `Ctx: 72%` 或 `Ctx: compacted`：上下文压力与压缩事件
 - `Subagents: 2 running`：委派中的子智能体数量
 - `Bg: 1 failed` / `Bg: idle`：后台任务总览
@@ -113,6 +118,8 @@ related_prds: []
 
 - 保留当前日志语义，作为默认回退 view。
 - 继续承担调试输出、事件流和错误详情。
+- workflow phase 切换、tool preview、todo 刷新这类 runtime activity 应优先进入该 view，而不是混入 `Response` 主对话流。
+- `Response` 面板应承载用户真正需要阅读的文本产物，包括 step 正文结果与最终 assistant 回复；纯运行态事件仍留在 `Activity & Logs`。
 
 ### Skills View
 
@@ -171,6 +178,8 @@ overlay 的职责是“短时聚焦交互”，而不是代替 `Activity` 或 `R
 
 | Capability | Bottom Status Bar | Activity View | Response | Todo |
 |-----------|------------|---------------|----------|------|
+| workflow | current step / warning | 未来可扩展 `Workflow` | 否 | 否 |
+| tool execution preview | 否 | `Logs` | 否 | 否 |
 | skills | count / warning | `Skills` | 可在回答中简述，但不重复完整列表 | 否 |
 | subagent | running count / error | `Delegations` | 保留最终回收结果 | 否 |
 | compression | pressure / compacted | `Logs` 或未来 `Context` | 否 | 否 |
@@ -198,10 +207,14 @@ overlay 的职责是“短时聚焦交互”，而不是代替 `Activity` 或 `R
 
 为了保持边界清晰，后续 runtime-visible 能力应优先通过 `omega-session` 暴露“前端可消费但不带 widget 语义”的更新，而不是让 `omega-tui` 直接读取各个 crate 的内部 manager。
 
+这里的 `omega-session` 指当前 TUI 主路径上的 session boundary，不应自动推断为 REPL 已经接入同一层。REPL 是否在后续复用 `omega-session`，属于未来的架构收敛动作，而不是当前已成立的事实。
+
 建议遵守以下规则：
 
 - `omega-core` 只产生领域数据，不理解 `Activity view`、badge 顺序、颜色和焦点。
 - `omega-session` 负责把领域事件归一为稳定的前端更新协议。
+- `omega-session` 应负责把工作流阶段变化归一为 typed update，而不是让 `omega-tui` 直接推断阶段。
+- 未来更通用的跨模块前端协议应以 `docs/specs/omega-runtime-ui-message-contract.md` 为主规格，`omega-tui` 只消费 target/kind/source 清晰的 runtime UI envelope。
 - `omega-theme` 负责承载共享视觉令牌，例如颜色、边框类型、状态语义色和组件级样式槽，避免这些定义继续散落在 `omega-tui` 的多个渲染函数里。
 - `omega-tui` 负责决定这些协议映射到哪个 badge、哪个 Activity view、以及窄终端如何退化。
 
@@ -238,8 +251,11 @@ overlay 的职责是“短时聚焦交互”，而不是代替 `Activity` 或 `R
 - `Task 15B-16`: 为 `Activity` 面板与状态栏徽章建立统一基础，作为后续 skills/subagent/background/team/worktree 等能力接入 TUI 的统一承载层。
 - `Task 15B-17`: 为输入上下文带与底部状态带建立稳定布局和状态槽，为后续会话统计与运行态摘要扩展提供底座。
 - `Task 15E-1`: 为 `omega-tui` 抽离 `omega-theme` 主题包，把共享颜色、边框和组件视觉令牌集中管理，为后续 Markdown、高亮和会话统计等能力的视觉扩展提供稳定入口。
+- `Task 15F-1`: 为 `omega-session` 引入可配置 `omega-workflow` 执行阶段模型，并把当前阶段接入底部状态栏。
+- `Task 15F-3`: 为 workflow 与 future runtime-visible 模块建立统一 runtime UI message/effect contract。
+- `Task 15B-18`: 为 `omega-tui` 建立统一的 runtime UI sink/reducer，按协议 target/kind/source 消费上游消息，而不是继续 feature-by-feature 增加特例分支。
 
-这些任务都不必先于 `Task 5` / `Task 10` 的核心 crate 实现完成，但应在这些能力正式追求 TUI 可用体验前落地；其中 `Task 15B-16` 应建立在 `Task 15B-16A` 之上，`Task 15B-17` 应建立在 `Task 15B-16` 之上，`Task 15E-1` 应建立在 `Task 15D` 与 `Task 15B-17` 已明确 UI 边界和底部布局之后。
+这些任务都不必先于 `Task 5` / `Task 10` 的核心 crate 实现完成，但应在这些能力正式追求 TUI 可用体验前落地；其中 `Task 15B-16` 应建立在 `Task 15B-16A` 之上，`Task 15B-17` 应建立在 `Task 15B-16` 之上，`Task 15E-1` 应建立在 `Task 15D` 与 `Task 15B-17` 已明确 UI 边界和底部布局之后，`Task 15F-1` 应建立在 `Task 15D` 提供的 `omega-session` 更新边界之上。
 
 ## Technical Decisions
 
@@ -265,3 +281,7 @@ overlay 的职责是“短时聚焦交互”，而不是代替 `Activity` 或 `R
 - 2026-03-19: 补充 overlay / popup 交互层定位，明确其作为短时浮动交互基础设施先于 Activity 详情交互落地。
 - 2026-03-19: 补充输入上下文带与底部状态带规则，明确移除顶部密集 header，并将持续状态摘要下移到底部固定区域。
 - 2026-03-19: 补充 `omega-theme` 主题包边界，规划把共享视觉令牌从 `omega-tui` 渲染实现中抽离。
+- 2026-03-19: 补充 `omega-workflow` 可配置四阶段执行模型，规划把当前工作流阶段接入底部状态栏摘要。
+- 2026-03-20: workflow 接入后明确 `Response` 与 `Activity & Logs` 的职责分工：前者承载用户可阅读的对话与 step 正文结果，后者承载 workflow 阶段切换、tool preview、todo 刷新与 tracing runtime activity。
+- 2026-03-20: 补充统一 runtime UI message/effect contract 规划，要求未来 runtime-visible 模块通过稳定 target/kind/source 协议接入 TUI。
+- 2026-03-20: v1.1 — 补充当前 richer shell / thin shell 分裂现实，明确本规格仅覆盖 `omega-tui` 路径；与 `omega-repl`、`omega-session`、`omega-core` 的现状依赖关系以 `omega-runtime-ui-message-contract.md` 的 current-state 图为准。

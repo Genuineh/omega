@@ -37,6 +37,7 @@ pub struct Agent {
     messages: Vec<Message>,
     system: String,
     tool_definitions: Vec<ToolDefinition>,
+    all_tool_definitions: Vec<ToolDefinition>,
     max_tokens: u32,
     max_iterations: u32,
 }
@@ -54,6 +55,7 @@ impl Agent {
             dispatcher,
             messages: Vec::new(),
             system,
+            all_tool_definitions: tool_definitions.clone(),
             tool_definitions,
             max_tokens: 8_000,
             max_iterations: DEFAULT_MAX_ITERATIONS,
@@ -62,6 +64,28 @@ impl Agent {
 
     pub fn add_user_message(&mut self, content: &str) {
         self.messages.push(Message::user(content));
+    }
+
+    pub async fn run_single_response(&mut self) -> Result<String> {
+        let request = ChatRequest::new(self.messages.clone())
+            .with_system(&self.system)
+            .with_max_tokens(self.max_tokens);
+
+        let response = self
+            .client
+            .chat(request)
+            .await
+            .map_err(|e| anyhow!("{e}"))?;
+
+        if response.is_tool_use() {
+            return Err(anyhow!(
+                "model requested tools during a no-tools workflow phase"
+            ));
+        }
+
+        self.messages
+            .push(Message::assistant(response.content.clone()));
+        Ok(response.text_content())
     }
 
     /// Run the agent loop without tool-call callbacks.
@@ -208,6 +232,36 @@ impl Agent {
     pub fn set_system(&mut self, system: String) {
         self.system = system;
     }
+
+    pub fn set_visible_tools(&mut self, names: Option<&[&str]>) -> Vec<String> {
+        let tool_definitions = match names {
+            Some(names) => self
+                .dispatcher
+                .to_schemas_filtered(names)
+                .into_iter()
+                .map(|value| {
+                    serde_json::from_value(value)
+                        .map_err(|error| anyhow!("invalid tool schema: {error}"))
+                })
+                .collect::<Result<Vec<ToolDefinition>>>()
+                .expect("dispatcher generated invalid filtered tool schema"),
+            None => self.all_tool_definitions.clone(),
+        };
+
+        let names = tool_definitions
+            .iter()
+            .map(|definition| definition.name.clone())
+            .collect::<Vec<_>>();
+        self.tool_definitions = tool_definitions;
+        names
+    }
+
+    pub fn visible_tool_names(&self) -> Vec<&str> {
+        self.tool_definitions
+            .iter()
+            .map(|definition| definition.name.as_str())
+            .collect()
+    }
 }
 
 /// Create a ToolDispatcher with all built-in tools.
@@ -305,6 +359,41 @@ mod tests {
         agent.add_user_message("hi");
         let result = agent.run_loop().await.unwrap();
         assert_eq!(result, "Hello!");
+    }
+
+    #[tokio::test]
+    async fn single_response_uses_system_without_tools() {
+        struct RecordingClient {
+            systems: Mutex<Vec<Option<String>>>,
+        }
+
+        #[async_trait]
+        impl LlmClient for RecordingClient {
+            async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, ClientError> {
+                self.systems.lock().unwrap().push(request.system.clone());
+                assert!(request.tools.is_empty());
+                Ok(text_response("planned"))
+            }
+
+            fn provider_name(&self) -> &'static str {
+                "recording"
+            }
+        }
+
+        let client = Arc::new(RecordingClient {
+            systems: Mutex::new(Vec::new()),
+        });
+        let dispatcher = create_default_tools(std::env::temp_dir());
+        let mut agent = Agent::new(client.clone(), "phase prompt".to_string(), dispatcher).unwrap();
+        agent.add_user_message("go");
+
+        let result = agent.run_single_response().await.unwrap();
+
+        assert_eq!(result, "planned");
+        assert_eq!(
+            client.systems.lock().unwrap().as_slice(),
+            &[Some("phase prompt".to_string())]
+        );
     }
 
     #[tokio::test]
@@ -620,6 +709,42 @@ mod tests {
         let mut agent = Agent::new(client, "test".to_string(), dispatcher).unwrap();
         agent.set_max_tokens(4096);
         // No panic; just verifies the setter works
+    }
+
+    #[test]
+    fn set_visible_tools_filters_model_visible_tool_subset() {
+        let client: DynLlmClient = Arc::new(MockLlmClient::new(vec![]));
+        let dispatcher = create_default_tools(std::env::temp_dir());
+        let mut agent = Agent::new(client, "test".to_string(), dispatcher).unwrap();
+
+        let visible = agent.set_visible_tools(Some(&["todo", "bash", "missing"]));
+
+        assert_eq!(visible, vec!["bash".to_string(), "todo".to_string()]);
+        assert_eq!(agent.visible_tool_names(), vec!["bash", "todo"]);
+    }
+
+    #[test]
+    fn set_visible_tools_none_restores_all_tools() {
+        let client: DynLlmClient = Arc::new(MockLlmClient::new(vec![]));
+        let dispatcher = create_default_tools(std::env::temp_dir());
+        let mut agent = Agent::new(client, "test".to_string(), dispatcher).unwrap();
+
+        agent.set_visible_tools(Some(&[]));
+        assert!(agent.visible_tool_names().is_empty());
+
+        let restored = agent.set_visible_tools(None);
+        assert_eq!(restored.len(), 6);
+        assert_eq!(
+            agent.visible_tool_names(),
+            vec![
+                "bash",
+                "edit_file",
+                "load_skill",
+                "read_file",
+                "todo",
+                "write_file"
+            ]
+        );
     }
 
     #[tokio::test]

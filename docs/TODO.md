@@ -129,7 +129,7 @@ _将 M11 中基础级体验优化前移，确保在开发后续功能时有可�
 - **Description**: 将当前 `Todos` + `Logs` 组合升级为统一可收起的右侧 `Sidebar`，支持整体收起快捷键、顶部图标轨、section 折叠/切换，以及面向 `skills/subagent/tasks/background/message/team/worktree` 的 `Activity` 面板基础
 - **Complexity**: M
 - **Related**: docs/specs/omega-tui-runtime-experience.md, docs/specs/omega-tui-collapsible-sidebar.md, docs/specs/omega-tui-modal-keymap.md, docs/specs/omega-tui-overlay-popups.md
-- **Summary**: `omega-tui` 新增统一 `Sidebar` shell 与本地 `SidebarState`，把右侧辅助区重构为 `Response | Sidebar` 布局，并在侧边栏顶部加入轻量可聚焦 rail；当前 rail 直接以 `Todos | Logs` 呈现，`Logs` 面板不再显示 `Activity[Logs]` 包装标题，支持 `leader b` 整体收起/展开、rail 左右切换、`x` 折叠 section、`Enter` 激活展开内容，同时显式禁止把最后一个 section 收起成空 sidebar；窄终端会自动隐藏侧边栏并回退焦点，状态栏同步增加 sidebar/logs 徽章信息；相关布局、事件和状态单测已覆盖，并以 `cargo test -p omega-tui`、`cargo test -p omega-keymap -p omega-tui`、`cargo clippy -p omega-keymap -p omega-tui --all-targets -- -D warnings` 验证
+- **Summary**: `omega-tui` 新增统一 `Sidebar` shell 与本地 `SidebarState`，把右侧辅助区重构为 `Response | Sidebar` 布局，并在侧边栏顶部加入轻量可聚焦 rail；当前 rail 直接以 `Todos | Logs` 呈现，后续 workflow 接入后又进一步收敛出清晰语义分工：`Response` 展示用户输入、各 step 的文本结果与最终 assistant 回复，右侧 `Activity & Logs` 承接 workflow phase、tool preview、todo 刷新与 tracing 日志，避免把纯运行态事件伪装成对用户的回答；支持 `leader b` 整体收起/展开、rail 左右切换、`x` 折叠 section、`Enter` 激活展开内容，同时显式禁止把最后一个 section 收起成空 sidebar；窄终端会自动隐藏侧边栏并回退焦点，状态栏同步增加 sidebar/logs 徽章信息；相关布局、事件和状态单测已覆盖，并以 `cargo test -p omega-tui`、`cargo test -p omega-keymap -p omega-tui`、`cargo clippy -p omega-keymap -p omega-tui --all-targets -- -D warnings` 验证
 
 ### Task 15B-17: omega-tui — 输入上下文带与底部状态带重构
 - **Status**: Completed
@@ -286,6 +286,52 @@ _基础体验已在 M1.7 完成，此处保留高级特性。_
 - **Blocked by**: Task 15D
 - **Blocks**: Task 15B-8, Task 15B-9, Task 15B-12
 - **Summary**: 新增 `omega-theme` crate，提供内建 `dark` 主题、语义/组件级主题结构、`.omega/theme.toml` 默认模板写入、TOML 解析与覆盖式合并、非法配置告警与安全回退；`omega-tui` 启动时现与 keymap 一样加载主题，并将所有主要面板、输入框、状态带、消息样式和 overlay 视觉令牌统一改为消费 `omega-theme`，为后续 Markdown/高亮/统计类视觉扩展提供集中入口
+
+### Task 15F-1: omega-workflow — 可配置四阶段工作流系统
+- **Status**: Completed
+- **Completed**: 2026-03-19
+- **Priority**: Medium
+- **Description**: 新增独立 `omega-workflow` crate，支持通过 `.omega/workflow.toml` 配置单轮执行的 `analysis -> plan -> execute -> report` 四阶段工作流，并由 `omega-session` 推送结构化阶段更新，让 `omega-tui` 在底部状态栏显示当前执行阶段
+- **Complexity**: M
+- **Related**: docs/specs/omega-workflow-package.md, docs/specs/omega-tui-runtime-experience.md, docs/specs/omega-tui-input-status-layout.md, docs/specs/omega-agent-impl-plan.md
+- **Summary**: 新增 `omega-workflow` crate，复用 `.omega/*.toml` 约定提供默认 `workflow.toml` 生成、解析、校验与回退，并将四阶段提示词外置到 `.omega/prompt/step/analysis.md|plan.md|execute.md|report.md`；`omega-session` 现按真实阶段顺序驱动无工具分析、无工具计划、工具执行与最终报告，而不再在线程启动后直接跳到 `execute`；`omega-tui` 继续消费结构化 `WorkflowStepChanged` 更新，在底部状态带显示当前 `flow <label> <index>/<total>`；相关单测已补齐
+- **Blocked by**: Task 15D
+
+### Task 15F-2A: omega-session — 会话资产管理基础
+- **Status**: Completed
+- **Completed**: 2026-03-20
+- **Priority**: Medium
+- **Description**: 在 `omega-session` 内建立 `SessionToolCatalog`（独立结构体，纯 resolve 方法，`Arc` 友好）和 `SessionSkillCatalog`；在 `omega-core::Agent` 补齐 `set_visible_tools` + `ToolDispatcher::to_schemas_filtered` 动态工具切换 API；`AgentSession` 通过组合持有 catalog，避免 God Object 膨胀
+- **Complexity**: L
+- **Related**: docs/specs/omega-step-session-asset-model.md, docs/specs/omega-agent-impl-plan.md
+- **Summary**: 已新增 `crates/omega-session/src/tool_catalog.rs` 与 `crates/omega-session/src/skill_catalog.rs`，分别承接 tools/skills 的独立 resolve 逻辑；`omega-core::Agent` 已支持 `set_visible_tools` 动态切换模型可见工具，`omega-tools::ToolDispatcher` 已支持 `to_schemas_filtered` 生成稳定排序的工具子集 schema；当前 `AgentSession` 已通过组合持有两个 catalog，并让现有固定四阶段 runner 经由 catalog 和 visible-tools API 执行，从而在不改变现有四阶段行为的前提下完成 15F-2B 的前置资产层；`cargo test -p omega-tools -p omega-core -p omega-session -p omega-skills` 与对应 `clippy -D warnings` 已通过
+
+### Task 15F-2B: omega-workflow — 通用 Step 编排接入会话资产层
+- **Status**: Completed
+- **Completed**: 2026-03-20
+- **Priority**: Medium
+- **Description**: 分步实现：(1) `WorkflowStepKind` enum → `id: String` 内部模型泛化（保持 4 canonical id 配置兼容），`WorkflowPrompts` 改为 `HashMap`；(2) step 定义增加 `StepLoopMode` + `StepToolRequest` + `StepSkillRequest`；(3) `omega-session` 改为通用 step runner，采用 `WorkflowRun` 状态机替代直接 iterator；(4) 事件协议增加 `step_id` 字段与 `step_label` 分离；`context` 本轮仅保留不实现
+- **Complexity**: L
+- **Related**: docs/specs/omega-step-session-asset-model.md, docs/specs/omega-workflow-package.md, docs/specs/omega-agent-impl-plan.md
+- **Summary**: `omega-workflow` 已完成 string-keyed step 内部模型改造，并把 `prompt_path`、`StepLoopMode`、`StepToolRequest`、`StepSkillRequest` 收敛到通用 `WorkflowStep` 定义；`omega-session` 已使用 `WorkflowRun` 驱动 step 编排，按 `loop_mode` 决定无工具单响应或工具循环，并通过 session catalogs 解析每个 step 的 tools/skills；`SessionUpdate::WorkflowStepChanged` 现包含稳定 `step_id`，`omega-tui` 已适配；`cargo test -p omega-workflow -p omega-session -p omega-tui -p omega-core -p omega-skills` 与对应 `clippy -D warnings` 已通过
+
+### Task 15F-3: omega-session — 统一 runtime UI 消息与效果协议
+- **Status**: Pending
+- **Priority**: Medium
+- **Description**: 为 workflow 与后续 runtime-visible 模块建立统一的 runtime UI message/effect contract，替代继续在 `SessionUpdate` 中按 feature 堆特例；同时定义 session-owned bridge / runtime context 边界，明确哪些输出走 UI 协议，哪些交互继续走 domain event / API
+- **Complexity**: L
+- **Related**: docs/specs/omega-runtime-ui-message-contract.md, docs/specs/omega-tui-runtime-experience.md, docs/specs/omega-step-session-asset-model.md, docs/specs/omega-agent-impl-plan.md
+- **Planning Note**: 2026-03-20 已在 `docs/specs/omega-runtime-ui-message-contract.md` 补充以 TUI shell 为核心的现状/目标依赖图；后续 15F-3 与 15B-18 的实现和拆分，都应以 `omega-tui shell -> omega-session -> omega-core` 为主链路，而不是按仓库内已存在 crate 名称直接扩张 UI surface
+- **Blocks**: Task 15B-18
+
+### Task 15B-18: omega-tui — 统一 runtime UI sink / reducer
+- **Status**: Pending
+- **Priority**: Medium
+- **Description**: 让 `omega-tui` 作为统一 runtime UI 协议的 consumer/sink，按 `target` / `kind` / `source` 路由上游消息到 `Response`、`Activity`、`Todo`、`StatusBar` 与 `Overlay`，为 workflow Response 输出体验和未来多样式扩展建立稳定 reducer 架构
+- **Complexity**: M
+- **Related**: docs/specs/omega-runtime-ui-message-contract.md, docs/specs/omega-tui-runtime-experience.md, docs/specs/omega-agent-impl-plan.md
+- **Planning Note**: 先只收敛当前已接通的 richer shell 主路径（`omega-tui -> omega-session -> omega-core`）；对 `subagent/background/message/team/worktree` 仅保留 target/source 语义，不因 Cargo 依赖已存在而提前做 feature-specific reducer 分支
+- **Blocked by**: Task 15F-3
 
 ### Task 15B-8: omega-tui — Markdown 渲染
 - **Status**: Pending

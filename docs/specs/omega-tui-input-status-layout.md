@@ -80,18 +80,19 @@ related_prds: []
 
 - `primary slot`: 模型名
 - `state slot`: 运行态，例如 `Idle` / `Running`
+- `workflow slot`: 当前执行阶段，例如 `Analyze` / `Plan` / `Execute` / `Report`
 - `extension slots`: 预留给后续功能的附加状态项
 
 扩展规则：
 
 - 各 slot 只接收结构化状态项，不直接拼接完整展示字符串。
 - 展示顺序固定，避免每个功能自由插队。
-- 窄终端下优先保留 `primary slot` 和 `state slot`，其余 slot 可截断、折叠或隐藏。
+- 窄终端下优先保留 `primary slot`、`state slot` 和 `workflow slot`，其余 slot 可截断、折叠或隐藏。
 
 ## Interaction Rules
 
 - `Input context bar` 负责“当前正在发生什么”，例如 leader 序列等待、当前模式下的快捷键提示、局部 notice。
-- `Bottom status bar` 负责“系统当前处于什么状态”，例如模型、运行中/空闲、未来的统计和运行态摘要。
+- `Bottom status bar` 负责“系统当前处于什么状态”，例如模型、运行中/空闲、当前 workflow step 与未来的统计和运行态摘要。
 - overlay 激活时，上下文带可切换为 overlay 专属提示；底部状态带仍保留基础状态摘要。
 - `Sidebar` 收起或展开不应影响底部两条固定区域的结构。
 
@@ -101,6 +102,7 @@ related_prds: []
 - `docs/specs/omega-tui-collapsible-sidebar.md` 中提到的状态栏摘要，应理解为新的底部状态带，而非旧顶部 header。
 - `docs/specs/omega-tui-overlay-popups.md` 中的短时提示，应优先复用输入上下文带，而不是污染底部状态带。
 - `docs/specs/omega-theme-package.md` 应承接输入框、上下状态条、边框形态和状态语义色的共享视觉令牌，避免这些定义继续散落在 `omega-tui` 的单个渲染文件中。
+- `docs/specs/omega-workflow-package.md` 应承接 workflow step 的定义、外部配置与阶段推进模型；底部状态带只消费结构化阶段摘要。
 
 ## Task Planning Impact
 
@@ -144,3 +146,4 @@ related_prds: []
 - 2026-03-19: `Task 15B-17` 完成实现，主布局改为 `Main content -> Input context bar -> Input box -> Bottom status bar`，底部状态带以 slot 化 segment 渲染模型名与运行态。
 - 2026-03-19: 新增输入上下文带与底部状态带布局规格，规划 TUI 底部区域的统一重构方向。
 - 2026-03-19: 补充与 `omega-theme` 的关系，明确输入框和上下状态条的视觉令牌后续应由独立主题包统一管理。
+- 2026-03-19: 补充 workflow slot 规划，要求底部状态带可显示当前执行阶段，并与 `omega-workflow` 的结构化阶段模型对齐。

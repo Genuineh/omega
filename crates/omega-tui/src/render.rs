@@ -103,7 +103,6 @@ pub fn render(frame: &mut Frame, app: &mut App, model_name: &str, theme: &OmegaT
             let style = match msg.kind {
                 MsgKind::User => Style::default().fg(colors.user_message),
                 MsgKind::Agent => Style::default().fg(colors.agent_message),
-                MsgKind::Tool => Style::default().fg(colors.tool_message),
                 MsgKind::Error => Style::default().fg(colors.error_message),
                 MsgKind::Separator => Style::default().fg(colors.separator_message),
             };
@@ -285,10 +284,13 @@ fn input_context_line(app: &App, sidebar_hidden: bool, colors: &ColorScheme) -> 
 
 #[cfg(test)]
 fn bottom_status_text(app: &App, model_name: &str, spinner_frames: &[char]) -> String {
-    format!(
-        " {} ",
-        bottom_status_segments(app, model_name, spinner_frames).join(" │ ")
-    )
+    let segments = bottom_status_segments(app, model_name, spinner_frames);
+    let mut rendered = vec![segments.model, segments.state];
+    if let Some(flow) = segments.flow {
+        rendered.push(flow);
+    }
+
+    format!(" {} ", rendered.join(" │ "))
 }
 
 fn bottom_status_line(
@@ -308,7 +310,7 @@ fn bottom_status_line(
         InteractionMode::Insert => colors.mode_insert_fg,
     };
 
-    Line::from(vec![
+    let mut spans = vec![
         Span::styled(
             " mode ",
             Style::default()
@@ -335,7 +337,7 @@ fn bottom_status_line(
                 .bg(colors.status_bar_bg),
         ),
         Span::styled(
-            segments[0].clone(),
+            segments.model,
             Style::default()
                 .fg(colors.text)
                 .bg(colors.status_bar_bg)
@@ -354,7 +356,7 @@ fn bottom_status_line(
                 .bg(colors.status_bar_bg),
         ),
         Span::styled(
-            segments[1].clone(),
+            segments.state,
             Style::default()
                 .fg(if runtime_active {
                     colors.status_running_fg
@@ -364,18 +366,64 @@ fn bottom_status_line(
                 .bg(colors.status_bar_bg)
                 .add_modifier(Modifier::BOLD),
         ),
-    ])
+    ];
+
+    if let Some(flow) = segments.flow {
+        spans.push(Span::styled(
+            "  ·  ",
+            Style::default()
+                .fg(colors.bar_divider)
+                .bg(colors.status_bar_bg),
+        ));
+        spans.push(Span::styled(
+            " flow ",
+            Style::default()
+                .fg(colors.status_label)
+                .bg(colors.status_bar_bg),
+        ));
+        spans.push(Span::styled(
+            flow,
+            Style::default()
+                .fg(colors.focus_border)
+                .bg(colors.status_bar_bg)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    Line::from(spans)
 }
 
-fn bottom_status_segments(app: &App, model_name: &str, spinner_frames: &[char]) -> Vec<String> {
+struct BottomStatusSegments {
+    model: String,
+    state: String,
+    flow: Option<String>,
+}
+
+fn bottom_status_segments(
+    app: &App,
+    model_name: &str,
+    spinner_frames: &[char],
+) -> BottomStatusSegments {
     let spinner_char = spinner_frames[(app.spinner_tick as usize / 2) % spinner_frames.len()];
-    let runtime_state = if app.is_running {
+    let state = if app.is_running {
         format!("{spinner_char} Running…")
     } else {
         "● Idle".to_string()
     };
 
-    vec![model_name.to_string(), runtime_state]
+    let flow = if app.is_running {
+        app.workflow_summary
+            .as_ref()
+            .map(|workflow| format!("{} {}/{}", workflow.label, workflow.index, workflow.total))
+    } else {
+        None
+    };
+
+    BottomStatusSegments {
+        model: model_name.to_string(),
+        state,
+        flow,
+    }
 }
 
 fn render_sidebar_rail(
@@ -901,11 +949,18 @@ mod tests {
         let mut app = App::new();
         app.is_running = true;
         app.spinner_tick = 3;
+        app.workflow_summary = Some(crate::app::WorkflowSummary {
+            id: "analysis".to_string(),
+            label: "Analyze".to_string(),
+            index: 1,
+            total: 4,
+        });
 
         let text = bottom_status_text(&app, "test-model", &['⠋', '⠙']);
 
         assert!(text.contains("test-model"));
         assert!(text.contains("Running…"));
+        assert!(text.contains("Analyze 1/4"));
         assert!(!text.contains("Omega Agent"));
         assert!(!text.contains("Mode:"));
         assert!(!text.contains("Focus:"));
@@ -941,5 +996,21 @@ mod tests {
         assert_eq!(status.spans[7].style.fg, Some(colors.status_running_fg));
         assert_eq!(colors.context_bar_bg, colors.status_bar_bg);
         assert_eq!(colors.input_bg, colors.context_bar_bg);
+    }
+
+    #[test]
+    fn idle_bottom_status_hides_workflow_segment() {
+        let mut app = App::new();
+        app.workflow_summary = Some(crate::app::WorkflowSummary {
+            id: "report".to_string(),
+            label: "Report".to_string(),
+            index: 4,
+            total: 4,
+        });
+
+        let text = bottom_status_text(&app, "test-model", &['⠋', '⠙']);
+
+        assert!(!text.contains("Report 4/4"));
+        assert!(text.contains("● Idle"));
     }
 }

@@ -2,14 +2,16 @@
 status: draft
 owner: omega-team
 created: 2026-03-19
-updated: 2026-03-19
-version: 1.0
+updated: 2026-03-20
+version: 1.1
 supersedes: []
 related_prds:
   - docs/prds/observability-logging.md
 ---
 
 # Omega TUI 非 UI 职责剥离规格
+
+> Status note (2026-03-20): `Task 15D` 的首轮目标已完成，`omega-session` 与 `omega-observability` 已落地。本文件保留为该次剥离的设计基线，但其中关于“未来如何继续共享到 REPL”的表述应以当前代码事实为准：截至当前，`omega-session` 实际只接在 `omega-tui` 路径上，`omega-repl` 仍然直接驱动 `omega-core::Agent`。后续活跃规划以 `docs/specs/omega-runtime-ui-message-contract.md` 为主。
 
 ## Overview
 
@@ -20,7 +22,7 @@ related_prds:
 ## Goals
 
 - 让 `omega-tui` 只保留终端 UI 直接相关的职责。
-- 将 `agent_session` 抽为可复用的会话编排 crate，供 TUI、REPL 和未来其他前端共享。
+- 将 `agent_session` 抽为可复用的会话编排 crate，优先服务 TUI 主路径，并为 REPL 或未来其他前端保留复用可能。
 - 将 tracing 初始化、ANSI 清洗、文件日志策略从 `omega-tui` 中抽离，建立前端共享的可观察性 crate。
 - 为 `app` / `event` 的后续继续拆分给出明确边界，避免“先都留着，之后再说”。
 - 保持 `omega-core` 前端无关，不把面板、鼠标、键位或颜色语义回灌到核心层。
@@ -54,6 +56,8 @@ related_prds:
 - `event.rs` 同时承担 terminal 事件适配和用户命令语义分发，后者不应依赖 crossterm。
 
 ## Current Module Disposition
+
+下表中的 `src/agent_session.rs` 与 `src/logging.rs` 指的是 Task 15D 开始前的历史位置，用于解释为什么要拆分；当前实际代码已经分别迁入 `omega-session` 与 `omega-observability`。
 
 | File | 当前责任 | 判定 | 处理策略 |
 |------|----------|------|----------|
@@ -111,7 +115,7 @@ Phase 2 只在以下条件成立时推进：
 
 #### Responsibility
 
-`omega-session` 负责“前端如何驱动一次 agent turn”，而不是“如何把状态画到终端上”。它从 `omega-tui/src/agent_session.rs` 演进而来，成为前端共享的会话编排层。
+`omega-session` 负责“前端如何驱动一次 agent turn”，而不是“如何把状态画到终端上”。它从 `omega-tui/src/agent_session.rs` 演进而来，当前首先服务于 `omega-tui` 这条 richer shell 路径；未来若 REPL 或其他前端需要 workflow-aware orchestration，再复用同一层。
 
 #### Must Own
 
@@ -294,6 +298,14 @@ Phase 1 完成后，`omega-tui` 应只保留以下责任：
 3. TUI 保留事件适配和视图状态
 4. REPL 仅在确有共享需求时接入
 
+## Current Usage Baseline
+
+为避免本规格继续被误读成“REPL 已经走 session 主路径”，当前事实基线明确如下：
+
+- `omega-tui -> omega-session -> omega-core` 已是当前 richer shell 主路径。
+- `omega-repl -> omega-core` 仍是当前 thin shell 主路径，尚未接入 `omega-session`。
+- 因此，`omega-session` 当前应被视为 TUI shell 与 agent runtime 之间的编排边界，而不是所有前端已经统一接入的 shared frontend runtime。
+
 ## Dependency Rules
 
 - `omega-session` 只能向下依赖 `omega-core`，不能反向依赖 `omega-tui`。
@@ -330,3 +342,4 @@ Phase 1 完成后，`omega-tui` 应只保留以下责任：
 ### Change Log
 
 - 2026-03-19: 初版规格，定义 `omega-session`、`omega-observability` 和候选 `omega-interaction` 的职责边界与迁移顺序。
+- 2026-03-20: v1.1 — 补充 Task 15D 完成后的状态说明，明确本文件保留为历史设计基线；统一当前事实为 `omega-tui -> omega-session -> omega-core` 与 `omega-repl -> omega-core` 两条路径，避免继续把 REPL 描述成已接入 `omega-session` 的现状。

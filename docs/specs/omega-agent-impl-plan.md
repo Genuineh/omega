@@ -1227,7 +1227,7 @@ git commit -m "feat: add omega-core"
 
 ### Task 15: omega-tui - TUI 界面
 
-**TODO Mapping:** `Task 15A` = 最小 REPL 功能里程碑（M1，现由 `omega-repl` 承接），`Task 15B` = `omega-tui` Ratatui 完整 TUI（M11），`Task 15C` = 交互层重构（`omega-tui` 库化 + `omega-repl` 新包），`Task 15D` = `omega-tui` 非 UI 职责剥离（新增 `omega-session` + `omega-observability`，必要时预留 `omega-interaction`）
+**TODO Mapping:** `Task 15A` = 最小 REPL 功能里程碑（M1，现由 `omega-repl` 承接），`Task 15B` = `omega-tui` Ratatui 完整 TUI（M11），`Task 15C` = 交互层重构（`omega-tui` 库化 + `omega-repl` 新包），`Task 15D` = `omega-tui` 非 UI 职责剥离（新增 `omega-session` + `omega-observability`，必要时预留 `omega-interaction`），`Task 15E` = 视觉与主题基础，`Task 15F` = 可见执行工作流与运行态状态摘要基础
 
 **Refactor Note (2026-03-19):** `Task 15C` 已完成：最小 REPL 已迁移到 `omega-repl`，`omega-tui` 已收敛为 library-first crate。当前主线先执行 `Task 15D`，继续把非 UI 职责迁出，再推进剩余 `Task 15B-*`。
 
@@ -1279,6 +1279,265 @@ cargo build -p omega-observability
 git add crates/omega-tui/ crates/omega-repl/ crates/omega-session/ crates/omega-observability/
 git commit -m "refactor: extract omega-tui non-ui crates"
 ```
+
+---
+
+### Task 15F-1: omega-workflow - 可配置四阶段工作流系统
+
+**Status:** Completed
+
+**Completed:** 2026-03-19
+
+**Files:**
+- Create: `crates/omega-workflow/Cargo.toml`
+- Create: `crates/omega-workflow/src/lib.rs`
+- Update: `crates/omega-session/src/lib.rs`
+- Update: `crates/omega-tui/src/app.rs`
+- Update: `crates/omega-tui/src/render.rs`
+- Create: `docs/specs/omega-workflow-package.md`
+
+- [x] **Step 1: 创建 `omega-workflow` crate 与默认配置模型**
+
+    - 定义 canonical workflow steps：`analysis -> plan -> execute -> report`
+    - 增加 `.omega/workflow.toml` 默认模板、加载、校验和 fallback 逻辑
+    - 保持首期只支持线性四阶段，不引入任意 DAG
+
+- [x] **Step 2: 将工作流阶段推进接入 `omega-session`**
+
+    - 在 turn 生命周期中定义何时进入 `analysis`、`plan`、`execute`、`report`
+    - 通过 typed `SessionUpdate` 暴露当前阶段、序号与用户可见 label
+    - turn 完成或中断后正确清理当前 workflow run
+
+- [x] **Step 3: 将当前阶段接入 TUI 底部状态栏**
+
+    - 为底部状态带新增 workflow slot
+    - 运行中显示当前阶段；空闲时隐藏或退化为 `Idle`
+    - 窄终端下定义短格式退化规则
+
+- [x] **Step 4: 编译与测试验证**
+
+```bash
+cargo build -p omega-workflow
+cargo test -p omega-workflow -p omega-session -p omega-tui
+```
+
+- [ ] **Step 5: 提交**
+
+```bash
+git add crates/omega-workflow/ crates/omega-session/ crates/omega-tui/ docs/specs/omega-workflow-package.md docs/TODO.md
+git commit -m "feat: add omega-workflow"
+```
+
+**Summary:** `omega-workflow` crate 已落地，包含 `WorkflowStepKind` 枚举、`WorkflowDefinition` 加载/校验/回退、`WorkflowPrompts` 外置到 `.omega/prompt/step/*.md`、`WorkflowRun` 状态机；`omega-session` 已按阶段顺序驱动四阶段执行并发送 `WorkflowStepChanged` 事件；`omega-tui` 消费事件在底部状态带显示当前阶段；6 项 workflow 单测 + session 集成测试全部通过
+
+---
+
+### Task 15F-2A: omega-session - 会话资产管理基础
+
+**Status:** Completed
+
+**Completed:** 2026-03-20
+
+**Files:**
+- Create: `crates/omega-session/src/tool_catalog.rs`
+- Create: `crates/omega-session/src/skill_catalog.rs`
+- Update: `crates/omega-session/src/lib.rs`
+- Update: `crates/omega-core/src/lib.rs`
+- Update: `crates/omega-tools/src/lib.rs`
+- Update: `crates/omega-skills/src/lib.rs`
+- Update: `docs/specs/omega-step-session-asset-model.md`
+
+- [x] **Step 1: 收敛术语与边界**
+
+    - 明确 `step` 是 workflow 的正式最小执行单元
+    - 明确 tools 与 skills 属于 session 内共享资产，而不是 step 私有字段直接驱动
+    - 保持 `omega-tui` 只消费状态更新，不承接资产管理逻辑
+
+- [x] **Step 2: 实现 `SessionToolCatalog` 为独立组合型结构体**
+
+    - 独立文件 `crates/omega-session/src/tool_catalog.rs`，独立单元测试
+    - 持有默认工具名列表，提供 `resolve_for_step(request: &StepToolRequest) -> ResolvedToolSet` 纯方法
+    - `ResolvedToolSet` 为排序后的工具名 `Vec<String>`，可直接传给 `Agent::set_visible_tools`
+    - `Inherit` → 返回全部默认工具；`Extend(names)` → 默认 + 追加（忽略未注册名）；`Block(names)` → 默认 - 屏蔽
+    - 设计为 `Arc<SessionToolCatalog>` 友好（只读 resolve，不持有可变状态），预留多消费者并发访问
+
+- [x] **Step 3: 实现 `SessionSkillCatalog` 为独立组合型结构体**
+
+    - 独立文件 `crates/omega-session/src/skill_catalog.rs`，独立单元测试
+    - 将 task matching、显式追加、禁用装配收敛为统一接口
+    - `resolve_for_step(task: &str, request: &StepSkillRequest) -> ResolvedSkillSet`
+    - 保证后续 step、subagent、team 都可复用同一接口
+    - 避免把 skill 装配逻辑散落在多个 runner 内
+
+- [x] **Step 4: 为 `omega-core::Agent` 补齐动态工具切换 API**
+
+    - 在 `ToolDispatcher` 新增 `to_schemas_filtered(&self, names: &[&str]) -> Vec<Value>`
+    - 在 `Agent` 新增 `set_visible_tools(&mut self, names: Option<&[&str]>) -> Vec<String>`
+    - `set_visible_tools(None)` 恢复全量工具（安全默认值）
+    - 保持现有 `run_single_response`（无工具）与 `run_loop_with`（带工具）语义不变
+    - 为后续 step runner 提供稳定依赖点
+
+- [x] **Step 5: 将 `AgentSession` 改为组合持有 catalog**
+
+    - `AgentSession` 新增 `tool_catalog: Arc<SessionToolCatalog>` 与 `skill_catalog: Arc<SessionSkillCatalog>` 字段
+    - 保持现有默认工具和技能行为不变（首轮不改变运行时行为，只建立接口）
+    - `WorkflowTurnRunner` 内暂时仍走原 path，但可调用 catalog.resolve 做 assertion 验证
+
+- [x] **Step 6: 验证与文档更新**
+
+```bash
+cargo test -p omega-tools -p omega-core -p omega-session -p omega-skills
+cargo clippy -p omega-tools -p omega-core -p omega-session -p omega-skills --all-targets -- -D warnings
+```
+
+**Summary:** `omega-session` 已新增 `SessionToolCatalog` 与 `SessionSkillCatalog` 两个独立组合型结构体，并通过 `Arc` 持有到 `AgentSession`；`omega-tools::ToolDispatcher` 已新增 `to_schemas_filtered`，`omega-core::Agent` 已新增 `set_visible_tools` 与 `visible_tool_names`，可按 step 解析结果切换本轮对模型可见的工具子集；当前固定四阶段 runner 已接入 catalogs，但仍保持既有四阶段行为不变，为 15F-2B 的 step 泛化提供稳定依赖点；相关单测与 clippy 验证均已通过
+
+---
+
+### Task 15F-2B: omega-workflow - 通用 Step 编排接入会话资产层
+
+**Status:** Completed
+
+**Completed:** 2026-03-20
+
+**Files:**
+- Update: `crates/omega-workflow/src/lib.rs`
+- Update: `crates/omega-session/src/lib.rs`
+- Update: `crates/omega-tui/src/app.rs`
+- Update: `crates/omega-tui/src/render.rs`
+- Update: `docs/specs/omega-step-session-asset-model.md`
+- Update: `docs/specs/omega-workflow-package.md`
+
+- [x] **Step 1: 泛化 `WorkflowStep` 内部模型（enum → string-keyed）**
+
+    - 将 `WorkflowStep.kind: WorkflowStepKind` 改为 `WorkflowStep.id: String` + `WorkflowStep.loop_mode: StepLoopMode`
+    - 保留 4 个 canonical id（`analysis`, `plan`, `execute`, `report`）作为内建默认值
+    - 将 `WorkflowPrompts` 从固定 4 字段改为 `HashMap<String, String>`，内建默认仍覆盖 4 个 canonical 的 prompt
+    - TOML 配置校验**仍只允许** 4 个 canonical id（向后兼容，开放自定义 id 留到独立后续任务）
+    - 移除对 `WorkflowStepKind` 枚举的硬编码依赖点（`prompt_for`、`default_label`、`file_stem`、`build_step_system_prompt`）
+
+- [x] **Step 2: 在 `WorkflowStepDefinition` 中增加 tool/skill request 字段**
+
+    - 在 `WorkflowStep`（或新 `WorkflowStepDefinition`）中加入 `StepToolRequest` 与 `StepSkillRequest`
+    - 定义 `StepLoopMode { SingleResponse, ToolLoop }` 枚举
+    - 更新 `.omega/workflow.toml` 格式，新增 `loop_mode`、`tool_request`、`skill_request` 字段
+    - 提供从当前固定 step 表达到通用 step definition 的兼容映射
+
+- [x] **Step 3: 将 `omega-session` 改为通用 step runner**
+
+    - 移除 `WorkflowTurnRunner::run` 中对 `WorkflowStepKind::Execute` 的硬编码分支
+    - 按 `loop_mode` 选择单次响应或工具循环
+    - 通过 `SessionToolCatalog::resolve_for_step` 解析工具集，调用 `agent.set_visible_tools` 切换
+    - 通过 `SessionSkillCatalog::resolve_for_step` 解析技能集，注入到 system prompt
+    - 采用 `WorkflowRun` 作为编排运行时容器（替代当前的直接 iterator），使用 `current_step()`/`advance()` 驱动
+
+- [x] **Step 4: 稳定 step 事件协议，增加 `step_id`**
+
+    - `SessionUpdate::WorkflowStepChanged` 新增 `step_id: String` 字段
+    - `step_id` 对应配置中的 id，用于日志/调试/程序化匹配
+    - `step_label` 继续仅用于 TUI 展示
+    - 更新 `omega-tui` 事件消费代码适配新字段
+
+- [x] **Step 5: 明确 `context` 延后，不纳入首轮实现**
+
+    - 保持 `context` 仅为保留能力
+    - 后续单独起规格设计 artifact/context 模型
+    - 避免首轮任务同时承担 step 泛化与 context 设计
+
+- [x] **Step 6: 验证与文档更新**
+
+```bash
+cargo test -p omega-workflow -p omega-session -p omega-tui -p omega-core -p omega-skills
+cargo clippy -p omega-workflow -p omega-session -p omega-tui -p omega-core -p omega-skills --all-targets -- -D warnings
+```
+
+**Summary:** `omega-workflow` 已把内部 step 模型泛化为 string-keyed `WorkflowStep`，并在 step definition 中正式纳入 `prompt_path`、`StepLoopMode`、`StepToolRequest`、`StepSkillRequest`；`WorkflowPrompts` 已改为按 `step_id` 查找的映射结构，仍保持 4 个 canonical step 的 TOML 兼容与默认 prompt 写入。`omega-session` 现通过 `WorkflowRun` 驱动整轮 step 编排，不再对 `execute` 做枚举分支特判，而是按 `loop_mode` 选择单响应或工具循环，并结合 `SessionToolCatalog` / `SessionSkillCatalog` 解析每个 step 的能力集。`SessionUpdate::WorkflowStepChanged` 已增加稳定的 `step_id` 字段，`omega-tui` 已适配新的事件协议；相关测试与 `clippy -D warnings` 均已通过。
+
+---
+
+### Task 15F-3: omega-session - 统一 runtime UI 消息与效果协议
+
+**Status:** Pending
+
+**Files:**
+- Planned: `crates/omega-session/src/runtime_ui.rs`
+- Planned: `crates/omega-session/src/lib.rs`
+- Planned: `docs/specs/omega-runtime-ui-message-contract.md`
+- Planned: `docs/specs/omega-tui-runtime-experience.md`
+
+- [ ] **Step 1: 定义统一 runtime UI envelope 与所有子类型**
+
+    - 新增 `RuntimeUiEnvelope = Message | Effect`
+    - `RuntimeUiMessage` 包含 `target: UiTarget`、`source: UiSource`、`kind: UiMessageKind`、`content: UiContent`、`priority: Option<UiPriority>`
+    - `RuntimeUiEffect` 包含 `SetStatusSlot`、`ClearStatusSlot`、`ReplacePanel`、`ShowOverlay`、`HideOverlay`、`FocusHint`（不含 `AppendMessage` 和 `Invalidate`）
+    - 补齐所有子类型定义：`UiContent(Text)`、`UiPriority(Normal/Low/High)`、`ActivityTarget(Log)`、`StatusSlot(Workflow/Agent/Session)`、`StatusValue(Label/Hidden)`、`OverlayTarget`、`OverlayRequest`
+
+- [ ] **Step 2: 定义 bridge / sink trait 与 session context**
+
+    - 新增 `RuntimeUiBridge` trait（`fn send(&self, envelope: RuntimeUiEnvelope)`）
+    - 新增 `RuntimeUiSink` trait（`fn try_recv(&self) -> Option<RuntimeUiEnvelope>`）
+    - 首轮实现基于 `mpsc::Sender`/`Receiver`
+    - `SessionRuntimeContext` 首轮仅包含 `ui_bridge: Arc<dyn RuntimeUiBridge>`
+    - 保持显式注入，不引入隐藏式全局 singleton / service locator
+
+- [ ] **Step 3: 一步替换 `SessionUpdate` → `RuntimeUiEnvelope`**
+
+    - 按映射表将 7 个 `SessionUpdate` variant 逐一转为 envelope 发送
+    - `ToolCallPreview` → `Message { target: Activity(Log), source: Tool, kind: Log }`
+    - `TodoSnapshot` → `Effect::ReplacePanel { target: Todo }`
+    - `WorkflowStepChanged` → `Effect::SetStatusSlot { slot: Workflow }` + `Message { target: Activity(Log), kind: Log }`
+    - `StepText` → `Message { target: Response, source: WorkflowStep, kind: Narrative }`
+    - `AssistantText` → `Message { target: Response, source: Assistant, kind: Result }`
+    - `TurnFinished` → `Effect::ClearStatusSlot { slot: Workflow }` + `Effect::SetStatusSlot { slot: Agent, value: Idle }`
+    - 废弃 `SessionUpdate` enum，不保留双通道过渡期
+    - `omega-tui` 直接消费 `RuntimeUiEnvelope`
+
+- [ ] **Step 4: 文档与验证**
+
+```bash
+cargo test -p omega-session -p omega-tui
+cargo clippy -p omega-session -p omega-tui --all-targets -- -D warnings
+```
+
+**Summary:** 该任务用于把当前 workflow 的 Response 输出与 future runtime-visible 模块的前端对接统一到一套 message/effect contract 中，避免 `SessionUpdate` 随 feature 数量继续膨胀，并为 `omega-tui` 的统一 reducer/sink 设计建立稳定上游边界。
+
+**Current Path Note:** 本任务应以当前真实主链路 `omega-tui shell -> omega-session -> omega-core` 为准推进；`omega-repl` 当前仍是 `omega-repl -> omega-core` 的 thin shell，不应把 REPL 尚未接通的能力提前当作本任务的实施前提。
+
+---
+
+### Task 15B-18: omega-tui - 统一 runtime UI sink / reducer
+
+**Status:** Pending
+
+**Files:**
+- Planned: `crates/omega-tui/src/app.rs`
+- Planned: `crates/omega-tui/src/runtime.rs`
+- Planned: `crates/omega-tui/src/render.rs`
+- Planned: `docs/specs/omega-tui-runtime-experience.md`
+
+- [ ] **Step 1: 建立 TUI runtime UI reducer**
+
+    - 由 reducer 按 `target` / `kind` / `source` 把 envelope 映射到 `App`
+    - 减少 feature-by-feature 的 `match SessionUpdate::*` 特例分支
+
+- [ ] **Step 2: 收敛固定 surface 路由规则**
+
+    - `Response`、`Activity`、`Todo`、`StatusBar`、`Overlay` 的落点规则集中化
+    - workflow step 正文结果、assistant reply、tool preview、warning、summary 等样式映射集中化
+
+- [ ] **Step 3: 为 future style variants 预留扩展点**
+
+    - 支持按 `source` / `kind` 做不同 rendering preset
+    - 为 step block、markdown-aware rendering、theme-driven variant 预留稳定接口
+
+- [ ] **Step 4: 验证**
+
+```bash
+cargo test -p omega-tui
+cargo clippy -p omega-tui --all-targets -- -D warnings
+```
+
+**Summary:** 该任务用于让 `omega-tui` 作为统一 runtime UI 协议的 consumer/sink，而不是继续为 workflow、skills、subagent、background 等能力逐个补 UI 特例，从而为更好的 Response 输出体验与后续多样式扩展建立稳定 reducer 架构。
 
 ---
 

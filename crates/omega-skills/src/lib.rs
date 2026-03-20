@@ -15,7 +15,7 @@ pub struct Skill {
 }
 
 impl Skill {
-    fn rendered_content(&self) -> String {
+    pub fn rendered_content(&self) -> String {
         format!("<skill name=\"{}\">\n{}\n</skill>", self.name, self.body)
     }
 

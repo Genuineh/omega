@@ -205,20 +205,21 @@ Omega 定义了四种 span 类型：
 ┌──────────────────────────────────────────────────────────┐
 │  Omega Agent │ model-name │ ● Idle │ Focus: Response │
 ├───────────────────────────────┬──────────────────────────┤
-│  Agent Response               │  Logs                   │
+│  Agent Response               │  Activity & Logs        │
 │                               │                          │
 │  > hello                      │  llm_call.model=...     │
 │  I will help you...           │  tool_exec.tool_name=...│
-│  $ cat AGENTS.md              │  llm_call.duration_ms=..│
-│  # Repository Guidelines...   │                          │
+│                               │  [flow 3/4] Execute ... │
+│                               │  [tool] $ cat AGENTS.md │
+│                               │  [tool] # Repository... │
 │                               │                          │
 ├───────────────────────────────┴──────────────────────────┤
 │  Input: > _                                            │
 └──────────────────────────────────────────────────────────┘
 ```
 
-- **Agent Response 面板**：agent 响应 + 工具执行输出（bash 命令、工具预览）
-- **Logs 面板**：完整 tracing 日志行（span 生命周期、token 用量、tool_exec 等）
+- **Agent Response 面板**：用户输入、各 workflow step 的文本结果与最终 assistant 回复
+- **Activity & Logs 面板**：workflow phase、tool preview、todo 刷新与 tracing 日志行，不承载 step 的正文结果
 - **Input 区域**：用户输入，回车发送
 
 ### TUI 快捷键

@@ -615,6 +615,7 @@ mod tests {
     use omega_client::{ChatRequest, ChatResponse, ClientError};
     use omega_core::{DynLlmClient, LlmClient};
     use omega_keymap::{InteractionMode, KeymapManager};
+    use omega_workflow::WorkflowDefinition;
 
     use crate::app::Panel;
 
@@ -642,19 +643,29 @@ mod tests {
         }
     }
 
+    fn test_session(
+        client: DynLlmClient,
+        root: std::path::PathBuf,
+        runtime: &tokio::runtime::Runtime,
+    ) -> AgentSession {
+        AgentSession::new(omega_session::AgentSessionConfig {
+            client,
+            system: "system".to_string(),
+            cwd: root,
+            runtime_handle: runtime.handle().clone(),
+            workflow_definition: WorkflowDefinition::default_linear(),
+            workflow_prompts: omega_workflow::WorkflowPrompts::builtin_defaults(),
+        })
+        .unwrap()
+    }
+
     #[test]
     fn submit_while_running_shows_wait_message() {
         let client: DynLlmClient = Arc::new(IdleClient);
         let root = std::env::temp_dir().join("omega-event-test");
         let _ = std::fs::create_dir_all(&root);
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let session = AgentSession::new(omega_session::AgentSessionConfig {
-            client,
-            system: "system".to_string(),
-            cwd: root,
-            runtime_handle: runtime.handle().clone(),
-        })
-        .unwrap();
+        let session = test_session(client, root, &runtime);
         let app = Arc::new(Mutex::new(App::new()));
         let (tx, _rx) = mpsc::channel();
         {
@@ -680,13 +691,7 @@ mod tests {
         let root = std::env::temp_dir().join("omega-event-tab-hidden-test");
         let _ = std::fs::create_dir_all(&root);
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let session = AgentSession::new(omega_session::AgentSessionConfig {
-            client,
-            system: "system".to_string(),
-            cwd: root,
-            runtime_handle: runtime.handle().clone(),
-        })
-        .unwrap();
+        let session = test_session(client, root, &runtime);
         let app = Arc::new(Mutex::new(App::new()));
         let (tx, _rx) = mpsc::channel();
         let keymap = KeymapManager::default();
@@ -719,13 +724,7 @@ mod tests {
         let root = std::env::temp_dir().join("omega-event-raw-tab-test");
         let _ = std::fs::create_dir_all(&root);
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let session = AgentSession::new(omega_session::AgentSessionConfig {
-            client,
-            system: "system".to_string(),
-            cwd: root,
-            runtime_handle: runtime.handle().clone(),
-        })
-        .unwrap();
+        let session = test_session(client, root, &runtime);
         let app = Arc::new(Mutex::new(App::new()));
         let (tx, _rx) = mpsc::channel();
         let keymap = KeymapManager::default();
@@ -754,13 +753,7 @@ mod tests {
         let root = std::env::temp_dir().join("omega-event-insert-mode-test");
         let _ = std::fs::create_dir_all(&root);
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let session = AgentSession::new(omega_session::AgentSessionConfig {
-            client,
-            system: "system".to_string(),
-            cwd: root,
-            runtime_handle: runtime.handle().clone(),
-        })
-        .unwrap();
+        let session = test_session(client, root, &runtime);
         let app = Arc::new(Mutex::new(App::new()));
         let (tx, _rx) = mpsc::channel();
         let keymap = KeymapManager::default();
@@ -809,13 +802,7 @@ mod tests {
         let root = std::env::temp_dir().join("omega-event-normal-mode-test");
         let _ = std::fs::create_dir_all(&root);
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let session = AgentSession::new(omega_session::AgentSessionConfig {
-            client,
-            system: "system".to_string(),
-            cwd: root,
-            runtime_handle: runtime.handle().clone(),
-        })
-        .unwrap();
+        let session = test_session(client, root, &runtime);
         let app = Arc::new(Mutex::new(App::new()));
         let (tx, _rx) = mpsc::channel();
         let keymap = KeymapManager::default();
@@ -838,13 +825,7 @@ mod tests {
         let root = std::env::temp_dir().join("omega-event-insert-disabled-test");
         let _ = std::fs::create_dir_all(&root);
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let session = AgentSession::new(omega_session::AgentSessionConfig {
-            client,
-            system: "system".to_string(),
-            cwd: root,
-            runtime_handle: runtime.handle().clone(),
-        })
-        .unwrap();
+        let session = test_session(client, root, &runtime);
         let app = Arc::new(Mutex::new(App::new()));
         let (tx, _rx) = mpsc::channel();
         let keymap = KeymapManager::default();
@@ -889,13 +870,7 @@ mod tests {
         let root = std::env::temp_dir().join("omega-event-toggle-normal-test");
         let _ = std::fs::create_dir_all(&root);
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let session = AgentSession::new(omega_session::AgentSessionConfig {
-            client,
-            system: "system".to_string(),
-            cwd: root,
-            runtime_handle: runtime.handle().clone(),
-        })
-        .unwrap();
+        let session = test_session(client, root, &runtime);
         let app = Arc::new(Mutex::new(App::new()));
         let (tx, _rx) = mpsc::channel();
         let keymap = KeymapManager::default();
@@ -940,13 +915,7 @@ mod tests {
         let root = std::env::temp_dir().join("omega-event-overlay-search-test");
         let _ = std::fs::create_dir_all(&root);
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let session = AgentSession::new(omega_session::AgentSessionConfig {
-            client,
-            system: "system".to_string(),
-            cwd: root,
-            runtime_handle: runtime.handle().clone(),
-        })
-        .unwrap();
+        let session = test_session(client, root, &runtime);
         let app = Arc::new(Mutex::new(App::new()));
         let (tx, _rx) = mpsc::channel();
         let keymap = KeymapManager::default();
@@ -991,13 +960,7 @@ mod tests {
         let root = std::env::temp_dir().join("omega-event-overlay-escape-test");
         let _ = std::fs::create_dir_all(&root);
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let session = AgentSession::new(omega_session::AgentSessionConfig {
-            client,
-            system: "system".to_string(),
-            cwd: root,
-            runtime_handle: runtime.handle().clone(),
-        })
-        .unwrap();
+        let session = test_session(client, root, &runtime);
         let app = Arc::new(Mutex::new(App::new()));
         let (tx, _rx) = mpsc::channel();
         let keymap = KeymapManager::default();
@@ -1043,13 +1006,7 @@ mod tests {
         let root = std::env::temp_dir().join("omega-event-overlay-block-focus-test");
         let _ = std::fs::create_dir_all(&root);
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let session = AgentSession::new(omega_session::AgentSessionConfig {
-            client,
-            system: "system".to_string(),
-            cwd: root,
-            runtime_handle: runtime.handle().clone(),
-        })
-        .unwrap();
+        let session = test_session(client, root, &runtime);
         let app = Arc::new(Mutex::new(App::new()));
         let (tx, _rx) = mpsc::channel();
         let keymap = KeymapManager::default();
@@ -1095,13 +1052,7 @@ mod tests {
         let root = std::env::temp_dir().join("omega-event-toggle-sidebar-test");
         let _ = std::fs::create_dir_all(&root);
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let session = AgentSession::new(omega_session::AgentSessionConfig {
-            client,
-            system: "system".to_string(),
-            cwd: root,
-            runtime_handle: runtime.handle().clone(),
-        })
-        .unwrap();
+        let session = test_session(client, root, &runtime);
         let app = Arc::new(Mutex::new(App::new()));
         let (tx, _rx) = mpsc::channel();
         let keymap = KeymapManager::default();
@@ -1134,13 +1085,7 @@ mod tests {
         let root = std::env::temp_dir().join("omega-event-sidebar-rail-test");
         let _ = std::fs::create_dir_all(&root);
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let session = AgentSession::new(omega_session::AgentSessionConfig {
-            client,
-            system: "system".to_string(),
-            cwd: root,
-            runtime_handle: runtime.handle().clone(),
-        })
-        .unwrap();
+        let session = test_session(client, root, &runtime);
         let app = Arc::new(Mutex::new(App::new()));
         let (tx, _rx) = mpsc::channel();
         let keymap = KeymapManager::default();

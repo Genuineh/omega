@@ -34,11 +34,11 @@ pub enum Panel {
 pub enum MsgKind {
     User,
     Agent,
-    Tool,
     Error,
     Separator,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Msg {
     pub kind: MsgKind,
     pub text: String,
@@ -54,6 +54,14 @@ pub enum TodoPanelStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TodoSummary {
     pub completed: usize,
+    pub total: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowSummary {
+    pub id: String,
+    pub label: String,
+    pub index: usize,
     pub total: usize,
 }
 
@@ -85,6 +93,7 @@ pub struct App {
     pub input_enabled: bool,
     pub is_running: bool,
     pub active_turn_id: u64,
+    pub workflow_summary: Option<WorkflowSummary>,
     pub last_todo_turn_id: Option<u64>,
     pub spinner_tick: u8,
     pub response_displayed_count: usize,
@@ -129,6 +138,7 @@ impl App {
             input_enabled: true,
             is_running: false,
             active_turn_id: 0,
+            workflow_summary: None,
             last_todo_turn_id: None,
             spinner_tick: 0,
             response_displayed_count: 0,
@@ -147,12 +157,14 @@ impl App {
     pub fn begin_turn(&mut self) -> u64 {
         self.active_turn_id = self.active_turn_id.wrapping_add(1);
         self.is_running = true;
+        self.workflow_summary = None;
         self.active_turn_id
     }
 
     pub fn interrupt_turn(&mut self) {
         self.active_turn_id = self.active_turn_id.wrapping_add(1);
         self.is_running = false;
+        self.workflow_summary = None;
     }
 
     pub fn is_current_turn(&self, turn_id: u64) -> bool {
@@ -167,18 +179,45 @@ impl App {
                 preview,
             } if self.is_current_turn(turn_id) => {
                 if let Some(command) = command {
-                    self.push_msg(MsgKind::Tool, &format!("$ {}", command));
+                    self.add_log(format!("[tool] $ {}", command));
                 }
-                self.push_msg(MsgKind::Tool, &preview);
+                self.add_log(format!("[tool] {}", preview));
             }
             SessionUpdate::TodoSnapshot { turn_id, rendered } if self.is_current_turn(turn_id) => {
                 self.set_todo_snapshot(turn_id, &rendered);
+            }
+            SessionUpdate::WorkflowStepChanged {
+                turn_id,
+                step_id,
+                step_label,
+                index,
+                total,
+            } if self.is_current_turn(turn_id) => {
+                self.add_log(format!(
+                    "[flow {}/{}] {} ({})",
+                    index, total, step_label, step_id
+                ));
+                self.workflow_summary = Some(WorkflowSummary {
+                    id: step_id,
+                    label: step_label,
+                    index,
+                    total,
+                });
+            }
+            SessionUpdate::StepText {
+                turn_id,
+                step_label,
+                text,
+                ..
+            } if self.is_current_turn(turn_id) => {
+                self.push_step_result(&step_label, &text);
             }
             SessionUpdate::AssistantText { turn_id, text } if self.is_current_turn(turn_id) => {
                 self.push_msg(MsgKind::Agent, &text);
             }
             SessionUpdate::TurnFinished { turn_id } if self.is_current_turn(turn_id) => {
                 self.is_running = false;
+                self.workflow_summary = None;
             }
             _ => {}
         }
@@ -225,6 +264,24 @@ impl App {
             self.output_msgs.push(Msg {
                 kind,
                 text: String::new(),
+            });
+        }
+    }
+
+    pub fn push_step_result(&mut self, step_label: &str, text: &str) {
+        let clean = strip_ansi(text);
+        if clean.is_empty() {
+            self.output_msgs.push(Msg {
+                kind: MsgKind::Agent,
+                text: format!("[{}]", step_label),
+            });
+            return;
+        }
+
+        for line in clean.lines() {
+            self.output_msgs.push(Msg {
+                kind: MsgKind::Agent,
+                text: format!("[{}] {}", step_label, line),
             });
         }
     }
@@ -513,7 +570,7 @@ impl App {
     }
 
     pub fn logs_panel_title(&self) -> String {
-        let mut title = " Logs ".to_string();
+        let mut title = " Activity & Logs ".to_string();
         if self.focused_panel == Panel::Logs {
             title.push('◆');
             title.push(' ');
@@ -848,6 +905,78 @@ mod tests {
 
         assert!(app.todo_refresh_pending());
         assert!(app.todo_panel_title().contains("stale"));
+    }
+
+    #[test]
+    fn current_turn_workflow_updates_replace_summary_and_clear_on_finish() {
+        let mut app = App::new();
+        let turn_id = app.begin_turn();
+
+        app.apply_session_update(SessionUpdate::WorkflowStepChanged {
+            turn_id,
+            step_id: "plan".to_string(),
+            step_label: "Plan".to_string(),
+            index: 2,
+            total: 4,
+        });
+
+        assert_eq!(
+            app.workflow_summary,
+            Some(WorkflowSummary {
+                id: "plan".to_string(),
+                label: "Plan".to_string(),
+                index: 2,
+                total: 4,
+            })
+        );
+        assert_eq!(app.log_lines, vec!["[flow 2/4] Plan (plan)"]);
+
+        app.apply_session_update(SessionUpdate::TurnFinished { turn_id });
+
+        assert!(app.workflow_summary.is_none());
+    }
+
+    #[test]
+    fn tool_preview_routes_to_logs_instead_of_response() {
+        let mut app = App::new();
+        let turn_id = app.begin_turn();
+
+        app.apply_session_update(SessionUpdate::ToolCallPreview {
+            turn_id,
+            command: Some("echo hi".to_string()),
+            preview: "hi".to_string(),
+        });
+
+        assert!(app.output_msgs.is_empty());
+        assert_eq!(app.log_lines, vec!["[tool] $ echo hi", "[tool] hi"]);
+    }
+
+    #[test]
+    fn step_text_routes_to_response_with_step_label() {
+        let mut app = App::new();
+        let turn_id = app.begin_turn();
+
+        app.apply_session_update(SessionUpdate::StepText {
+            turn_id,
+            step_id: "plan".to_string(),
+            step_label: "Plan".to_string(),
+            text: "Line one\nLine two".to_string(),
+        });
+
+        assert_eq!(
+            app.output_msgs,
+            vec![
+                Msg {
+                    kind: MsgKind::Agent,
+                    text: "[Plan] Line one".to_string(),
+                },
+                Msg {
+                    kind: MsgKind::Agent,
+                    text: "[Plan] Line two".to_string(),
+                },
+            ]
+        );
+        assert!(app.log_lines.is_empty());
     }
 
     #[test]

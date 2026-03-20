@@ -6,6 +6,7 @@ use omega_core::DynLlmClient;
 use omega_keymap::KeymapManager;
 use omega_session::{AgentSession, AgentSessionConfig, SessionUpdate};
 use omega_theme::OmegaTheme;
+use omega_workflow::WorkflowDefinition;
 use tokio::runtime::Handle;
 use tracing::{info, warn};
 
@@ -44,14 +45,22 @@ pub fn run(config: TuiLaunchConfig) -> anyhow::Result<()> {
     for warning in &loaded_theme.warnings {
         warn!(%warning, source = %loaded_theme.source_label(), "theme config fallback activated");
     }
+    let loaded_workflow = WorkflowDefinition::load(&cwd);
+    for warning in &loaded_workflow.warnings {
+        warn!(%warning, source = %loaded_workflow.source_label(), "workflow config fallback activated");
+    }
     let keymap = loaded_keymap.manager;
     let theme = loaded_theme.theme;
+    let workflow_definition = loaded_workflow.definition;
+    let workflow_prompts = loaded_workflow.prompts;
 
     let session = AgentSession::new(AgentSessionConfig {
         client,
         system,
         cwd,
         runtime_handle,
+        workflow_definition,
+        workflow_prompts,
     })?;
     let app = Arc::new(Mutex::new(App::new()));
     {
@@ -65,6 +74,11 @@ pub fn run(config: TuiLaunchConfig) -> anyhow::Result<()> {
         }
 
         for warning in loaded_theme.warnings {
+            startup_warnings.push(warning.clone());
+            app_guard.add_log(warning);
+        }
+
+        for warning in loaded_workflow.warnings {
             startup_warnings.push(warning.clone());
             app_guard.add_log(warning);
         }
@@ -154,14 +168,38 @@ mod tests {
             turn_id,
             rendered: "[>] #1: Code".to_string(),
         });
+        app.apply_session_update(SessionUpdate::WorkflowStepChanged {
+            turn_id,
+            step_id: "execute".to_string(),
+            step_label: "Execute".to_string(),
+            index: 3,
+            total: 4,
+        });
+        app.apply_session_update(SessionUpdate::StepText {
+            turn_id,
+            step_id: "plan".to_string(),
+            step_label: "Plan".to_string(),
+            text: "draft patch".to_string(),
+        });
         app.apply_session_update(SessionUpdate::AssistantText {
             turn_id,
             text: "hello".to_string(),
         });
         app.apply_session_update(SessionUpdate::TurnFinished { turn_id });
 
-        assert_eq!(app.output_msgs.len(), 3);
+        assert_eq!(app.output_msgs.len(), 2);
+        assert_eq!(app.output_msgs[0].text, "[Plan] draft patch");
+        assert_eq!(app.output_msgs[1].text, "hello");
         assert_eq!(app.todo_lines, vec!["[>] #1: Code"]);
+        assert_eq!(
+            app.log_lines,
+            vec![
+                "[tool] $ echo hi",
+                "[tool] hi",
+                "[flow 3/4] Execute (execute)",
+            ]
+        );
+        assert!(app.workflow_summary.is_none());
         assert!(!app.is_running);
     }
 }
