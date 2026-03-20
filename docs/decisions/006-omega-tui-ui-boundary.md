@@ -15,7 +15,7 @@ Accepted
 
 ## Context
 
-`Task 15C` 完成后，`omega-repl` 已经从交互层中独立出来，但 `omega-tui` 仍然混合了 terminal UI、Agent turn orchestration、tracing bootstrap 和一部分前端无关交互状态。继续把功能堆进这个 crate，会削弱 `001` 中“独立 crate、边界清晰”的决策，也会让 `005` 中定义的 observability 基础设施被误实现成 TUI 私有模块。
+在交互层开始收敛时，`omega-tui` 仍然混合了 terminal UI、Agent turn orchestration、tracing bootstrap 和一部分前端无关交互状态。继续把功能堆进这个 crate，会削弱 `001` 中“独立 crate、边界清晰”的决策，也会让 `005` 中定义的 observability 基础设施被误实现成 TUI 私有模块。
 
 ## Decision
 
@@ -31,7 +31,7 @@ Accepted
 
 ### Positive
 
-- `omega-session` 可被 TUI、REPL 和后续前端共享。
+- `omega-session` 保持前端无关边界，必要时可被未来前端复用。
 - `omega-observability` 成为跨前端基础设施，符合 `005` 的设计意图。
 - `omega-tui` 后续迭代时，变更面会明显缩小，测试边界更清晰。
 - 交互层继续演进时，有明确的“哪些逻辑不能再写进 TUI crate”的判断标准。
@@ -52,11 +52,11 @@ Accepted
 
 ### Alternative 2: 一次性引入统一 frontend runtime crate
 
-**Pros**: 可能减少 `omega-tui` 和 `omega-repl` 的少量装配重复。
+**Pros**: 可能减少未来多个前端之间的少量装配重复。
 **Cons**: 当前前端种类太少，容易形成过早抽象。
 **Why Rejected**: 当前最紧迫的问题是把明显不属于 UI 的职责迁走，而不是再增加一个中间层。
 
 ## Notes
 
 - 详细设计见 [docs/specs/omega-tui-non-ui-extraction.md](../specs/omega-tui-non-ui-extraction.md)
-- 本决策是 `docs/specs/omega-interaction-layer-refactor.md` 在 `Task 15C` 完成之后的后续边界收敛动作
+- 本决策的历史来源见 `docs/archive/omega-interaction-layer-refactor.md`；当前活跃边界以 `docs/specs/omega-tui-non-ui-extraction.md` 与 `docs/specs/omega-runtime-ui-message-contract.md` 为准

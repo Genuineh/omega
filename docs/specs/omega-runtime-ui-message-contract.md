@@ -41,13 +41,12 @@ related_prds: []
 
 ## Current State Snapshot
 
-在继续定义 `omega-session` 与 `omega-tui` 的协议之前，必须先承认当前仓库的实际连通路径并不只有一条：
+在继续定义 `omega-session` 与 `omega-tui` 的协议之前，必须先固定当前唯一的用户交互主路径：
 
-- `omega-tui` 已经通过 `omega-session` 走 workflow-aware 的 turn orchestration 路径。
-- `omega-repl` 目前仍然是更薄的一条直接 REPL 路径，直接驱动 `omega-core::Agent`，尚未接入 `omega-session` 与 `omega-workflow`。
+- `omega-tui` 已经通过 `omega-session` 走 workflow-aware 的 turn orchestration 路径，并且现在是唯一保留的用户入口。
 - `omega-core` 的 `Cargo.toml` 声明了 `omega-subagent`、`omega-compression`、`omega-tasks`、`omega-background`、`omega-message`、`omega-team`、`omega-worktree` 等未来 crate 依赖，但当前主路径里并没有实际引用这些 crate；`create_default_tools()` 当前只注册 `bash`、`read_file`、`write_file`、`edit_file`、`load_skill`、`todo`。
 
-这意味着后续规划不能把“仓库里已经有这些 crate”误判为“主交互路径已经接通这些能力”。对于以 TUI 下 REPL 交互为核心路径的规划，真正需要先固定的是：谁是交互壳层，谁拥有 turn orchestration，谁拥有 agent runtime，谁只是未来的 runtime-visible producer。
+这意味着后续规划不能把“仓库里已经有这些 crate”误判为“主交互路径已经接通这些能力”。当前真正需要固定的是：谁是交互壳层，谁拥有 turn orchestration，谁拥有 agent runtime，谁只是未来的 runtime-visible producer。
 
 ### Current Actual TUI Path
 
@@ -68,30 +67,14 @@ flowchart LR
     Obs -- trace lines --> TuiShell
 ```
 
-### Current Actual REPL Path
-
-```mermaid
-flowchart LR
-    User[User] --> ReplBin[omega-repl bin]
-    ReplBin --> Obs[omega-observability]
-    ReplBin --> ReplLoop[omega-repl::run_repl]
-    ReplLoop --> Skills[omega-skills\nSkillLoader]
-    ReplLoop --> Core[omega-core\nAgent + ToolDispatcher]
-    Core --> Client[omega-client]
-    Core --> WiredTools[wired tools today\nbash / read / write / edit / load_skill / todo]
-    Core -- tool callback text --> ReplLoop
-    Core -- final response --> ReplLoop
-```
-
 ### Business Interpretation
 
-以业务视角看，当前真正成立的不是“`omega-tui` 和 `omega-repl` 共用同一套交互主路径”，而是：
+以业务视角看，当前真正成立的是：
 
-- `omega-tui` 已经是一个带 workflow、todo、logs 和 tracing 的 richer shell。
-- `omega-repl` 仍然是直接面向 `Agent` 的 thin shell，更接近“最小可用 CLI 入口”。
-- `omega-session` 当前只服务于 TUI 侧 richer shell，不是仓库里所有前端共同依赖的唯一交互中枢。
+- `omega-tui` 已经是一个带 workflow、todo、logs 和 tracing 的 richer shell，同时也是当前唯一的用户入口。
+- `omega-session` 当前是 TUI shell 与 agent runtime 之间的会话编排边界。
 
-因此，后续若要以“tui 下的 repl 交互”作为主路径来收敛架构，合理方向不是让 `omega-session` 变成另一个 UI 模块，而是让它成为 TUI shell 与 agent runtime 之间唯一的会话编排边界。
+因此，后续规划不再需要围绕双入口做协调；合理方向是保持 `omega-session` 作为 TUI shell 与 agent runtime 之间唯一的会话编排边界。
 
 ## Core Design
 
@@ -193,25 +176,24 @@ flowchart LR
 
 ### Current Runtime Connectivity Matrix
 
-| Module | In Cargo Graph | On Current TUI Path | On Current REPL Path | Role Today |
-|--------|----------------|---------------------|----------------------|------------|
-| `omega-tui` | yes | yes | no | terminal shell |
-| `omega-repl` | yes | no | yes | thin CLI shell |
-| `omega-session` | yes | yes | no | workflow-aware turn orchestration |
-| `omega-workflow` | yes | yes | no | step config + run state |
-| `omega-skills` | yes | yes | yes | skill prompt loading |
-| `omega-core` | yes | yes | yes | agent runtime + tool dispatch |
-| `omega-observability` | yes | yes | yes | tracing bootstrap + line sink |
-| `omega-keymap` | yes | yes | no | TUI interaction config |
-| `omega-theme` | yes | yes | no | TUI visual config |
-| `omega-todo` | indirect | yes | yes | todo tool via dispatcher |
-| `omega-subagent` | declared in `omega-core` | no | no | not wired yet |
-| `omega-compression` | declared in `omega-core` | no | no | not wired yet |
-| `omega-tasks` | declared in `omega-core` | no | no | not wired yet |
-| `omega-background` | declared in `omega-core` | no | no | not wired yet |
-| `omega-message` | declared in `omega-core` | no | no | not wired yet |
-| `omega-team` | declared in `omega-core` | no | no | not wired yet |
-| `omega-worktree` | declared in `omega-core` | no | no | not wired yet |
+| Module | In Cargo Graph | On Current User Path | Role Today |
+|--------|----------------|----------------------|------------|
+| `omega-tui` | yes | yes | terminal shell |
+| `omega-session` | yes | yes | workflow-aware turn orchestration |
+| `omega-workflow` | yes | yes | step config + run state |
+| `omega-skills` | yes | yes | skill prompt loading |
+| `omega-core` | yes | yes | agent runtime + tool dispatch |
+| `omega-observability` | yes | yes | tracing bootstrap + line sink |
+| `omega-keymap` | yes | yes | TUI interaction config |
+| `omega-theme` | yes | yes | TUI visual config |
+| `omega-todo` | indirect | yes | todo tool via dispatcher |
+| `omega-subagent` | declared in `omega-core` | no | not wired yet |
+| `omega-compression` | declared in `omega-core` | no | not wired yet |
+| `omega-tasks` | declared in `omega-core` | no | not wired yet |
+| `omega-background` | declared in `omega-core` | no | not wired yet |
+| `omega-message` | declared in `omega-core` | no | not wired yet |
+| `omega-team` | declared in `omega-core` | no | not wired yet |
+| `omega-worktree` | declared in `omega-core` | no | not wired yet |
 
 这个矩阵的用途不是描述未来理想状态，而是约束后续规划：只有已经在主路径上接通的模块，才应该进入本轮的 reducer / contract / surface 设计；未接通模块先保留 target/source 语义，不应倒逼 `omega-tui` 现在就为它们做特例 UI。
 
@@ -558,4 +540,5 @@ pub struct SessionRuntimeContext {
 ### Change Log
 - 2026-03-20: 初版规格，提出统一 runtime UI message/effect contract，作为 workflow output、Activity 映射与 future runtime-visible 模块的统一前端协议。
 - 2026-03-20: v0.2 — 根据审查反馈补齐协议类型定义（`UiContent`、`UiPriority`、`StatusSlot`、`StatusValue`、`ActivityTarget`、`OverlayTarget`、`OverlayRequest`）；新增 `RuntimeUiBridge` / `RuntimeUiSink` trait 签名；移除 `AppendMessage` effect 消除双路径歧义；移除 `Invalidate` effect（当前 TUI 无可观测行为）；`UiPriority` 改为 `Option` 延迟消费；`SessionRuntimeContext` 首轮仅包含 `ui_bridge`，推迟 phantom 依赖；Migration Plan 新增 `SessionUpdate` 全量一步替换策略与 variant→envelope 映射表。
-- 2026-03-20: v0.3 — 补充以业务路径为中心的现状依赖图，明确当前 `omega-tui` 与 `omega-repl` 并不共享同一条主交互路径；新增 current/target mermaid 图与 runtime connectivity matrix，用于后续以 `omega-tui shell -> omega-session -> omega-core` 为主线推进规划。
+- 2026-03-20: v0.3 — 补充以业务路径为中心的现状依赖图，明确当前主线应以 `omega-tui shell -> omega-session -> omega-core` 为准；新增 current/target mermaid 图与 runtime connectivity matrix，用于后续规划。
+- 2026-03-20: `omega-repl` 路径已移除，current-state 描述收敛为单一用户路径。

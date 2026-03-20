@@ -1,15 +1,23 @@
 ---
-status: draft
+status: superseded
 owner: omega-team
 created: 2026-03-19
-updated: 2026-03-19
-version: 1.0
+updated: 2026-03-20
+version: 1.1
 supersedes:
   - docs/specs/omega-agent-impl-plan.md#task-15
 related_prds: []
+archived: true
+archived_date: 2026-03-20
+replaced_by:
+  - docs/specs/omega-runtime-ui-message-contract.md
+  - docs/specs/omega-tui-non-ui-extraction.md
+reason: omega-repl path retired; interaction model converged to omega-tui single entry
 ---
 
 # Omega 交互层重构规格
+
+> Archived on 2026-03-20. This document was archived because its central goal was to split and preserve `omega-repl` as an active user path. The repository has since converged to `omega-tui` as the only user-facing entry. Use `docs/specs/omega-runtime-ui-message-contract.md` for the active runtime path, and `docs/specs/omega-tui-non-ui-extraction.md` for the retained non-UI boundary rationale.
 
 ## Overview
 

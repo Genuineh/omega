@@ -47,7 +47,6 @@ omega/
 │   ├── omega-background/        # 后台任务 (s08)
 │   ├── omega-team/              # 团队协作 (s09-s11)
 │   ├── omega-core/              # 核心 agent (组合所有)
-│   ├── omega-repl/              # 最小 stdin/stdout REPL
 │   └── omega-tui/               # Ratatui TUI 界面库 + 薄 wrapper
 ```
 
@@ -70,11 +69,10 @@ omega-team        <- omega-message + omega-tasks
 omega-core        <- omega-client + omega-tools + omega-todo + omega-subagent
                   + omega-compression + omega-tasks + omega-background + omega-skills
                   + omega-message + omega-team + omega-worktree
-omega-repl        <- omega-core
 omega-tui         <- omega-core
 ```
 
-> 交互层说明：`Task 15C` 已完成。当前结构为 `omega-tui` 负责 TUI 库与薄 wrapper，`omega-repl` 独立承接行式 REPL，边界见 [docs/specs/omega-interaction-layer-refactor.md](docs/specs/omega-interaction-layer-refactor.md)。
+> 交互层说明：当前用户入口已收敛为 `omega-tui`。交互主路径为 `omega-tui -> omega-session -> omega-core`；较早阶段的 `omega-repl` 拆分方案已归档，不再作为当前结构目标。
 
 ### 计划中的交互基础设施
 
@@ -83,8 +81,7 @@ omega-tui         <- omega-core
 ### 数据流
 
 ```text
-REPL Input -> omega-repl -> omega-core -> omega-client -> LLM API
-TUI Events -> omega-tui  -> omega-core -> omega-client -> LLM API
+TUI Events -> omega-tui -> omega-session -> omega-core -> omega-client -> LLM API
 ```
 
 ## API Specification
@@ -331,7 +328,7 @@ pub enum TaskStatus {
 | s10 | s10_team_protocols.py | omega-team | 团队协议 |
 | s11 | s11_autonomous_agents.py | omega-team | 自治智能体 |
 | s12 | s12_worktree_*.py | omega-worktree | Worktree 隔离 |
-| full | s_full.py | omega-core + omega-tui + omega-repl | 完整整合（交互层已拆分为 omega-tui + omega-repl） |
+| full | s_full.py | omega-core + omega-tui | 完整整合（当前用户入口收敛为 omega-tui） |
 
 ## Security Considerations
 
@@ -370,4 +367,4 @@ pub enum TaskStatus {
 12. **Task 12**: omega-background - 后台任务
 13. **Task 13**: omega-team - 团队协作
 14. **Task 14**: omega-core - 核心 Agent
-15. **Task 15**: 交互层（当前为 omega-tui + omega-repl）
+15. **Task 15**: 交互层（当前为 omega-tui 单入口）

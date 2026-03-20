@@ -11,7 +11,7 @@ related_prds:
 
 # Omega TUI 非 UI 职责剥离规格
 
-> Status note (2026-03-20): `Task 15D` 的首轮目标已完成，`omega-session` 与 `omega-observability` 已落地。本文件保留为该次剥离的设计基线，但其中关于“未来如何继续共享到 REPL”的表述应以当前代码事实为准：截至当前，`omega-session` 实际只接在 `omega-tui` 路径上，`omega-repl` 仍然直接驱动 `omega-core::Agent`。后续活跃规划以 `docs/specs/omega-runtime-ui-message-contract.md` 为主。
+> Status note (2026-03-20): `Task 15D` 的首轮目标已完成，`omega-session` 与 `omega-observability` 已落地。本文件保留为该次剥离的设计基线，但后续交互入口已经进一步收敛为 `omega-tui` 单入口；文中涉及 `omega-repl` 的表述仅保留为阶段性历史。后续活跃规划以 `docs/specs/omega-runtime-ui-message-contract.md` 为主。
 
 ## Overview
 
@@ -22,7 +22,7 @@ related_prds:
 ## Goals
 
 - 让 `omega-tui` 只保留终端 UI 直接相关的职责。
-- 将 `agent_session` 抽为可复用的会话编排 crate，优先服务 TUI 主路径，并为 REPL 或未来其他前端保留复用可能。
+- 将 `agent_session` 抽为可复用的会话编排 crate，优先服务 TUI 主路径，并为未来其他前端保留复用可能。
 - 将 tracing 初始化、ANSI 清洗、文件日志策略从 `omega-tui` 中抽离，建立前端共享的可观察性 crate。
 - 为 `app` / `event` 的后续继续拆分给出明确边界，避免“先都留着，之后再说”。
 - 保持 `omega-core` 前端无关，不把面板、鼠标、键位或颜色语义回灌到核心层。
@@ -30,7 +30,7 @@ related_prds:
 ## Non-Goals
 
 - 不在本次规划中重写 `omega-core::Agent` 的运行模型。
-- 不新增统一 launcher crate；当前仍保留 `omega-tui` 和 `omega-repl` 分别装配自己的入口。
+- 不新增统一 launcher crate；当前继续保留 `omega-tui` 作为唯一用户入口。
 - 不为了“每个模块都成 crate”而把 `render`、`terminal` 这类纯 TUI 模块强行拆出去。
 - 不在本次文档中承诺 Web UI、GUI 或 MCP 前端的实现。
 
@@ -82,8 +82,8 @@ omega-session
 omega-tui
 
 omega-observability
-  ↑          ↑
-omega-tui  omega-repl
+  ↑
+omega-tui
 ```
 
 Phase 1 的目标不是一次性把所有交互状态都清空，而是先把“明显不属于 UI 的部分”迁走，优先打掉最强耦合点。
@@ -101,13 +101,13 @@ omega-tui
 
 omega-observability
   ↑          ↑
-omega-tui  omega-repl
+omega-tui  future-frontend?
 ```
 
 Phase 2 只在以下条件成立时推进：
 
 - `app.rs` / `event.rs` 在继续迭代高级 TUI 能力时再次出现职责膨胀。
-- `omega-repl` 或后续前端需要共享 turn 状态、输入缓冲、更新协议，而不是只共享 `AgentSession`。
+- 若未来重新引入第二种前端，并且它需要共享 turn 状态、输入缓冲、更新协议，而不是只共享 `AgentSession`。
 
 ## New Crate Design
 
@@ -254,7 +254,7 @@ pub fn strip_ansi(text: &str) -> String;
 满足以下任一条件时，应启动该 crate 的实现：
 
 - `app.rs` 再次同时新增 UI 字段和交互逻辑字段
-- `omega-repl` 开始需要共享输入编辑或 turn 状态
+- 新的第二前端开始需要共享输入编辑或 turn 状态
 - TUI 测试必须频繁构造 `ListState` 才能验证纯交互逻辑
 
 ## `omega-tui` After Extraction
@@ -287,7 +287,7 @@ Phase 1 完成后，`omega-tui` 应只保留以下责任：
 
 1. 新建 `crates/omega-observability`
 2. 迁移 `logging.rs` 实现
-3. `omega-tui` 与 `omega-repl` 均改用新 crate 初始化 tracing
+3. `omega-tui` 以及未来可能的第二前端均改用新 crate 初始化 tracing
 4. 保持 `OMEGA_LOG`, `OMEGA_LOG_DIR`, `OMEGA_LOG_FILE` 行为不变
 5. 验证日志面板与 JSONL 文件输出不回归
 
@@ -296,15 +296,15 @@ Phase 1 完成后，`omega-tui` 应只保留以下责任：
 1. 从 `app.rs` 提炼非 ratatui 状态对象
 2. 从 `event.rs` 提炼命令语义与提交/中断流程
 3. TUI 保留事件适配和视图状态
-4. REPL 仅在确有共享需求时接入
+4. 如未来再次出现第二种前端，再评估是否接入同一交互边界
 
 ## Current Usage Baseline
 
 为避免本规格继续被误读成“REPL 已经走 session 主路径”，当前事实基线明确如下：
 
-- `omega-tui -> omega-session -> omega-core` 已是当前 richer shell 主路径。
-- `omega-repl -> omega-core` 仍是当前 thin shell 主路径，尚未接入 `omega-session`。
-- 因此，`omega-session` 当前应被视为 TUI shell 与 agent runtime 之间的编排边界，而不是所有前端已经统一接入的 shared frontend runtime。
+- `omega-tui -> omega-session -> omega-core` 是当前唯一的用户交互主路径。
+- `omega-session` 当前应被视为 TUI shell 与 agent runtime 之间的编排边界。
+- 若未来重新引入第二种前端，应视为新的架构收敛任务，而不是当前已存在的前提。
 
 ## Dependency Rules
 
@@ -342,4 +342,4 @@ Phase 1 完成后，`omega-tui` 应只保留以下责任：
 ### Change Log
 
 - 2026-03-19: 初版规格，定义 `omega-session`、`omega-observability` 和候选 `omega-interaction` 的职责边界与迁移顺序。
-- 2026-03-20: v1.1 — 补充 Task 15D 完成后的状态说明，明确本文件保留为历史设计基线；统一当前事实为 `omega-tui -> omega-session -> omega-core` 与 `omega-repl -> omega-core` 两条路径，避免继续把 REPL 描述成已接入 `omega-session` 的现状。
+- 2026-03-20: v1.1 — 补充 Task 15D 完成后的状态说明，明确本文件保留为历史设计基线；后续交互入口已进一步收敛为 `omega-tui -> omega-session -> omega-core` 单一路径。

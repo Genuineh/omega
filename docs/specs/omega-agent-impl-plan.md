@@ -44,7 +44,6 @@ members = [
     "crates/omega-background",
     "crates/omega-team",
     "crates/omega-core",
-    "crates/omega-repl",
     "crates/omega-tui",
 ]
 resolver = "2"
@@ -1227,18 +1226,16 @@ git commit -m "feat: add omega-core"
 
 ### Task 15: omega-tui - TUI 界面
 
-**TODO Mapping:** `Task 15A` = 最小 REPL 功能里程碑（M1，现由 `omega-repl` 承接），`Task 15B` = `omega-tui` Ratatui 完整 TUI（M11），`Task 15C` = 交互层重构（`omega-tui` 库化 + `omega-repl` 新包），`Task 15D` = `omega-tui` 非 UI 职责剥离（新增 `omega-session` + `omega-observability`，必要时预留 `omega-interaction`），`Task 15E` = 视觉与主题基础，`Task 15F` = 可见执行工作流与运行态状态摘要基础
+**TODO Mapping:** `Task 15A` = 最小终端交互里程碑（M1，历史上曾实现为 REPL），`Task 15B` = `omega-tui` Ratatui 完整 TUI（M11），`Task 15C` = 交互层重构（`omega-tui` 库化并最终收敛为单入口），`Task 15D` = `omega-tui` 非 UI 职责剥离（新增 `omega-session` + `omega-observability`，必要时预留 `omega-interaction`），`Task 15E` = 视觉与主题基础，`Task 15F` = 可见执行工作流与运行态状态摘要基础
 
-**Refactor Note (2026-03-19):** `Task 15C` 已完成：最小 REPL 已迁移到 `omega-repl`，`omega-tui` 已收敛为 library-first crate。当前主线先执行 `Task 15D`，继续把非 UI 职责迁出，再推进剩余 `Task 15B-*`。
+**Refactor Note (2026-03-20):** `Task 15C` 的阶段性拆分已结束；当前用户入口收敛为 `omega-tui`，`omega-repl` 已退役。`omega-tui` 继续保持 library-first crate，主线先执行 `Task 15D/15F` 的边界与协议收敛，再推进剩余 `Task 15B-*`。
 
-**Progress:** `Task 15A`、`Task 15C` 与 `Task 15D` 已完成；`omega-session` 与 `omega-observability` 已落地，`Task 15B` 的高级 TUI 能力可在新的边界上继续实现
+**Progress:** `Task 15A`、`Task 15C` 与 `Task 15D` 已完成；`omega-session` 与 `omega-observability` 已落地，交互入口也已统一到 `omega-tui`，`Task 15B` 的高级 TUI 能力可在新的边界上继续实现
 
 **Files:**
 - Update: `crates/omega-tui/Cargo.toml`
 - Create: `crates/omega-tui/src/lib.rs`
 - Update: `crates/omega-tui/src/main.rs` 或迁移为薄 wrapper bin
-- Create: `crates/omega-repl/Cargo.toml`
-- Create: `crates/omega-repl/src/main.rs`
 - Create: `crates/omega-session/Cargo.toml`
 - Create: `crates/omega-session/src/lib.rs`
 - Create: `crates/omega-observability/Cargo.toml`
@@ -1246,9 +1243,9 @@ git commit -m "feat: add omega-core"
 
 - [x] **Step 1: 先完成 Task 15C 交互层重构**
 
-    - 已将最小 REPL 从 `omega-tui` 迁移到 `omega-repl`
+    - 历史上的最小 REPL 已完成独立拆分并在后续收敛阶段退役
     - 已将 `omega-tui` 收敛为 library-first crate，并拆出 `src/lib.rs`
-    - 已保留极薄 TUI wrapper binary 以维持现有命令与行为
+    - 当前仅保留极薄 TUI wrapper binary 作为唯一用户入口
     - 后续高级 TUI 功能应建立在新的模块边界上，而不是继续堆叠在历史 `main.rs` 中
 
 - [x] **Step 2: 先执行 Task 15D 非 UI 职责剥离**
@@ -1257,7 +1254,7 @@ git commit -m "feat: add omega-core"
     - 新建 `omega-observability`，迁移 tracing 初始化、ANSI 清洗、文件日志与 UI sink
     - `omega-tui` 改为依赖 `omega-session` 与 `omega-observability`
     - 如 `app.rs` / `event.rs` 在实现过程中继续膨胀，则按 `docs/specs/omega-tui-non-ui-extraction.md` 启动 `omega-interaction` 的第二阶段抽离
-    - 验证 `omega-core` 未新增任何 TUI/REPL 专属概念
+    - 验证 `omega-core` 未新增任何 TUI 专属概念
 
 - [ ] **Step 3: 在完成 Task 15D 的边界上继续 Task 15B 的 Ratatui TUI**
 
@@ -1268,7 +1265,6 @@ git commit -m "feat: add omega-core"
 
 ```bash
 cargo build -p omega-tui
-cargo build -p omega-repl
 cargo build -p omega-session
 cargo build -p omega-observability
 ```
@@ -1276,7 +1272,7 @@ cargo build -p omega-observability
 - [ ] **Step 5: 提交**
 
 ```bash
-git add crates/omega-tui/ crates/omega-repl/ crates/omega-session/ crates/omega-observability/
+git add crates/omega-tui/ crates/omega-session/ crates/omega-observability/
 git commit -m "refactor: extract omega-tui non-ui crates"
 ```
 
@@ -1501,7 +1497,7 @@ cargo clippy -p omega-session -p omega-tui --all-targets -- -D warnings
 
 **Summary:** 该任务用于把当前 workflow 的 Response 输出与 future runtime-visible 模块的前端对接统一到一套 message/effect contract 中，避免 `SessionUpdate` 随 feature 数量继续膨胀，并为 `omega-tui` 的统一 reducer/sink 设计建立稳定上游边界。
 
-**Current Path Note:** 本任务应以当前真实主链路 `omega-tui shell -> omega-session -> omega-core` 为准推进；`omega-repl` 当前仍是 `omega-repl -> omega-core` 的 thin shell，不应把 REPL 尚未接通的能力提前当作本任务的实施前提。
+**Current Path Note:** 本任务应以当前真实主链路 `omega-tui shell -> omega-session -> omega-core` 为准推进；当前用户入口已统一为 `omega-tui`，不再以双路径并存为前提。
 
 ---
 

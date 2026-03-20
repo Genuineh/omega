@@ -33,7 +33,6 @@ Omega 项目需要复刻 learn-claude-code 的 12 阶段教程，每个阶段有
 - omega-background: 后台任务
 - omega-team: 团队协作
 - omega-core: 核心 Agent
-- omega-repl: 最小 stdin/stdout REPL
 - omega-tui: TUI 界面
 
 ## Consequences
@@ -63,5 +62,5 @@ Omega 项目需要复刻 learn-claude-code 的 12 阶段教程，每个阶段有
 
 ## Notes
 - 依赖关系：底层 crate 无依赖，上层依赖下层
-- 2026-03-19: `Task 15C` 完成后，交互层由 `omega-tui + omega-repl` 共同组成，避免 REPL 与 TUI 继续混在同一入口文件
+- 2026-03-20: 交互层当前收敛为 `omega-tui` 单一用户入口；早期 `omega-repl` 路径已退役，不再计入当前 crate 结构基线
 - 详见: docs/specs/omega-agent-impl-plan.md

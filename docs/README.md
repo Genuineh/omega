@@ -42,3 +42,4 @@ This directory contains the working documentation set for the Omega Rust project
 - `docs/guide/` contains contributor-facing usage documentation.
 - `docs/decisions/` records architecture choices and tradeoffs.
 - Interaction-layer note: use `omega-runtime-ui-message-contract.md` for the current TUI/session/core runtime path; treat `omega-tui-non-ui-extraction.md` as the completed Task 15D baseline rather than the newest planning source.
+- Historical note: the earlier `omega-repl` split plan has been archived to `docs/archive/omega-interaction-layer-refactor.md`; it is no longer an active architecture target.

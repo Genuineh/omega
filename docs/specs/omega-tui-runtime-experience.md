@@ -16,7 +16,7 @@ related_prds: []
 
 本规格定义一套统一的 TUI 体验策略：把未来运行态能力收敛为底部状态徽章、可切换的 Activity 面板，以及少量持续可见的固定面板，避免每个 crate 各自发明一套 UI。
 
-当前事实补充：本规格讨论的是 `omega-tui` 这条 richer shell 路径的体验边界，而不是所有前端的统一体验边界。截至当前，`omega-repl` 仍然是直接面向 `omega-core::Agent` 的 thin shell，不消费 `omega-session` 的 workflow/update 协议。与当前主路径有关的依赖图与模块接通状态，以 `docs/specs/omega-runtime-ui-message-contract.md` 为最新基线。
+当前事实补充：本规格讨论的是当前唯一用户入口 `omega-tui` 的体验边界。与现行主路径有关的依赖图与模块接通状态，以 `docs/specs/omega-runtime-ui-message-contract.md` 为最新基线。
 
 ## Goals
 
@@ -30,7 +30,7 @@ related_prds: []
 
 - 不在本规格中直接实现新的 TUI widget 或键位映射。
 - 不在本次设计中引入操作系统级多窗口、任意层级 modal stack、鼠标拖拽编辑或树形导航。
-- 不要求每个主线任务都必须先做 TUI 才能落地；核心能力仍可先以 REPL/内部协议打通。
+- 不要求每个主线任务都必须先做完整 TUI 体验才能落地；核心能力仍可先以内层协议、测试或非交互集成方式打通。
 
 ## Affected Roadmap Tasks
 
@@ -284,4 +284,5 @@ overlay 的职责是“短时聚焦交互”，而不是代替 `Activity` 或 `R
 - 2026-03-19: 补充 `omega-workflow` 可配置四阶段执行模型，规划把当前工作流阶段接入底部状态栏摘要。
 - 2026-03-20: workflow 接入后明确 `Response` 与 `Activity & Logs` 的职责分工：前者承载用户可阅读的对话与 step 正文结果，后者承载 workflow 阶段切换、tool preview、todo 刷新与 tracing runtime activity。
 - 2026-03-20: 补充统一 runtime UI message/effect contract 规划，要求未来 runtime-visible 模块通过稳定 target/kind/source 协议接入 TUI。
-- 2026-03-20: v1.1 — 补充当前 richer shell / thin shell 分裂现实，明确本规格仅覆盖 `omega-tui` 路径；与 `omega-repl`、`omega-session`、`omega-core` 的现状依赖关系以 `omega-runtime-ui-message-contract.md` 的 current-state 图为准。
+- 2026-03-20: v1.1 — 补充当前 richer shell / thin shell 分裂现实，明确本规格仅覆盖 `omega-tui` 路径；与 `omega-session`、`omega-core` 的现状依赖关系以 `omega-runtime-ui-message-contract.md` 的 current-state 图为准。
+- 2026-03-20: 交互入口已收敛为 `omega-tui`；与已移除 `omega-repl` 路径有关的说明不再作为活跃约束。

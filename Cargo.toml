@@ -18,7 +18,6 @@ members = [
     "crates/omega-core",
     "crates/omega-session",
     "crates/omega-observability",
-    "crates/omega-repl",
     "crates/omega-tui",
 ]
 resolver = "2"

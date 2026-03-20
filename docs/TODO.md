@@ -190,7 +190,7 @@ _将 M11 中基础级体验优化前移，确保在开发后续功能时有可�
 - **Priority**: High
 - **Description**: 实现 SkillLoader，扫描 skills 目录，按关键词匹配加载
 - **Related**: docs/specs/omega-agent-impl-plan.md, docs/specs/omega-tui-runtime-experience.md
-- **Summary**: `omega-skills` 新增递归扫描 `.claude/skills` 与 `skills/` 的 `SkillLoader`，支持 frontmatter 读取、技能描述汇总、按任务文本做关键词匹配，并提供 `load_skill` 工具按需返回完整 `<skill ...>` 内容；`omega-core::create_default_tools` 已默认注册该工具，`omega-repl` 与 `omega-session` 会在每轮按当前输入把匹配到的 skill 正文预装进 system prompt，同时始终附带低成本的 skills 描述列表；新增 `omega-skills`、`omega-repl` 相关单测，并以定向 cargo test 验证通过
+- **Summary**: `omega-skills` 新增递归扫描 `.claude/skills` 与 `skills/` 的 `SkillLoader`，支持 frontmatter 读取、技能描述汇总、按任务文本做关键词匹配，并提供 `load_skill` 工具按需返回完整 `<skill ...>` 内容；`omega-core::create_default_tools` 已默认注册该工具，当前主路径上的 `omega-session` 会在每轮按当前输入把匹配到的 skill 正文预装进 system prompt，同时始终附带低成本的 skills 描述列表；相关单测已补齐，并以定向 cargo test 验证通过
 
 ### ── M6: 上下文压缩 (s06) ──
 
@@ -261,12 +261,12 @@ _将 M11 中基础级体验优化前移，确保在开发后续功能时有可�
 
 _基础体验已在 M1.7 完成，此处保留高级特性。_
 
-### Task 15C: 交互层重构 — omega-tui 库化 + omega-repl 新包
+### Task 15C: 交互层重构 — omega-tui 库化与单入口收敛
 - **Status**: Completed
-- **Completed**: 2026-03-19
+- **Completed**: 2026-03-20
 - **Priority**: High
-- **Description**: 在继续高阶 TUI 能力前，先将 `omega-tui` 拆为 library-first crate，并新增 `omega-repl` 承接最小 REPL，降低后续功能继续堆叠在单一入口文件中的风险
-- **Related**: docs/specs/omega-interaction-layer-refactor.md
+- **Description**: 在继续高阶 TUI 能力前，先将 `omega-tui` 拆为 library-first crate，并最终收敛为唯一用户入口，避免交互路径继续分裂
+- **Related**: docs/archive/omega-interaction-layer-refactor.md, docs/specs/omega-runtime-ui-message-contract.md
 
 ### Task 15D: `omega-tui` 非 UI 职责剥离
 - **Status**: Completed
@@ -274,7 +274,7 @@ _基础体验已在 M1.7 完成，此处保留高级特性。_
 - **Priority**: High
 - **Description**: 将 `omega-tui` 中不属于 UI 的 turn orchestration 与 observability 逻辑拆为独立 crate；该任务先于剩余主线执行，Phase 1 先实现 `omega-session` 与 `omega-observability`，Phase 2 再按需要评估 `omega-interaction`
 - **Related**: docs/specs/omega-tui-non-ui-extraction.md, docs/decisions/006-omega-tui-ui-boundary.md
-- **Summary**: 新增 `omega-session` 承接 Agent turn orchestration 与 checkpoint/interrupt/update 协议，新增 `omega-observability` 承接 tracing 初始化、UI sink、JSONL 文件日志与 ANSI 清洗；`omega-tui` 改为仅保留 UI 运行时并消费外部 `SessionUpdate`/trace channel，`omega-repl` 也接入统一 tracing 初始化；`cargo test -p omega-session -p omega-observability -p omega-tui -p omega-repl` 通过
+- **Summary**: 新增 `omega-session` 承接 Agent turn orchestration 与 checkpoint/interrupt/update 协议，新增 `omega-observability` 承接 tracing 初始化、UI sink、JSONL 文件日志与 ANSI 清洗；`omega-tui` 改为仅保留 UI 运行时并消费外部 `SessionUpdate`/trace channel。后续已进一步收敛为 `omega-tui` 单入口；当前验证基线应以 `cargo test -p omega-session -p omega-observability -p omega-tui` 为准
 
 ### Task 15E-1: omega-theme — 主题与样式令牌包
 - **Status**: Completed
@@ -419,7 +419,7 @@ _基础体验已在 M1.7 完成，此处保留高级特性。_
 - **Started**: 2026-03-18
 - **Completed**: 2026-03-18
 - **Description**: stdin/stdout REPL 入口，从环境变量读取配置构造 Agent，可 cargo run 交互
-- **Summary**: MinimaxConfig::from_env 构造客户端、create_default_tools 注册工具集、run_loop_with 回调显示工具调用（命令预览 + 输出预览）、UTF-8 安全截断、EOF/q/exit 退出；该功能已在 `Task 15C` 中迁移到独立的 `omega-repl` 包
+- **Summary**: MinimaxConfig::from_env 构造客户端、create_default_tools 注册工具集、run_loop_with 回调显示工具调用（命令预览 + 输出预览）、UTF-8 安全截断、EOF/q/exit 退出；该最小 REPL 里程碑后来一度被拆到独立入口，但当前已结束双路径策略，用户入口统一收敛为 `omega-tui`
 - **Related**: learn/learn-claude-code/agents/s01_agent_loop.py
 
 ### 非计划项：文档体系建设
