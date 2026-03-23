@@ -363,8 +363,18 @@ impl App {
             self.step_diagnostics.push(sanitized);
         }
         self.step_diagnostics.sort_by(|left, right| {
-            (left.workflow_role.as_str(), left.workflow_id.as_str(), left.index, left.step_id.as_str())
-                .cmp(&(right.workflow_role.as_str(), right.workflow_id.as_str(), right.index, right.step_id.as_str()))
+            (
+                left.workflow_role.as_str(),
+                left.workflow_id.as_str(),
+                left.index,
+                left.step_id.as_str(),
+            )
+                .cmp(&(
+                    right.workflow_role.as_str(),
+                    right.workflow_id.as_str(),
+                    right.index,
+                    right.step_id.as_str(),
+                ))
         });
         self.rebuild_diagnostics_lines();
     }
@@ -710,7 +720,9 @@ impl App {
 
     pub fn activate_selected_diagnostics_item(&mut self) -> Option<String> {
         let selected = self.diagnostics_state.selected()?;
-        let width = (self.diagnostics_rect.width as usize).saturating_sub(2).max(1);
+        let width = (self.diagnostics_rect.width as usize)
+            .saturating_sub(2)
+            .max(1);
         let line = self
             .wrapped_panel_lines(Panel::Diagnostics, width)
             .get(selected)
@@ -834,7 +846,11 @@ impl App {
         } else if self.diagnostics_rect.width > 0
             && col >= self.diagnostics_rect.x
             && row >= self.diagnostics_rect.y
-            && row < self.diagnostics_rect.y.saturating_add(self.diagnostics_rect.height)
+            && row
+                < self
+                    .diagnostics_rect
+                    .y
+                    .saturating_add(self.diagnostics_rect.height)
         {
             Panel::Diagnostics
         } else if self.logs_rect.width > 0
@@ -1781,16 +1797,20 @@ fn build_diagnostics_lines(diagnostics: &StepDiagnostics) -> Vec<DiagnosticsLine
         diagnostics.output.max_retries,
         diagnostics.session_writes.len()
     );
-    let mut lines = vec![DiagnosticsLine {
-        text: header,
-        diagnostic_id: Some(diagnostics.id.clone()),
-    }, DiagnosticsLine {
-        text: input,
-        diagnostic_id: Some(diagnostics.id.clone()),
-    }, DiagnosticsLine {
-        text: output,
-        diagnostic_id: Some(diagnostics.id.clone()),
-    }];
+    let mut lines = vec![
+        DiagnosticsLine {
+            text: header,
+            diagnostic_id: Some(diagnostics.id.clone()),
+        },
+        DiagnosticsLine {
+            text: input,
+            diagnostic_id: Some(diagnostics.id.clone()),
+        },
+        DiagnosticsLine {
+            text: output,
+            diagnostic_id: Some(diagnostics.id.clone()),
+        },
+    ];
     if let Some(error) = diagnostics
         .input
         .error
@@ -1831,7 +1851,10 @@ fn build_step_diagnostics_detail_lines(diagnostics: &StepDiagnostics) -> Vec<Str
                 .input
                 .summary_sources
                 .iter()
-                .map(|source| format!("{}:{} ({})", source.workflow_id, source.step_id, source.title))
+                .map(|source| format!(
+                    "{}:{} ({})",
+                    source.workflow_id, source.step_id, source.title
+                ))
                 .collect::<Vec<_>>()
                 .join(", ")
         ));
@@ -1878,7 +1901,10 @@ fn build_step_diagnostics_detail_lines(diagnostics: &StepDiagnostics) -> Vec<Str
     ));
     lines.push(format!(
         "output_contract: {}{}{}",
-        diagnostics_output_contract_label(diagnostics.output.status, diagnostics.output.format.as_deref()),
+        diagnostics_output_contract_label(
+            diagnostics.output.status,
+            diagnostics.output.format.as_deref()
+        ),
         diagnostics
             .output
             .schema_path
@@ -1949,7 +1975,10 @@ fn diagnostics_output_status_label(status: StepOutputStatus) -> &'static str {
 
 fn diagnostics_output_contract_label(status: StepOutputStatus, format: Option<&str>) -> String {
     match format {
-        Some(format) => format!("format={format} · status={}", diagnostics_output_status_label(status)),
+        Some(format) => format!(
+            "format={format} · status={}",
+            diagnostics_output_status_label(status)
+        ),
         None => format!("status={}", diagnostics_output_status_label(status)),
     }
 }
@@ -2092,10 +2121,9 @@ mod tests {
     use super::*;
     use omega_session::{
         ActivityTarget, OverlayRequest, ResponseSectionDelta, ResponseSectionMetadata,
-        RuntimeUiEffect, RuntimeUiMessage, StepDiagnostics, StepInputDiagnostics,
-        StepInputStatus, StepOutputContractMode, StepOutputDiagnostics, StepOutputStatus,
-        StepSummarySource, ToolRunDetail, UiContent, UiMessageKind, UiSource, UiTarget,
-        WorkflowRunRole,
+        RuntimeUiEffect, RuntimeUiMessage, StepDiagnostics, StepInputDiagnostics, StepInputStatus,
+        StepOutputContractMode, StepOutputDiagnostics, StepOutputStatus, StepSummarySource,
+        ToolRunDetail, UiContent, UiMessageKind, UiSource, UiTarget, WorkflowRunRole,
     };
     use ratatui::layout::Rect;
 
@@ -2118,7 +2146,9 @@ mod tests {
                 expected_structured_sources: vec!["analysis".to_string()],
                 resolved_structured_sources: vec!["analysis".to_string()],
                 missing_structured_sources: vec![],
-                structured_input_preview: Some("{\"analysis\":{\"objective\":\"Ship\"}}".to_string()),
+                structured_input_preview: Some(
+                    "{\"analysis\":{\"objective\":\"Ship\"}}".to_string(),
+                ),
                 todo_state_preview: None,
                 error: None,
             },
@@ -2191,9 +2221,15 @@ mod tests {
         match app.overlay.as_ref() {
             Some(OverlayState::Detail(detail)) => {
                 assert!(detail.title.contains("Plan"));
-                assert!(detail.lines.iter().any(|line| line.contains("step_outputs.plan")));
+                assert!(detail
+                    .lines
+                    .iter()
+                    .any(|line| line.contains("step_outputs.plan")));
                 assert!(detail.lines.iter().any(|line| line.contains("(added)")));
-                assert!(detail.lines.iter().any(|line| line.contains("after  {\"tasks\"")));
+                assert!(detail
+                    .lines
+                    .iter()
+                    .any(|line| line.contains("after  {\"tasks\"")));
             }
             other => panic!("expected detail overlay, got {other:?}"),
         }

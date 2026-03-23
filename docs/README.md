@@ -29,6 +29,7 @@ This directory contains the working documentation set for the Omega Rust project
 | `docs/specs/omega-scene-routing.md` | Specification | Planned scene-aware routing layer above execution workflows |
 | `docs/specs/omega-runtime-ui-message-contract.md` | Specification | Current source of truth for `omega-tui` / `omega-session` / `omega-core` runtime-path relations and unified UI contract planning |
 | `docs/specs/omega-step-session-asset-model.md` | Specification | Planned step model and session asset management boundary for workflow execution |
+| `docs/specs/omega-tool-system-upgrade.md` | Specification | Tool system follow-up plan for structured inspection, patch-centric editing, batch orchestration, and bash demotion |
 | `docs/specs/omega-workflow-package.md` | Specification | Configurable four-step workflow package and TUI phase visibility plan |
 | `docs/specs/omega-client-anthropic-api-abstraction.md` | Specification | Planned Anthropic API abstraction layer for `omega-client`, with Minimax as an Anthropic-compatible provider |
 | `docs/guide/omega-dev-guide.md` | Guide | Developer onboarding and local workflow guide |

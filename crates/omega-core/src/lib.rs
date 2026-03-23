@@ -1,12 +1,15 @@
 use std::path::PathBuf;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use futures_util::StreamExt;
 use omega_client::{ChatRequest, ChatResponse, ContentBlock, ToolDefinition};
 use omega_skills::LoadSkillHandler;
 use omega_todo::{SharedTodoManager, TodoToolHandler};
 use omega_tools::ToolDispatcher;
-use omega_tools_builtin::{BashHandler, EditHandler, ReadHandler, WriteHandler};
+use omega_tools_builtin::{
+    BashHandler, EditHandler, ReadHandler, WriteHandler,
+    default_bash_allowed_commands as builtin_default_bash_allowed_commands,
+};
 use tracing::{error, info, instrument};
 use uuid::Uuid;
 
@@ -330,12 +333,31 @@ pub fn create_default_tools(root: PathBuf) -> ToolDispatcher {
     )
 }
 
+pub fn default_bash_allowed_commands() -> Vec<String> {
+    builtin_default_bash_allowed_commands()
+}
+
 pub fn create_default_tools_with_todo_manager(
     root: PathBuf,
     todo_manager: SharedTodoManager,
 ) -> ToolDispatcher {
+    create_default_tools_with_todo_manager_and_bash_allowlist(
+        root,
+        todo_manager,
+        default_bash_allowed_commands(),
+    )
+}
+
+pub fn create_default_tools_with_todo_manager_and_bash_allowlist(
+    root: PathBuf,
+    todo_manager: SharedTodoManager,
+    bash_allowed_commands: Vec<String>,
+) -> ToolDispatcher {
     let mut dispatcher = ToolDispatcher::new();
-    dispatcher.register(Box::new(BashHandler::new(root.clone())));
+    dispatcher.register(Box::new(BashHandler::with_allowed_commands(
+        root.clone(),
+        bash_allowed_commands,
+    )));
     dispatcher.register(Box::new(ReadHandler::new(root.clone())));
     dispatcher.register(Box::new(WriteHandler::new(root.clone())));
     dispatcher.register(Box::new(EditHandler::new(root.clone())));
@@ -352,8 +374,8 @@ mod tests {
     use async_trait::async_trait;
     use omega_client::ChatEvent;
     use omega_client::{
-        ChatResponse, ClientError, MessageContent, Usage, STOP_REASON_END_TURN,
-        STOP_REASON_TOOL_USE,
+        ChatResponse, ClientError, MessageContent, STOP_REASON_END_TURN, STOP_REASON_TOOL_USE,
+        Usage,
     };
     use std::sync::{Arc, Mutex};
 

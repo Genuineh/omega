@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use omega_core::default_bash_allowed_commands;
 use serde::Deserialize;
 
 pub const DEFAULT_MODEL_CONFIG_PATH: &str = ".omega/model.toml";
@@ -20,12 +21,19 @@ context_window = 200000
 # It does NOT cap the full context window — only the output portion.
 [request]
 max_tokens = 32000
+
+# `allowed_commands` replaces the built-in bash allowlist for the `bash` tool.
+# Shell expansion, redirection, workspace escape, and dangerous sub-actions are
+# still blocked even when a command name appears in this list.
+[tools.bash]
+allowed_commands = ["cat", "echo", "false", "find", "grep", "head", "ls", "printf", "pwd", "rg", "sleep", "tail", "touch", "tr", "true", "wait", "wc", "yes"]
 "#;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentModelConfig {
     pub context_window: u32,
     pub max_output_tokens: u32,
+    pub bash_allowed_commands: Vec<String>,
 }
 
 impl Default for AgentModelConfig {
@@ -33,6 +41,7 @@ impl Default for AgentModelConfig {
         Self {
             context_window: DEFAULT_CONTEXT_WINDOW,
             max_output_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
+            bash_allowed_commands: default_bash_allowed_commands(),
         }
     }
 }
@@ -138,6 +147,13 @@ impl AgentModelConfig {
                 config.max_output_tokens = max_tokens;
             }
         }
+        if let Some(tools) = file.tools {
+            if let Some(bash) = tools.bash {
+                if let Some(allowed_commands) = bash.allowed_commands {
+                    config.bash_allowed_commands = normalize_allowed_commands(allowed_commands)?;
+                }
+            }
+        }
 
         if config.max_output_tokens >= config.context_window {
             warnings.push(format!(
@@ -164,12 +180,31 @@ impl AgentModelConfig {
     }
 }
 
+fn normalize_allowed_commands(allowed_commands: Vec<String>) -> Result<Vec<String>> {
+    let mut normalized = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+
+    for command in allowed_commands {
+        let command = command.trim().to_ascii_lowercase();
+        if command.is_empty() {
+            anyhow::bail!("tools.bash.allowed_commands must not contain empty entries");
+        }
+        if seen.insert(command.clone()) {
+            normalized.push(command);
+        }
+    }
+
+    Ok(normalized)
+}
+
 #[derive(Debug, Deserialize)]
 struct AgentModelConfigFile {
     #[serde(default)]
     context: Option<ContextConfigFile>,
     #[serde(default)]
     request: Option<RequestConfigFile>,
+    #[serde(default)]
+    tools: Option<ToolsConfigFile>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -182,6 +217,18 @@ struct ContextConfigFile {
 struct RequestConfigFile {
     #[serde(default)]
     max_tokens: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ToolsConfigFile {
+    #[serde(default)]
+    bash: Option<BashToolConfigFile>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BashToolConfigFile {
+    #[serde(default)]
+    allowed_commands: Option<Vec<String>>,
 }
 
 #[cfg(test)]
@@ -211,8 +258,23 @@ mod tests {
         assert!(loaded.warnings.is_empty());
         assert_eq!(loaded.config.max_output_tokens, 32_000);
         assert_eq!(loaded.config.context_window, 200_000);
+        assert!(
+            loaded
+                .config
+                .bash_allowed_commands
+                .iter()
+                .any(|command| command == "find")
+        );
+        assert!(
+            loaded
+                .config
+                .bash_allowed_commands
+                .iter()
+                .any(|command| command == "grep")
+        );
         assert!(written.contains("max_tokens = 32000"));
         assert!(written.contains("context_window = 200000"));
+        assert!(written.contains("allowed_commands"));
     }
 
     #[test]
@@ -231,6 +293,46 @@ mod tests {
         assert!(loaded.warnings.is_empty());
         assert_eq!(loaded.config.max_output_tokens, 64_000);
         assert_eq!(loaded.config.context_window, 128_000);
+    }
+
+    #[test]
+    fn file_override_updates_bash_allowlist() {
+        let root = temp_root("bash-allowlist");
+        let omega_dir = root.join(".omega");
+        std::fs::create_dir_all(&omega_dir).unwrap();
+        std::fs::write(
+            omega_dir.join("model.toml"),
+            "[context]\ncontext_window = 128000\n\n[request]\nmax_tokens = 64000\n\n[tools.bash]\nallowed_commands = [\"ls\", \"find\", \"grep\"]\n",
+        )
+        .unwrap();
+
+        let loaded = AgentModelConfig::load(&root);
+
+        assert!(loaded.warnings.is_empty());
+        assert_eq!(
+            loaded.config.bash_allowed_commands,
+            vec!["ls".to_string(), "find".to_string(), "grep".to_string()]
+        );
+    }
+
+    #[test]
+    fn file_override_rejects_empty_bash_allowlist_entries() {
+        let root = temp_root("bash-allowlist-invalid");
+        let omega_dir = root.join(".omega");
+        std::fs::create_dir_all(&omega_dir).unwrap();
+        std::fs::write(
+            omega_dir.join("model.toml"),
+            "[tools.bash]\nallowed_commands = [\"ls\", \"\"]\n",
+        )
+        .unwrap();
+
+        let loaded = AgentModelConfig::load(&root);
+
+        assert!(matches!(
+            loaded.source,
+            super::AgentModelConfigSource::FileWithFallback(_)
+        ));
+        assert!(loaded.warnings[0].contains("empty entries"));
     }
 
     #[test]

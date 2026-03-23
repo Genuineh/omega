@@ -1,4 +1,4 @@
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeUiEnvelope {

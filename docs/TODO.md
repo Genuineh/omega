@@ -8,6 +8,7 @@ _任务编号以 `docs/specs/omega-agent-impl-plan.md` 为准；为支持可运�
 
 ### High
 
+- **Task 8D → 8C → 8E ~ 8H**: tool system follow-up 需要前移。当前 chat 主路径在 repo inspection 场景里仍会把大量只读探索压到 `bash`，导致回合预算被 shell 语法和安全拦截消耗；**8D 优先落地**：`list_dir/glob_search/grep_search` 用现有 `Result<String>` 即可工作，session 的 `ToolRun` 已有 typed preview，不需要等 Tool Contract V2；8C 紧跟为新工具补结构化返回值，再继续 edit/batch/policy 收口。
 - **Task 10**: `omega-subagent` 仍重要，但应建立在新的 all-step loop + step context 主路径之上推进，避免继续绑定 v1 workflow 假设。
 - **Task 11**: 上下文压缩仍重要，但应建立在新的 session context 边界之上，而不是只对 raw transcript 做早期补丁。
 
@@ -154,6 +155,74 @@ _将 M11 中基础级体验优化前移，确保在开发后续功能时有可�
 - **Description**: 新增文件读取、写入、编辑三个 handler，含路径安全校验（不允许逃逸工作目录）
 - **Summary**: ReadHandler (read_file) 支持 path + 可选 limit，截断 50,000 字符，路径安全检验；WriteHandler (write_file) 支持 path + content，自动创建父目录；EditHandler (edit_file) 支持 path + old_text + new_text，替换第一次出现；三个 handler 共享 safe_path_within_root 安全辅助函数；create_default_tools 注册全部四个 handler（bash/read/write/edit）；新增 23 项测试，总计 44 项测试全通过；clippy 零警告
 - **Related**: learn/learn-claude-code/agents/s02_tool_use.py
+
+### ── M2A: Client Follow-up ──
+
+> 验证方式：`cargo test -p omega-client` 覆盖 Messages / Streaming / Prompt Caching / Count Tokens / Models / Message Batches，并补 mock HTTP/SSE 与 live Minimax acceptance tests
+> 对标：Anthropic 官方 API + `anthropic-sdk-go` 的 service 组织方式，但保持本仓库自有 typed client
+
+### Task 2A: omega-client — Anthropic SDK 风格 API 抽象与独立测试
+- **Status**: Completed
+- **Started**: 2026-03-23
+- **Completed**: 2026-03-23
+- **Priority**: Medium
+- **Description**: 在保留现有 `LlmClient` 兼容面的前提下，为 `omega-client` 抽出 provider-neutral 的 Anthropic API 层，并把 Minimax 下沉为 Anthropic-compatible provider 适配器。
+- **Summary**: `omega-client` 已新增 provider-neutral 的 `anthropic` 服务层与 `AnthropicMessagesCompatClient`，保留现有 `LlmClient` / `ChatRequest` / `ChatResponse` 兼容面不变；`MinimaxClient` 现通过该兼容层运行，并补齐 `AnthropicProviderConfig` / capability matrix、Messages create/create_stream、SSE 解析与消息累积、prompt caching typed fields、`count_tokens` / `models` / `message_batches` service、`OMEGA_*` / `ANTHROPIC_*` env fallback，以及独立的 request/stream/provider/capability/live-ignored 测试矩阵。验证已通过 `cargo fmt --all`、`cargo test -p omega-client`、`cargo clippy -p omega-client --all-targets -- -D warnings` 与 `cargo test -p omega-core -p omega-session -p omega-subagent -p omega-app`。
+- **Related**: docs/specs/omega-client-anthropic-api-abstraction.md
+
+### ── M2B: Tool System Follow-up ──
+
+> 验证方式：针对仓库分析与 workflow chat 主路径，常见探索动作默认走 `list_dir/glob_search/grep_search/read_file/apply_patch/batch` 等结构化工具，而不再依赖 `bash` 拼接 shell；tool result 与 runtime UI 保持结构化；相关 cargo test / clippy 通过
+> 对标：当前 Omega runtime contract + 参考实现中的结构化 read/glob/grep/edit/write/batch/task 工具分层
+
+### Task 8C: omega-tools / omega-core / omega-session — Tool Contract V2
+- **Status**: Pending
+- **Priority**: High
+- **Description**: 为 `ToolHandler` 建立统一的 typed result contract，首轮补齐 `output/preview/metadata/truncated/error_kind` 五个核心字段（`title` 与 `artifacts` 延后），同时保留旧字符串返回值的兼容包装。
+- **Complexity**: M
+- **Planning Note**: session 已有完整 `ToolRun`/`ToolRunDetail`/`ToolRunStatus`，不需要重新设计 UI contract；compat adapter 是标准模式。
+- **Related**: docs/specs/omega-tool-system-upgrade.md, docs/specs/omega-runtime-ui-message-contract.md
+
+### Task 8D: omega-tools-builtin — Structured Workspace Inspection Tools
+- **Status**: Pending
+- **Priority**: High
+- **Description**: 新增 `list_dir`、`glob_search`、`grep_search`，并为 `read_file` 增加 `start_line`/`end_line` 范围读取语义，覆盖常见 repo inspection 场景。同时统一 `BashHandler.validate_path_within_root` 与文件 handler 区域的 `safe_path_within_root` 为模块级共享函数。
+- **Complexity**: L
+- **Planning Note**: 不依赖 Task 8C——用现有 `Result<String>` 即可工作，8C 落地后再回补结构化返回值。这是当前稳定性收益最高、应第一个落地的任务。
+- **Related**: docs/specs/omega-tool-system-upgrade.md
+
+### Task 8E: omega-tools-builtin — Patch-Centric Editing Toolset
+- **Status**: Pending
+- **Priority**: Medium
+- **Description**: 新增 `apply_patch`、`create_file`，并增强现有 `edit_file` / `write_file` 的 diff 与诊断反馈，让执行态写路径更稳定。
+- **Complexity**: M
+- **Blocked by**: Task 8C
+- **Planning Note**: 当前失败模式集中在读路径而非写路径，优先级从 High 降为 Medium；8C 落地后再做。
+- **Related**: docs/specs/omega-tool-system-upgrade.md
+
+### Task 8F: omega-tools-builtin / omega-session — Batch Read-Only Tool
+- **Status**: Pending
+- **Priority**: Medium
+- **Description**: 提供受限的 `batch` 只读工具并行执行能力，减少目录浏览、glob、grep、read 等组合任务对 loop budget 的消耗。
+- **Complexity**: M
+- **Blocked by**: Task 8C, Task 8D
+- **Related**: docs/specs/omega-tool-system-upgrade.md
+
+### Task 8G: omega-tools-builtin — Bash V2
+- **Status**: Pending
+- **Priority**: Medium
+- **Description**: 为 `bash` 增加 `workdir`、`description`、更清晰的 policy error 分类。AST-based 校验评估移出本轮 scope——8D 补齐后 bash 压力大幅下降，当前字符串归一化策略够用。
+- **Complexity**: M
+- **Blocked by**: Task 8D
+- **Related**: docs/specs/omega-tool-system-upgrade.md
+
+### Task 8H: omega-tools / omega-workflow / omega-app — Tool Policy Surface
+- **Status**: Pending
+- **Priority**: Medium
+- **Description**: 统一 `.omega` 下的 tool policy 配置、workflow 默认工具组和 prompt 对齐策略，让配置、runtime 与提示词不再互相打架。
+- **Complexity**: M
+- **Blocked by**: Task 8C, Task 8D, Task 8G
+- **Related**: docs/specs/omega-tool-system-upgrade.md, docs/specs/omega-workflow-package.md
 
 ### ── M3: Todo 管理 (s03) ──
 
@@ -356,6 +425,7 @@ _基础体验已在 M1.7 完成，此处保留高级特性。_
 - **Blocked by**: Task 15F-4
 - **Blocks**: Task 15B-19
 - **Summary**: `omega-session` 已切换为 scene-aware orchestration：turn 先执行 `root` workflow 中的 `scene-recognition -> select-workflow`，再按 `SceneCatalog` 映射委派到 child workflow。root routing step 的内部输出会在 session 内消费并从 agent message history 回滚，避免污染 child workflow 对话上下文；runtime UI 现已通过 `StatusSlot::Session` 和 Activity 日志发出当前 scene、selected workflow 以及 root/child workflow 切换结果。后续又补上两类稳定性修正：当 root routing step 在 JSON contract 下多次输出自然语言时，session 会退回既有 text/default routing fallback 而不是直接终止整轮；同时 chat scene 现在显式承接“代码库说明 / 测试评估 / 优缺点分析”这类只读仓库分析请求，并放开安全只读 bash，避免把这类问题误送进 feature workflow。`omega-app` 也已改为装配 `LoadedWorkflowCatalog`，不再只向 session 传递单个 workflow。验证已通过 `cargo test -p omega-session -p omega-app -p omega-workflow` 与 `cargo clippy -p omega-session -p omega-app -p omega-workflow --all-targets -- -D warnings`。
+	2026-03-23 补充修正：root routing JSON 校验现在会从“短说明文字 + 顶层 JSON”响应中提取结构化结果，并在 step system prompt 的 output contract 中统一注入 JSON-only response rules，减少 `scene-recognition` / `select-workflow` 首轮被误记为 invalid structured output 的噪音；验证已补 `cargo test -p omega-session` 与 `cargo test -p omega-app`。
 
 ### Task 15B-18: omega-tui — 统一 runtime UI sink / reducer
 - **Status**: Completed
@@ -538,6 +608,7 @@ _基础体验已在 M1.7 完成，此处保留高级特性。_
 - **Started**: 2026-03-18
 - **Completed**: 2026-03-18
 - **Summary**: LlmClient trait、MinimaxClient 适配器、完整类型模型、Usage、stop_reason 常量、builder、from_env、29 项测试
+- **Follow-up Task**: `Task 2A`
 - **Follow-up Spec**: `docs/specs/omega-client-anthropic-api-abstraction.md` 规划将当前 Minimax 直连实现下沉为 Anthropic API 抽象层上的 provider 适配器，并补齐 Messages / Count Tokens / Models / Message Batches / Prompt Caching / Streaming 的独立测试矩阵。
 
 ### Task 7: omega-tools — 工具抽象层
@@ -554,6 +625,8 @@ _基础体验已在 M1.7 完成，此处保留高级特性。_
 - **Completed**: 2026-03-18
 - **Description**: 实现 BashHandler（shell 命令执行 + 安全过滤 + 超时控制）
 - **Summary**: 支持 shell 管道与复合命令、allowlist 命令集合、安全过滤（危险命令、shell expansion、redirection、工作区外路径、symlink 逃逸）、进程组级 timeout 清理、输出 50,000 字符截断、21 项测试全通过、clippy 零警告
+	2026-03-23 补充修正：默认 bash allowlist 已扩到 `find` / `grep`，并新增 `.omega/model.toml` 的 `[tools.bash].allowed_commands` 覆盖配置；同时 `find` 的 `-exec/-ok/-delete/-fprint*` 等危险动作仍保持拦截，验证已补 `omega-tools-builtin`、`omega-app` 与 `omega-session` 相关测试。
+	2026-03-23 对齐修正：chat workflow 提示词已同步更新为允许简单单行 `find` / `grep` 查询，但继续明确禁止 shell redirection 与 expansion，避免模型继续生成 `2>/dev/null`、`2>&1` 这类会被策略拦截的命令。
 - **Related**: learn/learn-claude-code/agents/s01_agent_loop.py
 
 ### Task 14: omega-core — 最小 Agent Loop

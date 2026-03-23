@@ -5,9 +5,9 @@ use std::time::Duration;
 
 use anyhow::Result;
 #[cfg(unix)]
-use libc::{kill, SIGKILL};
+use libc::{SIGKILL, kill};
 use omega_tools::ToolHandler;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use tempfile::NamedTempFile;
@@ -16,32 +16,73 @@ use wait_timeout::ChildExt;
 
 const DEFAULT_TIMEOUT_SECONDS: u64 = 120;
 const MAX_OUTPUT_CHARS: usize = 50_000;
-const ALLOWED_COMMANDS: &[&str] = &[
-    "cat", "echo", "false", "head", "ls", "printf", "pwd", "rg", "sleep", "tail", "touch", "tr",
-    "true", "wait", "wc", "yes",
+const DEFAULT_ALLOWED_COMMANDS: &[&str] = &[
+    "cat", "echo", "false", "find", "grep", "head", "ls", "printf", "pwd", "rg", "sleep", "tail",
+    "touch", "tr", "true", "wait", "wc", "yes",
 ];
 const DISALLOWED_SHELL_TOKENS: &[char] = &['$', '`', '\n', '\r'];
-const FILE_PATH_COMMANDS: &[&str] = &["cat", "head", "ls", "rg", "tail", "touch", "wc"];
+const FILE_PATH_COMMANDS: &[&str] = &[
+    "cat", "find", "grep", "head", "ls", "rg", "tail", "touch", "wc",
+];
+const FIND_BLOCKED_ACTIONS: &[&str] = &[
+    "-delete", "-exec", "-execdir", "-fprint", "-fprint0", "-fprintf", "-fls", "-ok", "-okdir",
+];
+
+pub fn default_bash_allowed_commands() -> Vec<String> {
+    DEFAULT_ALLOWED_COMMANDS
+        .iter()
+        .map(|command| (*command).to_string())
+        .collect()
+}
 
 #[derive(Debug, Clone)]
 pub struct BashHandler {
     root: PathBuf,
     default_timeout_seconds: u64,
+    allowed_commands: std::collections::BTreeSet<String>,
 }
 
 impl BashHandler {
     pub fn new(root: PathBuf) -> Self {
+        Self::with_allowed_commands(root, default_bash_allowed_commands())
+    }
+
+    pub fn with_allowed_commands(root: PathBuf, allowed_commands: Vec<String>) -> Self {
         Self {
             root: Self::resolve_root(root),
             default_timeout_seconds: DEFAULT_TIMEOUT_SECONDS,
+            allowed_commands: Self::normalize_allowed_commands(allowed_commands),
         }
     }
 
     pub fn with_timeout(root: PathBuf, default_timeout_seconds: u64) -> Self {
+        Self::with_timeout_and_allowed_commands(
+            root,
+            default_timeout_seconds,
+            default_bash_allowed_commands(),
+        )
+    }
+
+    pub fn with_timeout_and_allowed_commands(
+        root: PathBuf,
+        default_timeout_seconds: u64,
+        allowed_commands: Vec<String>,
+    ) -> Self {
         Self {
             root: Self::resolve_root(root),
             default_timeout_seconds,
+            allowed_commands: Self::normalize_allowed_commands(allowed_commands),
         }
+    }
+
+    fn normalize_allowed_commands(
+        allowed_commands: Vec<String>,
+    ) -> std::collections::BTreeSet<String> {
+        allowed_commands
+            .into_iter()
+            .map(|command| command.trim().to_ascii_lowercase())
+            .filter(|command| !command.is_empty())
+            .collect()
     }
 
     fn resolve_root(root: PathBuf) -> PathBuf {
@@ -135,10 +176,14 @@ impl BashHandler {
             .split_first()
             .ok_or_else(|| "Error: Command cannot be empty".to_string())?;
 
-        if !ALLOWED_COMMANDS.contains(&program.as_str()) {
+        if !self.allowed_commands.contains(program.as_str()) {
             return Err(format!(
                 "Error: Command '{program}' is blocked by safety policy"
             ));
+        }
+
+        if program == "find" {
+            self.validate_find_args(args)?;
         }
 
         if FILE_PATH_COMMANDS.contains(&program.as_str()) {
@@ -148,6 +193,17 @@ impl BashHandler {
                 }
                 self.validate_path_within_root(arg)?;
             }
+        }
+
+        Ok(())
+    }
+
+    fn validate_find_args(&self, args: &[String]) -> std::result::Result<(), String> {
+        if args
+            .iter()
+            .any(|arg| FIND_BLOCKED_ACTIONS.contains(&arg.as_str()))
+        {
+            return Err("Error: Dangerous find action blocked".to_string());
         }
 
         Ok(())
@@ -785,6 +841,26 @@ mod tests {
     }
 
     #[test]
+    fn bash_handler_allows_grep_and_find_by_default() {
+        let root = unique_test_dir();
+        fs::create_dir_all(root.join("nested")).expect("nested dir should be created");
+        fs::write(root.join("nested/hello.txt"), "hello world")
+            .expect("test file should be created");
+
+        let handler = BashHandler::new(root.clone());
+        let grep_result = handler
+            .execute(json!({"command": "grep hello nested/hello.txt"}))
+            .expect("tool execution should succeed");
+        let find_result = handler
+            .execute(json!({"command": "find nested -name hello.txt"}))
+            .expect("tool execution should succeed");
+
+        assert_eq!(grep_result, "hello world");
+        assert_eq!(find_result, "nested/hello.txt");
+        remove_dir_if_exists(&root);
+    }
+
+    #[test]
     fn bash_handler_blocks_dangerous_command() {
         let handler = BashHandler::new(PathBuf::from("."));
         let result = handler
@@ -822,6 +898,16 @@ mod tests {
             .expect("tool execution should succeed with error string");
 
         assert_eq!(result, "Error: Shell redirection is not allowed");
+    }
+
+    #[test]
+    fn bash_handler_blocks_dangerous_find_actions() {
+        let handler = BashHandler::new(PathBuf::from("."));
+        let result = handler
+            .execute(json!({"command": "find . -exec pwd {} +"}))
+            .expect("tool execution should succeed with error string");
+
+        assert_eq!(result, "Error: Dangerous find action blocked");
     }
 
     #[test]
@@ -998,6 +1084,24 @@ mod tests {
             .expect("tool execution should succeed");
 
         assert_eq!(result, "5");
+    }
+
+    #[test]
+    fn bash_handler_respects_custom_allowlist() {
+        let handler = BashHandler::with_allowed_commands(
+            PathBuf::from("."),
+            vec!["printf".to_string(), "wc".to_string()],
+        );
+
+        let allowed = handler
+            .execute(json!({"command": "printf hello | wc -c"}))
+            .expect("tool execution should succeed");
+        let blocked = handler
+            .execute(json!({"command": "ls"}))
+            .expect("tool execution should succeed with validation string");
+
+        assert_eq!(allowed, "5");
+        assert_eq!(blocked, "Error: Command 'ls' is blocked by safety policy");
     }
 
     #[test]

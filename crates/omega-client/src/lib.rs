@@ -1,17 +1,34 @@
 use std::env;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
-use std::time::Instant;
 
 use async_trait::async_trait;
 use futures_util::stream::{self, Stream};
-use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
-use reqwest::{Client, StatusCode};
+#[cfg(test)]
+use reqwest::header::HeaderMap;
+#[cfg(test)]
+use reqwest::header::CONTENT_TYPE;
+use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+#[cfg(test)]
+use serde_json::json;
+use serde_json::Value;
 use thiserror::Error;
-use tracing::{debug, instrument, trace};
+
+pub mod anthropic;
+pub mod compat;
+
+pub use anthropic::{
+    parse_sse_events, AnthropicBatchResult, AnthropicCacheControl, AnthropicClient,
+    AnthropicContentBlock, AnthropicCountTokensRequest, AnthropicEventStream, AnthropicMessage,
+    AnthropicMessageAccumulator, AnthropicMessageBatch, AnthropicMessageBatchCreateRequest,
+    AnthropicMessageBatchRequest, AnthropicMessageBatchRequestCounts, AnthropicMessageContent,
+    AnthropicMessageCreateRequest, AnthropicMessageParam, AnthropicModelInfo,
+    AnthropicProviderCapabilities, AnthropicProviderConfig, AnthropicStreamEvent,
+    AnthropicSystemBlock, AnthropicThinkingConfig, AnthropicTokenCount, AnthropicToolChoice,
+    AnthropicToolDefinition, AnthropicUsage,
+};
+pub use compat::AnthropicMessagesCompatClient;
 
 pub const MINIMAX_DEFAULT_MODEL: &str = "MiniMax-M2.5";
 pub const MINIMAX_GLOBAL_BASE_URL: &str = "https://api.minimax.io/anthropic";
@@ -174,6 +191,14 @@ impl ChatRequest {
 pub struct Usage {
     pub input_tokens: u32,
     pub output_tokens: u32,
+}
+
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+#[error("provider '{provider}' does not support {operation}: {detail}")]
+pub struct ProviderCapabilityError {
+    pub provider: String,
+    pub operation: String,
+    pub detail: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -411,8 +436,14 @@ pub enum ClientError {
     InvalidHeader(#[from] reqwest::header::InvalidHeaderValue),
     #[error("provider returned status {status}: {body}")]
     Api { status: StatusCode, body: String },
+    #[error("response decoding failed: {0}")]
+    Decode(String),
+    #[error("stream processing failed: {0}")]
+    Stream(String),
     #[error("configuration error: {0}")]
     Config(String),
+    #[error(transparent)]
+    UnsupportedCapability(#[from] ProviderCapabilityError),
 }
 
 #[async_trait]
@@ -467,33 +498,49 @@ impl MinimaxConfig {
     pub fn from_env() -> Result<Self, ClientError> {
         let api_key = env::var("OMEGA_API_KEY")
             .or_else(|_| env::var("OMEGA_MINIMAX_API_KEY"))
+            .or_else(|_| env::var("ANTHROPIC_API_KEY"))
             .map_err(|_| {
-                ClientError::Config("OMEGA_API_KEY or OMEGA_MINIMAX_API_KEY must be set".into())
+                ClientError::Config(
+                    "OMEGA_API_KEY, OMEGA_MINIMAX_API_KEY, or ANTHROPIC_API_KEY must be set".into(),
+                )
             })?;
-        let model =
-            env::var("OMEGA_MODEL_ID").unwrap_or_else(|_| MINIMAX_DEFAULT_MODEL.to_string());
-        let base_url =
-            env::var("OMEGA_BASE_URL").unwrap_or_else(|_| MINIMAX_GLOBAL_BASE_URL.to_string());
+        let model = env::var("OMEGA_MODEL_ID")
+            .or_else(|_| env::var("ANTHROPIC_MODEL"))
+            .unwrap_or_else(|_| MINIMAX_DEFAULT_MODEL.to_string());
+        let base_url = env::var("OMEGA_BASE_URL")
+            .or_else(|_| env::var("ANTHROPIC_BASE_URL"))
+            .unwrap_or_else(|_| MINIMAX_GLOBAL_BASE_URL.to_string());
 
         Ok(Self::with_base_url(api_key, model, base_url))
+    }
+
+    pub fn anthropic_provider_config(&self) -> AnthropicProviderConfig {
+        AnthropicProviderConfig::new(
+            self.api_key.clone(),
+            self.model.clone(),
+            self.base_url.clone(),
+            self.anthropic_version.clone(),
+        )
+    }
+
+    pub fn provider_capabilities(&self) -> AnthropicProviderCapabilities {
+        AnthropicProviderCapabilities::minimax()
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct MinimaxClient {
-    http_client: Client,
     config: MinimaxConfig,
+    compat_client: AnthropicMessagesCompatClient,
 }
 
 impl MinimaxClient {
     pub fn new(config: MinimaxConfig) -> Result<Self, ClientError> {
-        let http_client = Client::builder()
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(60))
-            .build()
-            .map_err(ClientError::Http)?;
+        let provider_config = config.anthropic_provider_config();
+        let anthropic_client =
+            AnthropicClient::new("minimax", provider_config, config.provider_capabilities())?;
         Ok(Self {
-            http_client,
+            compat_client: AnthropicMessagesCompatClient::new(anthropic_client),
             config,
         })
     }
@@ -502,101 +549,34 @@ impl MinimaxClient {
         &self.config
     }
 
+    fn compat_client(&self) -> &AnthropicMessagesCompatClient {
+        &self.compat_client
+    }
+
+    #[cfg(test)]
     fn messages_endpoint(&self) -> String {
-        format!("{}/v1/messages", self.config.base_url.trim_end_matches('/'))
+        self.compat_client.messages_endpoint()
     }
 
+    #[cfg(test)]
     fn build_headers(&self) -> Result<HeaderMap, ClientError> {
-        let mut headers = HeaderMap::new();
-        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        headers.insert(
-            "x-api-key",
-            HeaderValue::from_str(self.config.api_key.as_str())?,
-        );
-        headers.insert(
-            "anthropic-version",
-            HeaderValue::from_str(self.config.anthropic_version.as_str())?,
-        );
-        Ok(headers)
+        self.compat_client.build_headers(&[])
     }
 
+    #[cfg(test)]
     fn build_body(&self, request: ChatRequest) -> Result<Value, ClientError> {
-        let mut body = json!({
-            "model": self.config.model,
-            "max_tokens": request.max_tokens,
-            "messages": request.messages,
-        });
-
-        if let Some(system) = request.system {
-            body["system"] = Value::String(system);
-        }
-
-        if !request.tools.is_empty() {
-            body["tools"] = serde_json::to_value(request.tools)?;
-        }
-
-        Ok(body)
+        self.compat_client.build_body(request)
     }
 }
 
 #[async_trait]
 impl LlmClient for MinimaxClient {
-    #[instrument(
-        skip(self, request),
-        fields(
-            llm_call.model = %self.config.model,
-            llm_call.max_tokens = request.max_tokens,
-            llm_call.provider = "minimax",
-            llm_call.stop_reason,
-            llm_call.duration_ms,
-            llm_call.input_tokens,
-            llm_call.output_tokens
-        )
-    )]
     async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, ClientError> {
-        let start = Instant::now();
-        let body_value = self.build_body(request)?;
+        self.compat_client().chat(request).await
+    }
 
-        // TRACE level: log raw request JSON
-        if let Ok(body_str) = serde_json::to_string(&body_value) {
-            trace!(llm_call.request_json = %body_str);
-        }
-
-        let response = self
-            .http_client
-            .post(self.messages_endpoint())
-            .headers(self.build_headers()?)
-            .json(&body_value)
-            .send()
-            .await?;
-
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-
-        // TRACE level: log raw response JSON
-        debug!(llm_call.response_json = %body);
-
-        if !status.is_success() {
-            return Err(ClientError::Api { status, body });
-        }
-
-        let chat_response = serde_json::from_str::<ChatResponse>(&body).map_err(|e| {
-            ClientError::Config(format!("failed to parse response: {e}\nraw body: {body}"))
-        })?;
-
-        let duration_ms = start.elapsed().as_millis() as u64;
-
-        // Record span fields
-        if let Some(ref usage) = chat_response.usage {
-            tracing::Span::current().record("llm_call.input_tokens", usage.input_tokens);
-            tracing::Span::current().record("llm_call.output_tokens", usage.output_tokens);
-        }
-        if let Some(ref stop_reason) = chat_response.stop_reason {
-            tracing::Span::current().record("llm_call.stop_reason", stop_reason.as_str());
-        }
-        tracing::Span::current().record("llm_call.duration_ms", duration_ms);
-
-        Ok(chat_response)
+    async fn chat_stream(&self, request: ChatRequest) -> Result<ChatEventStream, ClientError> {
+        self.compat_client().chat_stream(request).await
     }
 
     fn provider_name(&self) -> &'static str {
@@ -672,6 +652,7 @@ mod tests {
         // Unset both potential env vars to ensure failure
         env::remove_var("OMEGA_API_KEY");
         env::remove_var("OMEGA_MINIMAX_API_KEY");
+        env::remove_var("ANTHROPIC_API_KEY");
         let result = MinimaxConfig::from_env();
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -679,6 +660,27 @@ mod tests {
             err.to_string().contains("OMEGA_API_KEY"),
             "error should mention env var: {err}"
         );
+    }
+
+    #[test]
+    fn from_env_accepts_anthropic_fallbacks() {
+        env::remove_var("OMEGA_API_KEY");
+        env::remove_var("OMEGA_MINIMAX_API_KEY");
+        env::remove_var("OMEGA_MODEL_ID");
+        env::remove_var("OMEGA_BASE_URL");
+        env::set_var("ANTHROPIC_API_KEY", "anthropic-key");
+        env::set_var("ANTHROPIC_MODEL", "claude-compatible");
+        env::set_var("ANTHROPIC_BASE_URL", "https://anthropic.example.com");
+
+        let config = MinimaxConfig::from_env().expect("env fallback should load config");
+
+        assert_eq!(config.api_key, "anthropic-key");
+        assert_eq!(config.model, "claude-compatible");
+        assert_eq!(config.base_url, "https://anthropic.example.com");
+
+        env::remove_var("ANTHROPIC_API_KEY");
+        env::remove_var("ANTHROPIC_MODEL");
+        env::remove_var("ANTHROPIC_BASE_URL");
     }
 
     // ── Message constructors ──────────────────────────────────────────
@@ -1045,7 +1047,8 @@ mod tests {
             .with_tools(vec![tool]);
         let body = client.build_body(req).unwrap();
 
-        assert_eq!(body["system"], "sys prompt");
+        assert_eq!(body["system"][0]["type"], "text");
+        assert_eq!(body["system"][0]["text"], "sys prompt");
         assert_eq!(body["tools"][0]["name"], "bash");
     }
 

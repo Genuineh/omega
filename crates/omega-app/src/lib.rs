@@ -8,7 +8,7 @@ use omega_keymap::KeymapManager;
 use omega_observability::init_tracing_channel;
 use omega_session::{AgentSession, AgentSessionConfig};
 use omega_theme::OmegaTheme;
-use omega_tui::{run as run_tui, TuiBehaviorConfig, TuiLaunchConfig};
+use omega_tui::{TuiBehaviorConfig, TuiLaunchConfig, run as run_tui};
 use omega_workflow::LoadedWorkflowCatalog;
 use tracing::{info, warn};
 
@@ -59,6 +59,7 @@ pub async fn run() -> anyhow::Result<()> {
     info!(
         context_window = loaded_model_config.config.context_window,
         max_output_tokens = loaded_model_config.config.max_output_tokens,
+        bash_allowed_commands = loaded_model_config.config.bash_allowed_commands.len(),
         "model budget loaded"
     );
 
@@ -82,6 +83,7 @@ pub async fn run() -> anyhow::Result<()> {
         prompt_catalog: loaded_workflow_catalog.prompt_catalog,
         context_window: loaded_model_config.config.context_window,
         max_output_tokens: loaded_model_config.config.max_output_tokens,
+        bash_allowed_commands: loaded_model_config.config.bash_allowed_commands.clone(),
     })?;
 
     run_tui(TuiLaunchConfig {
@@ -116,5 +118,17 @@ mod tests {
         let config = AgentModelConfig::default();
         assert_eq!(config.max_output_tokens, 32_000);
         assert_eq!(config.context_window, 200_000);
+        assert!(
+            config
+                .bash_allowed_commands
+                .iter()
+                .any(|command| command == "find")
+        );
+        assert!(
+            config
+                .bash_allowed_commands
+                .iter()
+                .any(|command| command == "grep")
+        );
     }
 }

@@ -398,8 +398,12 @@ impl DataFormat {
 pub enum StepInputContract {
     #[default]
     None,
-    Required { sources: Vec<String> },
-    Optional { sources: Vec<String> },
+    Required {
+        sources: Vec<String>,
+    },
+    Optional {
+        sources: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -1194,12 +1198,14 @@ impl BuiltinWorkflowStepId {
                 "write_file".to_string(),
                 "load_skill".to_string(),
             ]),
-            Self::Chat | Self::Analysis | Self::Plan | Self::Report => StepToolRequest::Block(vec![
-                "bash".to_string(),
-                "edit_file".to_string(),
-                "todo".to_string(),
-                "write_file".to_string(),
-            ]),
+            Self::Chat | Self::Analysis | Self::Plan | Self::Report => {
+                StepToolRequest::Block(vec![
+                    "bash".to_string(),
+                    "edit_file".to_string(),
+                    "todo".to_string(),
+                    "write_file".to_string(),
+                ])
+            }
         }
     }
 
@@ -1427,7 +1433,8 @@ impl StepOutputContractConfig {
         let format = self.format.unwrap_or(DataFormatConfig::Json).into_format();
         match self.mode {
             StepOutputContractMode::None => {
-                if self.schema_path.is_some() || self.max_retries.is_some() || self.format.is_some() {
+                if self.schema_path.is_some() || self.max_retries.is_some() || self.format.is_some()
+                {
                     bail!("output_contract mode 'none' does not accept format, schema_path, or max_retries");
                 }
                 Ok(StepOutputContract::None)
@@ -1548,8 +1555,12 @@ fn ensure_builtin_step_schema_files(
                     ..
                 } => schema_path,
                 StepOutputContract::None
-                | StepOutputContract::Required { schema_path: None, .. }
-                | StepOutputContract::Optional { schema_path: None, .. } => continue,
+                | StepOutputContract::Required {
+                    schema_path: None, ..
+                }
+                | StepOutputContract::Optional {
+                    schema_path: None, ..
+                } => continue,
             };
 
             let Some(default_content) = builtin_schema_content_for_path(schema_path) else {
@@ -1603,9 +1614,9 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        LoadedWorkflow, LoadedWorkflowCatalog, SceneCatalog, StepLoopMode, StepSkillRequest,
-        StepOutputContract, StepToolRequest, WorkflowDefinition, WorkflowPrompts,
-        WorkflowSource, ANALYSIS_STEP_ID, CHAT_WORKFLOW_ID, DEFAULT_ANALYSIS_SCHEMA_PATH,
+        LoadedWorkflow, LoadedWorkflowCatalog, SceneCatalog, StepLoopMode, StepOutputContract,
+        StepSkillRequest, StepToolRequest, WorkflowDefinition, WorkflowPrompts, WorkflowSource,
+        ANALYSIS_STEP_ID, CHAT_WORKFLOW_ID, DEFAULT_ANALYSIS_SCHEMA_PATH,
         DEFAULT_EXECUTE_SCHEMA_PATH, DEFAULT_PLAN_SCHEMA_PATH, DEFAULT_SCENES_PATH,
         DEFAULT_WORKFLOW_PATH, EXECUTE_STEP_ID, FEATURE_SCENE_ID, FEATURE_WORKFLOW_ID,
         REPORT_STEP_ID, ROOT_WORKFLOW_ID, SCENE_RECOGNITION_STEP_ID,

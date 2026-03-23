@@ -705,7 +705,10 @@ fn render_sidebar_body(
     } else {
         Layout::default()
             .direction(Direction::Vertical)
-            .constraints(vec![Constraint::Ratio(1, expanded_sections as u32); expanded_sections])
+            .constraints(vec![
+                Constraint::Ratio(1, expanded_sections as u32);
+                expanded_sections
+            ])
             .split(area)
             .iter()
             .copied()
