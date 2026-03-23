@@ -1,5 +1,7 @@
+use std::cell::RefCell;
 use std::sync::{mpsc, Arc, Mutex};
 
+use arboard::Clipboard;
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
@@ -7,8 +9,36 @@ use omega_keymap::{InteractionMode, KeyAction, KeyContext, KeyResolution, Keymap
 use omega_session::{AgentSession, RuntimeUiEnvelope};
 use tracing::info;
 
-use crate::app::{App, MsgKind, Panel};
+use crate::app::{App, MsgKind, Panel, ResponseActivation};
 use crate::overlay::{ConfirmChoice, ConfirmIntent, OverlayState};
+
+thread_local! {
+    static PERSISTENT_CLIPBOARD: RefCell<Option<SystemClipboard>> = const { RefCell::new(None) };
+}
+
+trait ClipboardBackend {
+    fn set_text(&mut self, text: &str) -> Result<(), String>;
+}
+
+struct SystemClipboard {
+    inner: Clipboard,
+}
+
+impl SystemClipboard {
+    fn new() -> Result<Self, String> {
+        Clipboard::new()
+            .map(|inner| Self { inner })
+            .map_err(|error| error.to_string())
+    }
+}
+
+impl ClipboardBackend for SystemClipboard {
+    fn set_text(&mut self, text: &str) -> Result<(), String> {
+        self.inner
+            .set_text(text.to_string())
+            .map_err(|error| error.to_string())
+    }
+}
 
 pub fn handle_event(
     event: Event,
@@ -42,6 +72,16 @@ fn handle_key_event(
 
     {
         let mut app_guard = app.lock().unwrap();
+        if app_guard.interaction_mode == InteractionMode::Normal && is_copy_shortcut(key) {
+            if let Some(count) = copy_selected_text(&mut app_guard).map_err(anyhow::Error::msg)? {
+                app_guard.set_status_notice(format!("Copied {} chars.", count));
+                return Ok(false);
+            }
+        }
+    }
+
+    {
+        let mut app_guard = app.lock().unwrap();
         if app_guard.interaction_mode == InteractionMode::Normal
             && app_guard.focused_panel == Panel::SidebarRail
         {
@@ -60,6 +100,58 @@ fn handle_key_event(
                 }
                 KeyCode::Char('x') => {
                     app_guard.toggle_selected_sidebar_section();
+                    return Ok(false);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    {
+        let mut app_guard = app.lock().unwrap();
+        if app_guard.interaction_mode == InteractionMode::Normal
+            && app_guard.focused_panel == Panel::Response
+        {
+            match key.code {
+                KeyCode::Enter | KeyCode::Char('x') => {
+                    let notice = match app_guard.activate_selected_response_item() {
+                        Some(ResponseActivation::ThinkingCollapsed) => "Thinking collapsed.",
+                        Some(ResponseActivation::ThinkingExpanded) => "Thinking expanded.",
+                        Some(ResponseActivation::ToolDetailOpened(tool_name)) => {
+                            app_guard
+                                .set_status_notice(format!("Opened {tool_name} detail overlay."));
+                            return Ok(false);
+                        }
+                        None if app_guard.show_thinking => {
+                            "Select a thinking block or tool summary before activating it."
+                        }
+                        None => "Thinking visibility is disabled in .omega/tui.toml.",
+                    };
+                    app_guard.set_status_notice(notice);
+                    return Ok(false);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    {
+        let mut app_guard = app.lock().unwrap();
+        if app_guard.interaction_mode == InteractionMode::Normal
+            && app_guard.focused_panel == Panel::Diagnostics
+        {
+            match key.code {
+                KeyCode::Enter | KeyCode::Char('x') => {
+                    let notice = match app_guard.activate_selected_diagnostics_item() {
+                        Some(step_label) => {
+                            app_guard.set_status_notice(format!(
+                                "Opened diagnostics overlay for {step_label}."
+                            ));
+                            return Ok(false);
+                        }
+                        None => "Select a diagnostics entry before activating it.",
+                    };
+                    app_guard.set_status_notice(notice);
                     return Ok(false);
                 }
                 _ => {}
@@ -590,10 +682,37 @@ fn handle_mouse_event(mouse: MouseEvent, app: &Arc<Mutex<App>>) {
         MouseEventKind::Down(MouseButton::Left) => {
             let panel = app_guard.panel_at(mouse.column, mouse.row);
             match panel {
-                Panel::SidebarRail => app_guard.focus_sidebar_rail(),
-                Panel::Todo if app_guard.todo_visible() => app_guard.focused_panel = Panel::Todo,
-                Panel::Logs if app_guard.logs_visible() => app_guard.focused_panel = Panel::Logs,
-                _ => app_guard.focused_panel = Panel::Response,
+                Panel::SidebarRail => {
+                    app_guard.clear_text_selection();
+                    app_guard.focus_sidebar_rail();
+                }
+                Panel::Diagnostics if app_guard.diagnostics_visible() => {
+                    app_guard.focused_panel = Panel::Diagnostics;
+                    app_guard.begin_mouse_selection(Panel::Diagnostics, mouse.column, mouse.row);
+                }
+                Panel::Todo if app_guard.todo_visible() => {
+                    app_guard.focused_panel = Panel::Todo;
+                    app_guard.begin_mouse_selection(Panel::Todo, mouse.column, mouse.row);
+                }
+                Panel::Logs if app_guard.logs_visible() => {
+                    app_guard.focused_panel = Panel::Logs;
+                    app_guard.begin_mouse_selection(Panel::Logs, mouse.column, mouse.row);
+                }
+                _ => {
+                    app_guard.focused_panel = Panel::Response;
+                    app_guard.begin_mouse_selection(Panel::Response, mouse.column, mouse.row);
+                }
+            }
+        }
+        MouseEventKind::Drag(MouseButton::Left) => {
+            app_guard.update_mouse_selection(mouse.column, mouse.row);
+        }
+        MouseEventKind::Up(MouseButton::Left) => {
+            if let Some(text) = app_guard.finish_mouse_selection(mouse.column, mouse.row) {
+                app_guard.set_status_notice(format!(
+                    "Selected {} chars. Press y or Ctrl+C to copy.",
+                    text.chars().count()
+                ));
             }
         }
         MouseEventKind::ScrollUp => {
@@ -608,6 +727,58 @@ fn handle_mouse_event(mouse: MouseEvent, app: &Arc<Mutex<App>>) {
     }
 }
 
+fn copy_selected_text(app: &mut App) -> Result<Option<usize>, String> {
+    PERSISTENT_CLIPBOARD.with(|clipboard| {
+        let mut clipboard = clipboard.borrow_mut();
+        copy_selected_text_with_backend(app, &mut clipboard, SystemClipboard::new)
+    })
+}
+
+fn copy_selected_text_with_backend<B, F>(
+    app: &mut App,
+    backend: &mut Option<B>,
+    init: F,
+) -> Result<Option<usize>, String>
+where
+    B: ClipboardBackend,
+    F: Fn() -> Result<B, String>,
+{
+    let Some(text) = app.selected_text() else {
+        return Ok(None);
+    };
+    let count = text.chars().count();
+    write_text_with_backend(backend, &text, init)?;
+    Ok(Some(count))
+}
+
+fn is_copy_shortcut(key: KeyEvent) -> bool {
+    matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y'))
+        && matches!(key.modifiers, KeyModifiers::NONE | KeyModifiers::SHIFT)
+        || matches!(key.code, KeyCode::Char('c')) && key.modifiers == KeyModifiers::CONTROL
+}
+
+fn write_text_with_backend<B, F>(backend: &mut Option<B>, text: &str, init: F) -> Result<(), String>
+where
+    B: ClipboardBackend,
+    F: Fn() -> Result<B, String>,
+{
+    if backend.is_none() {
+        *backend = Some(init()?);
+    }
+
+    if let Some(clipboard) = backend.as_mut() {
+        if clipboard.set_text(text).is_ok() {
+            return Ok(());
+        }
+    }
+
+    *backend = Some(init()?);
+    backend
+        .as_mut()
+        .ok_or_else(|| "clipboard backend is unavailable".to_string())?
+        .set_text(text)
+}
+
 #[cfg(test)]
 mod tests {
     use async_trait::async_trait;
@@ -615,11 +786,29 @@ mod tests {
     use omega_client::{ChatRequest, ChatResponse, ClientError};
     use omega_core::{DynLlmClient, LlmClient};
     use omega_keymap::{InteractionMode, KeymapManager};
-    use omega_workflow::WorkflowDefinition;
+    use omega_workflow::LoadedWorkflowCatalog;
 
     use crate::app::Panel;
 
     use super::*;
+
+    #[derive(Default)]
+    struct FakeClipboard {
+        writes: Vec<String>,
+        fail_next_write: bool,
+    }
+
+    impl ClipboardBackend for FakeClipboard {
+        fn set_text(&mut self, text: &str) -> Result<(), String> {
+            if self.fail_next_write {
+                self.fail_next_write = false;
+                return Err("stale clipboard".to_string());
+            }
+
+            self.writes.push(text.to_string());
+            Ok(())
+        }
+    }
 
     struct IdleClient;
 
@@ -648,13 +837,17 @@ mod tests {
         root: std::path::PathBuf,
         runtime: &tokio::runtime::Runtime,
     ) -> AgentSession {
+        let loaded_catalog = LoadedWorkflowCatalog::load(&root);
         AgentSession::new(omega_session::AgentSessionConfig {
             client,
             system: "system".to_string(),
             cwd: root,
             runtime_handle: runtime.handle().clone(),
-            workflow_definition: WorkflowDefinition::default_linear(),
-            workflow_prompts: omega_workflow::WorkflowPrompts::builtin_defaults(),
+            scene_catalog: loaded_catalog.scene_catalog,
+            workflow_catalog: loaded_catalog.workflow_catalog,
+            prompt_catalog: loaded_catalog.prompt_catalog,
+            context_window: 200_000,
+            max_output_tokens: 32_000,
         })
         .unwrap()
     }
@@ -683,6 +876,138 @@ mod tests {
         assert!(app_guard.output_msgs[0]
             .text
             .contains("Previous turn still finishing"));
+    }
+
+    #[test]
+    fn clipboard_backend_is_reused_between_writes() {
+        let init_count = std::cell::Cell::new(0);
+        let mut backend = None;
+
+        write_text_with_backend(&mut backend, "alpha", || {
+            init_count.set(init_count.get() + 1);
+            Ok(FakeClipboard::default())
+        })
+        .unwrap();
+        write_text_with_backend(&mut backend, "beta", || {
+            init_count.set(init_count.get() + 1);
+            Ok(FakeClipboard::default())
+        })
+        .unwrap();
+
+        assert_eq!(init_count.get(), 1);
+        assert_eq!(
+            backend.unwrap().writes,
+            vec!["alpha".to_string(), "beta".to_string()]
+        );
+    }
+
+    #[test]
+    fn clipboard_backend_reinitializes_after_write_failure() {
+        let init_count = std::cell::Cell::new(0);
+        let mut backend = Some(FakeClipboard {
+            writes: Vec::new(),
+            fail_next_write: true,
+        });
+
+        write_text_with_backend(&mut backend, "recovered", || {
+            init_count.set(init_count.get() + 1);
+            Ok(FakeClipboard::default())
+        })
+        .unwrap();
+
+        assert_eq!(init_count.get(), 1);
+        assert_eq!(backend.unwrap().writes, vec!["recovered".to_string()]);
+    }
+
+    #[test]
+    fn mouse_selection_only_marks_text_ready_for_copy() {
+        let app = Arc::new(Mutex::new(App::new()));
+        {
+            let mut app_guard = app.lock().unwrap();
+            app_guard.logs_rect = ratatui::layout::Rect::new(0, 0, 7, 5);
+            app_guard.log_lines = vec!["abcdefg".to_string()];
+        }
+
+        handle_mouse_event(
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 2,
+                row: 1,
+                modifiers: KeyModifiers::NONE,
+            },
+            &app,
+        );
+        handle_mouse_event(
+            MouseEvent {
+                kind: MouseEventKind::Drag(MouseButton::Left),
+                column: 3,
+                row: 2,
+                modifiers: KeyModifiers::NONE,
+            },
+            &app,
+        );
+        handle_mouse_event(
+            MouseEvent {
+                kind: MouseEventKind::Up(MouseButton::Left),
+                column: 3,
+                row: 2,
+                modifiers: KeyModifiers::NONE,
+            },
+            &app,
+        );
+
+        let app_guard = app.lock().unwrap();
+        assert_eq!(app_guard.selected_text().as_deref(), Some("bcdefg"));
+        assert_eq!(
+            app_guard.status_notice.as_deref(),
+            Some("Selected 6 chars. Press y or Ctrl+C to copy.")
+        );
+    }
+
+    #[test]
+    fn copy_selected_text_uses_current_selection() {
+        let mut app = App::new();
+        app.logs_rect = ratatui::layout::Rect::new(0, 0, 7, 5);
+        app.log_lines = vec!["abcdefg".to_string()];
+        app.begin_mouse_selection(Panel::Logs, 2, 1);
+        app.update_mouse_selection(3, 2);
+        app.finish_mouse_selection(3, 2);
+
+        let mut backend = Some(FakeClipboard::default());
+        let copied =
+            copy_selected_text_with_backend(
+                &mut app,
+                &mut backend,
+                || Ok(FakeClipboard::default()),
+            )
+            .unwrap();
+
+        assert_eq!(copied, Some(6));
+        assert_eq!(backend.unwrap().writes, vec!["bcdefg".to_string()]);
+    }
+
+    #[test]
+    fn ctrl_c_without_selection_does_not_trigger_copy_notice() {
+        let client: DynLlmClient = Arc::new(IdleClient);
+        let root = std::env::temp_dir().join("omega-event-copy-quit-test");
+        let _ = std::fs::create_dir_all(&root);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let session = test_session(client, root, &runtime);
+        let app = Arc::new(Mutex::new(App::new()));
+        let (tx, _rx) = mpsc::channel();
+        let keymap = KeymapManager::default();
+
+        let handled = handle_key_event(
+            press_key(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            &app,
+            &session,
+            &tx,
+            &keymap,
+        )
+        .unwrap();
+
+        assert!(!handled);
+        assert!(app.lock().unwrap().status_notice.is_none());
     }
 
     #[test]
@@ -1118,9 +1443,9 @@ mod tests {
         let app_guard = app.lock().unwrap();
         assert_eq!(
             app_guard.sidebar.rail_selection,
-            crate::sidebar::SidebarSection::Logs
+            crate::sidebar::SidebarSection::Todos
         );
-        assert!(!app_guard.sidebar.logs_expanded);
+        assert!(!app_guard.sidebar.todos_expanded);
         assert_eq!(app_guard.focused_panel, Panel::SidebarRail);
     }
 }

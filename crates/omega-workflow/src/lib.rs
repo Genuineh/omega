@@ -12,6 +12,7 @@ pub const DEFAULT_ROOT_WORKFLOW_PATH: &str = ".omega/workflows/root.toml";
 pub const DEFAULT_CHAT_WORKFLOW_PATH: &str = ".omega/workflows/chat.toml";
 pub const DEFAULT_FEATURE_WORKFLOW_PATH: &str = ".omega/workflows/feature.toml";
 pub const DEFAULT_STEP_PROMPT_DIR: &str = ".omega/prompt/step";
+pub const DEFAULT_STEP_SCHEMA_DIR: &str = ".omega/schema/step";
 
 pub const ROOT_WORKFLOW_ID: &str = "root";
 pub const CHAT_WORKFLOW_ID: &str = "chat";
@@ -35,6 +36,9 @@ pub const DEFAULT_ANALYSIS_PROMPT_PATH: &str = ".omega/prompt/step/analysis.md";
 pub const DEFAULT_PLAN_PROMPT_PATH: &str = ".omega/prompt/step/plan.md";
 pub const DEFAULT_EXECUTE_PROMPT_PATH: &str = ".omega/prompt/step/execute.md";
 pub const DEFAULT_REPORT_PROMPT_PATH: &str = ".omega/prompt/step/report.md";
+pub const DEFAULT_ANALYSIS_SCHEMA_PATH: &str = ".omega/schema/step/analysis.json";
+pub const DEFAULT_PLAN_SCHEMA_PATH: &str = ".omega/schema/step/plan.json";
+pub const DEFAULT_EXECUTE_SCHEMA_PATH: &str = ".omega/schema/step/execute.json";
 
 const DEFAULT_SCENES_TOML: &str = r#"# Default omega scene routing
 root_workflow = "root"
@@ -58,16 +62,22 @@ name = "root"
 id = "scene-recognition"
 label = "Scene Recognition"
 prompt = ".omega/prompt/step/scene-recognition.md"
-loop_mode = "single_response"
+loop_mode = "agent_loop"
+max_iterations = 2
+tool_request = { mode = "block", items = ["bash", "read_file", "edit_file", "todo", "write_file", "load_skill"] }
 skill_request = { mode = "match_task" }
+output_contract = { mode = "required", format = "json", max_retries = 1 }
 enabled = true
 
 [[steps]]
 id = "select-workflow"
 label = "Select Workflow"
 prompt = ".omega/prompt/step/select-workflow.md"
-loop_mode = "single_response"
+loop_mode = "agent_loop"
+max_iterations = 2
+tool_request = { mode = "block", items = ["bash", "read_file", "edit_file", "todo", "write_file", "load_skill"] }
 skill_request = { mode = "match_task" }
+output_contract = { mode = "required", format = "json", max_retries = 1 }
 enabled = true
 "#;
 
@@ -78,7 +88,9 @@ name = "chat"
 id = "chat"
 label = "Chat"
 prompt = ".omega/prompt/step/chat.md"
-loop_mode = "single_response"
+loop_mode = "agent_loop"
+max_iterations = 8
+tool_request = { mode = "block", items = ["edit_file", "todo", "write_file"] }
 skill_request = { mode = "match_task" }
 enabled = true
 "#;
@@ -90,33 +102,46 @@ name = "feature"
 id = "analysis"
 label = "Analyze"
 prompt = ".omega/prompt/step/analysis.md"
-loop_mode = "single_response"
+loop_mode = "agent_loop"
+max_iterations = 8
+tool_request = { mode = "block", items = ["bash", "edit_file", "todo", "write_file"] }
 skill_request = { mode = "match_task" }
+output_contract = { mode = "required", format = "json", schema_path = ".omega/schema/step/analysis.json", max_retries = 2 }
 enabled = true
 
 [[steps]]
 id = "plan"
 label = "Plan"
 prompt = ".omega/prompt/step/plan.md"
-loop_mode = "single_response"
+loop_mode = "agent_loop"
+max_iterations = 8
+tool_request = { mode = "block", items = ["bash", "edit_file", "todo", "write_file"] }
 skill_request = { mode = "match_task" }
+input_contract = { mode = "required", sources = ["analysis"] }
+output_contract = { mode = "required", format = "json", schema_path = ".omega/schema/step/plan.json", max_retries = 2 }
 enabled = true
 
 [[steps]]
 id = "execute"
 label = "Execute"
 prompt = ".omega/prompt/step/execute.md"
-loop_mode = "tool_loop"
+loop_mode = "agent_loop"
+max_iterations = 16
 tool_request = { mode = "inherit" }
 skill_request = { mode = "match_task" }
+input_contract = { mode = "required", sources = ["plan"] }
+output_contract = { mode = "optional", format = "json", schema_path = ".omega/schema/step/execute.json" }
 enabled = true
 
 [[steps]]
 id = "report"
 label = "Report"
 prompt = ".omega/prompt/step/report.md"
-loop_mode = "single_response"
+loop_mode = "agent_loop"
+max_iterations = 8
+tool_request = { mode = "block", items = ["bash", "edit_file", "todo", "write_file"] }
 skill_request = { mode = "match_task" }
+input_contract = { mode = "optional", sources = ["analysis", "plan", "execute"] }
 enabled = true
 "#;
 
@@ -129,33 +154,46 @@ name = "feature"
 id = "analysis"
 label = "Analyze"
 prompt = ".omega/prompt/step/analysis.md"
-loop_mode = "single_response"
+loop_mode = "agent_loop"
+max_iterations = 8
+tool_request = { mode = "block", items = ["bash", "edit_file", "todo", "write_file"] }
 skill_request = { mode = "match_task" }
+output_contract = { mode = "required", format = "json", schema_path = ".omega/schema/step/analysis.json", max_retries = 2 }
 enabled = true
 
 [[steps]]
 id = "plan"
 label = "Plan"
 prompt = ".omega/prompt/step/plan.md"
-loop_mode = "single_response"
+loop_mode = "agent_loop"
+max_iterations = 8
+tool_request = { mode = "block", items = ["bash", "edit_file", "todo", "write_file"] }
 skill_request = { mode = "match_task" }
+input_contract = { mode = "required", sources = ["analysis"] }
+output_contract = { mode = "required", format = "json", schema_path = ".omega/schema/step/plan.json", max_retries = 2 }
 enabled = true
 
 [[steps]]
 id = "execute"
 label = "Execute"
 prompt = ".omega/prompt/step/execute.md"
-loop_mode = "tool_loop"
+loop_mode = "agent_loop"
+max_iterations = 16
 tool_request = { mode = "inherit" }
 skill_request = { mode = "match_task" }
+input_contract = { mode = "required", sources = ["plan"] }
+output_contract = { mode = "optional", format = "json", schema_path = ".omega/schema/step/execute.json" }
 enabled = true
 
 [[steps]]
 id = "report"
 label = "Report"
 prompt = ".omega/prompt/step/report.md"
-loop_mode = "single_response"
+loop_mode = "agent_loop"
+max_iterations = 8
+tool_request = { mode = "block", items = ["bash", "edit_file", "todo", "write_file"] }
 skill_request = { mode = "match_task" }
+input_contract = { mode = "optional", sources = ["analysis", "plan", "execute"] }
 enabled = true
 "#;
 
@@ -163,9 +201,19 @@ const DEFAULT_SCENE_RECOGNITION_PROMPT: &str = r#"You are in the scene recogniti
 
 Classify the user's request into the most appropriate work scene.
 Prefer `chat` for conversational, clarifying, explanatory, or lightweight requests.
+Prefer `chat` for codebase explanation, architecture discussion, review, testing assessment, or other read-only repository analysis when the user is not asking you to change files.
 Prefer `feature` for requests that likely require structured analysis, planning, execution, or reporting.
-Produce only the internal scene judgment needed for the next phase.
-Do not call tools.
+Prefer `feature` only when the user is asking for concrete implementation work such as changing code, editing configs/docs, adding tests, fixing bugs, or executing a multi-step delivery task.
+Classify from the user's request and existing routing context only.
+Do not inspect repository files, list directories, or probe the workspace for this decision.
+Produce only a JSON object for the next phase.
+Return exactly this shape:
+{"recognized_scene_id":"chat"}
+or
+{"recognized_scene_id":"feature"}
+Do not wrap the JSON in markdown fences.
+Do not add any extra prose.
+Use tools only when they materially improve scene recognition.
 Do not produce the final user-facing answer.
 "#;
 
@@ -173,8 +221,15 @@ const DEFAULT_SELECT_WORKFLOW_PROMPT: &str = r#"You are in the workflow selectio
 
 Based on the recognized scene, choose the workflow that should run next.
 Prefer `chat` for the `chat` scene and `feature` for the `feature` scene unless explicit configuration says otherwise.
-Produce only the internal routing decision needed for execution.
-Do not call tools.
+Choose from the recognized scene and existing routing context only.
+Do not inspect repository files, list directories, or probe the workspace for this decision.
+Produce only a JSON object for the execution handoff.
+Return exactly this shape:
+{"selected_workflow_id":"chat"}
+Replace `chat` with the configured workflow id you want to start.
+Do not wrap the JSON in markdown fences.
+Do not add any extra prose.
+Use tools only when they materially improve workflow selection.
 Do not produce the final user-facing answer.
 "#;
 
@@ -183,22 +238,31 @@ const DEFAULT_CHAT_PROMPT: &str = r#"You are in the chat workflow.
 Respond conversationally and directly to the user's request.
 Use a lightweight interaction style unless the conversation clearly requires a more structured execution workflow.
 Do not force an analysis/plan/execute/report structure when a direct answer is sufficient.
+Use tools when they help you answer accurately, but avoid unnecessary tool churn.
+For repository inspection questions, you may use read-only tools to gather evidence before answering.
+If you use `bash`, stick to simple single-line allowlisted commands such as `ls`, `rg`, `cat`, `wc`, `head`, or `tail` with explicit workspace-relative paths.
+Do not rely on shell expansion, redirection, `find`, or `grep`; those forms are blocked by the bash safety policy.
 "#;
 
 const DEFAULT_ANALYSIS_PROMPT: &str = r#"You are in the analysis phase.
 
 Understand the user's request, constraints, affected files, and likely risks.
-Do not call tools.
+Use tools when they materially improve the analysis.
 Do not produce the final user-facing answer.
 Produce only the internal analysis needed for the next phase.
+Capture the work in structured form: objective, constraints, risks, and affected_paths.
+Keep entries concrete and concise. Prefer repository-relative paths in affected_paths.
 "#;
 
 const DEFAULT_PLAN_PROMPT: &str = r#"You are in the planning phase.
 
 Turn the analysis into a concrete execution plan with ordered steps and validation targets.
-Do not call tools.
+Use tools when they materially improve the plan.
 Do not produce the final user-facing answer.
 Produce only the internal plan needed for execution.
+The plan must be directly mappable to the todo system.
+Each task should be actionable, ordered, and small enough to complete or validate in one execution slice.
+Set `goal` to the overall outcome, `tasks` to the ordered worklist, and `validation_targets` to the checks execute/report should verify.
 "#;
 
 const DEFAULT_EXECUTE_PROMPT: &str = r#"You are in the execute phase.
@@ -206,20 +270,98 @@ const DEFAULT_EXECUTE_PROMPT: &str = r#"You are in the execute phase.
 Carry out the plan. Use tools when needed. Make concrete changes and run validation when appropriate.
 Do not produce the final user-facing wrap-up yet.
 Leave the final summary for the report phase.
+Treat the todo list as the execution anchor.
+Focus first on the current in-progress item, keep todo state aligned as work advances, and use validation_targets from the plan when verifying changes.
+If you emit structured output, report completed_tasks, open_tasks, validation_results, and changed_paths using the configured JSON contract.
 "#;
 
 const DEFAULT_REPORT_PROMPT: &str = r#"You are in the report phase.
 
 Based on the completed work and existing transcript, produce the final user-facing response.
-Do not call tools in this phase.
+Use tools only when they materially improve the final report.
 Summarize what changed, what was verified, and any remaining risks or follow-up.
+Use the structured analysis, plan, execute outputs, and current todo state when available.
 "#;
+
+const DEFAULT_ANALYSIS_SCHEMA: &str = r#"{
+    "type": "object",
+    "required": ["objective", "constraints", "risks", "affected_paths"],
+    "properties": {
+        "objective": { "type": "string" },
+        "constraints": {
+            "type": "array",
+            "items": { "type": "string" }
+        },
+        "risks": {
+            "type": "array",
+            "items": { "type": "string" }
+        },
+        "affected_paths": {
+            "type": "array",
+            "items": { "type": "string" }
+        }
+    }
+}"#;
+
+const DEFAULT_PLAN_SCHEMA: &str = r#"{
+    "type": "object",
+    "required": ["goal", "tasks", "validation_targets"],
+    "properties": {
+        "goal": { "type": "string" },
+        "tasks": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["id", "title", "description"],
+                "properties": {
+                    "id": { "type": "string" },
+                    "title": { "type": "string" },
+                    "description": { "type": "string" }
+                }
+            }
+        },
+        "validation_targets": {
+            "type": "array",
+            "items": { "type": "string" }
+        }
+    }
+}"#;
+
+const DEFAULT_EXECUTE_SCHEMA: &str = r#"{
+    "type": "object",
+    "required": ["completed_tasks", "open_tasks", "validation_results", "changed_paths"],
+    "properties": {
+        "completed_tasks": {
+            "type": "array",
+            "items": { "type": "string" }
+        },
+        "open_tasks": {
+            "type": "array",
+            "items": { "type": "string" }
+        },
+        "validation_results": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["target", "status"],
+                "properties": {
+                    "target": { "type": "string" },
+                    "status": { "type": "string" },
+                    "details": { "type": "string" }
+                }
+            }
+        },
+        "changed_paths": {
+            "type": "array",
+            "items": { "type": "string" }
+        }
+    }
+}"#;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum StepLoopMode {
     #[default]
-    SingleResponse,
-    ToolLoop,
+    AgentLoop,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -236,6 +378,43 @@ pub enum StepSkillRequest {
     MatchTask,
     Append(Vec<String>),
     Disable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DataFormat {
+    #[default]
+    Json,
+}
+
+impl DataFormat {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Json => "json",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum StepInputContract {
+    #[default]
+    None,
+    Required { sources: Vec<String> },
+    Optional { sources: Vec<String> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum StepOutputContract {
+    #[default]
+    None,
+    Required {
+        format: DataFormat,
+        schema_path: Option<PathBuf>,
+        max_retries: u32,
+    },
+    Optional {
+        format: DataFormat,
+        schema_path: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -368,11 +547,7 @@ impl SceneCatalog {
                 bail!("scene '{id}' is duplicated");
             }
 
-            let label = scene
-                .label
-                .unwrap_or_else(|| id.clone())
-                .trim()
-                .to_string();
+            let label = scene.label.unwrap_or_else(|| id.clone()).trim().to_string();
             if label.is_empty() {
                 bail!("scene '{id}' must have a non-empty label");
             }
@@ -390,9 +565,7 @@ impl SceneCatalog {
         }
 
         if !scenes.iter().any(|scene| scene.id == default_scene_id) {
-            bail!(
-                "default_scene '{default_scene_id}' must refer to a declared scene"
-            );
+            bail!("default_scene '{default_scene_id}' must refer to a declared scene");
         }
 
         Ok(Self {
@@ -459,8 +632,11 @@ pub struct WorkflowStep {
     pub label: String,
     pub prompt_path: PathBuf,
     pub loop_mode: StepLoopMode,
+    pub max_iterations: u32,
     pub tool_request: StepToolRequest,
     pub skill_request: StepSkillRequest,
+    pub input_contract: StepInputContract,
+    pub output_contract: StepOutputContract,
     pub enabled: bool,
 }
 
@@ -592,6 +768,10 @@ impl WorkflowDefinition {
                 bail!("workflow step '{id}' must have a non-empty prompt path");
             }
 
+            if step.max_iterations == Some(0) {
+                bail!("workflow step '{id}' must have max_iterations >= 1");
+            }
+
             steps.push(WorkflowStep {
                 id,
                 label,
@@ -600,6 +780,10 @@ impl WorkflowDefinition {
                     .loop_mode
                     .map(Into::into)
                     .unwrap_or_else(|| step.id.default_loop_mode()),
+                max_iterations: step
+                    .max_iterations
+                    .unwrap_or_else(|| step.id.default_max_iterations())
+                    .max(1),
                 tool_request: step
                     .tool_request
                     .map(StepToolRequestConfig::into_request)
@@ -610,6 +794,16 @@ impl WorkflowDefinition {
                     .map(StepSkillRequestConfig::into_request)
                     .transpose()?
                     .unwrap_or_else(|| step.id.default_skill_request()),
+                input_contract: step
+                    .input_contract
+                    .map(StepInputContractConfig::into_contract)
+                    .transpose()?
+                    .unwrap_or_else(|| step.id.default_input_contract()),
+                output_contract: step
+                    .output_contract
+                    .map(StepOutputContractConfig::into_contract)
+                    .transpose()?
+                    .unwrap_or_else(|| step.id.default_output_contract()),
                 enabled: step.enabled.unwrap_or(true),
             });
         }
@@ -648,8 +842,14 @@ pub struct WorkflowCatalog {
 impl WorkflowCatalog {
     pub fn default_builtin() -> Self {
         let mut workflows = BTreeMap::new();
-        workflows.insert(ROOT_WORKFLOW_ID.to_string(), WorkflowDefinition::default_root());
-        workflows.insert(CHAT_WORKFLOW_ID.to_string(), WorkflowDefinition::default_chat());
+        workflows.insert(
+            ROOT_WORKFLOW_ID.to_string(),
+            WorkflowDefinition::default_root(),
+        );
+        workflows.insert(
+            CHAT_WORKFLOW_ID.to_string(),
+            WorkflowDefinition::default_chat(),
+        );
         workflows.insert(
             FEATURE_WORKFLOW_ID.to_string(),
             WorkflowDefinition::default_feature(),
@@ -665,7 +865,10 @@ impl WorkflowCatalog {
         self.workflows.keys().map(String::as_str).collect()
     }
 
-    fn load(root: &Path, scene_catalog: &SceneCatalog) -> Result<(Self, BTreeMap<String, WorkflowSource>)> {
+    fn load(
+        root: &Path,
+        scene_catalog: &SceneCatalog,
+    ) -> Result<(Self, BTreeMap<String, WorkflowSource>)> {
         let mut workflows = BTreeMap::new();
         let mut sources = BTreeMap::new();
 
@@ -744,7 +947,11 @@ pub struct WorkflowRun {
 impl WorkflowRun {
     pub fn new(definition: &WorkflowDefinition) -> Self {
         let enabled_steps = definition.enabled_steps().cloned().collect::<Vec<_>>();
-        let current_index = if enabled_steps.is_empty() { None } else { Some(0) };
+        let current_index = if enabled_steps.is_empty() {
+            None
+        } else {
+            Some(0)
+        };
         Self {
             enabled_steps,
             current_index,
@@ -815,6 +1022,7 @@ impl LoadedWorkflowCatalog {
             }
         };
         let prompt_catalog = WorkflowPromptCatalog::load(root, &workflow_catalog, &mut warnings);
+        ensure_builtin_step_schema_files(root, &workflow_catalog, &mut warnings);
 
         Self {
             scene_catalog,
@@ -882,8 +1090,11 @@ struct WorkflowStepConfig {
     label: Option<String>,
     prompt: Option<PathBuf>,
     loop_mode: Option<StepLoopModeConfig>,
+    max_iterations: Option<u32>,
     tool_request: Option<StepToolRequestConfig>,
     skill_request: Option<StepSkillRequestConfig>,
+    input_contract: Option<StepInputContractConfig>,
+    output_contract: Option<StepOutputContractConfig>,
     enabled: Option<bool>,
 }
 
@@ -961,23 +1172,85 @@ impl BuiltinWorkflowStepId {
     }
 
     fn default_loop_mode(self) -> StepLoopMode {
+        StepLoopMode::AgentLoop
+    }
+
+    fn default_max_iterations(self) -> u32 {
         match self {
-            Self::Execute => StepLoopMode::ToolLoop,
-            Self::SceneRecognition
-            | Self::SelectWorkflow
-            | Self::Chat
-            | Self::Analysis
-            | Self::Plan
-            | Self::Report => StepLoopMode::SingleResponse,
+            Self::SceneRecognition | Self::SelectWorkflow => 2,
+            Self::Chat | Self::Analysis | Self::Plan | Self::Report => 8,
+            Self::Execute => 16,
         }
     }
 
     fn default_tool_request(self) -> StepToolRequest {
-        StepToolRequest::Inherit
+        match self {
+            Self::Execute => StepToolRequest::Inherit,
+            Self::SceneRecognition | Self::SelectWorkflow => StepToolRequest::Block(vec![
+                "bash".to_string(),
+                "read_file".to_string(),
+                "edit_file".to_string(),
+                "todo".to_string(),
+                "write_file".to_string(),
+                "load_skill".to_string(),
+            ]),
+            Self::Chat | Self::Analysis | Self::Plan | Self::Report => StepToolRequest::Block(vec![
+                "bash".to_string(),
+                "edit_file".to_string(),
+                "todo".to_string(),
+                "write_file".to_string(),
+            ]),
+        }
     }
 
     fn default_skill_request(self) -> StepSkillRequest {
         StepSkillRequest::MatchTask
+    }
+
+    fn default_input_contract(self) -> StepInputContract {
+        match self {
+            Self::Plan => StepInputContract::Required {
+                sources: vec![ANALYSIS_STEP_ID.to_string()],
+            },
+            Self::Execute => StepInputContract::Required {
+                sources: vec![PLAN_STEP_ID.to_string()],
+            },
+            Self::Report => StepInputContract::Optional {
+                sources: vec![
+                    ANALYSIS_STEP_ID.to_string(),
+                    PLAN_STEP_ID.to_string(),
+                    EXECUTE_STEP_ID.to_string(),
+                ],
+            },
+            Self::SceneRecognition | Self::SelectWorkflow | Self::Chat | Self::Analysis => {
+                StepInputContract::None
+            }
+        }
+    }
+
+    fn default_output_contract(self) -> StepOutputContract {
+        match self {
+            Self::SceneRecognition | Self::SelectWorkflow => StepOutputContract::Required {
+                format: DataFormat::Json,
+                schema_path: None,
+                max_retries: 1,
+            },
+            Self::Analysis => StepOutputContract::Required {
+                format: DataFormat::Json,
+                schema_path: Some(PathBuf::from(DEFAULT_ANALYSIS_SCHEMA_PATH)),
+                max_retries: 2,
+            },
+            Self::Plan => StepOutputContract::Required {
+                format: DataFormat::Json,
+                schema_path: Some(PathBuf::from(DEFAULT_PLAN_SCHEMA_PATH)),
+                max_retries: 2,
+            },
+            Self::Execute => StepOutputContract::Optional {
+                format: DataFormat::Json,
+                schema_path: Some(PathBuf::from(DEFAULT_EXECUTE_SCHEMA_PATH)),
+            },
+            Self::Chat | Self::Report => StepOutputContract::None,
+        }
     }
 }
 
@@ -988,8 +1261,11 @@ impl WorkflowStep {
             label: step.default_label().to_string(),
             prompt_path: PathBuf::from(step.default_prompt_path()),
             loop_mode: step.default_loop_mode(),
+            max_iterations: step.default_max_iterations(),
             tool_request: step.default_tool_request(),
             skill_request: step.default_skill_request(),
+            input_contract: step.default_input_contract(),
+            output_contract: step.default_output_contract(),
             enabled: true,
         }
     }
@@ -1009,17 +1285,15 @@ fn builtin_step_for_id(step_id: &str) -> Option<BuiltinWorkflowStepId> {
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "snake_case")]
 enum StepLoopModeConfig {
-    SingleResponse,
-    ToolLoop,
+    #[serde(rename = "agent_loop", alias = "single_response", alias = "tool_loop")]
+    AgentLoop,
 }
 
 impl From<StepLoopModeConfig> for StepLoopMode {
     fn from(value: StepLoopModeConfig) -> Self {
         match value {
-            StepLoopModeConfig::SingleResponse => Self::SingleResponse,
-            StepLoopModeConfig::ToolLoop => Self::ToolLoop,
+            StepLoopModeConfig::AgentLoop => Self::AgentLoop,
         }
     }
 }
@@ -1091,6 +1365,113 @@ enum StepSkillRequestMode {
     Disable,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StepInputContractConfig {
+    mode: StepInputContractMode,
+    #[serde(default)]
+    sources: Vec<String>,
+}
+
+impl StepInputContractConfig {
+    fn into_contract(self) -> Result<StepInputContract> {
+        match self.mode {
+            StepInputContractMode::None => {
+                if !self.sources.is_empty() {
+                    bail!("input_contract mode 'none' does not accept sources");
+                }
+                Ok(StepInputContract::None)
+            }
+            StepInputContractMode::Required => {
+                if self.sources.is_empty() {
+                    bail!("input_contract mode 'required' needs at least one source");
+                }
+                Ok(StepInputContract::Required {
+                    sources: self.sources,
+                })
+            }
+            StepInputContractMode::Optional => {
+                if self.sources.is_empty() {
+                    bail!("input_contract mode 'optional' needs at least one source");
+                }
+                Ok(StepInputContract::Optional {
+                    sources: self.sources,
+                })
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum StepInputContractMode {
+    None,
+    Required,
+    Optional,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StepOutputContractConfig {
+    mode: StepOutputContractMode,
+    #[serde(default)]
+    format: Option<DataFormatConfig>,
+    #[serde(default)]
+    schema_path: Option<PathBuf>,
+    #[serde(default)]
+    max_retries: Option<u32>,
+}
+
+impl StepOutputContractConfig {
+    fn into_contract(self) -> Result<StepOutputContract> {
+        let format = self.format.unwrap_or(DataFormatConfig::Json).into_format();
+        match self.mode {
+            StepOutputContractMode::None => {
+                if self.schema_path.is_some() || self.max_retries.is_some() || self.format.is_some() {
+                    bail!("output_contract mode 'none' does not accept format, schema_path, or max_retries");
+                }
+                Ok(StepOutputContract::None)
+            }
+            StepOutputContractMode::Required => Ok(StepOutputContract::Required {
+                format,
+                schema_path: self.schema_path,
+                max_retries: self.max_retries.unwrap_or(1).max(1),
+            }),
+            StepOutputContractMode::Optional => {
+                if self.max_retries.is_some() {
+                    bail!("output_contract mode 'optional' does not accept max_retries");
+                }
+                Ok(StepOutputContract::Optional {
+                    format,
+                    schema_path: self.schema_path,
+                })
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum StepOutputContractMode {
+    None,
+    Required,
+    Optional,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum DataFormatConfig {
+    Json,
+}
+
+impl DataFormatConfig {
+    fn into_format(self) -> DataFormat {
+        match self {
+            Self::Json => DataFormat::Json,
+        }
+    }
+}
+
 fn default_workflow_toml_for_id(workflow_id: &str) -> Option<&'static str> {
     match workflow_id {
         ROOT_WORKFLOW_ID => Some(DEFAULT_ROOT_WORKFLOW_TOML),
@@ -1109,7 +1490,10 @@ fn builtin_workflow_sources() -> BTreeMap<String, WorkflowSource> {
     let mut sources = BTreeMap::new();
     sources.insert(ROOT_WORKFLOW_ID.to_string(), WorkflowSource::BuiltinDefault);
     sources.insert(CHAT_WORKFLOW_ID.to_string(), WorkflowSource::BuiltinDefault);
-    sources.insert(FEATURE_WORKFLOW_ID.to_string(), WorkflowSource::BuiltinDefault);
+    sources.insert(
+        FEATURE_WORKFLOW_ID.to_string(),
+        WorkflowSource::BuiltinDefault,
+    );
     sources
 }
 
@@ -1143,6 +1527,60 @@ fn load_prompt_file(
     }
 }
 
+fn ensure_builtin_step_schema_files(
+    root: &Path,
+    workflow_catalog: &WorkflowCatalog,
+    warnings: &mut Vec<String>,
+) {
+    for workflow_id in workflow_catalog.workflow_ids() {
+        let Some(workflow) = workflow_catalog.workflow(workflow_id) else {
+            continue;
+        };
+
+        for step in &workflow.steps {
+            let schema_path = match &step.output_contract {
+                StepOutputContract::Required {
+                    schema_path: Some(schema_path),
+                    ..
+                }
+                | StepOutputContract::Optional {
+                    schema_path: Some(schema_path),
+                    ..
+                } => schema_path,
+                StepOutputContract::None
+                | StepOutputContract::Required { schema_path: None, .. }
+                | StepOutputContract::Optional { schema_path: None, .. } => continue,
+            };
+
+            let Some(default_content) = builtin_schema_content_for_path(schema_path) else {
+                continue;
+            };
+
+            let path = resolve_prompt_path(root, schema_path);
+            if path.exists() {
+                continue;
+            }
+
+            if let Err(error) = write_default_text_file(&path, default_content) {
+                warnings.push(format!(
+                    "Failed to create default schema file for step '{}' at {}: {error}.",
+                    step.id,
+                    path.display()
+                ));
+            }
+        }
+    }
+}
+
+fn builtin_schema_content_for_path(schema_path: &Path) -> Option<&'static str> {
+    match schema_path.to_string_lossy().as_ref() {
+        DEFAULT_ANALYSIS_SCHEMA_PATH => Some(DEFAULT_ANALYSIS_SCHEMA),
+        DEFAULT_PLAN_SCHEMA_PATH => Some(DEFAULT_PLAN_SCHEMA),
+        DEFAULT_EXECUTE_SCHEMA_PATH => Some(DEFAULT_EXECUTE_SCHEMA),
+        _ => None,
+    }
+}
+
 fn resolve_prompt_path(root: &Path, prompt_path: &Path) -> PathBuf {
     if prompt_path.is_absolute() {
         prompt_path.to_path_buf()
@@ -1156,8 +1594,7 @@ fn write_default_text_file(path: &Path, content: &str) -> Result<()> {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create parent dir {}", parent.display()))?;
     }
-    fs::write(path, content)
-        .with_context(|| format!("failed to write file {}", path.display()))
+    fs::write(path, content).with_context(|| format!("failed to write file {}", path.display()))
 }
 
 #[cfg(test)]
@@ -1167,10 +1604,11 @@ mod tests {
 
     use super::{
         LoadedWorkflow, LoadedWorkflowCatalog, SceneCatalog, StepLoopMode, StepSkillRequest,
-        StepToolRequest, WorkflowDefinition, WorkflowPrompts, WorkflowSource,
-        ANALYSIS_STEP_ID, CHAT_WORKFLOW_ID, DEFAULT_SCENES_PATH, DEFAULT_WORKFLOW_PATH,
-        EXECUTE_STEP_ID, FEATURE_SCENE_ID, FEATURE_WORKFLOW_ID, REPORT_STEP_ID,
-        ROOT_WORKFLOW_ID, SCENE_RECOGNITION_STEP_ID,
+        StepOutputContract, StepToolRequest, WorkflowDefinition, WorkflowPrompts,
+        WorkflowSource, ANALYSIS_STEP_ID, CHAT_WORKFLOW_ID, DEFAULT_ANALYSIS_SCHEMA_PATH,
+        DEFAULT_EXECUTE_SCHEMA_PATH, DEFAULT_PLAN_SCHEMA_PATH, DEFAULT_SCENES_PATH,
+        DEFAULT_WORKFLOW_PATH, EXECUTE_STEP_ID, FEATURE_SCENE_ID, FEATURE_WORKFLOW_ID,
+        REPORT_STEP_ID, ROOT_WORKFLOW_ID, SCENE_RECOGNITION_STEP_ID,
     };
 
     #[test]
@@ -1198,16 +1636,24 @@ mod tests {
         assert!(root.join(".omega/workflows/root.toml").exists());
         assert!(root.join(".omega/workflows/chat.toml").exists());
         assert!(root.join(".omega/workflows/feature.toml").exists());
-        assert!(root.join(".omega/prompt/step/scene-recognition.md").exists());
+        assert!(root
+            .join(".omega/prompt/step/scene-recognition.md")
+            .exists());
         assert!(root.join(".omega/prompt/step/select-workflow.md").exists());
         assert!(root.join(".omega/prompt/step/chat.md").exists());
         assert!(root.join(".omega/prompt/step/analysis.md").exists());
+        assert!(root.join(DEFAULT_ANALYSIS_SCHEMA_PATH).exists());
+        assert!(root.join(DEFAULT_PLAN_SCHEMA_PATH).exists());
+        assert!(root.join(DEFAULT_EXECUTE_SCHEMA_PATH).exists());
         assert!(loaded.warnings.is_empty());
         assert_eq!(loaded.scene_catalog.default_scene_id, FEATURE_SCENE_ID);
         assert_eq!(loaded.scene_catalog.root_workflow_id, ROOT_WORKFLOW_ID);
         assert!(loaded.workflow_catalog.workflow(ROOT_WORKFLOW_ID).is_some());
         assert!(loaded.workflow_catalog.workflow(CHAT_WORKFLOW_ID).is_some());
-        assert!(loaded.workflow_catalog.workflow(FEATURE_WORKFLOW_ID).is_some());
+        assert!(loaded
+            .workflow_catalog
+            .workflow(FEATURE_WORKFLOW_ID)
+            .is_some());
         assert!(loaded
             .prompt_catalog
             .prompts_for_workflow(ROOT_WORKFLOW_ID)
@@ -1239,7 +1685,9 @@ mod tests {
         assert_eq!(steps.len(), 2);
         assert_eq!(steps[0].label, "Scope");
         assert_eq!(steps[1].label, "Ship");
-        assert!(matches!(loaded.source, WorkflowSource::File(path) if path.ends_with(".omega/workflows/feature.toml")));
+        assert!(
+            matches!(loaded.source, WorkflowSource::File(path) if path.ends_with(".omega/workflows/feature.toml"))
+        );
     }
 
     #[test]
@@ -1249,7 +1697,7 @@ mod tests {
         std::fs::create_dir_all(workflow_path.parent().unwrap()).unwrap();
         std::fs::write(
             &workflow_path,
-            "name = \"trimmed\"\n\n[[steps]]\nid = \"analysis\"\nlabel = \"Scope\"\nprompt = \".omega/prompt/step/analysis.md\"\nloop_mode = \"single_response\"\nskill_request = { mode = \"append\", items = [\"review\"] }\nenabled = true\n\n[[steps]]\nid = \"plan\"\nenabled = false\n\n[[steps]]\nid = \"execute\"\nlabel = \"Build\"\nprompt = \".omega/prompt/step/execute.md\"\nloop_mode = \"tool_loop\"\ntool_request = { mode = \"extend\", items = [\"todo\"] }\nenabled = true\n",
+            "name = \"trimmed\"\n\n[[steps]]\nid = \"analysis\"\nlabel = \"Scope\"\nprompt = \".omega/prompt/step/analysis.md\"\nloop_mode = \"single_response\"\nmax_iterations = 5\nskill_request = { mode = \"append\", items = [\"review\"] }\nenabled = true\n\n[[steps]]\nid = \"plan\"\nenabled = false\n\n[[steps]]\nid = \"execute\"\nlabel = \"Build\"\nprompt = \".omega/prompt/step/execute.md\"\nloop_mode = \"tool_loop\"\nmax_iterations = 12\ntool_request = { mode = \"extend\", items = [\"todo\"] }\nenabled = true\n",
         )
         .unwrap();
 
@@ -1261,7 +1709,74 @@ mod tests {
 
         assert_eq!(feature.name, "trimmed");
         assert_eq!(feature.enabled_step_count(), 2);
-        assert!(matches!(loaded_catalog.workflow_source(FEATURE_WORKFLOW_ID), Some(WorkflowSource::File(path)) if path.ends_with(DEFAULT_WORKFLOW_PATH)));
+        assert!(
+            matches!(loaded_catalog.workflow_source(FEATURE_WORKFLOW_ID), Some(WorkflowSource::File(path)) if path.ends_with(DEFAULT_WORKFLOW_PATH))
+        );
+    }
+
+    #[test]
+    fn builtin_workflows_default_to_agent_loop_with_step_budgets() {
+        let root = WorkflowDefinition::default_root();
+        let feature = WorkflowDefinition::default_feature();
+
+        assert!(root
+            .enabled_steps()
+            .all(|step| step.loop_mode == StepLoopMode::AgentLoop));
+        assert!(feature
+            .enabled_steps()
+            .all(|step| step.loop_mode == StepLoopMode::AgentLoop));
+
+        let root_steps = root.enabled_steps().collect::<Vec<_>>();
+        assert_eq!(root_steps[0].max_iterations, 2);
+        assert_eq!(
+            root_steps[0].tool_request,
+            StepToolRequest::Block(vec![
+                "bash".to_string(),
+                "read_file".to_string(),
+                "edit_file".to_string(),
+                "todo".to_string(),
+                "write_file".to_string(),
+                "load_skill".to_string(),
+            ])
+        );
+        assert_eq!(root_steps[1].max_iterations, 2);
+        assert_eq!(
+            root_steps[1].tool_request,
+            StepToolRequest::Block(vec![
+                "bash".to_string(),
+                "read_file".to_string(),
+                "edit_file".to_string(),
+                "todo".to_string(),
+                "write_file".to_string(),
+                "load_skill".to_string(),
+            ])
+        );
+
+        let feature_steps = feature.enabled_steps().collect::<Vec<_>>();
+        assert_eq!(feature_steps[2].id, EXECUTE_STEP_ID);
+        assert_eq!(feature_steps[2].max_iterations, 16);
+        assert_eq!(feature_steps[2].tool_request, StepToolRequest::Inherit);
+        assert!(matches!(
+            &feature_steps[0].output_contract,
+            StepOutputContract::Required {
+                schema_path: Some(schema_path),
+                ..
+            } if schema_path == &PathBuf::from(DEFAULT_ANALYSIS_SCHEMA_PATH)
+        ));
+        assert!(matches!(
+            &feature_steps[1].output_contract,
+            StepOutputContract::Required {
+                schema_path: Some(schema_path),
+                ..
+            } if schema_path == &PathBuf::from(DEFAULT_PLAN_SCHEMA_PATH)
+        ));
+        assert!(matches!(
+            &feature_steps[2].output_contract,
+            StepOutputContract::Optional {
+                schema_path: Some(schema_path),
+                ..
+            } if schema_path == &PathBuf::from(DEFAULT_EXECUTE_SCHEMA_PATH)
+        ));
     }
 
     #[test]
@@ -1289,7 +1804,7 @@ mod tests {
         std::fs::create_dir_all(workflow_path.parent().unwrap()).unwrap();
         std::fs::write(
             &workflow_path,
-            "name = \"trimmed\"\n\n[[steps]]\nid = \"analysis\"\nlabel = \"Scope\"\nprompt = \".omega/prompt/step/analysis.md\"\nloop_mode = \"single_response\"\nskill_request = { mode = \"append\", items = [\"review\"] }\nenabled = true\n\n[[steps]]\nid = \"plan\"\nenabled = false\n\n[[steps]]\nid = \"execute\"\nlabel = \"Build\"\nprompt = \".omega/prompt/step/execute.md\"\nloop_mode = \"tool_loop\"\ntool_request = { mode = \"extend\", items = [\"todo\"] }\nenabled = true\n",
+            "name = \"trimmed\"\n\n[[steps]]\nid = \"analysis\"\nlabel = \"Scope\"\nprompt = \".omega/prompt/step/analysis.md\"\nloop_mode = \"agent_loop\"\nmax_iterations = 5\nskill_request = { mode = \"append\", items = [\"review\"] }\nenabled = true\n\n[[steps]]\nid = \"plan\"\nenabled = false\n\n[[steps]]\nid = \"execute\"\nlabel = \"Build\"\nprompt = \".omega/prompt/step/execute.md\"\nloop_mode = \"agent_loop\"\nmax_iterations = 12\ntool_request = { mode = \"extend\", items = [\"todo\"] }\nenabled = true\n",
         )
         .unwrap();
 
@@ -1300,11 +1815,14 @@ mod tests {
         assert_eq!(loaded.definition.enabled_step_count(), 2);
         let steps = loaded.definition.enabled_steps().collect::<Vec<_>>();
         assert_eq!(steps[0].id, ANALYSIS_STEP_ID);
+        assert_eq!(steps[0].loop_mode, StepLoopMode::AgentLoop);
+        assert_eq!(steps[0].max_iterations, 5);
         assert_eq!(
             steps[0].skill_request,
             StepSkillRequest::Append(vec!["review".to_string()])
         );
-        assert_eq!(steps[1].loop_mode, StepLoopMode::ToolLoop);
+        assert_eq!(steps[1].loop_mode, StepLoopMode::AgentLoop);
+        assert_eq!(steps[1].max_iterations, 12);
         assert_eq!(
             steps[1].tool_request,
             StepToolRequest::Extend(vec!["todo".to_string()])
@@ -1332,6 +1850,28 @@ mod tests {
             .prompts
             .prompt_for(EXECUTE_STEP_ID)
             .is_some_and(|prompt| prompt.contains("execute phase")));
+    }
+
+    #[test]
+    fn legacy_loop_mode_values_map_to_agent_loop() {
+        let root = unique_test_root("legacy-loop-mode-values");
+        let workflow_path = root.join(DEFAULT_WORKFLOW_PATH);
+        std::fs::create_dir_all(workflow_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &workflow_path,
+            "name = \"compat\"\n\n[[steps]]\nid = \"analysis\"\nloop_mode = \"single_response\"\nenabled = true\n\n[[steps]]\nid = \"execute\"\nloop_mode = \"tool_loop\"\nenabled = true\n",
+        )
+        .unwrap();
+
+        let loaded = WorkflowDefinition::load(&root);
+        let steps = loaded.definition.enabled_steps().collect::<Vec<_>>();
+
+        assert_eq!(steps.len(), 2);
+        assert!(steps
+            .iter()
+            .all(|step| step.loop_mode == StepLoopMode::AgentLoop));
+        assert_eq!(steps[0].max_iterations, 8);
+        assert_eq!(steps[1].max_iterations, 16);
     }
 
     #[test]

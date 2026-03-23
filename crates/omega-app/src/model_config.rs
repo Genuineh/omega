@@ -1,0 +1,254 @@
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result};
+use serde::Deserialize;
+
+pub const DEFAULT_MODEL_CONFIG_PATH: &str = ".omega/model.toml";
+const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 32_000;
+const DEFAULT_CONTEXT_WINDOW: u32 = 200_000;
+
+const DEFAULT_MODEL_CONFIG_TOML: &str = r#"# Model budget configuration
+#
+# `context_window` is the model's full context window size (input + output).
+# This controls how much total content (system prompt, history, summaries,
+# step context, and response) fits in a single request.
+[context]
+context_window = 200000
+
+# `max_tokens` controls the maximum assistant response length per request.
+# It does NOT cap the full context window — only the output portion.
+[request]
+max_tokens = 32000
+"#;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AgentModelConfig {
+    pub context_window: u32,
+    pub max_output_tokens: u32,
+}
+
+impl Default for AgentModelConfig {
+    fn default() -> Self {
+        Self {
+            context_window: DEFAULT_CONTEXT_WINDOW,
+            max_output_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadedAgentModelConfig {
+    pub config: AgentModelConfig,
+    pub source: AgentModelConfigSource,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentModelConfigSource {
+    BuiltinDefault,
+    File(PathBuf),
+    FileWithFallback(PathBuf),
+}
+
+impl AgentModelConfigSource {
+    pub fn source_label(&self) -> String {
+        match self {
+            Self::BuiltinDefault => "builtin".to_string(),
+            Self::File(path) | Self::FileWithFallback(path) => path.display().to_string(),
+        }
+    }
+}
+
+impl LoadedAgentModelConfig {
+    pub fn source_label(&self) -> String {
+        self.source.source_label()
+    }
+}
+
+impl AgentModelConfig {
+    pub fn load(root: &Path) -> LoadedAgentModelConfig {
+        let path = root.join(DEFAULT_MODEL_CONFIG_PATH);
+        if !path.exists() {
+            return match Self::write_default_file(&path) {
+                Ok(()) => match Self::load_from_file(&path) {
+                    Ok((config, warnings)) => LoadedAgentModelConfig {
+                        config,
+                        source: AgentModelConfigSource::File(path),
+                        warnings,
+                    },
+                    Err(error) => LoadedAgentModelConfig {
+                        config: Self::default(),
+                        source: AgentModelConfigSource::BuiltinDefault,
+                        warnings: vec![format!(
+                            "Default model config at {} was created but failed to load: {error}. Falling back to built-in defaults.",
+                            path.display()
+                        )],
+                    },
+                },
+                Err(error) => LoadedAgentModelConfig {
+                    config: Self::default(),
+                    source: AgentModelConfigSource::BuiltinDefault,
+                    warnings: vec![format!(
+                        "Failed to create default model config at {}: {error}. Falling back to built-in defaults.",
+                        path.display()
+                    )],
+                },
+            };
+        }
+
+        match Self::load_from_file(&path) {
+            Ok((config, warnings)) => LoadedAgentModelConfig {
+                config,
+                source: AgentModelConfigSource::File(path),
+                warnings,
+            },
+            Err(error) => LoadedAgentModelConfig {
+                config: Self::default(),
+                source: AgentModelConfigSource::FileWithFallback(path.clone()),
+                warnings: vec![format!(
+                    "Invalid model config at {}: {error}. Falling back to built-in defaults.",
+                    path.display()
+                )],
+            },
+        }
+    }
+
+    fn load_from_file(path: &Path) -> Result<(Self, Vec<String>)> {
+        let contents = fs::read_to_string(path)
+            .with_context(|| format!("failed to read model config {}", path.display()))?;
+        let file: AgentModelConfigFile = toml::from_str(&contents)
+            .with_context(|| format!("failed to parse model config {}", path.display()))?;
+
+        let mut config = Self::default();
+        let mut warnings = Vec::new();
+        if let Some(context) = file.context {
+            if let Some(context_window) = context.context_window {
+                if context_window == 0 {
+                    anyhow::bail!("context.context_window must be >= 1");
+                }
+                config.context_window = context_window;
+            }
+        }
+        if let Some(request) = file.request {
+            if let Some(max_tokens) = request.max_tokens {
+                if max_tokens == 0 {
+                    anyhow::bail!("request.max_tokens must be >= 1");
+                }
+                config.max_output_tokens = max_tokens;
+            }
+        }
+
+        if config.max_output_tokens >= config.context_window {
+            warnings.push(format!(
+                "request.max_tokens={} is too large for context.context_window={}. Resetting output budget to {}. If you want a larger transcript budget, set [context].context_window instead of [request].max_tokens.",
+                config.max_output_tokens,
+                config.context_window,
+                DEFAULT_MAX_OUTPUT_TOKENS,
+            ));
+            config.max_output_tokens = DEFAULT_MAX_OUTPUT_TOKENS.min(config.context_window);
+        }
+
+        Ok((config, warnings))
+    }
+
+    fn write_default_file(path: &Path) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!("failed to create model config dir {}", parent.display())
+            })?;
+        }
+        fs::write(path, DEFAULT_MODEL_CONFIG_TOML)
+            .with_context(|| format!("failed to write model config {}", path.display()))?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct AgentModelConfigFile {
+    #[serde(default)]
+    context: Option<ContextConfigFile>,
+    #[serde(default)]
+    request: Option<RequestConfigFile>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ContextConfigFile {
+    #[serde(default)]
+    context_window: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RequestConfigFile {
+    #[serde(default)]
+    max_tokens: Option<u32>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AgentModelConfig, DEFAULT_MODEL_CONFIG_PATH};
+
+    fn temp_root(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "omega-model-config-{}-{}",
+            name,
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    use std::path::PathBuf;
+
+    #[test]
+    fn missing_file_writes_default_config() {
+        let root = temp_root("missing");
+
+        let loaded = AgentModelConfig::load(&root);
+        let written = std::fs::read_to_string(root.join(DEFAULT_MODEL_CONFIG_PATH)).unwrap();
+
+        assert!(loaded.warnings.is_empty());
+        assert_eq!(loaded.config.max_output_tokens, 32_000);
+        assert_eq!(loaded.config.context_window, 200_000);
+        assert!(written.contains("max_tokens = 32000"));
+        assert!(written.contains("context_window = 200000"));
+    }
+
+    #[test]
+    fn file_override_updates_request_budget() {
+        let root = temp_root("override");
+        let omega_dir = root.join(".omega");
+        std::fs::create_dir_all(&omega_dir).unwrap();
+        std::fs::write(
+            omega_dir.join("model.toml"),
+            "[context]\ncontext_window = 128000\n\n[request]\nmax_tokens = 64000\n",
+        )
+        .unwrap();
+
+        let loaded = AgentModelConfig::load(&root);
+
+        assert!(loaded.warnings.is_empty());
+        assert_eq!(loaded.config.max_output_tokens, 64_000);
+        assert_eq!(loaded.config.context_window, 128_000);
+    }
+
+    #[test]
+    fn oversized_request_budget_falls_back_to_default_output_tokens() {
+        let root = temp_root("oversized-request-budget");
+        let omega_dir = root.join(".omega");
+        std::fs::create_dir_all(&omega_dir).unwrap();
+        std::fs::write(
+            omega_dir.join("model.toml"),
+            "[context]\ncontext_window = 204800\n\n[request]\nmax_tokens = 204800\n",
+        )
+        .unwrap();
+
+        let loaded = AgentModelConfig::load(&root);
+
+        assert_eq!(loaded.config.context_window, 204_800);
+        assert_eq!(loaded.config.max_output_tokens, 32_000);
+        assert_eq!(loaded.warnings.len(), 1);
+        assert!(loaded.warnings[0].contains("request.max_tokens=204800"));
+    }
+}

@@ -1,9 +1,11 @@
 use std::env;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
 use async_trait::async_trait;
+use futures_util::stream::{self, Stream};
 use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
@@ -23,6 +25,7 @@ pub const STOP_REASON_MAX_TOKENS: &str = "max_tokens";
 pub const STOP_REASON_STOP_SEQUENCE: &str = "stop_sequence";
 
 pub type DynLlmClient = Arc<dyn LlmClient>;
+pub type ChatEventStream = Pin<Box<dyn Stream<Item = Result<ChatEvent, ClientError>> + Send>>;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -174,6 +177,41 @@ pub struct Usage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ChatEvent {
+    MessageStart {
+        id: String,
+        #[serde(default)]
+        model: Option<String>,
+    },
+    TextDelta {
+        text: String,
+    },
+    ThinkingDelta {
+        thinking: String,
+        #[serde(default)]
+        signature: Option<String>,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input: Value,
+    },
+    ToolResult {
+        tool_use_id: String,
+        content: Value,
+        #[serde(default)]
+        is_error: Option<bool>,
+    },
+    MessageComplete {
+        #[serde(default)]
+        stop_reason: Option<String>,
+        #[serde(default)]
+        usage: Option<Usage>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ChatResponse {
     pub id: String,
     #[serde(default)]
@@ -207,6 +245,160 @@ impl ChatResponse {
             .filter(|block| matches!(block, ContentBlock::ToolUse { .. }))
             .collect()
     }
+
+    pub fn to_events(&self) -> Vec<ChatEvent> {
+        let mut events = Vec::with_capacity(self.content.len() + 2);
+        events.push(ChatEvent::MessageStart {
+            id: self.id.clone(),
+            model: self.model.clone(),
+        });
+
+        for block in &self.content {
+            match block {
+                ContentBlock::Text { text } => {
+                    events.push(ChatEvent::TextDelta { text: text.clone() })
+                }
+                ContentBlock::Thinking {
+                    thinking,
+                    signature,
+                } => events.push(ChatEvent::ThinkingDelta {
+                    thinking: thinking.clone(),
+                    signature: signature.clone(),
+                }),
+                ContentBlock::ToolUse { id, name, input } => events.push(ChatEvent::ToolUse {
+                    id: id.clone(),
+                    name: name.clone(),
+                    input: input.clone(),
+                }),
+                ContentBlock::ToolResult {
+                    tool_use_id,
+                    content,
+                    is_error,
+                } => events.push(ChatEvent::ToolResult {
+                    tool_use_id: tool_use_id.clone(),
+                    content: content.clone(),
+                    is_error: *is_error,
+                }),
+            }
+        }
+
+        events.push(ChatEvent::MessageComplete {
+            stop_reason: self.stop_reason.clone(),
+            usage: self.usage.clone(),
+        });
+        events
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct ChatResponseBuilder {
+    id: Option<String>,
+    model: Option<String>,
+    content: Vec<ContentBlock>,
+    stop_reason: Option<String>,
+    usage: Option<Usage>,
+    current_text: Option<String>,
+    current_thinking: Option<(String, Option<String>)>,
+}
+
+impl ChatResponseBuilder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn push_event(&mut self, event: ChatEvent) -> Result<(), ClientError> {
+        match event {
+            ChatEvent::MessageStart { id, model } => {
+                if self.id.is_some() {
+                    return Err(ClientError::Config(
+                        "chat stream emitted multiple message_start events".to_string(),
+                    ));
+                }
+                self.id = Some(id);
+                self.model = model;
+            }
+            ChatEvent::TextDelta { text } => {
+                self.flush_thinking_block();
+                self.current_text
+                    .get_or_insert_with(String::new)
+                    .push_str(&text);
+            }
+            ChatEvent::ThinkingDelta {
+                thinking,
+                signature,
+            } => {
+                self.flush_text_block();
+                let current = self
+                    .current_thinking
+                    .get_or_insert_with(|| (String::new(), None));
+                current.0.push_str(&thinking);
+                if signature.is_some() {
+                    current.1 = signature;
+                }
+            }
+            ChatEvent::ToolUse { id, name, input } => {
+                self.flush_open_block();
+                self.content.push(ContentBlock::ToolUse { id, name, input });
+            }
+            ChatEvent::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => {
+                self.flush_open_block();
+                self.content.push(ContentBlock::ToolResult {
+                    tool_use_id,
+                    content,
+                    is_error,
+                });
+            }
+            ChatEvent::MessageComplete { stop_reason, usage } => {
+                self.stop_reason = stop_reason;
+                self.usage = usage;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn finish(mut self) -> Result<ChatResponse, ClientError> {
+        self.flush_open_block();
+        let id = self.id.ok_or_else(|| {
+            ClientError::Config("chat stream finished without message_start".to_string())
+        })?;
+
+        Ok(ChatResponse {
+            id,
+            model: self.model,
+            content: self.content,
+            stop_reason: self.stop_reason,
+            usage: self.usage,
+        })
+    }
+
+    fn flush_open_block(&mut self) {
+        self.flush_text_block();
+        self.flush_thinking_block();
+    }
+
+    fn flush_text_block(&mut self) {
+        if let Some(text) = self.current_text.take() {
+            if !text.is_empty() {
+                self.content.push(ContentBlock::Text { text });
+            }
+        }
+    }
+
+    fn flush_thinking_block(&mut self) {
+        if let Some((thinking, signature)) = self.current_thinking.take() {
+            if !thinking.is_empty() {
+                self.content.push(ContentBlock::Thinking {
+                    thinking,
+                    signature,
+                });
+            }
+        }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -226,6 +418,12 @@ pub enum ClientError {
 #[async_trait]
 pub trait LlmClient: Send + Sync {
     async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, ClientError>;
+    async fn chat_stream(&self, request: ChatRequest) -> Result<ChatEventStream, ClientError> {
+        let response = self.chat(request).await?;
+        Ok(Box::pin(stream::iter(
+            response.to_events().into_iter().map(Ok),
+        )))
+    }
     fn provider_name(&self) -> &'static str;
 }
 
@@ -409,6 +607,7 @@ impl LlmClient for MinimaxClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures_util::StreamExt;
 
     // ── Config & Client construction ──────────────────────────────────
 
@@ -674,6 +873,147 @@ mod tests {
             usage: None,
         };
         assert_eq!(resp.text_content(), "hello world");
+    }
+
+    #[test]
+    fn chat_response_roundtrips_through_events() {
+        let response = ChatResponse {
+            id: "msg_stream".to_string(),
+            model: Some("mock".to_string()),
+            content: vec![
+                ContentBlock::Thinking {
+                    thinking: "plan".to_string(),
+                    signature: Some("sig-1".to_string()),
+                },
+                ContentBlock::text("hello"),
+                ContentBlock::tool_use("tool-1", "bash", json!({"command": "pwd"})),
+                ContentBlock::text("done"),
+            ],
+            stop_reason: Some(STOP_REASON_TOOL_USE.to_string()),
+            usage: Some(Usage {
+                input_tokens: 11,
+                output_tokens: 7,
+            }),
+        };
+
+        let mut builder = ChatResponseBuilder::new();
+        for event in response.to_events() {
+            builder.push_event(event).unwrap();
+        }
+
+        assert_eq!(builder.finish().unwrap(), response);
+    }
+
+    #[test]
+    fn chat_response_builder_merges_sequential_deltas() {
+        let mut builder = ChatResponseBuilder::new();
+        builder
+            .push_event(ChatEvent::MessageStart {
+                id: "msg-1".to_string(),
+                model: Some("mock".to_string()),
+            })
+            .unwrap();
+        builder
+            .push_event(ChatEvent::ThinkingDelta {
+                thinking: "plan".to_string(),
+                signature: None,
+            })
+            .unwrap();
+        builder
+            .push_event(ChatEvent::ThinkingDelta {
+                thinking: " more".to_string(),
+                signature: Some("sig".to_string()),
+            })
+            .unwrap();
+        builder
+            .push_event(ChatEvent::TextDelta {
+                text: "hello".to_string(),
+            })
+            .unwrap();
+        builder
+            .push_event(ChatEvent::TextDelta {
+                text: " world".to_string(),
+            })
+            .unwrap();
+        builder
+            .push_event(ChatEvent::MessageComplete {
+                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                usage: None,
+            })
+            .unwrap();
+
+        let response = builder.finish().unwrap();
+
+        assert_eq!(
+            response.content,
+            vec![
+                ContentBlock::Thinking {
+                    thinking: "plan more".to_string(),
+                    signature: Some("sig".to_string()),
+                },
+                ContentBlock::text("hello world"),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn default_chat_stream_replays_chat_response_events() {
+        struct StreamingCompatClient;
+
+        #[async_trait]
+        impl LlmClient for StreamingCompatClient {
+            async fn chat(&self, _request: ChatRequest) -> Result<ChatResponse, ClientError> {
+                Ok(ChatResponse {
+                    id: "msg-stream".to_string(),
+                    model: Some("mock".to_string()),
+                    content: vec![
+                        ContentBlock::Thinking {
+                            thinking: "draft".to_string(),
+                            signature: None,
+                        },
+                        ContentBlock::text("answer"),
+                    ],
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                })
+            }
+
+            fn provider_name(&self) -> &'static str {
+                "streaming-compat"
+            }
+        }
+
+        let client = StreamingCompatClient;
+        let mut stream = client
+            .chat_stream(ChatRequest::new(vec![Message::user("hi")]))
+            .await
+            .unwrap();
+        let mut events = Vec::new();
+
+        while let Some(event) = stream.next().await {
+            events.push(event.unwrap());
+        }
+
+        assert_eq!(
+            events,
+            vec![
+                ChatEvent::MessageStart {
+                    id: "msg-stream".to_string(),
+                    model: Some("mock".to_string()),
+                },
+                ChatEvent::ThinkingDelta {
+                    thinking: "draft".to_string(),
+                    signature: None,
+                },
+                ChatEvent::TextDelta {
+                    text: "answer".to_string(),
+                },
+                ChatEvent::MessageComplete {
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                },
+            ]
+        );
     }
 
     // ── build_body ────────────────────────────────────────────────────

@@ -8,3 +8,6 @@ omega-client = { path = "../omega-client" }
 anyhow.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true

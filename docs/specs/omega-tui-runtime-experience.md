@@ -52,12 +52,14 @@ related_prds: []
 
 | Surface | Purpose | Data Class |
 |---------|---------|-----------|
-| `Response` | 当前主对话、各 step 的文本结果与最终用户可见回答 | turn-primary content |
+| `Response` | 当前主对话、按 scene/workflow/step 分组的结构化 turn timeline、最终用户可见回答与未来 thinking block | turn-primary content |
 | `Todos` | 当前任务的局部执行计划 | short-lived task plan |
 | `Activity` | 与运行时能力相关的可切换详情视图 | runtime secondary state |
 | `Overlay` | 搜索、确认、详情查看等短时浮动交互 | transient focused interaction |
 | `Input context bar` | 输入框上方的当前交互提示与短消息 | input-adjacent context |
 | `Bottom status bar` | 输入框下方的持续状态摘要与扩展槽 | compact badges |
+
+`Response` 的详细规划见 `docs/specs/omega-tui-response-thinking-experience.md`。当前该面板已经按 `route / step / final / thinking` 结构化渲染 turn timeline；provider-exposed thinking 现已作为独立、低噪音且可折叠的 block 接入，并支持通过 `.omega/tui.toml` 关闭可见性。
 
 ## Bottom Layout Rule
 
@@ -114,6 +116,12 @@ related_prds: []
 - 警告类状态优先于信息类状态，例如压缩失败、后台任务 error、subagent 异常。
 - 底部状态带只展示最新摘要；完整细节进入 `Activity` 面板。
 
+当前对 scene-aware routing 的落地规则：
+
+- `route` 徽章展示当前 recognized scene 与 selected workflow；在 scene 已识别但 child workflow 尚未选定时显示 `scene -> selecting`。
+- `flow` 徽章展示当前 active workflow step，并显式带出 `root` / `child` 角色与 workflow id，例如 `root:root Scene Recognition 1/2`、`child:feature Analyze 1/4`。
+- 新 turn 开始时应清空上一轮 route 摘要，避免上一轮 scene/workflow 残留到当前 turn。
+
 ## Activity Views
 
 ### Logs View
@@ -122,6 +130,7 @@ related_prds: []
 - 继续承担调试输出、事件流和错误详情。
 - workflow phase 切换、tool preview、todo 刷新这类 runtime activity 应优先进入该 view，而不是混入 `Response` 主对话流。
 - `Response` 面板应承载用户真正需要阅读的文本产物，包括 step 正文结果与最终 assistant 回复；纯运行态事件仍留在 `Activity & Logs`。
+- scene/workflow routing 相关事件应统一加上稳定前缀：routing 决策与 fallback 使用 `[route] ...`，root workflow step summary 使用 `[root:root ...] ...`，child workflow step summary 使用 `[child:<workflow> ...] ...`。
 
 ### Skills View
 

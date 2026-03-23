@@ -2,7 +2,7 @@
 status: draft
 owner: omega-team
 created: 2026-03-20
-updated: 2026-03-20
+updated: 2026-03-23
 version: 0.1
 supersedes: []
 related_prds: []
@@ -14,7 +14,7 @@ related_prds: []
 
 当前 Omega 的执行入口仍然默认直接进入单个 execution workflow。这对 feature-oriented coding task 是可行的，但对纯对话、轻量澄清或未来其他工作模式并不合适。下一阶段需要在 workflow 之上新增 `scene` 概念，把“当前是什么工作场景”作为显式路由前提。
 
-本规格定义一个 scene-aware routing 层：系统先运行一个主 workflow，依次执行 `scene-recognition` 与 `select-workflow` 两个 step；识别出 scene 后，再委派到匹配的 child workflow 中稳定执行。scene 允许用户配置，并预置两种场景：`chat` 与 `feature`。
+本规格定义一个 scene-aware routing 层：session 在每次收到用户新输入后，都先运行 root workflow，依次执行 `scene-recognition` 与 `select-workflow` 两个 step；识别出 scene 后，再委派到匹配的 child workflow 中稳定执行。scene 允许用户配置，并预置两种场景：`chat` 与 `feature`。
 
 默认预置映射：
 
@@ -34,6 +34,8 @@ related_prds: []
 - 让系统先识别 scene，再选择匹配 workflow，而不是默认把所有输入都送入同一条 feature flow。
 - 允许用户通过配置声明 scene catalog 与 scene -> workflow 绑定关系。
 - 预置 `chat` 与 `feature` 两种 scene，并分别映射到轻量 chat workflow 与四阶段 feature workflow。
+- 明确 session / root workflow / child workflow 的生命周期关系：session 持续存在，root workflow 是每个用户 turn 的统一入口，child workflow 是 root workflow 触发的本轮执行流。
+- 让 routing 结果进入 session-owned 的 typed context，而不是继续依赖弱结构化自由文本传递 scene / workflow 决策。
 - 保持 `omega-workflow` 拥有 scene/workflow definition，`omega-session` 拥有执行与 delegation，`omega-tui` 只消费可见状态。
 - 为未来 step-level workflow delegation 预留稳定模型，不把 scene routing 特判硬编码为一次性逻辑。
 
@@ -52,6 +54,7 @@ related_prds: []
 - `chat` 这类轻量场景不应该承担 `analysis -> plan -> execute -> report` 的完整成本。
 - 未来某些 step 可能需要按 scene 或局部语义触发 child workflow，但当前没有显式 delegation 模型。
 - scene 目前既不可配置，也不是前端可见状态，用户无法确认系统为什么选择了某条 workflow。
+- root routing 当前仍主要消费自由文本结果再做 token 级解析，scene / workflow 关系没有沉淀为稳定的 session context。
 
 ## Architecture
 
@@ -68,6 +71,13 @@ related_prds: []
 - `root workflow`: 主路由 workflow，首轮固定为 `scene-recognition -> select-workflow`。
 - `child workflow`: scene 选中后真正执行的 workflow，例如 `chat` 或 `feature`。
 - `workflow delegation`: 某个 step 结束后启动另一个 workflow 的行为。首轮只要求 `select-workflow` 使用该能力，但模型要允许未来其他 step 复用。
+
+### Session / Workflow Relationship
+
+- `session` 是持续存在的对话容器，持有 message history、session assets 与 session context。
+- `root workflow` 是每个用户 turn 的统一入口 workflow，而不是只在 session 启动时跑一次的初始化逻辑。
+- `child workflow` 是 root workflow 在当前 turn 内委派出的实际执行流，例如 `chat` 或 `feature`。
+- 当 child workflow 结束后，turn 完成；下一条用户输入到来时，session 会再次从 root workflow 开始，而不是绕过 root workflow 直接进入上次的 child workflow。
 
 ### Architectural Rule
 
@@ -144,13 +154,24 @@ workflow = "feature"
 
 `omega-session` 的目标执行路径应演进为：
 
-1. turn 开始后先进入 `root` workflow。
-2. `scene-recognition` step 识别当前输入属于哪个 scene。
-3. `select-workflow` step 根据 recognized scene 解析 child workflow。
-4. session 启动 child workflow run，并把它作为当前稳定执行流。
-5. child workflow 执行结束后，turn 才进入完成态。
+1. session 收到新的用户输入后，先进入 `root` workflow。
+2. `scene-recognition` step 基于最新用户输入、已有 session context 与 root step prompt 运行最小 agent loop，并把 `recognized_scene_id` 写入 session context。
+3. `select-workflow` step 读取该 routing context，再运行最小 agent loop，产生 `selected_workflow_id` 与 `StartWorkflow` transition。
+4. session 启动 child workflow run，并把它作为当前 turn 的稳定执行流。
+5. child workflow 的每个 step 都向同一个 session context 写回 summary，供后续 step 与下一轮 routing 使用。
+6. child workflow 执行结束后，turn 才进入完成态。
 
 这里的关键是：scene recognition 与 workflow selection 本身也是 step，而不是写在 `main`、TUI 事件处理或 session 外围的预处理分支里。
+
+### Routing Result Contract
+
+scene routing 的目标不是继续让 root workflow 依赖“assistant 文本里碰巧出现 `chat` / `feature` token”来完成路由，而是让 root step 写出 typed routing result：
+
+- `scene-recognition` 写入 `recognized_scene_id`
+- `select-workflow` 写入 `selected_workflow_id`
+- `select-workflow` 产出 `StartWorkflow { workflow_id }`
+
+当前 token matching 只应被视为兼容路径，而不是长期主模型。
 
 ### Runtime State Direction
 
@@ -161,6 +182,18 @@ workflow = "feature"
 - 当前 selected workflow id
 - active child workflow run
 - 未来可能的 workflow stack / nested workflow state
+- 当前 turn 已累积的 step summaries
+
+### Routing State Convergence (与 step-session-asset-model 对齐)
+
+当前实现使用 `WorkflowRoutingState { recognized_scene_id, selected_workflow_id }` 作为 `WorkflowTurnRunner` 的内部状态。spec 同时定义了 `SessionContext.routing: RoutingContext`。为避免双写风险，运行时应统一使用 `RoutingContext` 作为唯一路由状态容器：
+
+- `WorkflowTurnRunner::run()` 初始化 `SessionContext`，其中 `routing: RoutingContext::default()`
+- `scene-recognition` step 完成后更新 `session_context.routing.recognized_scene_id`
+- `select-workflow` step 完成后更新 `session_context.routing.selected_workflow_id`
+- child workflow delegation 从 `session_context.routing` 取值，不再维护独立的 `WorkflowRoutingState`
+
+详见 [omega-step-session-asset-model.md](omega-step-session-asset-model.md) 中 "Routing State Convergence" 小节。
 
 ## Step-Level Delegation Direction
 
@@ -175,7 +208,7 @@ enum StepTransition {
 }
 ```
 
-这样未来即使 `analysis`、`chat` 或其他自定义 step 需要再次触发 scene judgment、verify flow、delegate flow，也不需要推翻现有 session 编排边界。
+这样未来即使 `analysis`、`chat` 或其他自定义 step 需要再次触发 scene judgment、verify flow、delegate flow，也不需要推翻现有 session 编排边界。对 scene routing 来说，`scene-recognition` 与 `select-workflow` 只是第一个写入 `SessionContext.routing` 并触发 `StartWorkflow` 的 step 组合。
 
 ## Runtime UI Implications
 
@@ -199,7 +232,8 @@ scene-aware routing 是 runtime-visible 行为，因此后续实现至少要让�
 ### Phase 2: Root Workflow Execution
 
 - 在 `omega-session` 中执行 `scene-recognition -> select-workflow`
-- 把 scene 识别结果转为 selected child workflow
+- 把 scene 识别结果与 workflow 选择结果写入 session context
+- 把 selected child workflow 明确表达为 typed transition，而不是自由文本 token 解析
 - 让 child workflow 成为真正的稳定执行流
 
 ### Phase 3: UI Visibility
@@ -233,3 +267,5 @@ scene-aware routing 是 runtime-visible 行为，因此后续实现至少要让�
 ### Change Log
 
 - 2026-03-20: 初版规格，提出 `scene` 作为 workflow 之上的顶层工作场景，并规划 `scene-recognition -> select-workflow -> child workflow` 的主路由模型。
+- 2026-03-20: 明确 session / root workflow / child workflow 的生命周期关系：session 持续存在，root workflow 是每个用户 turn 的统一入口，child workflow 是 root workflow 触发的本轮执行流；routing 结果应进入 typed session context。
+- 2026-03-23: Task 15F-9 实现完成：`scene-recognition` / `select-workflow` 现以 JSON 为主路径产出结构化 routing handoff，`RoutingContext` 成为 `omega-session` 的唯一路由状态容器，child workflow delegation 与跨 turn session context 已在运行时落地。

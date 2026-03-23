@@ -17,6 +17,7 @@ omega-message = { path = "../omega-message" }
 omega-team = { path = "../omega-team" }
 omega-worktree = { path = "../omega-worktree" }
 anyhow.workspace = true
+futures-util.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
 tracing.workspace = true

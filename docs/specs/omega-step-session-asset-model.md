@@ -2,7 +2,7 @@
 status: draft
 owner: omega-team
 created: 2026-03-20
-updated: 2026-03-20
+updated: 2026-03-23
 version: 0.1
 supersedes: []
 related_prds: []
@@ -14,11 +14,11 @@ related_prds: []
 
 当前 `omega-workflow` 已经能表达四阶段工作流，并把每个阶段的 prompt 外置到 `.omega/prompt/step/*.md`。下一阶段不再把“flow”理解成一套独立于现有 `step` 的新概念，而是明确把现在的 `step` 视为工作流中的最小执行单元，只是在讨论时曾临时把它叫作 flow。
 
-本规格的目标，是在保持 `step` 术语不变的前提下，把当前固定四阶段 step 提升为通用 step definition，并引入 session 级资产管理边界。`omega-session` 统一管理 tools 与 skills 这类会话内资产，workflow step、后续 subagent、team 等执行体只从 session 的资产管理层申请、继承、扩展或屏蔽自己需要的能力；`context` 本轮仅保留为未来能力，不进入首轮实现范围。
+本规格的下一阶段目标，是在保持 `step` 术语不变的前提下，把当前固定四阶段 step 提升为通用 step definition，并把 session 级资产与 step context 一起收敛到 `omega-session`。`omega-session` 不仅统一管理 tools 与 skills 这类会话内资产，也负责把 routing state、历史 step summary、本轮用户输入与当前 step 的功能提示拼装成下一个 step 的执行上下文。
 
 下一阶段还会在此基础上加入 scene-aware routing：`scene-recognition` 与 `select-workflow` 也将被建模为 step，而不是 session 外围的特殊预处理逻辑；未来个别 step 也可能触发 child workflow delegation。相关规划见 [docs/specs/omega-scene-routing.md](omega-scene-routing.md)。
 
-截至 2026-03-20，Task 15F-2B 已完成首轮落地：`omega-workflow` 内部模型已从 enum-centric 四阶段切换为 string-keyed `WorkflowStep`，`WorkflowPrompts` 已改为按 `step_id` 查找的映射结构，`omega-session` 已基于 `WorkflowRun` + `StepLoopMode` 驱动通用 step 编排，`SessionUpdate::WorkflowStepChanged` 也已补齐稳定的 `step_id` 字段。
+截至 2026-03-20，Task 15F-2B 与 Task 15F-8 已完成首轮落地：`omega-workflow` 内部模型已从 enum-centric 四阶段切换为 string-keyed `WorkflowStep`，`WorkflowPrompts` 已改为按 `step_id` 查找的映射结构，`omega-session` 已基于统一的 bounded `AgentLoop` 驱动通用 step 编排，`SessionUpdate::WorkflowStepChanged` 也已补齐稳定的 `step_id` 字段；当前 root / chat / feature step 已全部进入同一种最小循环，只通过工具子集、loop budget 和 prompt 约束区别行为。下一轮主线将继续在此基础上引入结构化 step context。
 
 ## Goals
 
@@ -26,13 +26,15 @@ related_prds: []
 - 将当前固定四阶段提升为可配置的 `WorkflowStepDefinition` 列表。
 - 让 `omega-session` 成为 tools 与 skills 的统一资产管理入口。
 - 让 step 运行时默认继承 session 资产，并支持增补、屏蔽和按需加载。
+- 让所有 root / child workflow step 都以有界最小 agent loop 运行，而不是把 analysis / plan / report / routing step 固定成无工具单响应。
+- 引入 session-owned 的 step context，让后续 step 明确消费“之前任务总结的上下文”，而不是只隐式依赖 raw message history。
 - 为未来的 subagent、team 等会话内执行体复用同一套资产管理机制。
 - 为 future scene-aware child workflow delegation 预留稳定的 step-level 扩展点。
 
 ## Non-Goals
 
 - 本次规划不要求实现 DAG、条件分支或循环回边。
-- 本次规划不要求立即实现 `context` 的结构化读写与 artifact schema。
+- 本次规划不要求一步做成完整的持久化 artifact store、跨 session memory graph 或数据库化上下文仓库。
 - 本次规划不要求把 `omega-tui` 变成 step 运行器；TUI 仍然只消费状态更新。未来若引入 `omega-app` 装配层，也由 app 负责 session/tui wiring，而不是改变 step 领域所有权。
 - 本次规划不要求现在拆出新的 crate；优先在现有 `omega-workflow`、`omega-session`、`omega-core` 边界内演进。
 
@@ -50,7 +52,9 @@ related_prds: []
 - `omega-session` 仍然按固定四阶段写执行分支，新增第五个阶段时需要修改 orchestration 代码。
 - tools 与 skills 目前是初始化时一次性装配，没有 session 级统一分配边界。
 - step 还不能表达“继承默认能力、追加能力、屏蔽能力、能力不足时触发加载”的运行时诉求。
-- `context` 的未来方向已经明确存在，但现在还不适合和 step 泛化一起打包实现。
+- 当前所有 step 已统一进入 bounded agent loop，但 step 之间仍缺少 session-owned 的结构化 summary/context 传递。
+- root routing step 当前仍主要依赖 assistant 自由文本 + token matching 传递 scene / workflow 决策，语义过弱。
+- 后续 step 还拿不到显式的前序任务总结，只能依赖 raw message history 或隐含 routing 状态。
 
 ## Architectural Direction
 
@@ -78,14 +82,14 @@ pub struct WorkflowStepDefinition {
     pub label: String,
     pub prompt_path: PathBuf,
     pub loop_mode: StepLoopMode,
+    pub max_iterations: u32,
     pub tool_request: StepToolRequest,
     pub skill_request: StepSkillRequest,
     pub enabled: bool,
 }
 
 pub enum StepLoopMode {
-    SingleResponse,
-    ToolLoop,
+    AgentLoop,
 }
 
 pub enum StepToolRequest {
@@ -101,7 +105,7 @@ pub enum StepSkillRequest {
 }
 ```
 
-默认 `analysis / plan / execute / report` 仍然是内建 step，但执行器不再依赖固定分支名才能工作。
+默认 `analysis / plan / execute / report` 仍然是内建 step，但执行器不再依赖固定分支名才能工作。当前实现已经将主路径统一到 `AgentLoop`；`SingleResponse` / `ToolLoop` 只保留为配置兼容别名，不再代表运行时分叉。
 
 ### WorkflowDefinition
 
@@ -134,6 +138,344 @@ session 统一持有 skills 描述与加载器，并负责：
 - `Disable` 时关闭该 step 的自动 skill 装配
 
 这样一来，skills 不再只是 workflow 的局部技巧，而是 session 资产层的一部分；后续 subagent、team 同样可以复用。
+
+## Session Context Model
+
+session 需要拥有一份可组合、可总结、可供后续 step 消费的上下文，而不再只把上下文寄托在 raw transcript 里：
+
+```rust
+pub struct SessionContext {
+    pub latest_user_turn: String,
+    pub routing: RoutingContext,
+    pub step_summaries: Vec<StepSummary>,
+}
+
+pub struct RoutingContext {
+    pub recognized_scene_id: Option<String>,
+    pub selected_workflow_id: Option<String>,
+    pub active_workflow_id: String,
+    pub active_workflow_role: WorkflowRunRole,
+}
+
+pub struct StepSummary {
+    pub workflow_id: String,
+    pub step_id: String,
+    pub title: String,
+    pub summary: String,
+    /// 粗略 token 估算（4 chars ≈ 1 token），用于 context budget 裁剪。
+    pub estimated_tokens: u32,
+}
+
+pub struct StepExecutionInput {
+    pub base_system: String,
+    pub resolved_tools: ResolvedToolSet,
+    pub resolved_skills: ResolvedSkillSet,
+    pub session_context: SessionContext,
+    pub step: WorkflowStepDefinition,
+    pub step_prompt: String,
+}
+
+pub struct StepExecutionResult {
+    pub final_text: String,
+    pub summary: StepSummary,
+    pub transition: StepTransition,
+}
+
+pub enum StepTransition {
+    Continue,
+    StartWorkflow { workflow_id: String },
+    FinishTurn,
+    /// Step 执行失败时，session 仍需要完成 turn 清理。
+    /// 首轮只做 turn 终止；后续可扩展为 retry / fallback policy。
+    Error { message: String },
+}
+```
+
+约束：
+
+- step summary 是 session-owned 的 typed context，不等于直接复用上一个 step 的整段 assistant 原文。
+- 后续 step 默认读取 `SessionContext.step_summaries`，而不是假设模型会从长 transcript 中自行稳定找回关键结论。
+- routing 结果同样进入 `SessionContext.routing`，而不是只通过弱结构化自由文本在 root workflow 内传递。
+
+### Context Budget Model
+
+`SessionContext` 注入到 step system prompt 时，不能无限增长。session 必须在组装 step 输入之前进行 budget-aware 裁剪。
+
+**配置来源**：`.omega/model.toml` 新增 `[context]` section，提供 `context_window` 字段（默认 200000），表示模型完整上下文窗口大小。`[request].max_tokens` 保持现有语义，仅控制单次 assistant 响应预算。两者关系为：
+
+```
+available_input_budget = context_window - max_output_tokens - safety_margin
+```
+
+其中 `safety_margin` 为固定保守值（如 2000 tokens），避免边界溢出。
+
+**裁剪策略**：当 `step_summaries` 的 `estimated_tokens` 总和加上 system prompt 与 step prompt 超过 `available_input_budget` 时，session 应从最早的 summary 开始丢弃或截断，直到总量回到预算内。具体规则：
+
+1. 保留最近一个 step 的 summary 不裁剪（保证工作链连续性）
+2. 剩余 summary 按时间从旧到新依次丢弃
+3. routing context 不参与裁剪（体积固定且很小）
+
+这不要求精确 tokenizer，粗估（4 chars ≈ 1 token）在首轮即可满足。后续若需精确 token 统计，可接入 tiktoken 或类似库。
+
+### Summary Generation Strategy
+
+`StepSummary.summary` 不等于 step 的原始 assistant 全文：
+
+1. **截断路径**（首轮实现）：从 step 最终文本中截取前 N 个字符（如 2000 chars ≈ 500 tokens），作为 summary。
+2. **LLM 摘要路径**（后续扩展）：对长文本调用独立的 summarization prompt 生成结构化摘要。
+3. `estimated_tokens` 在截断路径下直接由 `summary.len() / 4` 计算。
+
+分阶段迁移：
+
+- **Phase 1**（Task 15F-9）：截断路径，固定 2000 chars 上限。
+- **Phase 2**（独立任务）：引入可配置的 summary strategy（truncate / llm-summarize），作为 `omega-compression` 的消费场景。
+
+### Current Gap After Task 15F-9
+
+当前实现只完成了“step 之间可传递文本摘要”的最小链路，还没有完成 workflow-owned 的结构化上下文闭环。现状限制如下：
+
+- `analysis` 产物仍只是 `StepSummary.summary` 的截断文本，不是结构化分析资产。
+- `plan` 没有稳定产出 ordered tasks / validation targets；它只是给 `execute` 暴露一段 plan 文本摘要。
+- `execute` 没有消费 workflow-owned task queue；当前 `todo` 只是通用工具，`omega-core` 只会在 3 轮未更新时注入 reminder，不会把 `todo` 变成 execute 的完成判据或循环锚点。
+- `report` 当前主要依赖 raw transcript 与前序文本 summary，不会稳定读取“完成了哪些 planned items、哪些验证通过/失败、还有哪些 open items”这类结构化执行结果。
+
+因此，当前 `SessionContext` 足以支撑“上一阶段给下一阶段一个文本提示”，但还不足以满足 `analysis -> plan -> execute -> report` 逐阶段通过结构化上下文闭环协作的目标。
+
+### Next-Stage Workflow Context Evolution
+
+下一阶段需要把 `SessionContext` 从"routing + text summaries"演进为"routing + step data contracts + structured outputs + diagnostics"的 session-owned 工作上下文。
+
+#### Step Data Contract
+
+之前的设计（`WorkflowArtifacts { analysis, plan, execution }` 硬编码槽位）把结构化数据绑定到 feature workflow 的固定四阶段，无法复用于其他 workflow 形状或自定义 step。重新审查后，结构化输入输出应作为 **step 级通用能力**，而不是某个 workflow 的专属特性。
+
+核心设计原则：
+
+1. **每个 step 独立声明其输入输出数据契约**，而不是由 session 维护一套全局 artifact 类型。
+2. **输入和输出分开配置**，支持四种组合：(None, None)、(None, Required)、(Required, None)、(Required, Required)，以及 Optional 变体。
+3. **当 Required 数据缺失时，有明确的流程级处理**：输入缺失 → 阻止启动；输出缺失 → 重试+反馈 → 超限后 Error。
+4. **结构化数据需要自测**：系统级 JSON 提取与 schema 校验 + LLM 收到校验反馈后自行修正。
+
+##### Step Input Contract
+
+```rust
+/// 声明 step 对前序 step 结构化输出的消费需求。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum StepInputContract {
+    /// 不需要结构化输入（如 analysis 直接读用户请求）。
+    #[default]
+    None,
+    /// 必须从指定 source step 获取结构化输出；任一 source 缺失则阻止启动。
+    Required { sources: Vec<String> },
+    /// 如果 source step 有结构化输出则注入，缺失不阻塞。
+    Optional { sources: Vec<String> },
+}
+```
+
+##### Step Output Contract
+
+```rust
+/// 声明 step 必须/可选产出的结构化输出及校验策略。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum StepOutputContract {
+    /// 不产出结构化输出（如 report 只产出自由文本摘要）。
+    #[default]
+    None,
+    /// 必须产出符合指定格式的结构化输出，校验失败可重试。
+    Required {
+        format: DataFormat,
+        schema_path: Option<PathBuf>,
+        max_retries: u32,
+    },
+    /// 尝试产出结构化输出，校验失败不阻塞流程。
+    Optional {
+        format: DataFormat,
+        schema_path: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DataFormat {
+    #[default]
+    Json,
+}
+```
+
+##### WorkflowStep 扩展
+
+```rust
+pub struct WorkflowStep {
+    // ... existing fields ...
+    pub input_contract: StepInputContract,
+    pub output_contract: StepOutputContract,
+}
+```
+
+##### SessionContext 扩展
+
+```rust
+struct SessionContext {
+    pub latest_user_turn: String,
+    pub routing: RoutingContext,
+    pub step_summaries: Vec<StepSummary>,
+    /// step_id → 该 step 产出的结构化输出，供后续 step 的 input_contract 消费。
+    pub step_outputs: BTreeMap<String, serde_json::Value>,
+}
+```
+
+`StepSummary` 继续保留，承担 budget-aware 的文本压缩摘要职责。`step_outputs` 负责精确的结构化数据传递，二者互补。
+
+##### StepExecutionInput / Result 扩展
+
+```rust
+struct StepExecutionInput {
+    // ... existing fields ...
+    /// 从 input_contract.sources 解析合并后的结构化输入。
+    pub structured_input: Option<serde_json::Value>,
+}
+
+struct StepExecutionResult {
+    // ... existing fields ...
+    /// 从 step 最终输出中提取并校验后的结构化输出。
+    pub structured_output: Option<serde_json::Value>,
+}
+```
+
+##### TOML 配置格式
+
+与现有 `tool_request` / `skill_request` 风格一致，使用内联表：
+
+```toml
+[[steps]]
+id = "analysis"
+label = "Analyze"
+prompt = ".omega/prompt/step/analysis.md"
+max_iterations = 8
+tool_request = { mode = "block", items = ["bash", "edit_file", "todo", "write_file"] }
+output_contract = { mode = "required", format = "json", max_retries = 2 }
+
+[[steps]]
+id = "plan"
+label = "Plan"
+prompt = ".omega/prompt/step/plan.md"
+max_iterations = 8
+input_contract = { mode = "required", sources = ["analysis"] }
+output_contract = { mode = "required", format = "json", max_retries = 2 }
+
+[[steps]]
+id = "execute"
+label = "Execute"
+prompt = ".omega/prompt/step/execute.md"
+max_iterations = 16
+input_contract = { mode = "required", sources = ["plan"] }
+output_contract = { mode = "optional", format = "json" }
+
+[[steps]]
+id = "report"
+label = "Report"
+prompt = ".omega/prompt/step/report.md"
+max_iterations = 8
+input_contract = { mode = "required", sources = ["analysis", "plan", "execute"] }
+```
+
+##### 内建 step 默认 I/O Contract
+
+| Step               | Input Contract               | Output Contract              |
+|--------------------|------------------------------|------------------------------|
+| scene-recognition  | None                         | Required(Json, max_retries=1)|
+| select-workflow    | None                         | Required(Json, max_retries=1)|
+| chat               | None                         | None                         |
+| analysis           | None                         | Required(Json, max_retries=2)|
+| plan               | Required(["analysis"])       | Required(Json, max_retries=2)|
+| execute            | Required(["plan"])           | Optional(Json)               |
+| report             | Required(["analysis","plan","execute"]) | None            |
+
+注意：root routing steps（scene-recognition / select-workflow）**已经在 `finalize_step()` 中做结构化 JSON 解析**，只是当前是硬编码的特殊分支。Step Data Contract 将把这套逻辑泛化为通用机制，使 root routing 成为 data contract 的首个消费者而不是唯一特例。
+
+#### Validation & Flow-level Handling
+
+##### 输出校验流程
+
+step 完成后，若 `output_contract` 不是 `None`：
+
+1. **JSON 提取**：从 `final_text` 中尝试提取结构化数据
+   - 优先查找 ` ```json ... ``` ` 代码块
+   - 若无代码块，尝试整体 `serde_json::from_str()`
+   - 若都失败，标记为提取失败
+
+2. **Schema 校验**（若 `schema_path` 存在）：
+   - 加载 JSON Schema 文件，对提取到的 JSON 做结构校验
+   - 首轮实现可只做"是否为合法 JSON + 是否包含必须 key"级别的轻量校验
+   - 后续可引入完整 JSON Schema validator
+
+3. **失败处理**：
+   - 若 `Required` 且校验失败且重试次数未用尽：
+     - 向 agent conversation 注入一条系统反馈消息，描述校验失败原因
+     - 不 advance step，重新进入 agent loop 的下一轮迭代
+     - 这就是"自测"：LLM 收到自己输出的校验结果，自行修正
+   - 若 `Required` 且重试耗尽：`StepTransition::Error { message }`
+   - 若 `Optional` 且校验失败：继续流程，`structured_output` 设为 `None`
+
+##### 输入校验流程
+
+step 启动前，若 `input_contract` 不是 `None`：
+
+1. 从 `session_context.step_outputs` 中查找 `sources` 列出的所有 step_id
+2. 若 `Required` 且任一 source 缺失 → 立即 `StepTransition::Error`
+3. 若 `Optional` 且部分缺失 → 只注入已有的 source
+4. 将收集到的结构化数据合并为 `structured_input`（按 source step_id 为 key 的 JSON object）
+
+##### Prompt 自动注入
+
+当 step 拥有 data contract 时，`build_step_system_prompt()` 自动追加：
+
+- 若有 `output_contract`：追加 `<output_contract>` 段，描述期望格式与 schema 要求
+- 若有 `structured_input`：追加 `<structured_input source="...">` 段，注入前序 step 的结构化输出
+
+这使得 step prompt 文件不需要手动重复格式要求；格式约束由 data contract 机制统一注入。
+
+#### Todo-Driven Execute Contract
+
+Step Data Contract 建立通用框架后，feature workflow 的 `plan → execute → report` 链路可基于此实现具体的领域绑定：
+
+1. `analysis` 产出结构化输出（objective / constraints / risks / affected paths），通过 `output_contract: Required(Json)` 保证
+2. `plan` 消费 analysis 输出，产出结构化计划（ordered tasks / validation targets），通过 `input_contract: Required(["analysis"])` + `output_contract: Required(Json)` 保证
+3. `plan` 的结构化输出中的 tasks 可映射到 `TodoManager`，使 todo 成为 workflow context 的正式投射而非旁路
+4. `execute` 消费 plan 输出，以 todo list 为主循环锚点推进，每次聚焦当前 `in_progress` item
+5. `execute` 可选产出执行结果（completed tasks / validation results / changed paths），通过 `output_contract: Optional(Json)` 声明
+6. `report` 消费 analysis + plan + execute 的结构化输出，组织最终总结，通过 `input_contract: Required(["analysis","plan","execute"])` 保证
+
+todo 不再只是通用工具旁路；它需要和 workflow context 建立稳定映射：
+
+- `plan` 产出的 ordered tasks 可直接映射到 `TodoManager`
+- `execute` 的完成条件与 todo completion 语义对齐
+- `report` 能稳定看到哪些 items 完成、哪些未完成、哪些验证失败
+
+#### Context Observability
+
+当 workflow context 演进为 step data contract + structured outputs，就必须具备可观察性，否则 TUI 中的 failure 仍然只能看到"模型说了什么"，而看不到"session context 里到底存了什么"。
+
+截至 2026-03-23，Task 15F-12 已完成首轮落地，当前观测面包含：
+
+- 在 tracing / jsonl 中记录每次 step 输入时注入了哪些 summaries + structured inputs
+- 记录 output contract 校验结果（成功/失败/重试次数）
+- 记录各阶段对 `SessionContext.step_outputs` 的 snapshot/diff 写入变化
+- 记录 plan-generated todo 与 execute-completed todo 的 before/after 变化轨迹
+- 在 TUI Diagnostics 侧栏与 detail overlay 中提供 data contract 状态 drill-down
+
+当前实现已足以回答“这个 step 读了什么、写了什么、校验是否通过”；后续扩展重点转向更长期的 compression / retention 策略，而不是继续补一套新的 diagnostics 主路径。
+
+### Routing State Convergence
+
+当前 `omega-session` 内部使用 `WorkflowRoutingState { recognized_scene_id, selected_workflow_id }` 驱动 root workflow 执行。spec 同时定义了 `SessionContext.routing: RoutingContext`，两者存在语义重叠。
+
+**收敛决策**：`RoutingContext` 替代 `WorkflowRoutingState` 成为运行时唯一的路由状态容器。`WorkflowTurnRunner` 内部操作 `RoutingContext`，root step 完成后同步更新，组装 child step 输入时从 `SessionContext.routing` 取值。不允许两份路由状态独立存在。
+
+这同时消除了 `build_step_system_prompt()` 的散落参数问题：当前函数接受 `routing_context: Option<&str>` 等独立参数，后续应统一为 `StepExecutionInput` 作为单一输入，函数签名收敛为：
+
+```rust
+fn build_step_system_prompt(input: &StepExecutionInput) -> String;
+```
 
 ### Why Session Owns Assets
 
@@ -196,7 +538,7 @@ impl ToolDispatcher {
 
 - `ToolDispatcher` 本身**不变**——仍然持有全部已注册 handler，dispatch 时仍然路由到完整 handler 集合。过滤只影响 LLM 看到的 `tool_definitions`，不影响执行路由。这样即使 LLM 意外返回了 blocked 工具的调用，dispatcher 仍能返回结果（但 session 层可选择拒绝）。
 - `set_visible_tools(None)` 恢复为全量工具，作为安全默认值。
-- `run_single_response` 当前显式拒绝工具调用。未来如果出现"单次响应但允许看到工具 schema"的需求，应新增 `StepLoopMode::SingleResponseWithTools` 而不是修改现有语义。
+- `run_single_response` 可继续作为 `omega-core` 的低层兼容 API 保留，但 workflow 主路径不应再依赖它承载 step 编排。
 
 ### 前置依赖
 
@@ -204,20 +546,26 @@ impl ToolDispatcher {
 
 ## Execution Model
 
-每次进入一个 step，`omega-session` 组装：
+每次进入一个 step，`omega-session` 必须显式组装该 step 的执行输入：
 
 - 当前 session message history
 - 基础 system prompt
-- step prompt
 - 从 `SessionSkillCatalog` 解析得到的 step skill 片段
 - 从 `SessionToolCatalog` 解析得到的 step tool 集合
+- 当前 `SessionContext`，其中至少包含：latest user turn、routing state、之前 step 的 summary
+- 当前 step 的功能身份（step id / label）与 step prompt
 
-然后按 `loop_mode` 选择执行方式：
+然后所有 step 都走同一条有界最小循环：
 
-- `SingleResponse`: 单次模型响应，不暴露工具。调用 `agent.set_visible_tools(Some(&[]))` 清空可见工具后执行。
-- `ToolLoop`: 进入标准 agent tool loop。先调用 `agent.set_visible_tools(Some(&resolved_names))` 设置该 step 的工具子集。
+1. `agent.set_visible_tools(Some(&resolved_names))`
+2. 按当前 step 的 `max_iterations` 进入 bounded agent loop
+3. LLM 产生 response
+4. 若 `stop_reason == tool_use`，执行工具、追加结果并继续 loop
+5. 若不是 `tool_use`，以该 step 的最终文本结束本 step
+6. session 从本 step 最终结果中生成 `StepSummary` 与 `StepTransition`
+7. 将 summary 写回 `SessionContext`，再进入下一 step 或 child workflow
 
-这意味着当前 `analysis`、`plan`、`report` 仍然可以走无工具单响应，而 `execute` 走工具循环，但这个行为将来自 step 定义与 session 资产解析，而不是硬编码 if/else。
+这意味着 root routing、chat、analysis、plan、execute、report 共享同一种 loop contract，只是工具子集、预算和 prompt 约束不同，而不是继续拆成两套执行语义。
 
 ## Forward Direction: Scene-Aware Workflow Delegation
 
@@ -226,7 +574,7 @@ scene-aware routing 的下一阶段要求是：workflow selection 本身也被�
 - `scene-recognition` 与 `select-workflow` 作为 root workflow step，仍然由 `omega-session` 用通用 step runner 执行。
 - 当某个 step 需要触发 child workflow 时，session 应维护 workflow stack / active workflow state，而不是把 delegation 逻辑散落到 UI 或 app shell。
 
-因此，后续模型应允许 step completion 保留类似 `StartWorkflow { workflow_id }` 的通用过渡语义。首轮 scene routing 只要求 `select-workflow` 使用它，但不应把它设计成不可复用的专用分支。
+因此，后续模型应允许 step completion 保留 `StartWorkflow { workflow_id }` 这类通用过渡语义，并把 scene recognition / workflow selection 的结果先写入 `SessionContext.routing`。首轮 scene routing 只要求 `select-workflow` 使用它，但不应把它设计成不可复用的专用分支。
 
 ## Step Identity Model: Enum → String Migration
 
@@ -267,8 +615,9 @@ name = "default"
 id = "analysis"
 label = "Analyze"
 prompt = ".omega/prompt/step/analysis.md"
-loop_mode = "single_response"
-tool_request = { mode = "block", items = ["bash", "read_file", "write_file", "edit_file"] }
+loop_mode = "agent_loop"
+max_iterations = 6
+tool_request = { mode = "inherit" }
 skill_request = { mode = "match_task" }
 enabled = true
 
@@ -276,7 +625,8 @@ enabled = true
 id = "execute"
 label = "Execute"
 prompt = ".omega/prompt/step/execute.md"
-loop_mode = "tool_loop"
+loop_mode = "agent_loop"
+max_iterations = 12
 tool_request = { mode = "inherit" }
 skill_request = { mode = "match_task" }
 enabled = true
@@ -332,40 +682,57 @@ SessionUpdate::WorkflowStepChanged {
 
 ## Context Direction
 
-`context` 本轮不实现，只做方向保留：
+`context` 不再继续只做保留术语，而是进入下一轮主线；但首轮只做 session-owned 的 step summary 与 routing context，不一步扩展到完整 artifact 平台：
 
-- 不在 `Task 15F-2A / 15F-2B` 中加入结构化 context 读写
-- 后续若要做 `analysis_notes`、`plan_outline`、`verification_summary` 等 artifact，再单独起规格和任务
-- 当前 step 共享能力仍以 session message history 为主
+- 当前优先级是让后续 step 能稳定消费前序总结，而不是继续只依赖 raw transcript
+- 首轮 context 写入以 `StepSummary` 与 `RoutingContext` 为主
+- 更细粒度的 `analysis_notes`、`plan_outline`、`verification_summary`、structured artifact schema 可在其后继续扩展
 
 ## Migration Plan
 
-### Phase 1: Session 资产管理基础
+### Phase 1: 全 step 最小循环
 
-- 在 `omega-session` 中抽出 tool/skill 资产解析边界
-- 保持现有默认工具和技能行为不变
-- 为 step、subagent、team 复用建立统一接口
+- 将内建 root / chat / feature workflow step 全部切换为 `AgentLoop`
+- 让 analysis / plan / report / routing step 与 execute 共享同一套 loop contract
+- 用 step-level tool filtering 和 max-iteration budget 控制行为，而不是通过 `SingleResponse` 物理分叉
 
-### Phase 2: 通用 Step 编排
+### Phase 2: Session-owned Step Context
 
-- 在 `omega-workflow` 中把固定四阶段提升为 `WorkflowStepDefinition`
-- 让 step 通过 session 资产层拿到工具和技能
-- 让 `omega-session` 改为通用 step runner
+- 在 `omega-session` 中引入 `SessionContext`、`StepSummary` 与 `StepExecutionResult`
+- 让每个 step 在完成后产出 summary，并显式写回 session context
+- 让 root routing step 产出 typed routing context 与 `StartWorkflow` transition，替代弱结构化 token matching
 
-### Phase 3: 后续增强
+### Phase 3: Step Data Contract Framework
 
+- 为 `WorkflowStep` 引入 `StepInputContract` 与 `StepOutputContract`，使结构化 I/O 成为 step 级通用能力
+- 在 `SessionContext` 中新增 `step_outputs: BTreeMap<String, Value>`，存储各 step 的结构化输出
+- 实现 JSON 提取、output 校验、校验失败重试与 prompt 自动注入机制
+- 为内建 step 设置默认 I/O contract（root routing / feature workflow / chat）
+- TOML 配置新增 `input_contract` / `output_contract` 字段
+
+### Phase 4: Feature Workflow Schema Binding & Todo Integration
+
+- 定义 analysis / plan / execute 的具体输出 JSON schema
+- 更新 step prompt 与 TOML 配置使用 data contract
+- 让 `plan` 的结构化输出映射到 `TodoManager`
+- 让 `execute` 围绕 todo item 推进，结果写回 structured output
+
+### Phase 5: Context Observability And Compression
+
+- 让 `omega-subagent` 与 `omega-compression` 直接建立在 `SessionContext + step data contracts` 之上，而不是重新发明上下文边界
+- 在现有 context snapshot / diff observability 之上继续演进 compression / retention 策略，包括 data contract 校验状态的长期保留方式
 - 支持更多 step 模板，如 `verify`、`delegate`、`summarize`
-- 细化 tool lazy-loading 和 skill 显式装配策略
-- 为未来 `context` 设计单独规格
+- 继续细化 schema 定义、tool lazy-loading 和 skill 显式装配策略
 
 ## Risks
 
 - 如果把 session 资产层做成万能中心，会出现新的 God Object 风险。**缓解**: catalog 作为独立组合型结构体，暴露纯 resolve 方法，`AgentSession` 只持有不内联。
 - 如果 tool 与 skill 的解析接口不统一，后续 subagent 和 team 仍会复制逻辑。**缓解**: `ResolvedToolSet` / `ResolvedSkillSet` 类型统一，任何消费者都通过相同接口获取。
-- 如果首轮就把 context 一起做进去，会把任务复杂度推高到不必要的程度。**缓解**: context 仅保留术语，不进入 15F-2A/2B 实现范围。
+- 如果把 context 直接扩成完整 artifact 平台，会把任务复杂度推高到不必要的程度。**缓解**: 首轮仅实现 `StepSummary` + `RoutingContext`，不同时引入完整 schema 仓库。
 - `WorkflowStepKind` enum → `id: String` 是断裂式变更。**缓解**: 分两阶段迁移，15F-2B 内只泛化内部模型，保持 4 个 canonical id 配置兼容；之后独立小任务开放自定义。
 - `Agent` 当前没有动态工具切换 API。**缓解**: 15F-2A Step 4 先落地 `set_visible_tools` + `to_schemas_filtered`，验证后再做资产层接入。
 - 单 agent slot 模式与多执行体愿景有张力。**缓解**: catalog 设计为 `Arc` 只读 resolve，可变部分用内部锁隔离，不阻塞后续 subagent 并发。
+- 如果 routing 继续依赖自由文本 token matching，root workflow 的稳定性会持续偏弱。**缓解**: 在下一轮 context/task 中引入 typed `StepSummary` / `StepTransition`，把 routing 结果写进 session context。
 
 ## Testing Strategy
 
@@ -392,3 +759,7 @@ SessionUpdate::WorkflowStepChanged {
 - 2026-03-20: 根据进一步架构收敛，明确以 `step` 为正式术语，由 `omega-session` 统一管理 tools/skills 资产，`context` 延后单独设计。
 - 2026-03-20: 15F-2A 首轮实现完成：`SessionToolCatalog` / `SessionSkillCatalog` 已落地，`omega-core::Agent` 已支持 `set_visible_tools`，当前固定四阶段 runner 已通过 session 资产层切换工具可见性并保持既有行为稳定。
 - 2026-03-20: 补充下一阶段方向：scene-aware routing 仍以 step 和 session 编排为核心，`select-workflow` 只是首个 child workflow delegation step，而不是例外机制。
+- 2026-03-20: 将“所有 step 进入有界最小 agent loop”和“session-owned step context”提升为下一主线，明确后续 step 输入应由 session 资源、历史 step summary、routing state 与当前 step prompt 共同组成。
+- 2026-03-20: Task 15F-8 完成，root / chat / feature step 已统一进入 bounded `AgentLoop`，并通过 `tool_request + max_iterations + step prompt` 控制行为；下一主线收敛到 session-owned step context 与 typed root-child handoff。
+- 2026-03-21: 架构审查收敛更新（8 findings → 3 convergence items）：(1) 新增 context budget model — `.omega/model.toml` 新增 `[context].context_window`，`request_max_tokens` 重命名为 `max_output_tokens`，session 组装 step 输入时执行 budget-aware 裁剪。(2) 锁定 summary generation strategy — 首轮截断路径 2000 chars，`StepSummary` 新增 `estimated_tokens` 字段。(3) routing state 收敛 — `RoutingContext` 替代 `WorkflowRoutingState` 成为唯一路由状态容器，`build_step_system_prompt` 收敛为接受 `StepExecutionInput` 单一输入。(4) `StepTransition` 新增 `Error` 变体。
+- 2026-03-23: Task 15F-9 实现完成：`omega-session` 已持久化 `SessionContext`，每个 step 通过 `StepExecutionInput` 组装技能、工具、routing state 与可裁剪的 `StepSummary` 历史；root workflow 改为 JSON 主路径输出 `recognized_scene_id` / `selected_workflow_id`，child workflow delegation 与后续 turn 共享同一份 session context，并通过 `cargo test -p omega-workflow -p omega-session -p omega-app -p omega-tui` 与 `cargo clippy -p omega-workflow -p omega-session -p omega-app -p omega-tui --all-targets -- -D warnings` 验证通过。

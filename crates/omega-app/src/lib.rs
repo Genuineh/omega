@@ -1,14 +1,18 @@
 use std::path::Path;
 use std::sync::Arc;
 
+mod model_config;
+
 use omega_core::{DynLlmClient, MinimaxClient, MinimaxConfig};
 use omega_keymap::KeymapManager;
 use omega_observability::init_tracing_channel;
 use omega_session::{AgentSession, AgentSessionConfig};
 use omega_theme::OmegaTheme;
-use omega_tui::{run as run_tui, TuiLaunchConfig};
+use omega_tui::{run as run_tui, TuiBehaviorConfig, TuiLaunchConfig};
 use omega_workflow::LoadedWorkflowCatalog;
 use tracing::{info, warn};
+
+use crate::model_config::AgentModelConfig;
 
 pub fn default_system_prompt(cwd: &Path) -> String {
     format!(
@@ -38,10 +42,25 @@ pub async fn run() -> anyhow::Result<()> {
         warn!(%warning, source = %loaded_theme.source_label(), "theme config fallback activated");
     }
 
+    let loaded_tui_config = TuiBehaviorConfig::load(&cwd);
+    for warning in &loaded_tui_config.warnings {
+        warn!(%warning, source = %loaded_tui_config.source_label(), "tui config fallback activated");
+    }
+
     let loaded_workflow_catalog = LoadedWorkflowCatalog::load(&cwd);
     for warning in &loaded_workflow_catalog.warnings {
         warn!(%warning, source = "workflow-catalog", "workflow config fallback activated");
     }
+
+    let loaded_model_config = AgentModelConfig::load(&cwd);
+    for warning in &loaded_model_config.warnings {
+        warn!(%warning, source = %loaded_model_config.source_label(), "model config fallback activated");
+    }
+    info!(
+        context_window = loaded_model_config.config.context_window,
+        max_output_tokens = loaded_model_config.config.max_output_tokens,
+        "model budget loaded"
+    );
 
     let keymap_source = loaded_keymap.manager.source_label();
     let mut startup_warnings = Vec::new();
@@ -49,7 +68,9 @@ pub async fn run() -> anyhow::Result<()> {
         startup_warnings.push(warning);
     }
     startup_warnings.extend(loaded_theme.warnings.iter().cloned());
+    startup_warnings.extend(loaded_tui_config.warnings.iter().cloned());
     startup_warnings.extend(loaded_workflow_catalog.warnings.iter().cloned());
+    startup_warnings.extend(loaded_model_config.warnings.iter().cloned());
 
     let session = AgentSession::new(AgentSessionConfig {
         client,
@@ -59,6 +80,8 @@ pub async fn run() -> anyhow::Result<()> {
         scene_catalog: loaded_workflow_catalog.scene_catalog,
         workflow_catalog: loaded_workflow_catalog.workflow_catalog,
         prompt_catalog: loaded_workflow_catalog.prompt_catalog,
+        context_window: loaded_model_config.config.context_window,
+        max_output_tokens: loaded_model_config.config.max_output_tokens,
     })?;
 
     run_tui(TuiLaunchConfig {
@@ -66,6 +89,7 @@ pub async fn run() -> anyhow::Result<()> {
         session,
         keymap: loaded_keymap.manager,
         theme: loaded_theme.theme,
+        show_thinking: loaded_tui_config.config.show_thinking,
         keymap_source,
         startup_warnings,
         trace_rx,
@@ -77,6 +101,7 @@ mod tests {
     use std::path::Path;
 
     use super::default_system_prompt;
+    use crate::model_config::AgentModelConfig;
 
     #[test]
     fn system_prompt_includes_workspace_path() {
@@ -84,5 +109,12 @@ mod tests {
 
         assert!(prompt.contains("/tmp/omega"));
         assert!(prompt.contains("Use bash to solve tasks"));
+    }
+
+    #[test]
+    fn model_config_defaults_to_expected_budgets() {
+        let config = AgentModelConfig::default();
+        assert_eq!(config.max_output_tokens, 32_000);
+        assert_eq!(config.context_window, 200_000);
     }
 }

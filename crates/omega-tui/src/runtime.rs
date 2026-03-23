@@ -16,6 +16,7 @@ pub struct TuiLaunchConfig {
     pub session: AgentSession,
     pub keymap: KeymapManager,
     pub theme: OmegaTheme,
+    pub show_thinking: bool,
     pub keymap_source: String,
     pub startup_warnings: Vec<String>,
     pub trace_rx: mpsc::Receiver<String>,
@@ -27,6 +28,7 @@ pub fn run(config: TuiLaunchConfig) -> anyhow::Result<()> {
         session,
         keymap,
         theme,
+        show_thinking,
         keymap_source,
         startup_warnings,
         trace_rx,
@@ -38,6 +40,7 @@ pub fn run(config: TuiLaunchConfig) -> anyhow::Result<()> {
     let app = Arc::new(Mutex::new(App::new()));
     {
         let mut app_guard = app.lock().unwrap();
+        app_guard.set_show_thinking(show_thinking);
         app_guard.set_keymap_source(keymap_source);
         for warning in &startup_warnings {
             app_guard.add_log(warning.clone());
@@ -96,8 +99,10 @@ pub fn run(config: TuiLaunchConfig) -> anyhow::Result<()> {
 mod tests {
     use crate::app::App;
     use omega_session::{
-        ActivityTarget, RuntimeUiEffect, RuntimeUiEnvelope, RuntimeUiMessage, StatusSlot,
-        StatusValue, UiContent, UiMessageKind, UiSource, UiTarget,
+        ActivityTarget, ResponseSection, ResponseSectionDelta, ResponseSectionKind,
+        ResponseSectionMetadata, ResponseSectionState, RuntimeUiEffect, RuntimeUiEnvelope,
+        RuntimeUiMessage, StatusSlot, StatusValue, UiContent, UiMessageKind, UiSource, UiTarget,
+        WorkflowRunRole,
     };
 
     #[test]
@@ -169,6 +174,8 @@ mod tests {
             RuntimeUiEffect::SetStatusSlot {
                 slot: StatusSlot::Workflow,
                 value: StatusValue::WorkflowStep {
+                    workflow_id: "feature".to_string(),
+                    workflow_role: WorkflowRunRole::Child,
                     step_id: "execute".to_string(),
                     step_label: "Execute".to_string(),
                     index: 3,
@@ -181,6 +188,8 @@ mod tests {
             RuntimeUiMessage {
                 target: UiTarget::Activity(ActivityTarget::Log),
                 source: UiSource::WorkflowStep {
+                    workflow_id: "feature".to_string(),
+                    workflow_role: WorkflowRunRole::Child,
                     step_id: "execute".to_string(),
                     step_label: "Execute".to_string(),
                     index: 3,
@@ -191,29 +200,70 @@ mod tests {
                 priority: None,
             },
         ));
-        app.apply_runtime_envelope(RuntimeUiEnvelope::message(
+        app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
             turn_id,
-            RuntimeUiMessage {
-                target: UiTarget::Response,
-                source: UiSource::WorkflowStep {
-                    step_id: "plan".to_string(),
-                    step_label: "Plan".to_string(),
-                    index: 0,
-                    total: 0,
+            RuntimeUiEffect::BeginResponseSection {
+                section: ResponseSection {
+                    id: "turn-1:child:feature:plan".to_string(),
+                    parent_id: None,
+                    kind: ResponseSectionKind::Step,
+                    title: "Plan".to_string(),
+                    state: ResponseSectionState::Streaming,
+                    metadata: ResponseSectionMetadata {
+                        scene_id: Some("feature".to_string()),
+                        workflow_id: "feature".to_string(),
+                        workflow_role: WorkflowRunRole::Child,
+                        step_id: Some("plan".to_string()),
+                        step_label: Some("Plan".to_string()),
+                    },
                 },
-                kind: UiMessageKind::Narrative,
-                content: UiContent::Text("draft patch".to_string()),
-                priority: None,
             },
         ));
-        app.apply_runtime_envelope(RuntimeUiEnvelope::message(
+        app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
             turn_id,
-            RuntimeUiMessage {
-                target: UiTarget::Response,
-                source: UiSource::Assistant,
-                kind: UiMessageKind::Result,
-                content: UiContent::Text("hello".to_string()),
-                priority: None,
+            RuntimeUiEffect::AppendResponseSection {
+                id: "turn-1:child:feature:plan".to_string(),
+                delta: ResponseSectionDelta::Text("draft patch".to_string()),
+            },
+        ));
+        app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+            turn_id,
+            RuntimeUiEffect::CompleteResponseSection {
+                id: "turn-1:child:feature:plan".to_string(),
+                state: ResponseSectionState::Complete,
+            },
+        ));
+        app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+            turn_id,
+            RuntimeUiEffect::BeginResponseSection {
+                section: ResponseSection {
+                    id: "turn-1:child:feature:report".to_string(),
+                    parent_id: None,
+                    kind: ResponseSectionKind::FinalAnswer,
+                    title: "Final Answer".to_string(),
+                    state: ResponseSectionState::Streaming,
+                    metadata: ResponseSectionMetadata {
+                        scene_id: Some("feature".to_string()),
+                        workflow_id: "feature".to_string(),
+                        workflow_role: WorkflowRunRole::Child,
+                        step_id: Some("report".to_string()),
+                        step_label: Some("Report".to_string()),
+                    },
+                },
+            },
+        ));
+        app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+            turn_id,
+            RuntimeUiEffect::AppendResponseSection {
+                id: "turn-1:child:feature:report".to_string(),
+                delta: ResponseSectionDelta::Text("hello".to_string()),
+            },
+        ));
+        app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+            turn_id,
+            RuntimeUiEffect::CompleteResponseSection {
+                id: "turn-1:child:feature:report".to_string(),
+                state: ResponseSectionState::Complete,
             },
         ));
         app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
@@ -230,16 +280,24 @@ mod tests {
             },
         ));
 
-        assert_eq!(app.output_msgs.len(), 2);
-        assert_eq!(app.output_msgs[0].text, "[Plan] draft patch");
-        assert_eq!(app.output_msgs[1].text, "hello");
+        assert_eq!(
+            app.response_lines(),
+            vec![
+                "step  child:feature  Plan  [done]".to_string(),
+                "  scene feature".to_string(),
+                "  draft patch".to_string(),
+                "final  child:feature  Final Answer  [done]".to_string(),
+                "  scene feature".to_string(),
+                "  hello".to_string(),
+            ]
+        );
         assert_eq!(app.todo_lines, vec!["[>] #1: Code"]);
         assert_eq!(
             app.log_lines,
             vec![
                 "[tool] $ echo hi",
                 "[tool] hi",
-                "[flow 3/4] Execute (execute)",
+                "[child:feature 3/4] Execute (execute)",
             ]
         );
         assert!(app.workflow_summary.is_none());

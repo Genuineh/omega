@@ -755,84 +755,42 @@ git commit -m "feat(s03): add omega-todo"
 
 ### Task 10: omega-subagent - 子智能体
 
+**Status:** In Progress
+
 **Files:**
-- Create: `crates/omega-subagent/Cargo.toml`
-- Create: `crates/omega-subagent/src/lib.rs`
+- Updated: `crates/omega-subagent/Cargo.toml`
+- Updated: `crates/omega-subagent/src/lib.rs`
 
-- [ ] **Step 1: 创建 Cargo.toml**
+- [x] **Step 1: 创建/完善 Cargo.toml**
 
-```toml
-[package]
-name = "omega-subagent"
-version.workspace = true
-edition.workspace = true
+    - 保持 `omega-subagent <- omega-client` 依赖方向不变
+    - 为单测补齐 `async-trait` dev-dependency
 
-[dependencies]
-omega-client = { path = "../omega-client" }
-anyhow.workspace = true
-tokio.workspace = true
-serde_json.workspace = true
-```
+- [x] **Step 2: 实现 fresh-context SubAgent loop**
 
-- [ ] **Step 2: 实现 SubAgent**
+    - `SubAgent` 现在持有独立 `messages` 生命周期，每次 run 都从单条 user prompt 开始
+    - tool loop 复用 caller 提供的 `ToolDefinition` 与 handler callback，而不是直接绑定父 Agent transcript
+    - tool handler 错误会回写为 `tool_result_error`，避免一次失败直接中断子智能体 loop
+    - 增加 `run_with(...)` callback 入口，为后续父 Agent / runtime 可见性接线预留钩子
 
-```rust
-// crates/omega-subagent/src/lib.rs
-use omega_client::{ChatRequest, ContentBlock, DynLlmClient, Message};
-use anyhow::Result;
-
-pub struct SubAgent {
-    client: DynLlmClient,
-    system: String,
-    tools: Vec<serde_json::Value>,
-    max_rounds: usize,
-}
-
-impl SubAgent {
-    pub fn new(client: DynLlmClient, system: String, tools: Vec<serde_json::Value>) -> Self {
-        Self { client, system, tools, max_rounds: 30 }
-    }
-
-    pub async fn run<F>(&self, prompt: &str, mut handler: F) -> Result<String>
-    where F: FnMut(&str, serde_json::Value) -> Result<String> {
-        let mut msgs = vec![Message { role: "user".to_string(), content: prompt.to_string() }];
-        for _ in 0..self.max_rounds {
-            let req = ChatRequest {
-                system: Some(self.system.clone()),
-                messages: msgs.clone(),
-                tools: Vec::new(),
-                max_tokens: 8000,
-            };
-            let resp = self.client.chat(req).await?;
-            msgs.push(Message::assistant(resp.content.clone()));
-            if resp.stop_reason != Some("tool_use".to_string()) {
-                return Ok(resp.content.first().and_then(|c| if let ContentBlock::Text { text } = c { Some(text.clone()) } else { None }).unwrap_or_else(|| "(no summary)".to_string()));
-            }
-            let mut results = Vec::new();
-            for block in &resp.content {
-                if let ContentBlock::ToolUse { id, name, input } = block {
-                    results.push(serde_json::json!({ "type": "tool_result", "tool_use_id": id, "content": handler(name, input)? }));
-                }
-            }
-            msgs.push(Message { role: "user".to_string(), content: serde_json::to_string(&results)? });
-        }
-        Ok("(max rounds)".to_string())
-    }
-}
-```
-
-- [ ] **Step 3: 编译验证**
+- [x] **Step 3: crate 级验证**
 
 ```bash
-cargo build -p omega-subagent
+cargo test -p omega-subagent
+cargo clippy -p omega-subagent --all-targets -- -D warnings
 ```
 
-- [ ] **Step 4: 提交**
+- [ ] **Step 4: 接入父 Agent 的 `task` tool 调度**
 
-```bash
-git add crates/omega-subagent/
-git commit -m "feat(s04): add omega-subagent"
-```
+    - 需要把当前 fresh-context runner 接到父 Agent 可见的 tool surface
+    - 需要明确子智能体可继承的工具子集、system prompt 与 runtime callback 语义
+
+- [ ] **Step 5: 接入 session/runtime 可见性**
+
+    - 通过 `omega-session` / `RuntimeUiEnvelope` 把 subagent 启动、运行中和结果回收暴露给 TUI
+    - 避免在 `omega-tui` 直接为 `omega-subagent` 写特例逻辑
+
+**Summary:** `omega-subagent` 已完成第一阶段落地：当前 crate 已具备 fresh-context child loop、独立消息列表、tool result/tool result error 回写和定向单测，作为 Task 10 的基础执行内核已可单独验证。尚未完成的部分是把它作为父 Agent 可调用的 `task` tool 接入当前 session/runtime 主路径，并补齐对应的 UI 可见性。
 
 ---
 
@@ -1610,37 +1568,502 @@ cargo clippy -p omega-session -p omega-app -p omega-workflow --all-targets -- -D
 
 ### Task 15B-19: omega-tui - scene / workflow routing 可见性
 
-**Status:** Pending
+**Status:** Completed
+
+**Files:**
+- Planned: `crates/omega-tui/src/app.rs`
+- Planned: `crates/omega-tui/src/reducer.rs`
+- Planned: `crates/omega-tui/src/render.rs`
+- Planned: `crates/omega-session/src/runtime_ui.rs`
+- Planned: `crates/omega-session/src/lib.rs`
+- Planned: `docs/specs/omega-tui-runtime-experience.md`
+- Planned: `docs/specs/omega-runtime-ui-message-contract.md`
+
+- [x] **Step 1: 增加 scene / workflow 状态展示**
+
+    - 在底部状态带展示当前 scene 与 active workflow 摘要
+    - 保持窄终端可退化为短格式
+
+- [x] **Step 2: 区分 root workflow 与 child workflow 可见性**
+
+    - 用户需要看见当前在 `scene-recognition` / `select-workflow`
+    - 也需要看见真正执行中的 child workflow
+
+- [x] **Step 3: 收敛到现有 reducer / runtime UI contract**
+
+    - 继续沿 `RuntimeUiEnvelope` + `TuiUpdateReducer` 扩展
+    - 不重新引入 feature-specific UI 分支
+
+- [x] **Step 4: 验证**
+
+```bash
+cargo test -p omega-tui -p omega-session -p omega-app
+cargo clippy -p omega-session -p omega-tui -p omega-app --all-targets -- -D warnings
+```
+
+**Summary:** `Task 15B-19` 已把 scene-aware routing 从“后台逻辑”推进为稳定的运行态可见性：runtime UI contract 新增 `WorkflowRunRole`、带 `workflow_id + workflow_role` 的 `StatusValue::WorkflowStep` 与 `UiSource::WorkflowStep`，以及 `StatusValue::SessionRouting` / `UiSource::SessionRouting`；`omega-session` 现按结构化 routing state 发出 scene、selected workflow 和 active root/child workflow，`omega-tui` 则在底部状态带展示 `flow child:feature Analyze 1/4`、`route feature -> feature` 这类摘要，并在 Activity/Logs 中区分 `[route] ...`、`[root:root ...]`、`[child:feature ...]` 的轨迹。验证已通过 `cargo test -p omega-session -p omega-tui -p omega-app` 与 `cargo clippy -p omega-session -p omega-tui -p omega-app --all-targets -- -D warnings`。
+
+---
+
+### Task 15F-6: omega-client / omega-core / omega-session - 流式 response / thinking runtime contract
+
+**Status:** Completed
+
+**Files:**
+- Planned: `crates/omega-client/src/lib.rs`
+- Planned: `crates/omega-core/src/lib.rs`
+- Planned: `crates/omega-session/src/runtime_ui.rs`
+- Planned: `crates/omega-session/src/lib.rs`
+- Planned: `docs/specs/omega-runtime-ui-message-contract.md`
+- Planned: `docs/specs/omega-tui-response-thinking-experience.md`
+
+- [x] **Step 1: 为 LLM client 增加流式事件接口**
+
+    - 新增 `chat_stream` 或等价 typed stream API
+    - typed event 至少覆盖 text delta、thinking delta、tool use、message complete
+    - 保持现有同步 `chat -> ChatResponse` 路径兼容
+
+- [x] **Step 2: 在 core / session 中建立流式 response assembler**
+
+    - agent loop 可消费 stream events，而不是只等待整段 `ChatResponse`
+    - session 为当前 step / final answer 创建稳定 response section
+    - session 负责把 thinking 归属到正确 section，而不是交给 TUI 猜测
+
+- [x] **Step 3: 扩展 runtime UI contract**
+
+    - 增加 response section identity
+    - 增加 append / finalize 语义
+    - 明确 thinking 与 final answer 的 typed 区分
+
+- [x] **Step 4: 验证**
+
+```bash
+cargo test -p omega-client -p omega-core -p omega-session
+cargo clippy -p omega-client -p omega-core -p omega-session --all-targets -- -D warnings
+```
+
+**Summary:** 该任务已完成并作为 `Task 15B-20` / `Task 15B-21` 的稳定输入层落地：`omega-client` 现提供 typed `ChatEvent` 与兼容型 `chat_stream()`；`omega-core::Agent` 现可在保留原有同步 API 的同时向上游逐事件暴露流式 response/thinking；`omega-session` 则把这些事件转换为带 section identity、append/finalize 与 typed `Routing / Step / FinalAnswer / Thinking` 区分的 runtime UI effect。验证已通过 `cargo test -p omega-client -p omega-core -p omega-session` 与 `cargo clippy -p omega-client -p omega-core -p omega-session --all-targets -- -D warnings`。
+
+---
+
+### Task 15B-20: omega-tui - 结构化 Agent Response timeline
+
+**Status:** Completed
 
 **Files:**
 - Planned: `crates/omega-tui/src/app.rs`
 - Planned: `crates/omega-tui/src/reducer.rs`
 - Planned: `crates/omega-tui/src/render.rs`
 - Planned: `docs/specs/omega-tui-runtime-experience.md`
+- Planned: `docs/specs/omega-tui-response-thinking-experience.md`
 
-- [ ] **Step 1: 增加 scene / workflow 状态展示**
+- [x] **Step 1: 将 Response 从文本行列表重构为 block timeline**
 
-    - 在底部状态带展示当前 scene 与 active workflow 摘要
-    - 保持窄终端可退化为短格式
+    - root routing、child workflow step、final answer 各自拥有稳定 block
+    - 不再依赖 `[Step] ...` 这种单行前缀表达结构
 
-- [ ] **Step 2: 区分 root workflow 与 child workflow 可见性**
+- [x] **Step 2: 定义默认展开 / 折叠规则**
 
-    - 用户需要看见当前在 `scene-recognition` / `select-workflow`
-    - 也需要看见真正执行中的 child workflow
+    - root routing 默认折叠
+    - 当前活跃 step 与 final answer 默认展开
+    - 为后续 thinking block 预留稳定插槽
 
-- [ ] **Step 3: 收敛到现有 reducer / runtime UI contract**
+- [x] **Step 3: 保持窄终端可读性**
 
-    - 继续沿 `RuntimeUiEnvelope` + `TuiUpdateReducer` 扩展
-    - 不重新引入 feature-specific UI 分支
+    - 窄终端下优先保证 final answer 与当前活跃 step 可见
+    - 避免 Response 因结构增强退化为过重的嵌套 UI
 
-- [ ] **Step 4: 验证**
+- [x] **Step 4: 验证**
 
 ```bash
 cargo test -p omega-tui -p omega-session -p omega-app
 cargo clippy -p omega-tui --all-targets -- -D warnings
 ```
 
-**Summary:** 该任务用于把 scene-aware routing 从“后台路由逻辑”变成用户可确认的运行态信息，并保持可见性继续通过统一 reducer 与状态槽位扩展，而不是重新退回零散特例映射。
+**Summary:** 该任务已完成：`omega-tui` 现通过 `RuntimeUiEffect::{BeginResponseSection, AppendResponseSection, CompleteResponseSection}` 驱动 `Response`，并将 `Routing / Step / FinalAnswer` section 渲染为结构化 timeline，而不再依赖 `[Step] ...` 这类单行前缀。当前实现默认将 root routing 压成摘要行、保持 child step 与 final answer 可读，并保留现有滚动/搜索/窄终端退化行为。验证已通过 `cargo test -p omega-tui -p omega-session -p omega-app` 与 `cargo clippy -p omega-tui -p omega-session -p omega-app --all-targets -- -D warnings`。
+
+---
+
+### Task 15B-21: omega-tui - provider-exposed thinking 实时展示
+
+**Status:** Completed
+
+**Files:**
+- Updated: `crates/omega-app/src/lib.rs`
+- Updated: `crates/omega-tui/src/app.rs`
+- Added: `crates/omega-tui/src/config.rs`
+- Updated: `crates/omega-tui/src/event.rs`
+- Updated: `crates/omega-tui/src/render.rs`
+- Updated: `crates/omega-tui/src/runtime.rs`
+- Updated: `docs/specs/omega-tui-response-thinking-experience.md`
+- Updated: `docs/specs/omega-runtime-ui-message-contract.md`
+- Updated: `docs/specs/omega-tui-runtime-experience.md`
+- Updated: `docs/TODO.md`
+
+- [x] **Step 1: 在 Response 中接入 thinking block**
+
+    - thinking 只展示 provider 明确返回的 reasoning / thinking 内容
+    - 与 final answer 分离，不混在同一正文块里
+
+- [x] **Step 2: 增加实时 append 与完成态摘要**
+
+    - streaming 中持续追加 thinking delta
+    - 完成后支持折叠为摘要，减少主阅读面噪音
+
+- [x] **Step 3: 增加可见性控制**
+
+    - 支持默认折叠策略
+    - 预留配置开关，允许关闭 thinking 可见性
+
+- [x] **Step 4: 验证**
+
+```bash
+cargo test -p omega-tui -p omega-session -p omega-app
+cargo clippy -p omega-tui --all-targets -- -D warnings
+```
+
+**Summary:** 该任务已完成：`omega-tui` 现在把 provider-exposed thinking 作为独立 response section 接入 turn timeline，流式阶段实时追加，完成后默认折叠为摘要，并在 `Response` 焦点下支持 `Enter/x` 展开与重新折叠。与此同时，新增了 `.omega/tui.toml` 的 `[response].show_thinking` 开关，`omega-app` 会在启动时装配这一行为配置，从而允许用户直接关闭 thinking 可见性；相关单测、集成测试与 clippy 验证均已通过。
+
+---
+
+### Task 15F-7: omega-session - 结构化 tool-run runtime contract 与 provider markup 清洗
+
+**Status:** Completed
+
+**Files:**
+- Updated: `crates/omega-core/src/lib.rs`
+- Updated: `crates/omega-session/Cargo.toml`
+- Updated: `crates/omega-session/src/runtime_ui.rs`
+- Updated: `crates/omega-session/src/lib.rs`
+- Updated: `crates/omega-tui/src/reducer.rs`
+- Updated: `docs/specs/omega-runtime-ui-message-contract.md`
+
+- [x] **Step 1: 为 tool run 建立稳定的 typed runtime contract**
+
+    - 为 step 内工具调用增加 stable id、step 归属、status、invocation preview 与 result preview
+    - 保持完整 tool preview 仍可兼容输出到 `Activity(Log)`
+
+- [x] **Step 2: 在 session 层补齐 provider markup 清洗**
+
+    - 已收到结构化工具调用时，移除或抑制重复的 provider 风格 tool-call 包装文本
+    - 避免 `<minimax:tool_call>` 之类内容继续污染 step / thinking section
+
+- [x] **Step 3: 验证**
+
+```bash
+cargo test -p omega-core -p omega-session -p omega-tui -p omega-app
+cargo clippy -p omega-core -p omega-session -p omega-tui -p omega-app --all-targets -- -D warnings
+```
+
+**Summary:** 该任务已完成：`omega-session` 现已为 step 内工具调用补齐 session-owned `ToolRun` contract，`RuntimeUiEffect` 新增 `BeginToolRun / UpdateToolRun / CompleteToolRun`，并通过 provider `tool_use_id`、`parent_section_id`、`status`、`invocation_preview`、`result_preview` 与 detail lines 让后续 TUI 可以稳定建立 step-level tool lane。为支撑 stable id，`omega-core` 的工具回调已同步透传 `tool_use_id`；同时，response/thinking 流式入口已加入对 `<minimax:tool_call>` / `<invoke ...>` 这类已知 provider tool markup 的清洗。当前 `omega-tui` 暂时只做兼容忽略新 effect，并继续保留 Activity 中的 `[tool] ...` 兼容日志，等待 `Task 15B-22` 直接消费这套 typed lifecycle。
+
+---
+
+### Task 15F-8: omega-session / omega-workflow / omega-core - 全 step 有界最小 agent loop
+
+**Status:** Completed
+
+**Files:**
+- Updated: `crates/omega-workflow/src/lib.rs`
+- Updated: `crates/omega-session/src/lib.rs`
+- Updated: `.omega/workflows/root.toml`
+- Updated: `.omega/workflows/chat.toml`
+- Updated: `.omega/workflows/feature.toml`
+- Updated: `.omega/prompt/step/scene-recognition.md`
+- Updated: `.omega/prompt/step/select-workflow.md`
+- Updated: `.omega/prompt/step/chat.md`
+- Updated: `.omega/prompt/step/analysis.md`
+- Updated: `.omega/prompt/step/plan.md`
+- Updated: `.omega/prompt/step/report.md`
+- Updated: `docs/TODO.md`
+- Updated: `docs/specs/omega-agent-impl-plan.md`
+
+- [x] **Step 1: 将内建 step 执行语义统一为有界最小循环**
+
+    - `scene-recognition`、`select-workflow`、`chat`、`analysis`、`plan`、`execute`、`report` 全部进入同一种 bounded agent loop
+    - 不再把 analysis / plan / report / routing step 固定为 `SingleResponse`
+
+- [x] **Step 2: 用 step 级工具子集和循环预算约束行为**
+
+    - 继续保留 tool filtering、skill loading 与 step prompt 差异
+    - 将“是否允许工具”从运行器分叉改为 step policy，确保所有 step 共享同一 contract
+
+- [x] **Step 3: 验证**
+
+```bash
+cargo test -p omega-workflow -p omega-session
+cargo test -p omega-app -p omega-tui
+cargo clippy -p omega-workflow -p omega-session -p omega-app -p omega-tui --all-targets -- -D warnings
+```
+
+**Summary:** `Task 15F-8` 已完成。`omega-session` 现已把所有 step 统一收敛到同一条 bounded agent loop 执行路径，并按 step definition 设置 `visible_tools + max_iterations`；`omega-workflow` 现将 step loop 语义收敛为 `agent_loop`，新增 `max_iterations`，并把旧 `single_response` / `tool_loop` 仅保留为兼容解析别名。与此同时，内建 workflow preset 与仓库内 `.omega/workflows/*.toml` 已显式为 root/chat/analysis/plan/report 配置较窄的工具子集，为 execute 保留全工具继承；对应 step prompt 也已统一改为“工具可用但仅在必要时使用”，从而让配置、prompt 与 runtime contract 不再互相矛盾。
+
+---
+
+### Task 15F-9: omega-session / omega-workflow - 结构化 step context 与 root-child 生命周期收敛
+
+**Status:** Completed
+
+**Files:**
+- Updated: `crates/omega-app/src/model_config.rs`
+- Updated: `crates/omega-app/src/lib.rs`
+- Updated: `crates/omega-session/src/lib.rs`
+- Updated: `crates/omega-session/src/runtime_ui.rs`
+- Updated: `crates/omega-workflow/src/lib.rs`
+- Updated: `docs/specs/omega-step-session-asset-model.md`
+- Updated: `docs/specs/omega-scene-routing.md`
+- Updated: `docs/TODO.md`
+- Updated: `.omega/model.toml`
+
+- [x] **Step 0A: 锁定 context budget model (F1+F5)**
+
+    - `.omega/model.toml` 新增 `[context].context_window` 字段（默认 200000）
+    - `request_max_tokens` 重命名为 `max_output_tokens`，从 config → app → session 全链路同步
+    - 用户原先设置的 `max_tokens = 204800` 迁移为 `context_window = 204800` + `max_tokens = 32000`
+    - `StepSummary` 新增 `estimated_tokens: u32` 字段，spec 中定义 budget-aware 裁剪策略
+
+- [x] **Step 0B: 锁定 summary generation strategy (F2)**
+
+    - spec 中定义截断路径（首轮 2000 chars）与 LLM 摘要路径（后续扩展）
+    - `estimated_tokens` 在截断路径下由 `summary.len() / 4` 计算
+
+- [x] **Step 0C: 收敛 routing state + StepExecutionInput (F3+F4+F8)**
+
+    - spec 中明确 `RoutingContext` 替代 `WorkflowRoutingState` 为唯一路由容器
+    - spec 中定义 `build_step_system_prompt(input: &StepExecutionInput)` 单一输入签名
+    - `StepTransition` 新增 `Error { message }` 变体
+
+- [x] **Step 1: 引入 session-owned step context**
+
+    - 定义 `SessionContext`、`StepSummary` 与 `StepExecutionResult`
+    - 让后续 step 基于 session assets + 历史 summary + routing state + 当前 step prompt 组装输入
+
+- [x] **Step 2: 把 root routing 改为 typed context handoff**
+
+    - `scene-recognition` 写入 `recognized_scene_id`
+    - `select-workflow` 写入 `selected_workflow_id` 并产出 `StartWorkflow { workflow_id }`
+    - 不再长期依赖自由文本 token matching 作为主路径
+
+- [x] **Step 3: 明确 session / root workflow / child workflow 生命周期**
+
+    - session 持续接收用户输入
+    - 每个 turn 先进入 root workflow，再委派 child workflow
+    - child workflow 与后续 turn 共享同一个 session context
+
+- [x] **Step 4: 验证**
+
+```bash
+cargo test -p omega-session -p omega-workflow -p omega-app -p omega-tui
+cargo clippy -p omega-session -p omega-workflow --all-targets -- -D warnings
+```
+
+---
+
+### Task 15F-10: omega-workflow / omega-session - Step Data Contract 框架
+
+**Status:** Completed（代码与验证已完成）
+
+**Files:**
+- Planned: `crates/omega-workflow/src/lib.rs`
+- Planned: `crates/omega-session/src/lib.rs`
+- Planned: `crates/omega-session/src/runtime_ui.rs`
+- Planned: `docs/specs/omega-step-session-asset-model.md`
+- Planned: `docs/TODO.md`
+
+**设计依据**：之前计划的 `WorkflowArtifacts { analysis, plan, execution }` 硬编码方案把结构化数据绑定到固定四阶段，无法泛化。修订为通用 Step Data Contract：每个 step 独立声明其结构化输入输出需求，输入输出分开配置，支持 Required / Optional / None 组合，并在 Required 输出缺失时提供校验重试与流程级错误处理。
+
+- [x] **Step 1: 在 omega-workflow 中新增 StepInputContract / StepOutputContract / DataFormat 类型**
+
+    - `StepInputContract`: None / Required { sources } / Optional { sources }
+    - `StepOutputContract`: None / Required { format, schema_path, max_retries } / Optional { format, schema_path }
+    - `DataFormat`: Json (首轮只支持 JSON)
+    - 为 `WorkflowStep` 新增 `input_contract` 和 `output_contract` 字段，默认 `None`
+
+- [x] **Step 2: TOML 配置解析**
+
+    - `WorkflowStepConfig` 新增 `input_contract` / `output_contract` 可选字段
+    - 解析风格与 `tool_request` / `skill_request` 一致：`{ mode = "required", sources = [...] }` / `{ mode = "required", format = "json", max_retries = 2 }`
+    - 为 7 个内建 step 设置默认 I/O contract（见 spec 表格）
+
+- [x] **Step 3: SessionContext 扩展**
+
+    - 新增 `step_outputs: BTreeMap<String, serde_json::Value>`
+    - `begin_turn()` 时清空 `step_outputs`
+    - omega-session Cargo.toml 引入 `serde_json` 依赖
+
+- [x] **Step 4: JSON 提取与输出校验**
+
+    - 实现 `extract_json_from_text(text: &str) -> Option<Value>` 工具函数
+    - 在 `finalize_step()` 中：若 `output_contract` 非 None，尝试提取 JSON
+    - Required 校验失败 → 注入反馈消息到 agent conversation → 重试（不 advance step）
+    - Required 重试耗尽 → `StepTransition::Error`
+    - Optional 校验失败 → 继续，`structured_output = None`
+    - 校验成功 → 写入 `session_context.step_outputs[step.id]`
+
+- [x] **Step 5: 输入解析与 prompt 注入**
+
+    - `build_step_execution_input()` 中：若 `input_contract` 非 None，从 `step_outputs` 收集 sources
+    - Required source 缺失 → 立即 Error（跳过 step 执行）
+    - `StepExecutionInput` 新增 `structured_input: Option<Value>`
+    - `build_step_system_prompt()` 中：若有 structured_input 注入 `<structured_input>` 段
+    - `build_step_system_prompt()` 中：若有 output_contract 注入 `<output_contract>` 段（格式要求）
+
+- [x] **Step 6: 泛化 root routing 结构化解析**
+
+    - 当前 `finalize_step()` 中 scene-recognition / select-workflow 的硬编码 JSON 解析改为 data contract 的首个消费者
+    - 保持 root step 的 fallback 逻辑（default scene/workflow）作为 domain-specific 后处理
+
+- [x] **Step 7: 验证**
+
+```bash
+cargo test -p omega-workflow -p omega-session -p omega-app
+cargo clippy -p omega-workflow -p omega-session --all-targets -- -D warnings
+```
+
+---
+
+### Task 15F-11: omega-session / omega-todo / omega-workflow - Feature Workflow Schema 绑定与 Todo 集成
+
+**Status:** Completed（代码与验证已完成）
+
+**前置依赖**：Task 15F-10（Step Data Contract 框架）
+
+**Files:**
+- Planned: `crates/omega-session/src/lib.rs`
+- Planned: `crates/omega-todo/src/lib.rs`
+- Planned: `.omega/prompt/step/analysis.md`
+- Planned: `.omega/prompt/step/plan.md`
+- Planned: `.omega/prompt/step/execute.md`
+- Planned: `.omega/prompt/step/report.md`
+- Planned: `.omega/workflows/feature.toml`
+- Planned: `docs/specs/omega-step-session-asset-model.md`
+- Planned: `docs/TODO.md`
+
+**设计依据**：Step Data Contract 提供通用框架后，本任务把框架应用到 feature workflow 的具体 step 链路，定义各 step 的 JSON schema，更新 prompt 以配合结构化输出要求，并将 plan 输出与 TodoManager 集成。
+
+- [x] **Step 1: 定义 analysis / plan / execute 的输出 JSON 格式**
+
+    - analysis 输出：`{ objective, constraints[], risks[], affected_paths[] }`
+    - plan 输出：`{ goal, tasks[{ id, title, description }], validation_targets[] }`
+    - execute 输出（optional）：`{ completed_tasks[], open_tasks[], validation_results[], changed_paths[] }`
+    - 格式定义可选放在 `.omega/schema/step/` 或直接通过 prompt 约定（首轮不要求完整 JSON Schema 文件）
+
+- [x] **Step 2: 更新 feature workflow TOML 配置**
+
+    - 为 analysis / plan / execute / report 添加 `input_contract` / `output_contract` 字段
+    - 更新 `.omega/workflows/feature.toml` 使用新的 contract 配置
+
+- [x] **Step 3: 更新 step prompt 文件**
+
+    - 更新 `analysis.md` / `plan.md` / `execute.md` / `report.md`，使其配合 data contract 和结构化输出需求
+    - step prompt 主要描述任务目标和约束，格式要求由 data contract 自动注入
+
+- [x] **Step 4: Plan 输出与 TodoManager 集成**
+
+    - 当 `plan` 产出结构化 tasks 时，映射到 `TodoManager`
+    - `execute` 的 todo 更新与 structured output 对齐
+    - `report` 可从 step_outputs 中读取 analysis + plan + execute 的结构化数据
+
+- [x] **Step 5: 端到端验证**
+
+```bash
+cargo test -p omega-session -p omega-workflow -p omega-todo -p omega-app
+cargo clippy -p omega-session -p omega-workflow -p omega-todo --all-targets -- -D warnings
+```
+
+---
+
+### Task 15F-12: omega-session / omega-observability / omega-tui - 上下文观测与诊断
+
+**Status:** Completed（2026-03-23）
+
+**Files:**
+- Update: `crates/omega-session/src/lib.rs`
+- Update: `crates/omega-session/src/runtime_ui.rs`
+- Update: `crates/omega-tui/src/app.rs`
+- Update: `docs/specs/omega-step-session-asset-model.md`
+- Update: `docs/TODO.md`
+
+- [x] **Step 1: 增加 tracing 级 data contract 诊断**
+
+    - 记录 step 输入时注入了哪些 summaries + structured inputs（source step_ids 和 data preview）
+    - 记录 output contract 校验结果：成功 / 失败 / 重试次数 / 最终提取的 JSON preview
+    - 记录各阶段对 `SessionContext.step_outputs` 与 todo snapshot 的写入 diff
+
+- [x] **Step 2: 提供 TUI 侧 context diagnostics 落点**
+
+    - 在 Diagnostics 侧栏与 detail overlay 中提供 data contract 状态 drill-down
+    - 显示每个 step 的 input/output contract 满足状态
+    - 显示 `SessionContext` context write 的 `added / updated / cleared` before/after preview，避免上下文变化只能通过零散 reasoning/log 文本猜测
+
+- [x] **Step 3: 验证**
+
+```bash
+cargo test -p omega-session -p omega-tui -p omega-app
+cargo clippy -p omega-session -p omega-tui -p omega-app --all-targets -- -D warnings
+```
+
+---
+
+### Task 15B-22: omega-tui - step 内工具使用可见性
+
+**Status:** Completed
+
+**Files:**
+- Updated: `crates/omega-tui/src/app.rs`
+- Updated: `crates/omega-tui/src/event.rs`
+- Updated: `crates/omega-tui/src/reducer.rs`
+- Updated: `crates/omega-tui/src/render.rs`
+- Updated: `docs/TODO.md`
+
+- [x] **Step 1: 在 step block 中增加 tool summary lane**
+
+    - 当前活跃工具调用默认可见
+    - 已完成调用默认压缩为低噪音摘要
+
+- [x] **Step 2: 保持 Response / Activity 边界清晰**
+
+    - `Response` 仅显示工具摘要
+    - 完整 command/output 仍通过 `Activity` 或 `DetailOverlay` 查看
+
+- [x] **Step 3: 验证**
+
+```bash
+cargo test -p omega-tui -p omega-session -p omega-app
+cargo clippy -p omega-tui -p omega-session -p omega-app --all-targets -- -D warnings
+```
+
+**Summary:** 该任务已完成：`omega-tui` 现在会把 `ToolRun` lifecycle 挂到对应 step / final response block 下，渲染轻量 `tools` 摘要 lane，并用状态色区分 `running / failed / done`。每条工具摘要包含 tool name、invocation preview 与 result preview，用户在 `Response` 中选中摘要后可直接通过 `Enter/x` 打开 detail overlay 查看完整 detail lines；现有 `Activity(Log)` 中的 `[tool] ...` 兼容日志仍然保留，因此完整详情与运行轨迹并未重新塞回正文主阅读区。
+
+---
+
+### Task 15B-23: omega-tui - thinking 可读性强化
+
+**Status:** Completed
+
+**Files:**
+- Updated: `crates/omega-tui/src/app.rs`
+- Updated: `crates/omega-tui/src/render.rs`
+- Updated: `docs/TODO.md`
+
+- [x] **Step 1: 强化 thinking 的视觉层级**
+
+    - 提升 header/body 对比度
+    - 明确 streaming / done / failed 的视觉差异
+
+- [x] **Step 2: 优化 collapsed 摘要与 step 内分层**
+
+    - 摘要携带更强信息量
+    - 与 step 正文保持清晰缩进和分层关系
+
+- [x] **Step 3: 验证**
+
+```bash
+cargo test -p omega-tui -p omega-session -p omega-app
+cargo clippy -p omega-tui -p omega-session -p omega-app --all-targets -- -D warnings
+```
+
+**Summary:** 该任务已完成：`omega-tui` 现已为 thinking block 引入 state-aware 的 readability refinement，而不改变既有 runtime contract。thinking header 现按状态显示为 `Reasoning live / Reasoning / Reasoning failed`，expanded body 使用更清晰的导轨式 `|` 缩进，collapsed 摘要则携带状态、行数与预览片段；`render.rs` 也为 streaming / done / failed 分别提供更强的语义色与摘要样式，并补充了失败态与样式回归测试，从而在深色主题下显著提升可读性，同时继续保持 final answer 的最高阅读优先级。
 
 ---
 

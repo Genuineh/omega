@@ -1,9 +1,12 @@
 use omega_session::{
-    ActivityTarget, OverlayRequest, OverlayTarget, RuntimeUiEffect, RuntimeUiEnvelope,
-    RuntimeUiMessage, StatusValue, UiContent, UiMessageKind, UiSource, UiTarget,
+    ActivityTarget, OverlayRequest, OverlayTarget, ResponseSectionDelta, RuntimeUiEffect,
+    RuntimeUiEnvelope, RuntimeUiMessage, StatusValue, UiContent, UiMessageKind, UiSource, UiTarget,
+    WorkflowRunRole,
 };
 
-use crate::app::{App, MsgKind, Panel, WorkflowSummary};
+use crate::app::{
+    App, MsgKind, Panel, SessionRoutingSummary, SessionStatusSummary, WorkflowSummary,
+};
 
 pub struct TuiUpdateReducer;
 
@@ -39,13 +42,8 @@ impl TuiUpdateReducer {
     fn apply_response_message(app: &mut App, message: RuntimeUiMessage) {
         let text = message.content.as_text();
         match (&message.source, message.kind) {
-            (
-                UiSource::WorkflowStep { step_label, .. },
-                UiMessageKind::Narrative | UiMessageKind::Result,
-            ) => app.push_step_result(step_label, text),
-            (UiSource::Assistant, UiMessageKind::Result | UiMessageKind::Narrative) => {
-                app.push_msg(MsgKind::Agent, text)
-            }
+            (UiSource::WorkflowStep { .. }, UiMessageKind::Narrative | UiMessageKind::Result) => {}
+            (UiSource::Assistant, UiMessageKind::Result | UiMessageKind::Narrative) => {}
             (_, UiMessageKind::Error) => app.push_msg(MsgKind::Error, text),
             _ => app.push_msg(MsgKind::Agent, text),
         }
@@ -59,6 +57,8 @@ impl TuiUpdateReducer {
             }
             (
                 UiSource::WorkflowStep {
+                    workflow_id,
+                    workflow_role,
                     step_id,
                     step_label,
                     index,
@@ -67,9 +67,17 @@ impl TuiUpdateReducer {
                 UiMessageKind::Summary,
             ) => {
                 app.add_log(format!(
-                    "[flow {}/{}] {} ({})",
-                    index, total, step_label, step_id
+                    "[{}:{} {}/{}] {} ({})",
+                    workflow_role.as_str(),
+                    workflow_id,
+                    index,
+                    total,
+                    step_label,
+                    step_id
                 ));
+            }
+            (UiSource::SessionRouting, UiMessageKind::Summary | UiMessageKind::Warning) => {
+                app.add_log(format!("[route] {}", text));
             }
             _ => app.add_log(text.to_string()),
         }
@@ -85,6 +93,27 @@ impl TuiUpdateReducer {
             RuntimeUiEffect::ShowOverlay(request) => Self::show_overlay_request(app, request),
             RuntimeUiEffect::HideOverlay { target } => app.hide_overlay_target(target),
             RuntimeUiEffect::FocusHint { target } => Self::apply_focus_hint(app, target),
+            RuntimeUiEffect::BeginResponseSection { section } => {
+                app.begin_response_section(section)
+            }
+            RuntimeUiEffect::AppendResponseSection { id, delta } => {
+                Self::append_response_section(app, &id, delta)
+            }
+            RuntimeUiEffect::CompleteResponseSection { id, state } => {
+                app.complete_response_section(&id, state)
+            }
+            RuntimeUiEffect::BeginToolRun { tool_run } => app.begin_tool_run(tool_run),
+            RuntimeUiEffect::UpdateToolRun { tool_run } => app.update_tool_run(tool_run),
+            RuntimeUiEffect::CompleteToolRun { id, status } => app.complete_tool_run(&id, status),
+            RuntimeUiEffect::UpsertStepDiagnostics { diagnostics } => {
+                app.upsert_step_diagnostics(*diagnostics)
+            }
+        }
+    }
+
+    fn append_response_section(app: &mut App, id: &str, delta: ResponseSectionDelta) {
+        match delta {
+            ResponseSectionDelta::Text(text) => app.append_response_section(id, &text),
         }
     }
 
@@ -120,7 +149,10 @@ impl TuiUpdateReducer {
             OverlayRequest {
                 target: OverlayTarget::Detail,
                 content: UiContent::Text(text),
-            } => app.open_detail_overlay(" Runtime Detail ", text.lines().map(str::to_string).collect()),
+            } => app.open_detail_overlay(
+                " Runtime Detail ",
+                text.lines().map(str::to_string).collect(),
+            ),
             OverlayRequest {
                 target: OverlayTarget::Picker,
                 content: UiContent::Text(text),
@@ -161,22 +193,49 @@ impl TuiUpdateReducer {
 pub fn workflow_summary_from_status(value: StatusValue) -> Option<WorkflowSummary> {
     match value {
         StatusValue::WorkflowStep {
+            workflow_id,
+            workflow_role,
             step_id,
             step_label,
             index,
             total,
         } => Some(WorkflowSummary {
+            workflow_id,
+            workflow_role,
             id: step_id,
             label: step_label,
             index,
             total,
         }),
         StatusValue::Label(label) => Some(WorkflowSummary {
+            workflow_id: "workflow".to_string(),
+            workflow_role: WorkflowRunRole::Child,
             id: "workflow".to_string(),
             label,
             index: 0,
             total: 0,
         }),
         StatusValue::Hidden => None,
+        StatusValue::SessionRouting { .. } => None,
+    }
+}
+
+pub fn session_status_from_status(value: StatusValue) -> Option<SessionStatusSummary> {
+    match value {
+        StatusValue::Label(label) => Some(SessionStatusSummary::Label(label)),
+        StatusValue::SessionRouting {
+            root_workflow_id,
+            active_workflow_id,
+            active_workflow_role,
+            recognized_scene_id,
+            selected_workflow_id,
+        } => Some(SessionStatusSummary::Routing(SessionRoutingSummary {
+            root_workflow_id,
+            active_workflow_id,
+            active_workflow_role,
+            recognized_scene_id,
+            selected_workflow_id,
+        })),
+        StatusValue::Hidden | StatusValue::WorkflowStep { .. } => None,
     }
 }

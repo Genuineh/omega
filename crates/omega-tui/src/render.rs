@@ -7,9 +7,13 @@ use ratatui::{
 };
 
 use omega_keymap::InteractionMode;
+use omega_session::ResponseSectionState;
 use omega_theme::{OmegaTheme, RenderPalette as ColorScheme};
 
-use crate::app::{App, MsgKind, Panel};
+use crate::app::{
+    wrap_text_segments, App, MsgKind, Panel, ResponseDisplayLine, SessionRoutingSummary,
+    SessionStatusSummary, ThinkingLineKind,
+};
 use crate::overlay::{overlay_area, ConfirmChoice, OverlayState};
 use crate::sidebar::SidebarSection;
 
@@ -82,6 +86,13 @@ pub fn render(frame: &mut Frame, app: &mut App, model_name: &str, theme: &OmegaT
     } else {
         Style::default().fg(colors.border_dim)
     };
+    let diagnostics_border = if app.focused_panel == Panel::Diagnostics {
+        Style::default()
+            .fg(colors.focus_border)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(colors.border_dim)
+    };
     let logs_border = if app.focused_panel == Panel::Logs {
         Style::default()
             .fg(colors.focus_border)
@@ -95,20 +106,28 @@ pub fn render(frame: &mut Frame, app: &mut App, model_name: &str, theme: &OmegaT
     } else {
         " Agent Response "
     };
+    let app_ref: &App = &*app;
     let resp_inner_w = (main_chunks[0].width as usize).saturating_sub(2).max(1);
-    let output_items: Vec<ListItem> = app
-        .output_msgs
+    let response_lines = app_ref.response_display_lines();
+    let output_items: Vec<ListItem> = response_lines
         .iter()
-        .flat_map(|msg| {
-            let style = match msg.kind {
-                MsgKind::User => Style::default().fg(colors.user_message),
-                MsgKind::Agent => Style::default().fg(colors.agent_message),
-                MsgKind::Error => Style::default().fg(colors.error_message),
-                MsgKind::Separator => Style::default().fg(colors.separator_message),
-            };
-            wrap_text(&msg.text, resp_inner_w)
+        .enumerate()
+        .flat_map(|(line_index, line)| {
+            let style = response_line_style(line, &colors);
+            wrap_text_segments(&line.text, resp_inner_w)
                 .into_iter()
-                .map(move |wrapped| ListItem::new(Span::styled(wrapped, style)))
+                .map(move |(source_column_start, wrapped)| {
+                    list_item_with_selection(
+                        &wrapped,
+                        style,
+                        app_ref.selection_range_for_segment(
+                            Panel::Response,
+                            line_index,
+                            source_column_start,
+                            source_column_start + wrapped.chars().count(),
+                        ),
+                    )
+                })
         })
         .collect();
     let resp_total = output_items.len();
@@ -154,6 +173,7 @@ pub fn render(frame: &mut Frame, app: &mut App, model_name: &str, theme: &OmegaT
             app,
             &colors,
             sidebar_chunks[1],
+            diagnostics_border,
             todo_border,
             logs_border,
         );
@@ -231,6 +251,125 @@ pub fn render(frame: &mut Frame, app: &mut App, model_name: &str, theme: &OmegaT
     render_overlay(frame, app, &colors);
 }
 
+fn response_line_style(line: &ResponseDisplayLine, colors: &ColorScheme) -> Style {
+    match line.kind {
+        MsgKind::User => Style::default().fg(colors.user_message),
+        MsgKind::Agent => Style::default().fg(colors.agent_message),
+        MsgKind::Error => Style::default().fg(colors.error_message),
+        MsgKind::Separator => Style::default().fg(colors.separator_message),
+        MsgKind::Routing => {
+            if line.is_header {
+                Style::default()
+                    .fg(colors.context_label)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(colors.context_hint)
+            }
+        }
+        MsgKind::Step => {
+            if line.is_tool_line {
+                match line.tool_status {
+                    None => Style::default()
+                        .fg(colors.context_label)
+                        .add_modifier(Modifier::BOLD),
+                    Some(omega_session::ToolRunStatus::Running) => {
+                        Style::default().fg(colors.focus_border)
+                    }
+                    Some(omega_session::ToolRunStatus::Failed) => {
+                        Style::default().fg(colors.error_message)
+                    }
+                    _ => Style::default().fg(colors.context_hint),
+                }
+            } else if line.is_header {
+                Style::default()
+                    .fg(colors.focus_border)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(colors.agent_message)
+            }
+        }
+        MsgKind::FinalAnswer => {
+            if line.is_tool_line {
+                match line.tool_status {
+                    None => Style::default()
+                        .fg(colors.context_label)
+                        .add_modifier(Modifier::BOLD),
+                    Some(omega_session::ToolRunStatus::Running) => {
+                        Style::default().fg(colors.focus_border)
+                    }
+                    Some(omega_session::ToolRunStatus::Failed) => {
+                        Style::default().fg(colors.error_message)
+                    }
+                    _ => Style::default().fg(colors.context_hint),
+                }
+            } else if line.is_header {
+                Style::default()
+                    .fg(colors.mode_insert_fg)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(colors.text)
+            }
+        }
+        MsgKind::Thinking => {
+            let state = line
+                .response_state
+                .unwrap_or(ResponseSectionState::Complete);
+            if line.is_header {
+                thinking_header_style(state, colors)
+            } else {
+                match line.thinking_line_kind {
+                    Some(ThinkingLineKind::Summary) => thinking_summary_style(state, colors),
+                    Some(ThinkingLineKind::Placeholder) => {
+                        thinking_placeholder_style(state, colors)
+                    }
+                    _ => thinking_body_style(state, colors),
+                }
+            }
+        }
+    }
+}
+
+fn thinking_header_style(state: ResponseSectionState, colors: &ColorScheme) -> Style {
+    match state {
+        ResponseSectionState::Streaming => Style::default()
+            .fg(colors.focus_border)
+            .add_modifier(Modifier::BOLD),
+        ResponseSectionState::Complete => Style::default()
+            .fg(colors.context_label)
+            .add_modifier(Modifier::BOLD),
+        ResponseSectionState::Failed => Style::default()
+            .fg(colors.error_message)
+            .add_modifier(Modifier::BOLD),
+    }
+}
+
+fn thinking_summary_style(state: ResponseSectionState, colors: &ColorScheme) -> Style {
+    match state {
+        ResponseSectionState::Streaming => Style::default()
+            .fg(colors.focus_border)
+            .add_modifier(Modifier::BOLD),
+        ResponseSectionState::Complete => Style::default()
+            .fg(colors.context_label)
+            .add_modifier(Modifier::BOLD),
+        ResponseSectionState::Failed => Style::default()
+            .fg(colors.error_message)
+            .add_modifier(Modifier::BOLD),
+    }
+}
+
+fn thinking_body_style(state: ResponseSectionState, colors: &ColorScheme) -> Style {
+    match state {
+        ResponseSectionState::Failed => Style::default().fg(colors.error_message),
+        ResponseSectionState::Streaming | ResponseSectionState::Complete => {
+            Style::default().fg(colors.context_hint)
+        }
+    }
+}
+
+fn thinking_placeholder_style(state: ResponseSectionState, colors: &ColorScheme) -> Style {
+    thinking_body_style(state, colors).add_modifier(Modifier::ITALIC)
+}
+
 fn input_context_text(app: &App, sidebar_hidden: bool) -> &str {
     if app.overlay_active() {
         overlay_hint_text(app)
@@ -252,6 +391,10 @@ fn input_context_text(app: &App, sidebar_hidden: bool) -> &str {
             InteractionMode::Normal => {
                 if app.focused_panel == Panel::SidebarRail {
                     " Sidebar rail: ←/→ cycle  Enter focus  x collapse  Space b=Toggle sidebar  Space Tab=Next focus"
+                } else if app.focused_panel == Panel::Diagnostics {
+                    " Diagnostics: Enter/x=Open detail  Space Tab=Focus  Space b=Sidebar  Space /=Search  Space ↑/↓=Scroll"
+                } else if app.focused_panel == Panel::Response && app.show_thinking {
+                    " Response: Enter/x=Toggle thinking or open tool detail  Space Tab=Focus  Space b=Sidebar  Space /=Search  Space ↑/↓=Scroll"
                 } else {
                     " Space=Leader  Space jk=Toggle mode  Space Tab=Focus  Space b=Sidebar  Space /=Search  Space ↑/↓=Scroll"
                 }
@@ -289,8 +432,8 @@ fn bottom_status_text(app: &App, model_name: &str, spinner_frames: &[char]) -> S
     if let Some(flow) = segments.flow {
         rendered.push(flow);
     }
-    if let Some(session) = segments.session {
-        rendered.push(session);
+    if let Some(aux) = segments.aux {
+        rendered.push(aux.value);
     }
 
     format!(" {} ", rendered.join(" │ "))
@@ -393,7 +536,7 @@ fn bottom_status_line(
         ));
     }
 
-    if let Some(session) = segments.session {
+    if let Some(aux) = segments.aux {
         spans.push(Span::styled(
             "  ·  ",
             Style::default()
@@ -401,13 +544,13 @@ fn bottom_status_line(
                 .bg(colors.status_bar_bg),
         ));
         spans.push(Span::styled(
-            " session ",
+            format!(" {} ", aux.label),
             Style::default()
                 .fg(colors.status_label)
                 .bg(colors.status_bar_bg),
         ));
         spans.push(Span::styled(
-            session,
+            aux.value,
             Style::default()
                 .fg(colors.text)
                 .bg(colors.status_bar_bg)
@@ -422,7 +565,12 @@ struct BottomStatusSegments {
     model: String,
     state: String,
     flow: Option<String>,
-    session: Option<String>,
+    aux: Option<BottomStatusBadge>,
+}
+
+struct BottomStatusBadge {
+    label: &'static str,
+    value: String,
 }
 
 fn bottom_status_segments(
@@ -444,18 +592,53 @@ fn bottom_status_segments(
     };
 
     let flow = if app.is_running {
-        app.workflow_summary
-            .as_ref()
-            .map(|workflow| format!("{} {}/{}", workflow.label, workflow.index, workflow.total))
+        app.workflow_summary.as_ref().map(|workflow| {
+            format!(
+                "{}:{} {} {}/{}",
+                workflow.workflow_role.as_str(),
+                workflow.workflow_id,
+                workflow.label,
+                workflow.index,
+                workflow.total
+            )
+        })
     } else {
         None
+    };
+
+    let aux = match app.session_status.as_ref() {
+        Some(SessionStatusSummary::Label(label)) => Some(BottomStatusBadge {
+            label: "session",
+            value: label.clone(),
+        }),
+        Some(SessionStatusSummary::Routing(routing)) => Some(BottomStatusBadge {
+            label: "route",
+            value: format_routing_badge(routing),
+        }),
+        None => None,
     };
 
     BottomStatusSegments {
         model: model_name.to_string(),
         state,
         flow,
-        session: app.session_status_label.clone(),
+        aux,
+    }
+}
+
+fn format_routing_badge(routing: &SessionRoutingSummary) -> String {
+    match (
+        routing.recognized_scene_id.as_deref(),
+        routing.selected_workflow_id.as_deref(),
+    ) {
+        (None, None) => format!(
+            "{} via {}",
+            routing.active_workflow_role.as_str(),
+            routing.root_workflow_id
+        ),
+        (Some(scene_id), None) => format!("{} -> selecting", scene_id),
+        (Some(scene_id), Some(workflow_id)) => format!("{} -> {}", scene_id, workflow_id),
+        (None, Some(workflow_id)) => format!("pending -> {}", workflow_id),
     }
 }
 
@@ -465,7 +648,11 @@ fn render_sidebar_rail(
     colors: &ColorScheme,
     area: ratatui::layout::Rect,
 ) {
-    let sections = [SidebarSection::Todos, SidebarSection::Logs];
+    let sections = [
+        SidebarSection::Diagnostics,
+        SidebarSection::Todos,
+        SidebarSection::Logs,
+    ];
     let mut spans = Vec::new();
 
     for (index, section) in sections.into_iter().enumerate() {
@@ -497,41 +684,102 @@ fn render_sidebar_body(
     app: &mut App,
     colors: &ColorScheme,
     area: ratatui::layout::Rect,
+    diagnostics_border: Style,
     todo_border: Style,
     logs_border: Style,
 ) {
+    app.diagnostics_rect = ratatui::layout::Rect::default();
     app.todo_rect = ratatui::layout::Rect::default();
     app.logs_rect = ratatui::layout::Rect::default();
 
-    let sections = match (app.sidebar.todos_expanded, app.sidebar.logs_expanded) {
-        (true, true) => Layout::default()
+    let expanded_sections = [
+        app.sidebar.diagnostics_expanded,
+        app.sidebar.todos_expanded,
+        app.sidebar.logs_expanded,
+    ]
+    .into_iter()
+    .filter(|expanded| *expanded)
+    .count();
+    let sections = if expanded_sections == 0 {
+        Vec::new()
+    } else {
+        Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+            .constraints(vec![Constraint::Ratio(1, expanded_sections as u32); expanded_sections])
             .split(area)
             .iter()
             .copied()
-            .collect::<Vec<_>>(),
-        (true, false) | (false, true) => Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(100)])
-            .split(area)
-            .iter()
-            .copied()
-            .collect::<Vec<_>>(),
-        (false, false) => Vec::new(),
+            .collect::<Vec<_>>()
     };
 
     let mut next_index = 0;
+    if app.sidebar.diagnostics_expanded {
+        let rect = sections.get(next_index).copied().unwrap_or_default();
+        next_index += 1;
+        app.diagnostics_rect = rect;
+        let diagnostics_title = app.diagnostics_panel_title();
+        let diagnostics_inner_w = (rect.width as usize).saturating_sub(2).max(1);
+        let app_ref: &App = &*app;
+        let diagnostics_items: Vec<ListItem> = app_ref
+            .wrapped_panel_lines(Panel::Diagnostics, diagnostics_inner_w)
+            .into_iter()
+            .map(|line| {
+                let line_len = line.text.chars().count();
+                list_item_with_selection(
+                    &line.text,
+                    Style::default().fg(colors.text),
+                    app_ref.selection_range_for_segment(
+                        Panel::Diagnostics,
+                        line.source_line_index,
+                        line.source_column_start,
+                        line.source_column_start + line_len,
+                    ),
+                )
+            })
+            .collect();
+        let diagnostics_total = diagnostics_items.len();
+        app.diagnostics_displayed_count = diagnostics_total;
+        if !app.diagnostics_pinned && diagnostics_total > 0 {
+            app.diagnostics_state.select(Some(diagnostics_total - 1));
+        }
+        let diagnostics_list = List::new(diagnostics_items)
+            .block(
+                Block::default()
+                    .border_type(colors.panel_border_type)
+                    .title(diagnostics_title)
+                    .borders(Borders::ALL)
+                    .border_style(diagnostics_border),
+            )
+            .highlight_style(Style::default())
+            .style(Style::default().fg(colors.text));
+        frame.render_stateful_widget(diagnostics_list, rect, &mut app.diagnostics_state);
+    } else {
+        app.diagnostics_displayed_count = 0;
+    }
+
     if app.sidebar.todos_expanded {
         let rect = sections.get(next_index).copied().unwrap_or_default();
         next_index += 1;
         app.todo_rect = rect;
         let todo_title = app.todo_panel_title();
         let todo_inner_w = (rect.width as usize).saturating_sub(2).max(1);
-        let todo_items: Vec<ListItem> = app
-            .todo_lines
-            .iter()
-            .flat_map(|line| wrap_text(line, todo_inner_w).into_iter().map(ListItem::new))
+        let app_ref: &App = &*app;
+        let todo_items: Vec<ListItem> = app_ref
+            .wrapped_panel_lines(Panel::Todo, todo_inner_w)
+            .into_iter()
+            .map(|line| {
+                let line_len = line.text.chars().count();
+                list_item_with_selection(
+                    &line.text,
+                    Style::default().fg(colors.text),
+                    app_ref.selection_range_for_segment(
+                        Panel::Todo,
+                        line.source_line_index,
+                        line.source_column_start,
+                        line.source_column_start + line_len,
+                    ),
+                )
+            })
             .collect();
         let todo_total = todo_items.len();
         app.todo_displayed_count = todo_total;
@@ -558,10 +806,23 @@ fn render_sidebar_body(
         app.logs_rect = rect;
         let logs_title = app.logs_panel_title();
         let logs_inner_w = (rect.width as usize).saturating_sub(2).max(1);
-        let log_items: Vec<ListItem> = app
-            .log_lines
-            .iter()
-            .flat_map(|line| wrap_text(line, logs_inner_w).into_iter().map(ListItem::new))
+        let app_ref: &App = &*app;
+        let log_items: Vec<ListItem> = app_ref
+            .wrapped_panel_lines(Panel::Logs, logs_inner_w)
+            .into_iter()
+            .map(|line| {
+                let line_len = line.text.chars().count();
+                list_item_with_selection(
+                    &line.text,
+                    Style::default().fg(colors.text),
+                    app_ref.selection_range_for_segment(
+                        Panel::Logs,
+                        line.source_line_index,
+                        line.source_column_start,
+                        line.source_column_start + line_len,
+                    ),
+                )
+            })
             .collect();
         let logs_total = log_items.len();
         app.logs_displayed_count = logs_total;
@@ -584,22 +845,56 @@ fn render_sidebar_body(
     }
 }
 
+#[cfg(test)]
 fn wrap_text(line: &str, width: usize) -> Vec<String> {
-    if width == 0 {
-        return vec![line.to_string()];
+    wrap_text_segments(line, width)
+        .into_iter()
+        .map(|(_, segment)| segment)
+        .collect()
+}
+
+fn list_item_with_selection(
+    text: &str,
+    base_style: Style,
+    selection: Option<(usize, usize)>,
+) -> ListItem<'static> {
+    let Some((selection_start, selection_end)) = selection else {
+        return ListItem::new(Span::styled(text.to_string(), base_style));
+    };
+
+    let text_len = text.chars().count();
+    if selection_start >= selection_end || selection_start >= text_len {
+        return ListItem::new(Span::styled(text.to_string(), base_style));
     }
-    if line.is_empty() {
-        return vec![String::new()];
+
+    let selection_end = selection_end.min(text_len);
+    let before: String = text.chars().take(selection_start).collect();
+    let selected: String = text
+        .chars()
+        .skip(selection_start)
+        .take(selection_end - selection_start)
+        .collect();
+    let after: String = text.chars().skip(selection_end).collect();
+
+    let mut spans = Vec::new();
+    if !before.is_empty() {
+        spans.push(Span::styled(before, base_style));
     }
-    let chars: Vec<char> = line.chars().collect();
-    let mut result = Vec::new();
-    let mut start = 0;
-    while start < chars.len() {
-        let end = (start + width).min(chars.len());
-        result.push(chars[start..end].iter().collect());
-        start = end;
+    if !selected.is_empty() {
+        spans.push(Span::styled(
+            selected,
+            base_style.add_modifier(Modifier::REVERSED),
+        ));
     }
-    result
+    if !after.is_empty() {
+        spans.push(Span::styled(after, base_style));
+    }
+
+    if spans.is_empty() {
+        spans.push(Span::styled(String::new(), base_style));
+    }
+
+    ListItem::new(Line::from(spans))
 }
 
 fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorScheme) {
@@ -659,6 +954,7 @@ fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorScheme) {
             let panel_name = match panel {
                 Panel::Response => "Response",
                 Panel::SidebarRail => "Sidebar",
+                Panel::Diagnostics => "Diagnostics",
                 Panel::Todo => "Todos",
                 Panel::Logs => "Logs",
             };
@@ -883,14 +1179,22 @@ fn overlay_hint_text(app: &App) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use omega_session::ResponseSectionState;
     use omega_theme::OmegaTheme;
-    use ratatui::{backend::TestBackend, Terminal};
+    use ratatui::{
+        backend::TestBackend,
+        style::{Modifier, Style},
+        Terminal,
+    };
 
-    use crate::app::{App, Panel};
+    use crate::app::{
+        App, MsgKind, Panel, ResponseDisplayLine, SessionRoutingSummary, SessionStatusSummary,
+        ThinkingLineKind,
+    };
 
     use super::{
         bottom_status_line, bottom_status_text, input_context_line, input_context_text, render,
-        wrap_text,
+        response_line_style, wrap_text,
     };
 
     #[test]
@@ -923,6 +1227,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new();
         let theme = OmegaTheme::dark();
+        app.sidebar.diagnostics_expanded = false;
         app.sidebar.todos_expanded = false;
         app.sidebar.logs_expanded = true;
 
@@ -978,11 +1283,69 @@ mod tests {
     }
 
     #[test]
+    fn thinking_lines_use_stateful_styles() {
+        let colors = OmegaTheme::dark().render_palette();
+
+        let header = ResponseDisplayLine {
+            kind: MsgKind::Thinking,
+            text: "  reasoning  child:chat  Reasoning live  [streaming]".to_string(),
+            is_header: true,
+            message_id: Some("thinking-1".to_string()),
+            action: None,
+            is_tool_line: false,
+            tool_status: None,
+            response_state: Some(ResponseSectionState::Streaming),
+            thinking_line_kind: None,
+        };
+        let summary = ResponseDisplayLine {
+            kind: MsgKind::Thinking,
+            text: "    = reasoning · 2 lines · outline answer".to_string(),
+            is_header: false,
+            message_id: Some("thinking-1".to_string()),
+            action: None,
+            is_tool_line: false,
+            tool_status: None,
+            response_state: Some(ResponseSectionState::Complete),
+            thinking_line_kind: Some(ThinkingLineKind::Summary),
+        };
+        let failed_body = ResponseDisplayLine {
+            kind: MsgKind::Thinking,
+            text: "    | tool result mismatched".to_string(),
+            is_header: false,
+            message_id: Some("thinking-2".to_string()),
+            action: None,
+            is_tool_line: false,
+            tool_status: None,
+            response_state: Some(ResponseSectionState::Failed),
+            thinking_line_kind: Some(ThinkingLineKind::Body),
+        };
+
+        assert_eq!(
+            response_line_style(&header, &colors),
+            Style::default()
+                .fg(colors.focus_border)
+                .add_modifier(Modifier::BOLD)
+        );
+        assert_eq!(
+            response_line_style(&summary, &colors),
+            Style::default()
+                .fg(colors.context_label)
+                .add_modifier(Modifier::BOLD)
+        );
+        assert_eq!(
+            response_line_style(&failed_body, &colors),
+            Style::default().fg(colors.error_message)
+        );
+    }
+
+    #[test]
     fn bottom_status_keeps_model_and_runtime_without_old_header_fields() {
         let mut app = App::new();
         app.is_running = true;
         app.spinner_tick = 3;
         app.workflow_summary = Some(crate::app::WorkflowSummary {
+            workflow_id: "feature".to_string(),
+            workflow_role: omega_session::WorkflowRunRole::Child,
             id: "analysis".to_string(),
             label: "Analyze".to_string(),
             index: 1,
@@ -993,7 +1356,7 @@ mod tests {
 
         assert!(text.contains("test-model"));
         assert!(text.contains("Running…"));
-        assert!(text.contains("Analyze 1/4"));
+        assert!(text.contains("child:feature Analyze 1/4"));
         assert!(!text.contains("Omega Agent"));
         assert!(!text.contains("Mode:"));
         assert!(!text.contains("Focus:"));
@@ -1035,6 +1398,8 @@ mod tests {
     fn idle_bottom_status_hides_workflow_segment() {
         let mut app = App::new();
         app.workflow_summary = Some(crate::app::WorkflowSummary {
+            workflow_id: "feature".to_string(),
+            workflow_role: omega_session::WorkflowRunRole::Child,
             id: "report".to_string(),
             label: "Report".to_string(),
             index: 4,
@@ -1050,10 +1415,16 @@ mod tests {
     #[test]
     fn bottom_status_renders_session_slot_when_present() {
         let mut app = App::new();
-        app.session_status_label = Some("Workspace ready".to_string());
+        app.session_status = Some(SessionStatusSummary::Routing(SessionRoutingSummary {
+            root_workflow_id: "root".to_string(),
+            active_workflow_id: "feature".to_string(),
+            active_workflow_role: omega_session::WorkflowRunRole::Child,
+            recognized_scene_id: Some("feature".to_string()),
+            selected_workflow_id: Some("feature".to_string()),
+        }));
 
         let text = bottom_status_text(&app, "test-model", &['⠋', '⠙']);
 
-        assert!(text.contains("Workspace ready"));
+        assert!(text.contains("feature -> feature"));
     }
 }

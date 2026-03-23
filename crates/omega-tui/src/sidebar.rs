@@ -1,5 +1,6 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SidebarSection {
+    Diagnostics,
     Todos,
     Logs,
 }
@@ -7,6 +8,7 @@ pub enum SidebarSection {
 impl SidebarSection {
     pub fn label(self) -> &'static str {
         match self {
+            Self::Diagnostics => "Diagnostics",
             Self::Todos => "Todos",
             Self::Logs => "Logs",
         }
@@ -14,8 +16,9 @@ impl SidebarSection {
 
     pub fn next(self) -> Self {
         match self {
+            Self::Diagnostics => Self::Todos,
             Self::Todos => Self::Logs,
-            Self::Logs => Self::Todos,
+            Self::Logs => Self::Diagnostics,
         }
     }
 
@@ -28,6 +31,7 @@ impl SidebarSection {
 pub struct SidebarState {
     pub shell_collapsed: bool,
     pub rail_selection: SidebarSection,
+    pub diagnostics_expanded: bool,
     pub todos_expanded: bool,
     pub logs_expanded: bool,
 }
@@ -36,7 +40,8 @@ impl Default for SidebarState {
     fn default() -> Self {
         Self {
             shell_collapsed: false,
-            rail_selection: SidebarSection::Todos,
+            rail_selection: SidebarSection::Diagnostics,
+            diagnostics_expanded: true,
             todos_expanded: true,
             logs_expanded: true,
         }
@@ -45,7 +50,9 @@ impl Default for SidebarState {
 
 impl SidebarState {
     pub fn expanded_sections(self) -> usize {
-        usize::from(self.todos_expanded) + usize::from(self.logs_expanded)
+        usize::from(self.diagnostics_expanded)
+            + usize::from(self.todos_expanded)
+            + usize::from(self.logs_expanded)
     }
 
     pub fn toggle_shell(&mut self) {
@@ -62,6 +69,7 @@ impl SidebarState {
 
     pub fn is_expanded(self, section: SidebarSection) -> bool {
         match section {
+            SidebarSection::Diagnostics => self.diagnostics_expanded,
             SidebarSection::Todos => self.todos_expanded,
             SidebarSection::Logs => self.logs_expanded,
         }
@@ -73,6 +81,7 @@ impl SidebarState {
         }
 
         match self.rail_selection {
+            SidebarSection::Diagnostics => self.diagnostics_expanded = !self.diagnostics_expanded,
             SidebarSection::Todos => self.todos_expanded = !self.todos_expanded,
             SidebarSection::Logs => self.logs_expanded = !self.logs_expanded,
         }
@@ -87,6 +96,7 @@ mod tests {
     #[test]
     fn toggling_last_expanded_section_keeps_sidebar_body_nonempty() {
         let mut state = SidebarState {
+            diagnostics_expanded: false,
             todos_expanded: false,
             logs_expanded: true,
             rail_selection: SidebarSection::Logs,

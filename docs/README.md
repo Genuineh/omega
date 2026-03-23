@@ -22,6 +22,7 @@ This directory contains the working documentation set for the Omega Rust project
 | `docs/specs/omega-tui-modal-keymap.md` | Specification | Modal keymap, leader routing, and `.omega` keybinding config plan for `omega-tui` |
 | `docs/specs/omega-tui-overlay-popups.md` | Specification | Floating overlay / popup interaction plan for transient `omega-tui` workflows |
 | `docs/specs/omega-tui-runtime-experience.md` | Specification | Active TUI-only experience plan for the richer `omega-tui` runtime path |
+| `docs/specs/omega-tui-response-thinking-experience.md` | Specification | Structured Response timeline and provider-exposed thinking visibility plan |
 | `docs/specs/omega-tui-todo-sidebar-layout.md` | Specification | Todo/Logs split-panel layout for the TUI sidebar |
 | `docs/specs/omega-tui-non-ui-extraction.md` | Specification | Historical Task 15D extraction baseline; keep for boundary rationale, not as the latest runtime-path source of truth |
 | `docs/specs/omega-app-package.md` | Specification | Implemented `omega-app` assembly package and main-entry boundary |
@@ -29,6 +30,7 @@ This directory contains the working documentation set for the Omega Rust project
 | `docs/specs/omega-runtime-ui-message-contract.md` | Specification | Current source of truth for `omega-tui` / `omega-session` / `omega-core` runtime-path relations and unified UI contract planning |
 | `docs/specs/omega-step-session-asset-model.md` | Specification | Planned step model and session asset management boundary for workflow execution |
 | `docs/specs/omega-workflow-package.md` | Specification | Configurable four-step workflow package and TUI phase visibility plan |
+| `docs/specs/omega-client-anthropic-api-abstraction.md` | Specification | Planned Anthropic API abstraction layer for `omega-client`, with Minimax as an Anthropic-compatible provider |
 | `docs/guide/omega-dev-guide.md` | Guide | Developer onboarding and local workflow guide |
 | `docs/decisions/README.md` | Index | ADR index |
 | `docs/decisions/001-crate-architecture.md` | ADR | Multi-crate workspace structure |

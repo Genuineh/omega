@@ -1,25 +1,34 @@
 use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};
-use omega_client::{ChatRequest, ContentBlock, ToolDefinition};
+use futures_util::StreamExt;
+use omega_client::{ChatRequest, ChatResponse, ContentBlock, ToolDefinition};
 use omega_skills::LoadSkillHandler;
-use omega_todo::{TodoItem, TodoStatus, TodoToolHandler};
+use omega_todo::{SharedTodoManager, TodoToolHandler};
 use omega_tools::ToolDispatcher;
 use omega_tools_builtin::{BashHandler, EditHandler, ReadHandler, WriteHandler};
 use tracing::{error, info, instrument};
 use uuid::Uuid;
 
 // Re-export construction types for downstream crates (e.g. omega-tui).
+pub use omega_client::{ChatEvent, ChatResponseBuilder};
 pub use omega_client::{
-    ClientError, DynLlmClient, LlmClient, Message, MinimaxClient, MinimaxConfig,
+    ChatEventStream, ClientError, DynLlmClient, LlmClient, Message, MinimaxClient, MinimaxConfig,
     STOP_REASON_END_TURN, STOP_REASON_TOOL_USE,
 };
-pub use omega_todo::{TodoManager, TodoToolHandler as CoreTodoToolHandler};
+pub use omega_todo::{
+    SharedTodoManager as CoreSharedTodoManager, TodoItem, TodoManager, TodoStatus,
+    TodoToolHandler as CoreTodoToolHandler,
+};
 
 /// Core agent that implements the LLM ↔ tool execution loop.
 ///
 /// Mirrors the Python reference: `learn-claude-code/agents/s01_agent_loop.py`
 const DEFAULT_MAX_ITERATIONS: u32 = 100;
+
+fn tool_not_visible_error(name: &str) -> String {
+    format!("Error: Tool '{name}' is not available in this workflow step")
+}
 
 fn todo_input_has_open_items(input: &serde_json::Value) -> Option<bool> {
     let items = input.get("items")?.clone();
@@ -67,15 +76,18 @@ impl Agent {
     }
 
     pub async fn run_single_response(&mut self) -> Result<String> {
+        self.run_single_response_with_events(|_| {}).await
+    }
+
+    pub async fn run_single_response_with_events<F>(&mut self, on_chat_event: F) -> Result<String>
+    where
+        F: FnMut(&ChatEvent),
+    {
         let request = ChatRequest::new(self.messages.clone())
             .with_system(&self.system)
             .with_max_tokens(self.max_tokens);
 
-        let response = self
-            .client
-            .chat(request)
-            .await
-            .map_err(|e| anyhow!("{e}"))?;
+        let response = self.stream_chat_response(request, on_chat_event).await?;
 
         if response.is_tool_use() {
             return Err(anyhow!(
@@ -90,10 +102,10 @@ impl Agent {
 
     /// Run the agent loop without tool-call callbacks.
     pub async fn run_loop(&mut self) -> Result<String> {
-        self.run_loop_with(|_, _, _| {}).await
+        self.run_loop_with(|_, _, _, _| {}).await
     }
 
-    /// Run the agent loop, calling `on_tool_call(name, input, output)` after
+    /// Run the agent loop, calling `on_tool_call(tool_use_id, name, input, output)` after
     /// each tool execution so the caller can display progress.
     #[instrument(
         skip(self, on_tool_call),
@@ -104,9 +116,21 @@ impl Agent {
             agent_loop.stop_reason
         )
     )]
-    pub async fn run_loop_with<F>(&mut self, mut on_tool_call: F) -> Result<String>
+    pub async fn run_loop_with<F>(&mut self, on_tool_call: F) -> Result<String>
     where
-        F: FnMut(&str, &serde_json::Value, &str),
+        F: FnMut(&str, &str, &serde_json::Value, &str),
+    {
+        self.run_loop_with_events(on_tool_call, |_| {}).await
+    }
+
+    pub async fn run_loop_with_events<F, E>(
+        &mut self,
+        mut on_tool_call: F,
+        mut on_chat_event: E,
+    ) -> Result<String>
+    where
+        F: FnMut(&str, &str, &serde_json::Value, &str),
+        E: FnMut(&ChatEvent),
     {
         let session_id = Uuid::new_v4().to_string();
         let todo_enabled = self.dispatcher.has_tool("todo");
@@ -141,10 +165,8 @@ impl Agent {
                 .with_max_tokens(self.max_tokens);
 
             let response = self
-                .client
-                .chat(request)
-                .await
-                .map_err(|e| anyhow!("{e}"))?;
+                .stream_chat_response(request, &mut on_chat_event)
+                .await?;
 
             // Record stop_reason
             if let Some(ref stop_reason) = response.stop_reason {
@@ -171,21 +193,27 @@ impl Agent {
             let mut updated_todo = false;
             for block in &response.content {
                 if let ContentBlock::ToolUse { id, name, input } = block {
-                    let result = match self.dispatcher.dispatch(name, input.clone()) {
-                        Ok(output) => {
-                            if name == "todo" && !output.starts_with("Error:") {
-                                updated_todo = true;
-                                if let Some(has_open_items) = todo_input_has_open_items(input) {
-                                    todo_has_open_items = has_open_items;
+                    let result = if !self.is_tool_visible(name) {
+                        let err_msg = tool_not_visible_error(name);
+                        on_tool_call(id, name, input, &err_msg);
+                        ContentBlock::tool_result_error(id, &err_msg)
+                    } else {
+                        match self.dispatcher.dispatch(name, input.clone()) {
+                            Ok(output) => {
+                                if name == "todo" && !output.starts_with("Error:") {
+                                    updated_todo = true;
+                                    if let Some(has_open_items) = todo_input_has_open_items(input) {
+                                        todo_has_open_items = has_open_items;
+                                    }
                                 }
+                                on_tool_call(id, name, input, &output);
+                                ContentBlock::tool_result(id, &output)
                             }
-                            on_tool_call(name, input, &output);
-                            ContentBlock::tool_result(id, &output)
-                        }
-                        Err(e) => {
-                            let err_msg = e.to_string();
-                            on_tool_call(name, input, &err_msg);
-                            ContentBlock::tool_result_error(id, &err_msg)
+                            Err(e) => {
+                                let err_msg = e.to_string();
+                                on_tool_call(id, name, input, &err_msg);
+                                ContentBlock::tool_result_error(id, &err_msg)
+                            }
                         }
                     };
                     results.push(result);
@@ -211,6 +239,30 @@ impl Agent {
 
             self.messages.push(Message::tool_results(results));
         }
+    }
+
+    async fn stream_chat_response<F>(
+        &self,
+        request: ChatRequest,
+        mut on_chat_event: F,
+    ) -> Result<ChatResponse>
+    where
+        F: FnMut(&ChatEvent),
+    {
+        let mut stream = self
+            .client
+            .chat_stream(request)
+            .await
+            .map_err(|e| anyhow!("{e}"))?;
+        let mut builder = ChatResponseBuilder::new();
+
+        while let Some(event) = stream.next().await {
+            let event = event.map_err(|e| anyhow!("{e}"))?;
+            on_chat_event(&event);
+            builder.push_event(event).map_err(|e| anyhow!("{e}"))?;
+        }
+
+        builder.finish().map_err(|e| anyhow!("{e}"))
     }
 
     pub fn messages(&self) -> &[Message] {
@@ -262,10 +314,26 @@ impl Agent {
             .map(|definition| definition.name.as_str())
             .collect()
     }
+
+    fn is_tool_visible(&self, name: &str) -> bool {
+        self.tool_definitions
+            .iter()
+            .any(|definition| definition.name == name)
+    }
 }
 
 /// Create a ToolDispatcher with all built-in tools.
 pub fn create_default_tools(root: PathBuf) -> ToolDispatcher {
+    create_default_tools_with_todo_manager(
+        root,
+        std::sync::Arc::new(std::sync::Mutex::new(TodoManager::new())),
+    )
+}
+
+pub fn create_default_tools_with_todo_manager(
+    root: PathBuf,
+    todo_manager: SharedTodoManager,
+) -> ToolDispatcher {
     let mut dispatcher = ToolDispatcher::new();
     dispatcher.register(Box::new(BashHandler::new(root.clone())));
     dispatcher.register(Box::new(ReadHandler::new(root.clone())));
@@ -274,7 +342,7 @@ pub fn create_default_tools(root: PathBuf) -> ToolDispatcher {
     if let Ok(handler) = LoadSkillHandler::from_repo_root(&root) {
         dispatcher.register(Box::new(handler));
     }
-    dispatcher.register(Box::new(TodoToolHandler::new()));
+    dispatcher.register(Box::new(TodoToolHandler::with_manager(todo_manager)));
     dispatcher
 }
 
@@ -282,6 +350,7 @@ pub fn create_default_tools(root: PathBuf) -> ToolDispatcher {
 mod tests {
     use super::*;
     use async_trait::async_trait;
+    use omega_client::ChatEvent;
     use omega_client::{
         ChatResponse, ClientError, MessageContent, Usage, STOP_REASON_END_TURN,
         STOP_REASON_TOOL_USE,
@@ -431,7 +500,7 @@ mod tests {
 
     #[tokio::test]
     async fn callback_receives_tool_output() {
-        let calls: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        let calls: Arc<Mutex<Vec<(String, String, String)>>> = Arc::new(Mutex::new(Vec::new()));
         let calls_clone = calls.clone();
 
         let client: DynLlmClient = Arc::new(MockLlmClient::new(vec![
@@ -449,19 +518,81 @@ mod tests {
         agent.add_user_message("go");
 
         agent
-            .run_loop_with(|name, _input, output| {
-                calls_clone
-                    .lock()
-                    .unwrap()
-                    .push((name.to_string(), output.to_string()));
+            .run_loop_with(|tool_use_id, name, _input, output| {
+                calls_clone.lock().unwrap().push((
+                    tool_use_id.to_string(),
+                    name.to_string(),
+                    output.to_string(),
+                ));
             })
             .await
             .unwrap();
 
         let recorded = calls.lock().unwrap();
         assert_eq!(recorded.len(), 1);
-        assert_eq!(recorded[0].0, "bash");
-        assert!(recorded[0].1.contains("callback_test"));
+        assert_eq!(recorded[0].0, "t1");
+        assert_eq!(recorded[0].1, "bash");
+        assert!(recorded[0].2.contains("callback_test"));
+    }
+
+    #[tokio::test]
+    async fn response_event_callback_receives_text_and_completion() {
+        let events: Arc<Mutex<Vec<ChatEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let events_clone = events.clone();
+
+        let client: DynLlmClient = Arc::new(MockLlmClient::new(vec![ChatResponse {
+            id: "msg_test".to_string(),
+            model: Some("mock".to_string()),
+            content: vec![
+                ContentBlock::Thinking {
+                    thinking: "draft".to_string(),
+                    signature: None,
+                },
+                ContentBlock::text("Hello!"),
+            ],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: Some(Usage {
+                input_tokens: 10,
+                output_tokens: 5,
+            }),
+        }]));
+        let tmp = std::env::temp_dir().join("omega-core-event-cb-test");
+        let _ = std::fs::create_dir_all(&tmp);
+        let dispatcher = create_default_tools(tmp);
+        let mut agent = Agent::new(client, "Test".to_string(), dispatcher).unwrap();
+        agent.add_user_message("go");
+
+        let result = agent
+            .run_single_response_with_events(|event| {
+                events_clone.lock().unwrap().push(event.clone());
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(result, "Hello!");
+        assert_eq!(
+            events.lock().unwrap().as_slice(),
+            &[
+                ChatEvent::MessageStart {
+                    id: "msg_test".to_string(),
+                    model: Some("mock".to_string()),
+                },
+                ChatEvent::ThinkingDelta {
+                    thinking: "draft".to_string(),
+                    signature: None,
+                },
+                ChatEvent::TextDelta {
+                    text: "Hello!".to_string(),
+                },
+                ChatEvent::MessageComplete {
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: Some(Usage {
+                        input_tokens: 10,
+                        output_tokens: 5,
+                    }),
+                },
+            ]
+        );
     }
 
     #[test]
@@ -745,6 +876,31 @@ mod tests {
                 "write_file"
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn hidden_tool_calls_return_tool_result_error() {
+        let mut agent = make_agent(vec![
+            tool_use_response("t1", "bash", serde_json::json!({"command": "echo hidden"})),
+            text_response("done"),
+        ]);
+        agent.set_visible_tools(Some(&["read_file"]));
+        agent.add_user_message("inspect workspace");
+
+        let result = agent.run_loop().await.unwrap();
+
+        assert_eq!(result, "done");
+
+        let MessageContent::Blocks(blocks) = &agent.messages()[2].content else {
+            panic!("expected tool result blocks");
+        };
+
+        assert!(matches!(
+            &blocks[0],
+            ContentBlock::ToolResult { content, is_error, .. }
+                if is_error == &Some(true)
+                    && content.as_str() == Some("Error: Tool 'bash' is not available in this workflow step")
+        ));
     }
 
     #[tokio::test]

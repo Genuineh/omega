@@ -51,6 +51,30 @@ pub enum RuntimeUiEffect {
     FocusHint {
         target: UiTarget,
     },
+    BeginResponseSection {
+        section: ResponseSection,
+    },
+    AppendResponseSection {
+        id: String,
+        delta: ResponseSectionDelta,
+    },
+    CompleteResponseSection {
+        id: String,
+        state: ResponseSectionState,
+    },
+    BeginToolRun {
+        tool_run: ToolRun,
+    },
+    UpdateToolRun {
+        tool_run: ToolRun,
+    },
+    CompleteToolRun {
+        id: String,
+        status: ToolRunStatus,
+    },
+    UpsertStepDiagnostics {
+        diagnostics: Box<StepDiagnostics>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,16 +98,188 @@ pub enum StatusSlot {
     Session,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkflowRunRole {
+    Root,
+    Child,
+}
+
+impl WorkflowRunRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Root => "root",
+            Self::Child => "child",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StatusValue {
     Label(String),
     WorkflowStep {
+        workflow_id: String,
+        workflow_role: WorkflowRunRole,
         step_id: String,
         step_label: String,
         index: usize,
         total: usize,
     },
+    SessionRouting {
+        root_workflow_id: String,
+        active_workflow_id: String,
+        active_workflow_role: WorkflowRunRole,
+        recognized_scene_id: Option<String>,
+        selected_workflow_id: Option<String>,
+    },
     Hidden,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResponseSection {
+    pub id: String,
+    pub parent_id: Option<String>,
+    pub kind: ResponseSectionKind,
+    pub title: String,
+    pub state: ResponseSectionState,
+    pub metadata: ResponseSectionMetadata,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResponseSectionKind {
+    Routing,
+    Step,
+    FinalAnswer,
+    Thinking,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResponseSectionMetadata {
+    pub scene_id: Option<String>,
+    pub workflow_id: String,
+    pub workflow_role: WorkflowRunRole,
+    pub step_id: Option<String>,
+    pub step_label: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResponseSectionState {
+    Streaming,
+    Complete,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResponseSectionDelta {
+    Text(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolRun {
+    pub id: String,
+    pub parent_section_id: String,
+    pub tool_name: String,
+    pub status: ToolRunStatus,
+    pub invocation_preview: String,
+    pub result_preview: Option<String>,
+    pub detail: ToolRunDetail,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolRunStatus {
+    Running,
+    Complete,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolRunDetail {
+    pub title: String,
+    pub lines: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepDiagnostics {
+    pub id: String,
+    pub workflow_id: String,
+    pub workflow_role: WorkflowRunRole,
+    pub step_id: String,
+    pub step_label: String,
+    pub index: usize,
+    pub total: usize,
+    pub input: StepInputDiagnostics,
+    pub output: StepOutputDiagnostics,
+    pub session_writes: Vec<StepContextWrite>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepInputDiagnostics {
+    pub status: StepInputStatus,
+    pub summary_sources: Vec<StepSummarySource>,
+    pub expected_structured_sources: Vec<String>,
+    pub resolved_structured_sources: Vec<String>,
+    pub missing_structured_sources: Vec<String>,
+    pub structured_input_preview: Option<String>,
+    pub todo_state_preview: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepInputStatus {
+    None,
+    Ready,
+    OptionalEmpty,
+    MissingRequired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepSummarySource {
+    pub workflow_id: String,
+    pub step_id: String,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepOutputDiagnostics {
+    pub contract_mode: StepOutputContractMode,
+    pub format: Option<String>,
+    pub schema_path: Option<String>,
+    pub status: StepOutputStatus,
+    pub extracted_preview: Option<String>,
+    pub attempts: u32,
+    pub retry_count: u32,
+    pub max_retries: u32,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepOutputContractMode {
+    None,
+    Required,
+    Optional,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepOutputStatus {
+    None,
+    Pending,
+    Valid,
+    Invalid,
+    Skipped,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepContextWriteKind {
+    Added,
+    Updated,
+    Cleared,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepContextWrite {
+    pub path: String,
+    pub kind: StepContextWriteKind,
+    pub before_preview: Option<String>,
+    pub after_preview: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,11 +302,14 @@ pub enum UiSource {
     User,
     Assistant,
     WorkflowStep {
+        workflow_id: String,
+        workflow_role: WorkflowRunRole,
         step_id: String,
         step_label: String,
         index: usize,
         total: usize,
     },
+    SessionRouting,
     Tool {
         tool_name: String,
     },

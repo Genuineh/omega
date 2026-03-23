@@ -16,5 +16,7 @@ omega-theme = { path = "../omega-theme" }
 omega-tui = { path = "../omega-tui" }
 omega-workflow = { path = "../omega-workflow" }
 anyhow.workspace = true
+serde.workspace = true
 tokio.workspace = true
+toml.workspace = true
 tracing.workspace = true

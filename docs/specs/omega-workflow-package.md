@@ -18,6 +18,8 @@ related_prds: []
 
 截至当前实现，这四个 canonical steps 实际上对应内建的 `feature` execution workflow。下一阶段若要在其之上加入 `scene`、`chat` workflow 与主路由 workflow，应以 [docs/specs/omega-scene-routing.md](omega-scene-routing.md) 为规划基线，而不是直接改写本规格中的“当前已实现状态”。
 
+同样需要明确的是：`Task 15F-8` 已把 workflow 主路径的 step 运行方式收敛到统一的有界 agent loop。当前 `loop_mode = "single_response"` / `"tool_loop"` 只作为配置兼容别名存在，真正的运行时差异已经下沉为 `tool_request + max_iterations + step prompt`；后续主线将继续以 [docs/specs/omega-step-session-asset-model.md](omega-step-session-asset-model.md) 为准，引入 session-owned step context。
+
 ## Goals
 
 - 新增独立 `omega-workflow` crate，集中承载工作流定义、默认阶段、配置加载、校验与运行时阶段状态模型。
@@ -281,6 +283,8 @@ SessionUpdate::WorkflowStepChanged {
 - 当前实现仍以固定四阶段为默认结构，这是可运行的 v1。
 - 下一阶段规划会保留 `step` 术语，并把这些阶段提升为通用 step definition。
 - tools 与 skills 的分配边界会收敛到 `omega-session`，供 step 以及后续 subagent、team 复用。
+- step 执行语义会从“部分 single-response、部分 tool-loop”继续收敛为“所有 step 共用有界最小 agent loop”。
+- 后续 step 输入会显式消费 session-owned step context，而不再只把 raw message history 当作唯一上下文来源。
 - workflow 产生的 step 正文结果、phase change 与 tool-preview 邻接输出，后续应通过统一 runtime UI message/effect contract 接入前端，而不是继续为 TUI 单独加特例 update。
 - 该演进以 `docs/specs/omega-step-session-asset-model.md` 为主规格，当前文档继续作为已实现 v1 行为的说明。
 
@@ -314,3 +318,5 @@ SessionUpdate::WorkflowStepChanged {
 - 2026-03-19: `omega-workflow` crate 已实现，并接入 `omega-session` 阶段更新与 `omega-tui` 底部 `flow` 状态槽。
 - 2026-03-20: 将四阶段提示词外置到 `.omega/prompt/step/*.md`，并把阶段推进修正为真实的 `analysis -> plan -> execute -> report` 受控执行序列。
 - 2026-03-20: 记录下一阶段规划，准备将固定阶段模型演进为通用 step definition，并把 tools/skills 收敛到 session 资产管理边界。
+- 2026-03-20: 补充 v1 之后的主线方向：所有 step 将继续收敛为统一的有界 agent loop，并引入 session-owned step context 作为 step-to-step 协同基础。
+- 2026-03-20: Task 15F-8 完成，workflow 主路径已统一到 bounded agent loop；legacy `single_response` / `tool_loop` 仅保留为配置兼容解析别名。

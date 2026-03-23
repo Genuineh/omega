@@ -16,6 +16,8 @@ related_prds: []
 
 本规格提出一个统一的运行态 UI 协议层，让各个非 UI 模块不再直接“适配 TUI”，而是向一个稳定的 runtime UI bridge 发送结构化消息和效果请求。`omega-tui` 只是这个协议的一个消费者，负责把协议映射为具体视图状态和渲染结果。这样既能改善当前 workflow 在 `Response` 的输出体验，也能为后续多种样式和多模块运行态信息建立统一扩展面。
 
+当前补充说明：本规格的已实现部分已经覆盖 workflow / tool / todo / routing，以及 `Task 15F-6` / `Task 15B-20` / `Task 15B-21` / `Task 15F-7` 组合出的 response timeline + tool lifecycle foundation：`omega-session` 现在不仅可以发出 `BeginResponseSection` / `AppendResponseSection` / `CompleteResponseSection`，也可以发出 `BeginToolRun` / `UpdateToolRun` / `CompleteToolRun`。其中 `ToolRun` 以 stable `tool_use_id`、`parent_section_id`、`status`、`invocation_preview`、`result_preview` 与 detail lines 描述 step 内工具调用；`omega-tui` 当前已经兼容该 effect 扩展，并继续保留现有 `ResponseSectionKind::{Routing, Step, FinalAnswer, Thinking}` timeline 渲染。`Thinking` section 在流式阶段实时可见，完成后默认折叠为摘要，并受 `.omega/tui.toml` 的 `[response].show_thinking` 开关控制。
+
 ## Goals
 
 - 为 workflow step 正文结果提供比当前特例化 `SessionUpdate` 更稳定的输出协议。
@@ -294,9 +296,29 @@ pub enum StatusSlot {
     Session,
 }
 
+pub enum WorkflowRunRole {
+    Root,
+    Child,
+}
+
 /// 状态栏槽位值。
 pub enum StatusValue {
     Label(String),
+    WorkflowStep {
+        workflow_id: String,
+        workflow_role: WorkflowRunRole,
+        step_id: String,
+        step_label: String,
+        index: usize,
+        total: usize,
+    },
+    SessionRouting {
+        root_workflow_id: String,
+        active_workflow_id: String,
+        active_workflow_role: WorkflowRunRole,
+        recognized_scene_id: Option<String>,
+        selected_workflow_id: Option<String>,
+    },
     Hidden,
 }
 
@@ -322,7 +344,15 @@ pub struct OverlayRequest {
 pub enum UiSource {
     User,
     Assistant,
-    WorkflowStep { step_id: String, step_label: String },
+    WorkflowStep {
+        workflow_id: String,
+        workflow_role: WorkflowRunRole,
+        step_id: String,
+        step_label: String,
+        index: usize,
+        total: usize,
+    },
+    SessionRouting,
     Tool { tool_name: String },
     SkillLoader,
     Subagent { agent_id: String },
@@ -352,6 +382,8 @@ pub enum UiMessageKind {
 - workflow step 正文结果进入 `Response` 时，优先使用 `Narrative` 或 `Result`。
 - tool preview 默认进入 `Activity(Log)`。
 - workflow step phase change 不再伪装成正文消息，应通过 `Effect` 或 `Activity(Log)` 表达。
+- scene / workflow routing 不应再以自由字符串塞进 `StatusSlot::Session` 后再由消费者反解析；应优先使用结构化 `StatusValue::SessionRouting`。
+- root / child workflow 的步骤 Activity 应通过 `WorkflowRunRole + workflow_id` 明确区分，而不是只发一条无法归类的 summary 文本。
 
 ### RuntimeUiEffect
 
@@ -363,15 +395,53 @@ pub enum RuntimeUiEffect {
     ShowOverlay(OverlayRequest),
     HideOverlay { target: OverlayTarget },
     FocusHint { target: UiTarget },
+    BeginResponseSection { section: ResponseSection },
+    AppendResponseSection { id: String, delta: ResponseSectionDelta },
+    CompleteResponseSection { id: String, state: ResponseSectionState },
+    BeginToolRun { tool_run: ToolRun },
+    UpdateToolRun { tool_run: ToolRun },
+    CompleteToolRun { id: String, status: ToolRunStatus },
 }
 ```
 
 说明：
 
 - 不是所有 UI 变化都应表示为 message；例如更新状态栏 slot、本轮 todo snapshot 替换、overlay 打开/关闭，更适合作为 effect。
-- 内容追加统一走 `Envelope::Message`，effect 只负责 UI 状态变化。不设 `AppendMessage` effect，避免同一意图存在两条路径。
+- `Response` 的流式正文与 step-owned tool lifecycle 同样属于结构化 UI 状态变化，因此分别通过 `Begin/Append/CompleteResponseSection` 与 `Begin/Update/CompleteToolRun` 表达；不设通用 `AppendMessage` effect，避免同一意图存在两条路径。
 - 该层不携带具体布局指令，例如"把右栏宽度改为 40%"或"把第三个 widget 高亮成黄色"。
 - 不设 `Invalidate` effect：当前 TUI 每帧全量渲染，此 effect 无可观测行为。如果未来 partial-update GUI 需要，届时再引入。
+
+### ToolRun Model
+
+```rust
+pub struct ToolRun {
+    pub id: String,
+    pub parent_section_id: String,
+    pub tool_name: String,
+    pub status: ToolRunStatus,
+    pub invocation_preview: String,
+    pub result_preview: Option<String>,
+    pub detail: ToolRunDetail,
+}
+
+pub enum ToolRunStatus {
+    Running,
+    Complete,
+    Failed,
+}
+
+pub struct ToolRunDetail {
+    pub title: String,
+    pub lines: Vec<String>,
+}
+```
+
+约束：
+
+- `id` 应优先复用 provider `tool_use_id`，避免 session/TUI 再次自造不稳定标识。
+- `parent_section_id` 用于把工具调用稳定归属到具体 step response section，而不是依赖 `Activity` 文本前缀反推。
+- `invocation_preview` / `result_preview` 面向 step-level 摘要视图；`detail.lines` 面向 overlay 或 Activity drill-down。
+- 兼容期内，`Activity(Log)` 的 `[tool] ...` 预览可以继续保留，但新的 step-level UI 必须优先消费 `ToolRun` 而不是解析日志字符串。
 
 ## Workflow Output Strategy
 
