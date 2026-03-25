@@ -8,7 +8,6 @@ _任务编号以 `docs/specs/omega-agent-impl-plan.md` 为准；为支持可运�
 
 ### High
 
-- **Task 15B-24 ~ 15B-26**: 大文件拆分维护仍需前移；`omega-session` 与 `omega-workflow` 已完成入口瘦身和内部模块化拆分，但 `omega-tui/src/{app,event,render}.rs` 仍是后续 Task 10 / Task 11 以及 hook/gate/mock harness 方案持续放大复杂度的主阻力，应继续沿同样模式收拢 UI 模块边界。
 - **Task 15F-19 ~ 15F-22**: 大文件拆分完成后，应立即进入 step lifecycle hook / advance gate / deterministic mock harness 路线，而不是继续把 scene-specific execute 语义硬编码进 `omega-session`；这组任务为 Task 10 / Task 11 和未来不同工作场景下的 step 完成判据提供统一入口。
 - **Task 10**: `omega-subagent` 仍重要，但应建立在新的 all-step loop + step context 主路径之上推进，避免继续绑定 v1 workflow 假设；当前 execute 的 runtime repeat 已经补齐，剩余 gap 更集中在跨 step / 跨 workflow 的自治编排。
 - **Task 11**: 上下文压缩仍重要，但应建立在新的 session context 边界之上，而不是只对 raw transcript 做早期补丁。
@@ -283,30 +282,36 @@ _2026-03-25 补充：已按仓库当前真实体量做过一轮扫描；当前�
 - **Related**: docs/specs/omega-workflow-package.md, docs/specs/omega-scene-routing.md, docs/specs/omega-agent-impl-plan.md
 
 ### Task 15B-24: omega-tui — App State / Diagnostics Helper Split
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-03-25
 - **Priority**: High
 - **Description**: 将 `omega-tui/src/app.rs` 中的 `App` 状态机与 `diagnostics formatting`、`text selection/wrap helpers`、`todo / response summarization helpers` 分离，确保主状态容器不再与大量展示辅助逻辑耦合。
 - **Complexity**: L
 - **Planning Note**: 当前 `app.rs` 同时持有 `App` 主状态、diagnostics line/detail 构造、tool/response/thinking 摘要、文本选择与 wrap helper，以及大块测试；适合先从 helper 抽离开始。
 - **Blocked by**: Task 15F-15
+- **Summary**: `omega-tui/src/app.rs` 已拆出 `app/diagnostics.rs`、`app/response.rs`、`app/text.rs` 与 `app/todo.rs` 四个内部子模块，分别承接 contract diagnostics 构造、response/tool/thinking timeline helper、panel text selection/wrap，以及 todo snapshot/summary helper；`App` 根文件现主要保留状态定义、overlay/sidebar/focus 流转与少量标题/模式逻辑，对 `render.rs` / `event.rs` 的现有调用面保持兼容。验证已通过 `cargo fmt -p omega-tui` 与 `cargo test -p omega-tui`。
 - **Related**: docs/specs/omega-tui-runtime-experience.md, docs/specs/omega-tui-input-status-layout.md
 
 ### Task 15B-25: omega-tui — Event Routing Module Split
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-03-25
 - **Priority**: High
 - **Description**: 将 `omega-tui/src/event.rs` 拆为 `keyboard`、`overlay intent`、`mouse`、`clipboard` 与输入编辑辅助模块，避免单文件继续承载所有交互入口。
 - **Complexity**: M
 - **Planning Note**: 当前 `event.rs` 的核心问题不是算法复杂，而是多种输入通道和 overlay 逻辑都堆在一个文件内；后续继续加快捷键、overlay 或 sidebar 交互会更难守住边界。
 - **Blocked by**: Task 15F-15
+- **Summary**: `omega-tui/src/event.rs` 已收瘦为统一入口，并拆出 `event/key.rs`、`event/overlay_handlers.rs`、`event/mouse.rs` 与 `event/clipboard.rs` 四个内部子模块，分别承接 key routing / action dispatch、overlay 按键与 confirm intent、鼠标命中与选择滚动，以及剪贴板复制 helper；根层保留 `handle_event` 与测试所需 seam，现有 `event_tests.rs` 无需重写即可继续覆盖 submit、overlay、sidebar、mouse selection 与 clipboard 路径。验证已通过 `cargo fmt -p omega-tui` 与 `cargo test -p omega-tui --color never`。
 - **Related**: docs/specs/omega-tui-modal-keymap.md, docs/specs/omega-tui-overlay-popups.md, docs/specs/omega-tui-runtime-experience.md
 
 ### Task 15B-26: omega-tui — Render Pipeline Split
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-03-25
 - **Priority**: High
 - **Description**: 将 `omega-tui/src/render.rs` 拆为 `main layout`、`sidebar`、`status bar`、`overlay` 与 `style helpers` 模块，降低 UI 扩展时的渲染耦合。
 - **Complexity**: M
 - **Planning Note**: 当前 `render.rs` 同时处理主布局、底部状态带、侧栏、overlay、样式辅助与测试；继续把更多 runtime 面板或视觉语义叠加在同一文件内会让改动难以定位。
 - **Blocked by**: Task 15F-15
+- **Summary**: `omega-tui/src/render.rs` 已收瘦为模块根，并拆出 `render/layout.rs`、`render/sidebar.rs`、`render/status.rs`、`render/overlay.rs` 与 `render/style.rs` 五个内部子模块，分别承接主布局、侧栏、上下文/状态带、overlay 与 response/thinking 样式逻辑；根层继续保留 `render` 入口和 `render_tests.rs` 依赖的 helper seam，因此现有渲染测试无需重写即可继续覆盖 wrap、status/context bar 与 style 行为。验证已通过 `cargo fmt --all` 与 `cargo test -p omega-tui --color never`。
 - **Related**: docs/specs/omega-tui-runtime-experience.md, docs/specs/omega-tui-collapsible-sidebar.md, docs/specs/omega-tui-overlay-popups.md
 
 ### Task 2B: omega-client — Provider Client Module Split

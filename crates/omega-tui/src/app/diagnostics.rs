@@ -1,0 +1,415 @@
+use omega_observability::strip_ansi;
+use omega_session::{
+    StepContextWrite, StepContextWriteKind, StepDiagnostics, StepInputStatus,
+    StepOutputAttemptKind, StepOutputRecoveryDecision, StepOutputStatus,
+};
+
+use super::{App, DiagnosticsLine, Panel};
+
+impl App {
+    pub fn upsert_step_diagnostics(&mut self, diagnostics: StepDiagnostics) {
+        let sanitized = sanitize_step_diagnostics(diagnostics);
+        if let Some(existing) = self
+            .step_diagnostics
+            .iter_mut()
+            .find(|existing| existing.id == sanitized.id)
+        {
+            *existing = sanitized;
+        } else {
+            self.step_diagnostics.push(sanitized);
+        }
+        self.step_diagnostics.sort_by(|left, right| {
+            (
+                left.workflow_role.as_str(),
+                left.workflow_id.as_str(),
+                left.index,
+                left.step_id.as_str(),
+            )
+                .cmp(&(
+                    right.workflow_role.as_str(),
+                    right.workflow_id.as_str(),
+                    right.index,
+                    right.step_id.as_str(),
+                ))
+        });
+        self.rebuild_diagnostics_lines();
+    }
+
+    pub fn diagnostics_panel_title(&self) -> String {
+        let invalid = self
+            .step_diagnostics
+            .iter()
+            .filter(|diagnostics| diagnostics.output.status == StepOutputStatus::Invalid)
+            .count();
+        let mut title = if invalid > 0 {
+            format!(" Contract Diagnostics (!{}) ", invalid)
+        } else {
+            " Contract Diagnostics ".to_string()
+        };
+        if self.focused_panel == Panel::Diagnostics {
+            title.push('◆');
+            title.push(' ');
+        }
+        title
+    }
+
+    pub fn activate_selected_diagnostics_item(&mut self) -> Option<String> {
+        let selected = self.diagnostics_state.selected()?;
+        let width = (self.diagnostics_rect.width as usize)
+            .saturating_sub(2)
+            .max(1);
+        let line = self
+            .wrapped_panel_lines(Panel::Diagnostics, width)
+            .get(selected)
+            .cloned()?;
+        let diagnostic_id = self
+            .diagnostics_lines
+            .get(line.source_line_index)
+            .and_then(|line| line.diagnostic_id.clone())?;
+        self.open_step_diagnostics_detail(&diagnostic_id)
+    }
+
+    pub(super) fn clear_step_diagnostics(&mut self) {
+        self.step_diagnostics.clear();
+        self.diagnostics_lines.clear();
+        self.diagnostics_state.select(None);
+        self.diagnostics_displayed_count = 0;
+        self.diagnostics_pinned = false;
+    }
+
+    fn rebuild_diagnostics_lines(&mut self) {
+        self.diagnostics_lines = self
+            .step_diagnostics
+            .iter()
+            .flat_map(build_diagnostics_lines)
+            .collect();
+    }
+
+    fn open_step_diagnostics_detail(&mut self, id: &str) -> Option<String> {
+        let diagnostics = self
+            .step_diagnostics
+            .iter()
+            .find(|diagnostics| diagnostics.id == id)?;
+        let title = format!(
+            " Contract Diagnostics {}:{} {} ",
+            diagnostics.workflow_role.as_str(),
+            diagnostics.workflow_id,
+            diagnostics.step_label
+        );
+        let lines = build_step_diagnostics_detail_lines(diagnostics);
+        let label = diagnostics.step_label.clone();
+        self.open_detail_overlay(title, lines);
+        Some(label)
+    }
+}
+
+fn sanitize_step_diagnostics(mut diagnostics: StepDiagnostics) -> StepDiagnostics {
+    diagnostics.input.structured_input_preview = diagnostics
+        .input
+        .structured_input_preview
+        .map(|text| strip_ansi(&text));
+    diagnostics.input.todo_state_preview = diagnostics
+        .input
+        .todo_state_preview
+        .map(|text| strip_ansi(&text));
+    diagnostics.input.error = diagnostics.input.error.map(|text| strip_ansi(&text));
+    diagnostics.output.extracted_json_preview = diagnostics
+        .output
+        .extracted_json_preview
+        .map(|text| strip_ansi(&text));
+    diagnostics.output.previous_response_preview = diagnostics
+        .output
+        .previous_response_preview
+        .map(|text| strip_ansi(&text));
+    diagnostics.output.validation_error = diagnostics
+        .output
+        .validation_error
+        .map(|text| strip_ansi(&text));
+    diagnostics.session_writes = diagnostics
+        .session_writes
+        .into_iter()
+        .map(|write| StepContextWrite {
+            path: strip_ansi(&write.path),
+            kind: write.kind,
+            before_preview: write.before_preview.map(|text| strip_ansi(&text)),
+            after_preview: write.after_preview.map(|text| strip_ansi(&text)),
+        })
+        .collect();
+    diagnostics
+}
+
+fn build_diagnostics_lines(diagnostics: &StepDiagnostics) -> Vec<DiagnosticsLine> {
+    let header = format!(
+        "{}:{} {}/{} {}",
+        diagnostics.workflow_role.as_str(),
+        diagnostics.workflow_id,
+        diagnostics.index,
+        diagnostics.total,
+        diagnostics.step_label
+    );
+    let input = format!(
+        "  input {} · summaries={} · structured={}{}",
+        diagnostics_input_status_label(diagnostics.input.status),
+        diagnostics.input.summary_sources.len(),
+        diagnostics.input.resolved_structured_sources.len(),
+        if diagnostics.input.todo_state_preview.is_some() {
+            " · todo"
+        } else {
+            ""
+        }
+    );
+    let output = format!(
+        "  output {} · attempt={}{} · retries={}/{} · writes={}",
+        diagnostics_output_status_label(diagnostics.output.status),
+        diagnostics_output_attempt_kind_label(diagnostics.output.attempt_kind),
+        diagnostics
+            .output
+            .recovery_decision
+            .map(|decision| format!(
+                " · next={}",
+                diagnostics_output_recovery_decision_label(decision)
+            ))
+            .unwrap_or_default(),
+        diagnostics.output.retry_count,
+        diagnostics.output.max_retries,
+        diagnostics.session_writes.len()
+    );
+    let mut lines = vec![
+        DiagnosticsLine {
+            text: header,
+            diagnostic_id: Some(diagnostics.id.clone()),
+        },
+        DiagnosticsLine {
+            text: input,
+            diagnostic_id: Some(diagnostics.id.clone()),
+        },
+        DiagnosticsLine {
+            text: output,
+            diagnostic_id: Some(diagnostics.id.clone()),
+        },
+    ];
+    if let Some(error) = diagnostics
+        .input
+        .error
+        .as_deref()
+        .or(diagnostics.output.validation_error.as_deref())
+    {
+        lines.push(DiagnosticsLine {
+            text: format!("  error {}", truncate_preview(error, 96)),
+            diagnostic_id: Some(diagnostics.id.clone()),
+        });
+    }
+    lines
+}
+
+fn build_step_diagnostics_detail_lines(diagnostics: &StepDiagnostics) -> Vec<String> {
+    let mut lines = vec![
+        format!(
+            "step: {}:{} {} {}/{}",
+            diagnostics.workflow_role.as_str(),
+            diagnostics.workflow_id,
+            diagnostics.step_label,
+            diagnostics.index,
+            diagnostics.total
+        ),
+        format!("step_id: {}", diagnostics.step_id),
+        format!(
+            "input: {}",
+            diagnostics_input_status_label(diagnostics.input.status)
+        ),
+    ];
+
+    if diagnostics.input.summary_sources.is_empty() {
+        lines.push("summary_sources: none".to_string());
+    } else {
+        lines.push(format!(
+            "summary_sources: {}",
+            diagnostics
+                .input
+                .summary_sources
+                .iter()
+                .map(|source| format!(
+                    "{}:{} ({})",
+                    source.workflow_id, source.step_id, source.title
+                ))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+
+    if diagnostics.input.expected_structured_sources.is_empty() {
+        lines.push("structured_sources: none".to_string());
+    } else {
+        lines.push(format!(
+            "structured_expected: {}",
+            diagnostics.input.expected_structured_sources.join(", ")
+        ));
+        lines.push(format!(
+            "structured_resolved: {}",
+            if diagnostics.input.resolved_structured_sources.is_empty() {
+                "none".to_string()
+            } else {
+                diagnostics.input.resolved_structured_sources.join(", ")
+            }
+        ));
+        if !diagnostics.input.missing_structured_sources.is_empty() {
+            lines.push(format!(
+                "structured_missing: {}",
+                diagnostics.input.missing_structured_sources.join(", ")
+            ));
+        }
+    }
+
+    if let Some(preview) = diagnostics.input.structured_input_preview.as_deref() {
+        lines.push("structured_input_preview:".to_string());
+        lines.extend(preview.lines().map(|line| format!("  {line}")));
+    }
+    if let Some(preview) = diagnostics.input.todo_state_preview.as_deref() {
+        lines.push("todo_state_preview:".to_string());
+        lines.extend(preview.lines().map(|line| format!("  {line}")));
+    }
+    if let Some(error) = diagnostics.input.error.as_deref() {
+        lines.push(format!("input_error: {error}"));
+    }
+
+    lines.push(format!(
+        "output: {}",
+        diagnostics_output_status_label(diagnostics.output.status)
+    ));
+    let attempt = format!(
+        " · attempt={}",
+        diagnostics_output_attempt_kind_label(diagnostics.output.attempt_kind)
+    );
+    let attempts = if diagnostics.output.max_retries > 0 {
+        format!(
+            " · attempts={} · retries={}/{}",
+            diagnostics.output.attempts,
+            diagnostics.output.retry_count,
+            diagnostics.output.max_retries
+        )
+    } else if diagnostics.output.attempts > 0 {
+        format!(" · attempts={}", diagnostics.output.attempts)
+    } else {
+        String::new()
+    };
+
+    lines.push(format!(
+        "output_contract: {}{}{}{}",
+        diagnostics_output_contract_label(
+            diagnostics.output.status,
+            diagnostics.output.format.as_deref()
+        ),
+        attempt,
+        diagnostics
+            .output
+            .schema_path
+            .as_deref()
+            .map(|path| format!(" · schema={path}"))
+            .unwrap_or_default(),
+        attempts
+    ));
+    if let Some(recovery_decision) = diagnostics.output.recovery_decision {
+        lines.push(format!(
+            "recovery_decision: {}",
+            diagnostics_output_recovery_decision_label(recovery_decision)
+        ));
+    }
+    if let Some(preview) = diagnostics.output.previous_response_preview.as_deref() {
+        lines.push("previous_response_preview:".to_string());
+        lines.extend(preview.lines().map(|line| format!("  {line}")));
+    }
+    if let Some(preview) = diagnostics.output.extracted_json_preview.as_deref() {
+        lines.push("extracted_json_preview:".to_string());
+        lines.extend(preview.lines().map(|line| format!("  {line}")));
+    }
+    if let Some(error) = diagnostics.output.validation_error.as_deref() {
+        lines.push(format!("validation_error: {error}"));
+    }
+
+    if diagnostics.session_writes.is_empty() {
+        lines.push("session_writes: none".to_string());
+    } else {
+        lines.push("session_writes:".to_string());
+        for write in &diagnostics.session_writes {
+            lines.push(format!(
+                "  {} ({})",
+                write.path,
+                diagnostics_write_kind_label(write.kind)
+            ));
+            if let Some(preview) = write.before_preview.as_deref() {
+                lines.push(format!("    before {}", truncate_preview(preview, 140)));
+            }
+            if let Some(preview) = write.after_preview.as_deref() {
+                lines.push(format!("    after  {}", truncate_preview(preview, 140)));
+            }
+        }
+    }
+
+    lines
+}
+
+fn diagnostics_input_status_label(status: StepInputStatus) -> &'static str {
+    match status {
+        StepInputStatus::None => "none",
+        StepInputStatus::Ready => "ready",
+        StepInputStatus::OptionalEmpty => "optional-empty",
+        StepInputStatus::MissingRequired => "missing-required",
+    }
+}
+
+fn diagnostics_output_status_label(status: StepOutputStatus) -> &'static str {
+    match status {
+        StepOutputStatus::None => "none",
+        StepOutputStatus::Pending => "pending",
+        StepOutputStatus::Valid => "valid",
+        StepOutputStatus::Invalid => "invalid",
+        StepOutputStatus::Skipped => "skipped",
+    }
+}
+
+fn diagnostics_output_attempt_kind_label(kind: StepOutputAttemptKind) -> &'static str {
+    match kind {
+        StepOutputAttemptKind::Primary => "primary",
+        StepOutputAttemptKind::Repair => "repair",
+        StepOutputAttemptKind::Regenerate => "regenerate",
+    }
+}
+
+fn diagnostics_output_recovery_decision_label(
+    decision: StepOutputRecoveryDecision,
+) -> &'static str {
+    match decision {
+        StepOutputRecoveryDecision::Repair => "repair",
+        StepOutputRecoveryDecision::Regenerate => "regenerate",
+        StepOutputRecoveryDecision::FallbackTextRouting => "fallback-text-routing",
+        StepOutputRecoveryDecision::Abort => "abort",
+    }
+}
+
+fn diagnostics_output_contract_label(status: StepOutputStatus, format: Option<&str>) -> String {
+    match format {
+        Some(format) => format!(
+            "format={format} · status={}",
+            diagnostics_output_status_label(status)
+        ),
+        None => format!("status={}", diagnostics_output_status_label(status)),
+    }
+}
+
+fn diagnostics_write_kind_label(kind: StepContextWriteKind) -> &'static str {
+    match kind {
+        StepContextWriteKind::Added => "added",
+        StepContextWriteKind::Updated => "updated",
+        StepContextWriteKind::Cleared => "cleared",
+    }
+}
+
+fn truncate_preview(text: &str, max_chars: usize) -> String {
+    let mut chars = text.chars();
+    let preview: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        format!("{preview}...")
+    } else {
+        preview
+    }
+}

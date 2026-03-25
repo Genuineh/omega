@@ -1,6 +1,7 @@
 use omega_session::{
-    ActivityTarget, OverlayRequest, ResponseSectionDelta, ResponseSectionMetadata, RuntimeUiEffect,
-    RuntimeUiMessage, StepDiagnostics, StepInputDiagnostics, StepInputStatus,
+    ActivityTarget, OverlayRequest, ResponseSection, ResponseSectionDelta, ResponseSectionKind,
+    ResponseSectionMetadata, RuntimeUiEffect, RuntimeUiMessage, StepContextWrite,
+    StepContextWriteKind, StepDiagnostics, StepInputDiagnostics, StepInputStatus,
     StepOutputAttemptKind, StepOutputContractMode, StepOutputDiagnostics,
     StepOutputRecoveryDecision, StepOutputStatus, StepSummarySource, ToolRunDetail, UiContent,
     UiMessageKind, UiSource, UiTarget, WorkflowRunRole,
