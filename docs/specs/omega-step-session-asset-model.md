@@ -577,6 +577,19 @@ todo 不再只是通用工具旁路；它需要和 workflow context 建立稳定
 - `execute` 的完成条件与 todo completion 语义对齐
 - `report` 能稳定看到哪些 items 完成、哪些未完成、哪些验证失败
 
+##### Forward Direction: Hook-Driven Lifecycle Gate
+
+截至 2026-03-25，`feature` / `research` 的 execute repeat 已经补到“todo 未完成时留在当前 step”的最小闭环，但这仍然是 runtime 内部的场景化逻辑，不足以支撑未来不同 scene / 不同 execute 语义下的扩展。
+
+下一阶段不建议再引入单独的 `runtime_policy` 对象；更合理的方向是：
+
+- 把 `before_step`、`after_step`、`advance 判定` 统一收敛为 step 生命周期事件
+- 允许 workflow step 绑定 `.omega/hooks/` 下的 Rust hook
+- hook 通过单方法接口处理不同生命周期事件，而不是继续在 runtime 中散落布尔判断
+- session 先验证 output contract，再在 `BeforeAdvance` 阶段询问 hook 是否允许进入下一步；若不允许，则保持当前 step 重复执行，直到达到 step repeat 上限
+
+这条路径把“step 长什么样”和“step 何时允许离开”解耦成显式 contract，同时仍然保持 session 对最终 orchestration 的拥有权。详细设计见 [docs/specs/omega-step-lifecycle-hooks.md](omega-step-lifecycle-hooks.md)。
+
 #### Context Observability
 
 当 workflow context 演进为 step data contract + structured outputs，就必须具备可观察性，否则 TUI 中的 failure 仍然只能看到"模型说了什么"，而看不到"session context 里到底存了什么"。

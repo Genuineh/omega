@@ -1,0 +1,15 @@
+   Compiling omega-workflow v0.1.0 (/home/jerryg/github/omega/crates/omega-workflow)
+   Compiling omega-client v0.1.0 (/home/jerryg/github/omega/crates/omega-client)
+   Compiling omega-subagent v0.1.0 (/home/jerryg/github/omega/crates/omega-subagent)
+   Compiling omega-compression v0.1.0 (/home/jerryg/github/omega/crates/omega-compression)
+   Compiling omega-core v0.1.0 (/home/jerryg/github/omega/crates/omega-core)
+   Compiling omega-session v0.1.0 (/home/jerryg/github/omega/crates/omega-session)
+warning: function `parse_structured_output` is never used
+    --> crates/omega-session/src/lib.rs:2717:4
+     |
+2717 | fn parse_structured_output(format: DataFormat, final_text: &str) -> Option<Value> {
+     |    ^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling omega-tui v0.1.0 (/home/jerryg/github/omega/crates/omega-tui)
