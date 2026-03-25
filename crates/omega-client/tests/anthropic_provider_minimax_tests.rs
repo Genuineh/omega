@@ -1,8 +1,9 @@
+use futures_util::StreamExt;
 use httpmock::prelude::*;
 use omega_client::{
     AnthropicClient, AnthropicCountTokensRequest, AnthropicMessageBatchCreateRequest,
-    AnthropicMessageBatchRequest, AnthropicMessageCreateRequest, AnthropicMessageParam, LlmClient,
-    MinimaxClient, MinimaxConfig, Role,
+    AnthropicMessageBatchRequest, AnthropicMessageCreateRequest, AnthropicMessageParam, ChatEvent,
+    ChatRequest, LlmClient, Message, MinimaxClient, MinimaxConfig, Role, Usage,
 };
 use serde_json::json;
 
@@ -140,4 +141,78 @@ async fn anthropic_client_supports_count_tokens_models_and_batches() {
     assert_eq!(batch_get.processing_status.as_deref(), Some("ended"));
     assert_eq!(batch_list.len(), 1);
     assert_eq!(results.len(), 2);
+}
+
+#[tokio::test]
+async fn minimax_chat_stream_falls_back_to_non_stream_when_stream_start_is_missing() {
+    let server = MockServer::start();
+    let _stream = server.mock(|when, then| {
+        when.method(POST)
+            .path("/anthropic/v1/messages")
+            .header("accept", "text/event-stream")
+            .body_contains("\"stream\":true");
+        then.status(200)
+            .header("content-type", "text/event-stream")
+            .body(concat!(
+                "event: content_block_delta\n",
+                "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"broken\"}}\n\n",
+                "event: message_stop\n",
+                "data: {\"type\":\"message_stop\"}\n\n"
+            ));
+    });
+    let _fallback = server.mock(|when, then| {
+        when.method(POST)
+            .path("/anthropic/v1/messages")
+            .json_body(json!({
+                "model": "MiniMax-M2.5",
+                "messages": [{"role": "user", "content": "hello"}],
+                "max_tokens": 8000
+            }));
+        then.status(200).json_body(json!({
+            "id": "msg_fallback",
+            "model": "MiniMax-M2.5",
+            "content": [{"type": "text", "text": "fallback ok"}],
+            "stop_reason": "end_turn",
+            "usage": {
+                "input_tokens": 12,
+                "output_tokens": 4
+            }
+        }));
+    });
+
+    let client = MinimaxClient::new(MinimaxConfig::with_base_url(
+        "test-key",
+        "MiniMax-M2.5",
+        format!("{}/anthropic", server.base_url()),
+    ))
+    .expect("client should build");
+
+    let mut stream = client
+        .chat_stream(ChatRequest::new(vec![Message::user("hello")]))
+        .await
+        .expect("chat_stream should fall back successfully");
+    let mut events = Vec::new();
+    while let Some(event) = stream.next().await {
+        events.push(event.expect("event should succeed"));
+    }
+
+    assert_eq!(
+        events,
+        vec![
+            ChatEvent::MessageStart {
+                id: "msg_fallback".to_string(),
+                model: Some("MiniMax-M2.5".to_string()),
+            },
+            ChatEvent::TextDelta {
+                text: "fallback ok".to_string(),
+            },
+            ChatEvent::MessageComplete {
+                stop_reason: Some("end_turn".to_string()),
+                usage: Some(Usage {
+                    input_tokens: 12,
+                    output_tokens: 4,
+                }),
+            },
+        ]
+    );
 }

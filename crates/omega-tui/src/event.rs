@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{mpsc, Arc, Mutex};
 
 use arboard::Clipboard;
 use crossterm::event::{
@@ -849,6 +849,7 @@ mod tests {
             context_window: 200_000,
             max_output_tokens: 32_000,
             bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+            batch_max_requests: omega_core::default_batch_max_requests(),
         })
         .unwrap()
     }
@@ -874,11 +875,9 @@ mod tests {
         assert!(!should_quit);
         assert_eq!(app_guard.output_msgs.len(), 1);
         assert_eq!(app_guard.output_msgs[0].kind, MsgKind::Error);
-        assert!(
-            app_guard.output_msgs[0]
-                .text
-                .contains("Previous turn still finishing")
-        );
+        assert!(app_guard.output_msgs[0]
+            .text
+            .contains("Previous turn still finishing"));
     }
 
     #[test]
@@ -1186,12 +1185,10 @@ mod tests {
 
         let app_guard = app.lock().unwrap();
         assert_eq!(app_guard.interaction_mode, InteractionMode::Normal);
-        assert!(
-            app_guard
-                .status_notice
-                .as_deref()
-                .is_some_and(|notice| notice.contains("Insert mode"))
-        );
+        assert!(app_guard
+            .status_notice
+            .as_deref()
+            .is_some_and(|notice| notice.contains("Insert mode")));
     }
 
     #[test]
@@ -1233,12 +1230,10 @@ mod tests {
 
         let app_guard = app.lock().unwrap();
         assert_eq!(app_guard.interaction_mode, InteractionMode::Normal);
-        assert!(
-            app_guard
-                .status_notice
-                .as_deref()
-                .is_some_and(|notice| notice.contains("Mode: Normal"))
-        );
+        assert!(app_guard
+            .status_notice
+            .as_deref()
+            .is_some_and(|notice| notice.contains("Mode: Normal")));
     }
 
     #[test]

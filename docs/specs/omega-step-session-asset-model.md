@@ -2,7 +2,7 @@
 status: draft
 owner: omega-team
 created: 2026-03-20
-updated: 2026-03-23
+updated: 2026-03-24
 version: 0.1
 supersedes: []
 related_prds: []
@@ -105,7 +105,7 @@ pub enum StepSkillRequest {
 }
 ```
 
-默认 `analysis / plan / execute / report` 仍然是内建 step，但执行器不再依赖固定分支名才能工作。当前实现已经将主路径统一到 `AgentLoop`；`SingleResponse` / `ToolLoop` 只保留为配置兼容别名，不再代表运行时分叉。
+默认 `explore / plan / execute / report` 仍然是内建 step，但执行器不再依赖固定分支名才能工作。当前实现已经将主路径统一到 `AgentLoop`；`SingleResponse` / `ToolLoop` 只保留为配置兼容别名，不再代表运行时分叉。
 
 ### WorkflowDefinition
 
@@ -234,12 +234,12 @@ available_input_budget = context_window - max_output_tokens - safety_margin
 
 当前实现只完成了“step 之间可传递文本摘要”的最小链路，还没有完成 workflow-owned 的结构化上下文闭环。现状限制如下：
 
-- `analysis` 产物仍只是 `StepSummary.summary` 的截断文本，不是结构化分析资产。
+- `explore` 产物仍只是 `StepSummary.summary` 的截断文本，不是结构化探索资产。
 - `plan` 没有稳定产出 ordered tasks / validation targets；它只是给 `execute` 暴露一段 plan 文本摘要。
 - `execute` 没有消费 workflow-owned task queue；当前 `todo` 只是通用工具，`omega-core` 只会在 3 轮未更新时注入 reminder，不会把 `todo` 变成 execute 的完成判据或循环锚点。
 - `report` 当前主要依赖 raw transcript 与前序文本 summary，不会稳定读取“完成了哪些 planned items、哪些验证通过/失败、还有哪些 open items”这类结构化执行结果。
 
-因此，当前 `SessionContext` 足以支撑“上一阶段给下一阶段一个文本提示”，但还不足以满足 `analysis -> plan -> execute -> report` 逐阶段通过结构化上下文闭环协作的目标。
+因此，当前 `SessionContext` 足以支撑“上一阶段给下一阶段一个文本提示”，但还不足以满足 `explore -> plan -> execute -> report` 逐阶段通过结构化上下文闭环协作的目标。
 
 ### Next-Stage Workflow Context Evolution
 
@@ -348,8 +348,8 @@ struct StepExecutionResult {
 ```toml
 [[steps]]
 id = "analysis"
-label = "Analyze"
-prompt = ".omega/prompt/step/analysis.md"
+label = "Explore"
+prompt = ".omega/prompt/step/explore.md"
 max_iterations = 8
 tool_request = { mode = "block", items = ["bash", "edit_file", "todo", "write_file"] }
 output_contract = { mode = "required", format = "json", max_retries = 2 }
@@ -416,6 +416,132 @@ step 完成后，若 `output_contract` 不是 `None`：
    - 若 `Required` 且重试耗尽：`StepTransition::Error { message }`
    - 若 `Optional` 且校验失败：继续流程，`structured_output` 设为 `None`
 
+##### Structured Output Repair Strategy
+
+现有“校验失败后直接重跑同一步”只提供了 **blind retry**：模型知道自己错了，但不知道应当修哪一部分，也不知道是否应该复用上一轮 explore / plan 结果。对 `explore` / `plan` 这类高 token、强结构的 step，这会导致：
+
+- 第一次输出其实语义上已经接近正确，但因为缺字段、顶层不是 object、带了额外 prose 而被判 invalid
+- 第二次重试重新做整轮推理和仓库探索，而不是修正已有结果
+- 即使 diagnostics 里能看到 schema error，模型也没拿到足够的 machine-usable repair context
+
+下一阶段应把 Required structured output 的恢复策略从单一 retry 升级为 **Repair-Then-Regenerate**：
+
+1. **Attempt 0: Primary generation**
+    - 保持当前 step 行为：按正常 prompt、正常 tool policy、正常 loop 生成结果
+    - 若结构化提取 + schema/semantic 校验通过，直接写入 `SessionContext.step_outputs` 并进入下一 step
+
+2. **Attempt 1: Repair pass**
+    - 若第一次结果 invalid，不立即重新运行完整 step，而是进入一个轻量 repair pass
+    - repair pass 的输入必须包含：
+      - `validation_error`：精确错误文本
+      - `error_kind`：`extract_failed` / `schema_invalid` / `semantic_invalid`
+      - `previous_response_preview`：上一次原始输出的截断预览
+      - `extracted_json_preview`：若提取到了 JSON，但 schema/semantic 校验失败，则附上提取到的 JSON 预览
+      - `required_contract`：从 `StepOutputContract` 渲染出的格式要求与 schema 路径
+      - `repair_instructions`：仅修复结构，不重新做无关分析；输出必须是唯一 JSON value
+    - repair pass 默认应使用 **no-tools** 或最小工具集，避免模型把修 JSON 变成再次探索仓库
+    - repair pass 不应丢弃前一次 step 的语义成果；它是“把已有答案转成合法 structured output”，不是“重新思考任务”
+
+3. **Attempt 2+: Full regenerate**
+    - 若 repair pass 仍然失败，才回退到完整 regenerate
+    - regenerate 可以重新允许 step 原有工具集，因为此时说明问题不只是包装/字段缺失，而是上一次结果本身语义不够
+    - 若 `max_retries` 已耗尽，则维持当前 `StepTransition::Error`
+
+推荐把这个策略显式建模为 runtime policy，而不是继续把 repair 和 regenerate 都塞进同一个“重试”概念：
+
+```rust
+enum OutputRecoveryMode {
+     RegenerateOnly,
+     RepairThenRegenerate,
+}
+
+struct OutputValidationFailure {
+     error_kind: OutputValidationErrorKind,
+     message: String,
+     previous_response_preview: String,
+     extracted_json_preview: Option<String>,
+}
+
+enum OutputValidationErrorKind {
+     ExtractFailed,
+     SchemaInvalid,
+     SemanticInvalid,
+}
+```
+
+其中默认策略建议为：
+
+- `Required(Json)`：`RepairThenRegenerate`
+- `Optional(Json)`：维持当前 skip 行为，不强制 repair
+- root routing step：继续允许 text fallback，但在 fallback 前仍可先跑一次 no-tools repair，以减少 JSON contract 噪音
+
+##### Config Surface And Runtime Ownership
+
+该策略应当部分体现在 step 相关配置中，但只表达“声明式 policy”，不把 repair 机制本身下沉到 TOML：
+
+- `omega-workflow` / `.omega/workflows/*.toml` 负责声明 step 的 `output_contract` 恢复策略，例如 `recovery_mode = "repair_then_regenerate"`
+- step 配置只应暴露少量稳定开关，例如 recovery mode，必要时再补充是否允许 repair pass 临时继承工具能力这类例外项
+- `omega-session` 继续负责执行策略：构造 repair envelope、恢复 checkpoint、切换 tool visibility、记录 `attempt_kind`、决定何时从 repair 回退到 full regenerate
+- `validation_error`、`previous_response_preview`、`extracted_json_preview` 与 `required_contract` 都属于 runtime 运行态产物，不应在 step 配置中静态声明
+
+推荐边界如下：
+
+```rust
+struct StepOutputContract {
+    mode: StepOutputContractMode,
+    format: DataFormat,
+    schema_path: Option<PathBuf>,
+    max_retries: usize,
+    recovery_mode: OutputRecoveryMode,
+}
+```
+
+这意味着“该 step 遇到 invalid structured output 时采用什么恢复策略”是 workflow contract 的一部分；但“每次 repair 实际拿到什么错误、看到了哪些预览、何时降级为 regenerate”仍然必须由 runtime 决定。
+
+##### Repair Prompt Contract
+
+repair pass 不应该复用原始 step prompt，而应注入一个独立的 repair envelope，例如：
+
+```xml
+<output_repair step_id="plan">
+mode: repair_structured_output
+error_kind: schema_invalid
+validation_error: schema .omega/schema/step/plan.json expected object at $
+previous_response_preview: 1. Inspect ... 2. Update ...
+required_contract: return exactly one valid JSON object matching the configured schema
+repair_rules: preserve the meaning of the previous answer when possible
+repair_rules: do not add prose before or after the JSON
+repair_rules: if information is missing, infer only from the previous answer and existing structured_input
+</output_repair>
+```
+
+关键点：
+
+- **repair pass 只消费已有上下文**：`latest_user_turn`、已有 `structured_input`、前一次无效输出、validation error
+- **repair pass 只产出 JSON**，不产生新的最终正文
+- **repair 成功后直接进入下一 step**，不要求用户看到中间修复文本
+- **diagnostics 必须显式标识 repair attempt**，避免 UI 上仍看起来像普通 retry
+
+##### Runtime Integration Direction
+
+对 `omega-session` 的最小改动方向：
+
+- 在当前 `validate_step_output()` 失败分支中，把 retry 拆为 `repair_attempt` 与 `regenerate_attempt`
+- 将 `build_output_validation_feedback()` 升级为 `build_output_repair_feedback(failure, step)`，输出 machine-readable repair envelope，而不是单行自然语言提示
+- 在 repair attempt 前调用 `agent.set_messages(step_attempt_checkpoint.clone())`，但附加 repair envelope；必要时临时覆盖可见工具为 none
+- 在 `StepOutputDiagnostics` 中新增 `attempt_kind: primary | repair | regenerate`
+- 在 tracing / TUI Diagnostics 中保留 `validation_error`、`previous_response_preview`、`extracted_json_preview` 与 `attempt_kind`
+
+##### Step Boundary Rule
+
+该策略的核心 acceptance rule 必须明确：
+
+- **只要当前 step 还没有产出合法 structured output，就绝不能 advance 到下一 step**
+- repair pass 属于当前 step 的内部恢复流程，而不是新 step，也不是对下游 step 的补救
+- 只有当合法 structured output 已写入 `SessionContext.step_outputs.<step_id>` 后，后续 `input_contract` 依赖它的 step 才允许启动
+
+这保证了 `plan` 不会在 `explore` 结构化结果缺失时偷偷运行，也保证 `report` 看到的是已校验的稳定输入，而不是一段“看起来差不多”的自由文本
+
 ##### 输入校验流程
 
 step 启动前，若 `input_contract` 不是 `None`：
@@ -438,12 +564,12 @@ step 启动前，若 `input_contract` 不是 `None`：
 
 Step Data Contract 建立通用框架后，feature workflow 的 `plan → execute → report` 链路可基于此实现具体的领域绑定：
 
-1. `analysis` 产出结构化输出（objective / constraints / risks / affected paths），通过 `output_contract: Required(Json)` 保证
+1. `explore` 产出结构化输出（objective / key_findings / constraints / risks / affected paths），通过 `output_contract: Required(Json)` 保证
 2. `plan` 消费 analysis 输出，产出结构化计划（ordered tasks / validation targets），通过 `input_contract: Required(["analysis"])` + `output_contract: Required(Json)` 保证
 3. `plan` 的结构化输出中的 tasks 可映射到 `TodoManager`，使 todo 成为 workflow context 的正式投射而非旁路
 4. `execute` 消费 plan 输出，以 todo list 为主循环锚点推进，每次聚焦当前 `in_progress` item
 5. `execute` 可选产出执行结果（completed tasks / validation results / changed paths），通过 `output_contract: Optional(Json)` 声明
-6. `report` 消费 analysis + plan + execute 的结构化输出，组织最终总结，通过 `input_contract: Required(["analysis","plan","execute"])` 保证
+6. `report` 消费 explore + plan + execute 的结构化输出，组织最终总结，通过 `input_contract: Required(["explore","plan","execute"])` 保证
 
 todo 不再只是通用工具旁路；它需要和 workflow context 建立稳定映射：
 
@@ -592,7 +718,7 @@ scene-aware routing 的下一阶段要求是：workflow selection 本身也被�
 **阶段 1（15F-2B 内完成）**: 泛化内部模型
 
 - 将 `WorkflowStep.kind: WorkflowStepKind` 改为 `WorkflowStep.id: String` + `WorkflowStep.loop_mode: StepLoopMode`
-- 保留 4 个 canonical id（`analysis`, `plan`, `execute`, `report`）作为内建默认值
+- 保留 4 个 canonical id（`explore`, `plan`, `execute`, `report`）作为内建默认值
 - `WorkflowPrompts` 改为 `HashMap<String, String>`，内建默认仍覆盖 4 个 canonical 的 prompt
 - 配置校验仍只允许 4 个 canonical id（向后兼容）
 
@@ -613,8 +739,8 @@ name = "default"
 
 [[steps]]
 id = "analysis"
-label = "Analyze"
-prompt = ".omega/prompt/step/analysis.md"
+label = "Explore"
+prompt = ".omega/prompt/step/explore.md"
 loop_mode = "agent_loop"
 max_iterations = 6
 tool_request = { mode = "inherit" }
@@ -709,10 +835,12 @@ SessionUpdate::WorkflowStepChanged {
 - 实现 JSON 提取、output 校验、校验失败重试与 prompt 自动注入机制
 - 为内建 step 设置默认 I/O contract（root routing / feature workflow / chat）
 - TOML 配置新增 `input_contract` / `output_contract` 字段
+- 将 Required structured output 的恢复策略从 blind retry 演进为 `RepairThenRegenerate`
+- 在 step `output_contract` 中补充声明式 recovery policy，运行时 repair envelope 与 diagnostics 仍由 `omega-session` 负责
 
 ### Phase 4: Feature Workflow Schema Binding & Todo Integration
 
-- 定义 analysis / plan / execute 的具体输出 JSON schema
+- 定义 explore / plan / execute 的具体输出 JSON schema
 - 更新 step prompt 与 TOML 配置使用 data contract
 - 让 `plan` 的结构化输出映射到 `TodoManager`
 - 让 `execute` 围绕 todo item 推进，结果写回 structured output

@@ -1,4 +1,5 @@
-use futures_util::StreamExt;
+use futures_util::{stream, StreamExt};
+use tracing::warn;
 
 use crate::anthropic::{
     AnthropicClient, AnthropicContentBlock, AnthropicEventStream, AnthropicMessage,
@@ -59,14 +60,36 @@ impl AnthropicMessagesCompatClient {
     }
 
     pub async fn chat_stream(&self, request: ChatRequest) -> Result<ChatEventStream, ClientError> {
+        let fallback_request = request.clone();
         let anthropic_request =
             chat_request_to_anthropic_request(request, &self.client.config().default_model);
-        let stream = self
+        match self
             .client
             .messages()
             .create_stream(anthropic_request)
-            .await?;
-        Ok(map_anthropic_stream(stream))
+            .await
+        {
+            Ok(stream) => Ok(map_anthropic_stream(stream)),
+            Err(ClientError::Stream(stream_error)) => {
+                warn!(
+                    provider = self.provider_name(),
+                    stream_error = %stream_error,
+                    "streaming response invalid; falling back to non-stream chat"
+                );
+                let response = self
+                    .chat(fallback_request)
+                    .await
+                    .map_err(|fallback_error| {
+                        ClientError::Stream(format!(
+                            "{stream_error}; non-stream fallback failed: {fallback_error}"
+                        ))
+                    })?;
+                Ok(Box::pin(stream::iter(
+                    response.to_events().into_iter().map(Ok),
+                )))
+            }
+            Err(error) => Err(error),
+        }
     }
 }
 

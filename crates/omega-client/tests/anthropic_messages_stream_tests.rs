@@ -126,3 +126,40 @@ async fn create_stream_parses_sse_into_typed_events_and_accumulates() {
         Some(5)
     );
 }
+
+#[tokio::test]
+async fn create_stream_rejects_missing_message_start_with_diagnostics() {
+    let server = MockServer::start();
+    let sse_body = concat!(
+        "event: content_block_start\n",
+        "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+        "event: content_block_delta\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"oops\"}}\n\n",
+        "event: message_stop\n",
+        "data: {\"type\":\"message_stop\"}\n\n"
+    );
+
+    let _mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/messages");
+        then.status(200)
+            .header("content-type", "text/event-stream")
+            .body(sse_body);
+    });
+
+    let client = test_client(server.base_url());
+    let request = AnthropicMessageCreateRequest::new(
+        "model-a",
+        vec![AnthropicMessageParam::text(Role::User, "hello")],
+        256,
+    );
+
+    let error = match client.messages().create_stream(request).await {
+        Ok(_) => panic!("stream should fail when message_start is missing"),
+        Err(error) => error,
+    };
+
+    let rendered = error.to_string();
+    assert!(rendered.contains("missing initial message_start"));
+    assert!(rendered.contains("frame_count=3"));
+    assert!(rendered.contains("content_block_start"));
+}

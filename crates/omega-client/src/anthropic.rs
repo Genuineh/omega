@@ -667,7 +667,12 @@ impl MessagesService<'_> {
             .transport
             .post_text("/v1/messages", &request, &request.betas, true)
             .await?;
-        let events = parse_sse_events(&body)?;
+        let events = parse_sse_events(&body).map_err(|error| {
+            annotate_stream_error(self.client.provider_name(), "/v1/messages", error)
+        })?;
+        validate_stream_event_sequence(&events, &body).map_err(|error| {
+            annotate_stream_error(self.client.provider_name(), "/v1/messages", error)
+        })?;
         Ok(Box::pin(stream::iter(events.into_iter().map(Ok))))
     }
 
@@ -968,12 +973,123 @@ pub fn parse_sse_events(body: &str) -> Result<Vec<AnthropicStreamEvent>, ClientE
         }
 
         let value: Value = serde_json::from_str(&payload).map_err(|error| {
-            ClientError::Stream(format!("failed to parse SSE payload: {error}: {payload}"))
+            ClientError::Stream(format!(
+                "failed to parse SSE payload: {error}: {payload}; {}",
+                stream_body_diagnostics(body)
+            ))
         })?;
         consume_sse_value(&value, &mut state, &mut events)?;
     }
 
     Ok(events)
+}
+
+fn validate_stream_event_sequence(
+    events: &[AnthropicStreamEvent],
+    body: &str,
+) -> Result<(), ClientError> {
+    let start_count = events
+        .iter()
+        .filter(|event| matches!(event, AnthropicStreamEvent::MessageStart { .. }))
+        .count();
+
+    if start_count == 0 {
+        return Err(ClientError::Stream(format!(
+            "stream missing initial message_start; {}",
+            stream_body_diagnostics(body)
+        )));
+    }
+
+    if !matches!(
+        events.first(),
+        Some(AnthropicStreamEvent::MessageStart { .. })
+    ) {
+        return Err(ClientError::Stream(format!(
+            "stream started with {:?} instead of message_start; {}",
+            event_name(events.first()),
+            stream_body_diagnostics(body)
+        )));
+    }
+
+    if start_count > 1 {
+        return Err(ClientError::Stream(format!(
+            "stream emitted multiple message_start events; {}",
+            stream_body_diagnostics(body)
+        )));
+    }
+
+    Ok(())
+}
+
+fn annotate_stream_error(provider_name: &str, path: &str, error: ClientError) -> ClientError {
+    match error {
+        ClientError::Stream(message) => {
+            ClientError::Stream(format!("{provider_name} {path}: {message}"))
+        }
+        other => other,
+    }
+}
+
+fn event_name(event: Option<&AnthropicStreamEvent>) -> &'static str {
+    match event {
+        Some(AnthropicStreamEvent::MessageStart { .. }) => "message_start",
+        Some(AnthropicStreamEvent::TextDelta { .. }) => "text_delta",
+        Some(AnthropicStreamEvent::ThinkingDelta { .. }) => "thinking_delta",
+        Some(AnthropicStreamEvent::ToolUse { .. }) => "tool_use",
+        Some(AnthropicStreamEvent::MessageComplete { .. }) => "message_complete",
+        None => "no_event",
+    }
+}
+
+fn stream_body_diagnostics(body: &str) -> String {
+    let payloads = body
+        .split("\n\n")
+        .map(extract_sse_data)
+        .filter(|payload| !payload.is_empty() && payload != "[DONE]")
+        .collect::<Vec<_>>();
+    let event_types = payloads
+        .iter()
+        .filter_map(|payload| {
+            serde_json::from_str::<Value>(payload)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+        })
+        .take(6)
+        .collect::<Vec<_>>();
+    let preview = payloads
+        .iter()
+        .take(2)
+        .map(|payload| preview_stream_fragment(payload, 120))
+        .collect::<Vec<_>>()
+        .join(" | ");
+
+    format!(
+        "frame_count={}, event_types={:?}, body_preview={} bytes:{}",
+        payloads.len(),
+        event_types,
+        if preview.is_empty() {
+            "<empty>"
+        } else {
+            preview.as_str()
+        },
+        body.len()
+    )
+}
+
+fn preview_stream_fragment(text: &str, limit: usize) -> String {
+    let mut chars = text.chars();
+    let preview = chars.by_ref().take(limit).collect::<String>();
+    let preview = preview.replace('\n', "\\n");
+    if chars.next().is_some() {
+        format!("{}...", preview)
+    } else {
+        preview
+    }
 }
 
 fn extract_sse_data(frame: &str) -> String {

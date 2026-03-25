@@ -1,14 +1,16 @@
 use std::path::PathBuf;
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use futures_util::StreamExt;
 use omega_client::{ChatRequest, ChatResponse, ContentBlock, ToolDefinition};
 use omega_skills::LoadSkillHandler;
 use omega_todo::{SharedTodoManager, TodoToolHandler};
-use omega_tools::ToolDispatcher;
+use omega_tools::{ToolDispatcher, ToolErrorKind, ToolResult};
 use omega_tools_builtin::{
-    BashHandler, EditHandler, ReadHandler, WriteHandler,
     default_bash_allowed_commands as builtin_default_bash_allowed_commands,
+    default_batch_max_requests as builtin_default_batch_max_requests, ApplyPatchHandler,
+    BashHandler, BatchHandler, CreateFileHandler, EditHandler, GlobSearchHandler,
+    GrepSearchHandler, ListDirHandler, ReadHandler, WriteHandler,
 };
 use tracing::{error, info, instrument};
 use uuid::Uuid;
@@ -23,6 +25,7 @@ pub use omega_todo::{
     SharedTodoManager as CoreSharedTodoManager, TodoItem, TodoManager, TodoStatus,
     TodoToolHandler as CoreTodoToolHandler,
 };
+pub use omega_tools::{ToolErrorKind as CoreToolErrorKind, ToolResult as CoreToolResult};
 
 /// Core agent that implements the LLM ↔ tool execution loop.
 ///
@@ -31,6 +34,14 @@ const DEFAULT_MAX_ITERATIONS: u32 = 100;
 
 fn tool_not_visible_error(name: &str) -> String {
     format!("Error: Tool '{name}' is not available in this workflow step")
+}
+
+fn tool_result_block(tool_use_id: &str, result: &ToolResult) -> ContentBlock {
+    ContentBlock::ToolResult {
+        tool_use_id: tool_use_id.to_string(),
+        content: serde_json::Value::String(result.output.clone()),
+        is_error: result.is_error().then_some(true),
+    }
 }
 
 fn todo_input_has_open_items(input: &serde_json::Value) -> Option<bool> {
@@ -108,7 +119,7 @@ impl Agent {
         self.run_loop_with(|_, _, _, _| {}).await
     }
 
-    /// Run the agent loop, calling `on_tool_call(tool_use_id, name, input, output)` after
+    /// Run the agent loop, calling `on_tool_call(tool_use_id, name, input, result)` after
     /// each tool execution so the caller can display progress.
     #[instrument(
         skip(self, on_tool_call),
@@ -121,7 +132,7 @@ impl Agent {
     )]
     pub async fn run_loop_with<F>(&mut self, on_tool_call: F) -> Result<String>
     where
-        F: FnMut(&str, &str, &serde_json::Value, &str),
+        F: FnMut(&str, &str, &serde_json::Value, &ToolResult),
     {
         self.run_loop_with_events(on_tool_call, |_| {}).await
     }
@@ -132,7 +143,7 @@ impl Agent {
         mut on_chat_event: E,
     ) -> Result<String>
     where
-        F: FnMut(&str, &str, &serde_json::Value, &str),
+        F: FnMut(&str, &str, &serde_json::Value, &ToolResult),
         E: FnMut(&ChatEvent),
     {
         let session_id = Uuid::new_v4().to_string();
@@ -197,25 +208,27 @@ impl Agent {
             for block in &response.content {
                 if let ContentBlock::ToolUse { id, name, input } = block {
                     let result = if !self.is_tool_visible(name) {
-                        let err_msg = tool_not_visible_error(name);
-                        on_tool_call(id, name, input, &err_msg);
-                        ContentBlock::tool_result_error(id, &err_msg)
+                        let err_result =
+                            ToolResult::error(tool_not_visible_error(name), ToolErrorKind::Policy);
+                        on_tool_call(id, name, input, &err_result);
+                        tool_result_block(id, &err_result)
                     } else {
                         match self.dispatcher.dispatch(name, input.clone()) {
-                            Ok(output) => {
-                                if name == "todo" && !output.starts_with("Error:") {
+                            Ok(result) => {
+                                if name == "todo" && !result.is_error() {
                                     updated_todo = true;
                                     if let Some(has_open_items) = todo_input_has_open_items(input) {
                                         todo_has_open_items = has_open_items;
                                     }
                                 }
-                                on_tool_call(id, name, input, &output);
-                                ContentBlock::tool_result(id, &output)
+                                on_tool_call(id, name, input, &result);
+                                tool_result_block(id, &result)
                             }
                             Err(e) => {
-                                let err_msg = e.to_string();
-                                on_tool_call(id, name, input, &err_msg);
-                                ContentBlock::tool_result_error(id, &err_msg)
+                                let err_result =
+                                    ToolResult::error(e.to_string(), ToolErrorKind::Execution);
+                                on_tool_call(id, name, input, &err_result);
+                                tool_result_block(id, &err_result)
                             }
                         }
                     };
@@ -337,14 +350,19 @@ pub fn default_bash_allowed_commands() -> Vec<String> {
     builtin_default_bash_allowed_commands()
 }
 
+pub fn default_batch_max_requests() -> usize {
+    builtin_default_batch_max_requests()
+}
+
 pub fn create_default_tools_with_todo_manager(
     root: PathBuf,
     todo_manager: SharedTodoManager,
 ) -> ToolDispatcher {
-    create_default_tools_with_todo_manager_and_bash_allowlist(
+    create_default_tools_with_todo_manager_and_tool_limits(
         root,
         todo_manager,
         default_bash_allowed_commands(),
+        default_batch_max_requests(),
     )
 }
 
@@ -353,14 +371,37 @@ pub fn create_default_tools_with_todo_manager_and_bash_allowlist(
     todo_manager: SharedTodoManager,
     bash_allowed_commands: Vec<String>,
 ) -> ToolDispatcher {
+    create_default_tools_with_todo_manager_and_tool_limits(
+        root,
+        todo_manager,
+        bash_allowed_commands,
+        default_batch_max_requests(),
+    )
+}
+
+pub fn create_default_tools_with_todo_manager_and_tool_limits(
+    root: PathBuf,
+    todo_manager: SharedTodoManager,
+    bash_allowed_commands: Vec<String>,
+    batch_max_requests: usize,
+) -> ToolDispatcher {
     let mut dispatcher = ToolDispatcher::new();
     dispatcher.register(Box::new(BashHandler::with_allowed_commands(
         root.clone(),
         bash_allowed_commands,
     )));
+    dispatcher.register(Box::new(BatchHandler::with_max_requests(
+        root.clone(),
+        batch_max_requests,
+    )));
+    dispatcher.register(Box::new(ListDirHandler::new(root.clone())));
+    dispatcher.register(Box::new(GlobSearchHandler::new(root.clone())));
+    dispatcher.register(Box::new(GrepSearchHandler::new(root.clone())));
     dispatcher.register(Box::new(ReadHandler::new(root.clone())));
+    dispatcher.register(Box::new(CreateFileHandler::new(root.clone())));
     dispatcher.register(Box::new(WriteHandler::new(root.clone())));
     dispatcher.register(Box::new(EditHandler::new(root.clone())));
+    dispatcher.register(Box::new(ApplyPatchHandler::new(root.clone())));
     if let Ok(handler) = LoadSkillHandler::from_repo_root(&root) {
         dispatcher.register(Box::new(handler));
     }
@@ -374,10 +415,12 @@ mod tests {
     use async_trait::async_trait;
     use omega_client::ChatEvent;
     use omega_client::{
-        ChatResponse, ClientError, MessageContent, STOP_REASON_END_TURN, STOP_REASON_TOOL_USE,
-        Usage,
+        ChatResponse, ClientError, MessageContent, Usage, STOP_REASON_END_TURN,
+        STOP_REASON_TOOL_USE,
     };
     use std::sync::{Arc, Mutex};
+
+    type RecordedToolCall = (String, String, String, Option<String>, String);
 
     // ── Mock LLM client ───────────────────────────────────────────────
 
@@ -522,7 +565,7 @@ mod tests {
 
     #[tokio::test]
     async fn callback_receives_tool_output() {
-        let calls: Arc<Mutex<Vec<(String, String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        let calls: Arc<Mutex<Vec<RecordedToolCall>>> = Arc::new(Mutex::new(Vec::new()));
         let calls_clone = calls.clone();
 
         let client: DynLlmClient = Arc::new(MockLlmClient::new(vec![
@@ -544,7 +587,12 @@ mod tests {
                 calls_clone.lock().unwrap().push((
                     tool_use_id.to_string(),
                     name.to_string(),
-                    output.to_string(),
+                    output.output.clone(),
+                    output.preview.clone(),
+                    output.metadata["command"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
                 ));
             })
             .await
@@ -555,6 +603,11 @@ mod tests {
         assert_eq!(recorded[0].0, "t1");
         assert_eq!(recorded[0].1, "bash");
         assert!(recorded[0].2.contains("callback_test"));
+        assert!(recorded[0]
+            .3
+            .as_deref()
+            .is_some_and(|preview| preview.contains("callback_test")));
+        assert_eq!(recorded[0].4, "echo callback_test");
     }
 
     #[tokio::test]
@@ -620,7 +673,13 @@ mod tests {
     #[test]
     fn create_default_tools_includes_bash() {
         let dispatcher = create_default_tools(std::env::temp_dir());
+        assert!(dispatcher.has_tool("apply_patch"));
         assert!(dispatcher.has_tool("bash"));
+        assert!(dispatcher.has_tool("batch"));
+        assert!(dispatcher.has_tool("create_file"));
+        assert!(dispatcher.has_tool("list_dir"));
+        assert!(dispatcher.has_tool("glob_search"));
+        assert!(dispatcher.has_tool("grep_search"));
         assert!(dispatcher.has_tool("load_skill"));
         assert!(dispatcher.has_tool("todo"));
     }
@@ -633,13 +692,19 @@ mod tests {
             .into_iter()
             .map(|v| serde_json::from_value(v).unwrap())
             .collect();
-        assert_eq!(defs.len(), 6);
+        assert_eq!(defs.len(), 12);
         let names: Vec<&str> = defs.iter().map(|def| def.name.as_str()).collect();
         assert_eq!(
             names,
             vec![
+                "apply_patch",
                 "bash",
+                "batch",
+                "create_file",
                 "edit_file",
+                "glob_search",
+                "grep_search",
+                "list_dir",
                 "load_skill",
                 "read_file",
                 "todo",
@@ -886,12 +951,18 @@ mod tests {
         assert!(agent.visible_tool_names().is_empty());
 
         let restored = agent.set_visible_tools(None);
-        assert_eq!(restored.len(), 6);
+        assert_eq!(restored.len(), 12);
         assert_eq!(
             agent.visible_tool_names(),
             vec![
+                "apply_patch",
                 "bash",
+                "batch",
+                "create_file",
                 "edit_file",
+                "glob_search",
+                "grep_search",
+                "list_dir",
                 "load_skill",
                 "read_file",
                 "todo",

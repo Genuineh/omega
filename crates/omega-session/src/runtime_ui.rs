@@ -1,4 +1,4 @@
-use std::sync::{Arc, mpsc};
+use std::sync::{mpsc, Arc};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeUiEnvelope {
@@ -244,11 +244,50 @@ pub struct StepOutputDiagnostics {
     pub format: Option<String>,
     pub schema_path: Option<String>,
     pub status: StepOutputStatus,
-    pub extracted_preview: Option<String>,
+    pub attempt_kind: StepOutputAttemptKind,
+    pub extracted_json_preview: Option<String>,
+    pub previous_response_preview: Option<String>,
     pub attempts: u32,
     pub retry_count: u32,
     pub max_retries: u32,
-    pub error: Option<String>,
+    pub validation_error: Option<String>,
+    pub recovery_decision: Option<StepOutputRecoveryDecision>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepOutputAttemptKind {
+    Primary,
+    Repair,
+    Regenerate,
+}
+
+impl StepOutputAttemptKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Primary => "primary",
+            Self::Repair => "repair",
+            Self::Regenerate => "regenerate",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepOutputRecoveryDecision {
+    Repair,
+    Regenerate,
+    FallbackTextRouting,
+    Abort,
+}
+
+impl StepOutputRecoveryDecision {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Repair => "repair",
+            Self::Regenerate => "regenerate",
+            Self::FallbackTextRouting => "fallback_text_routing",
+            Self::Abort => "abort",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

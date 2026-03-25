@@ -8,7 +8,7 @@ use omega_keymap::KeymapManager;
 use omega_observability::init_tracing_channel;
 use omega_session::{AgentSession, AgentSessionConfig};
 use omega_theme::OmegaTheme;
-use omega_tui::{TuiBehaviorConfig, TuiLaunchConfig, run as run_tui};
+use omega_tui::{run as run_tui, TuiBehaviorConfig, TuiLaunchConfig};
 use omega_workflow::LoadedWorkflowCatalog;
 use tracing::{info, warn};
 
@@ -16,7 +16,7 @@ use crate::model_config::AgentModelConfig;
 
 pub fn default_system_prompt(cwd: &Path) -> String {
     format!(
-        "You are a coding agent at {}. Use bash to solve tasks. Act, don't explain.",
+        "You are a coding agent at {}. Prefer structured workspace tools for inspection and editing, and use bash only as a fallback for simple allowlisted commands. Act, don't explain.",
         cwd.display()
     )
 }
@@ -47,19 +47,23 @@ pub async fn run() -> anyhow::Result<()> {
         warn!(%warning, source = %loaded_tui_config.source_label(), "tui config fallback activated");
     }
 
-    let loaded_workflow_catalog = LoadedWorkflowCatalog::load(&cwd);
-    for warning in &loaded_workflow_catalog.warnings {
-        warn!(%warning, source = "workflow-catalog", "workflow config fallback activated");
-    }
-
     let loaded_model_config = AgentModelConfig::load(&cwd);
     for warning in &loaded_model_config.warnings {
         warn!(%warning, source = %loaded_model_config.source_label(), "model config fallback activated");
     }
+
+    let loaded_workflow_catalog = LoadedWorkflowCatalog::load(&cwd);
+    for warning in &loaded_workflow_catalog.warnings {
+        warn!(%warning, source = "workflow-catalog", "workflow config fallback activated");
+    }
     info!(
         context_window = loaded_model_config.config.context_window,
         max_output_tokens = loaded_model_config.config.max_output_tokens,
-        bash_allowed_commands = loaded_model_config.config.bash_allowed_commands.len(),
+        bash_allowed_commands = loaded_workflow_catalog
+            .tool_policy
+            .bash_allowed_commands
+            .len(),
+        batch_max_requests = loaded_workflow_catalog.tool_policy.batch_max_requests,
         "model budget loaded"
     );
 
@@ -83,7 +87,11 @@ pub async fn run() -> anyhow::Result<()> {
         prompt_catalog: loaded_workflow_catalog.prompt_catalog,
         context_window: loaded_model_config.config.context_window,
         max_output_tokens: loaded_model_config.config.max_output_tokens,
-        bash_allowed_commands: loaded_model_config.config.bash_allowed_commands.clone(),
+        bash_allowed_commands: loaded_workflow_catalog
+            .tool_policy
+            .bash_allowed_commands
+            .clone(),
+        batch_max_requests: loaded_workflow_catalog.tool_policy.batch_max_requests,
     })?;
 
     run_tui(TuiLaunchConfig {
@@ -110,7 +118,7 @@ mod tests {
         let prompt = default_system_prompt(Path::new("/tmp/omega"));
 
         assert!(prompt.contains("/tmp/omega"));
-        assert!(prompt.contains("Use bash to solve tasks"));
+        assert!(prompt.contains("Prefer structured workspace tools"));
     }
 
     #[test]
@@ -118,17 +126,13 @@ mod tests {
         let config = AgentModelConfig::default();
         assert_eq!(config.max_output_tokens, 32_000);
         assert_eq!(config.context_window, 200_000);
-        assert!(
-            config
-                .bash_allowed_commands
-                .iter()
-                .any(|command| command == "find")
-        );
-        assert!(
-            config
-                .bash_allowed_commands
-                .iter()
-                .any(|command| command == "grep")
-        );
+        assert!(config
+            .bash_allowed_commands
+            .iter()
+            .any(|command| command == "find"));
+        assert!(config
+            .bash_allowed_commands
+            .iter()
+            .any(|command| command == "grep"));
     }
 }

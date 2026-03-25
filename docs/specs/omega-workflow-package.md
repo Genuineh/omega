@@ -14,7 +14,7 @@ related_prds: []
 
 当前 Omega 的单轮执行虽然已经具备 `todo`、`skills`、`session update` 与 TUI 可见性基础，但“这一轮到底处于哪个阶段”仍然隐含在 prompt、日志和工具调用顺序里。结果是用户只能看到 `Running`，却看不到系统当前是在分析问题、生成计划、执行动作，还是整理最终报告。
 
-本规格规划新增独立 crate `omega-workflow`，把单轮执行过程收敛为一个可配置、可观测的工作流系统。当前实现仍保持四个 canonical steps：`analysis -> plan -> execute -> report`，但内部模型已提升为 string-keyed step definition，并在 step 上显式承载 `prompt_path`、`loop_mode`、`tool_request`、`skill_request`。工作流定义从外部 `.omega/workflow.toml` 加载；阶段提示词从 `.omega/prompt/step/*.md` 加载；`omega-session` 负责驱动阶段推进并向前端发出 typed update；`omega-tui` 只负责在底部状态栏显示当前阶段。
+本规格规划新增独立 crate `omega-workflow`，把单轮执行过程收敛为一个可配置、可观测的工作流系统。当前实现仍保持四个 canonical steps：`explore -> plan -> execute -> report`，但内部模型已提升为 string-keyed step definition，并在 step 上显式承载 `prompt_path`、`loop_mode`、`tool_request`、`skill_request`。工作流定义从外部 `.omega/workflow.toml` 加载；阶段提示词从 `.omega/prompt/step/*.md` 加载；`omega-session` 负责驱动阶段推进并向前端发出 typed update；`omega-tui` 只负责在底部状态栏显示当前阶段。
 
 截至当前实现，这四个 canonical steps 实际上对应内建的 `feature` execution workflow。下一阶段若要在其之上加入 `scene`、`chat` workflow 与主路由 workflow，应以 [docs/specs/omega-scene-routing.md](omega-scene-routing.md) 为规划基线，而不是直接改写本规格中的“当前已实现状态”。
 
@@ -23,9 +23,9 @@ related_prds: []
 ## Goals
 
 - 新增独立 `omega-workflow` crate，集中承载工作流定义、默认阶段、配置加载、校验与运行时阶段状态模型。
-- 为单轮执行提供稳定的四阶段语义：`analysis`、`plan`、`execute`、`report`，作为当前内建 `feature` workflow。
+- 为单轮执行提供稳定的四阶段语义：`explore`、`plan`、`execute`、`report`，作为当前内建 `feature` workflow。
 - 支持通过用户可编辑的 `.omega/workflow.toml` 对默认工作流做外部配置。
-- 支持通过 `.omega/prompt/step/analysis.md`、`plan.md`、`execute.md`、`report.md` 独立配置四阶段提示词。
+- 支持通过 `.omega/prompt/step/explore.md`、`plan.md`、`execute.md`、`report.md` 独立配置四阶段提示词。
 - 让 `omega-tui` 底部状态栏可以显示当前工作流阶段，而不是只显示 `Idle / Running`。
 - 保持 `omega-core`、`omega-session` 与 `omega-tui` 的职责边界清晰，不把 widget 语义下沉到工作流包。
 
@@ -89,14 +89,14 @@ related_prds: []
 
 当前内建 `feature` workflow 固定 canonical steps：
 
-1. `analysis`
+1. `explore`
 2. `plan`
 3. `execute`
 4. `report`
 
 语义定义：
 
-- `analysis`: 理解需求、抽取约束、识别边界和风险。
+- `explore`: 在规划前探索项目，提取关键发现、约束、边界、风险和受影响区域。
 - `plan`: 形成执行步骤、依赖顺序和成功标准。
 - `execute`: 实际调用工具、修改代码、运行验证。
 - `report`: 汇总结果、验证、风险和下一步。
@@ -125,7 +125,7 @@ related_prds: []
 
 默认文件：
 
-- `.omega/prompt/step/analysis.md`
+- `.omega/prompt/step/explore.md`
 - `.omega/prompt/step/plan.md`
 - `.omega/prompt/step/execute.md`
 - `.omega/prompt/step/report.md`
@@ -144,9 +144,9 @@ related_prds: []
 name = "default"
 
 [[steps]]
-id = "analysis"
-label = "Analyze"
-prompt = ".omega/prompt/step/analysis.md"
+id = "explore"
+label = "Explore"
+prompt = ".omega/prompt/step/explore.md"
 loop_mode = "single_response"
 skill_request = { mode = "match_task" }
 enabled = true
@@ -179,7 +179,7 @@ enabled = true
 
 校验规则：
 
-- `id` 只允许 `analysis` / `plan` / `execute` / `report`
+- `id` 只允许 `explore` / `plan` / `execute` / `report`
 - 每个 `id` 最多出现一次
 - 至少保留一个启用阶段
 - 若 `report` 与 `execute` 同时启用，`report` 不能出现在 `execute` 前面
@@ -223,8 +223,8 @@ pub struct LoadedWorkflow {
 
 `omega-session` 应把工作流当作 turn 级执行状态，而不是 UI 状态：
 
-- turn 开始后先进入 `analysis`，使用 `analysis.md` 发起一次无工具模型调用
-- `analysis` 完成后进入 `plan`，使用 `plan.md` 发起一次无工具模型调用
+- turn 开始后先进入 `explore`，使用 `explore.md` 发起一次无工具模型调用
+- `explore` 完成后进入 `plan`，使用 `plan.md` 发起一次无工具模型调用
 - `plan` 完成后进入 `execute`，使用 `execute.md` 驱动工具循环
 - `execute` 完成后进入 `report`，使用 `report.md` 发起最终无工具模型调用
 - turn 完成后清空当前 workflow run，状态栏回到 `Idle`
@@ -256,7 +256,7 @@ SessionUpdate::WorkflowStepChanged {
 
 建议展示：
 
-- `flow Analyze`
+- `flow Explore`
 - `flow Plan`
 - `flow Execute`
 - `flow Report`
@@ -314,9 +314,9 @@ SessionUpdate::WorkflowStepChanged {
 ---
 
 ### Change Log
-- 2026-03-19: 初版规格，规划新增独立 `omega-workflow` crate，支持外部 `.omega/workflow.toml` 配置与 `analysis -> plan -> execute -> report` 四阶段执行模型。
+- 2026-03-19: 初版规格，规划新增独立 `omega-workflow` crate，支持外部 `.omega/workflow.toml` 配置与 `explore -> plan -> execute -> report` 四阶段执行模型。
 - 2026-03-19: `omega-workflow` crate 已实现，并接入 `omega-session` 阶段更新与 `omega-tui` 底部 `flow` 状态槽。
-- 2026-03-20: 将四阶段提示词外置到 `.omega/prompt/step/*.md`，并把阶段推进修正为真实的 `analysis -> plan -> execute -> report` 受控执行序列。
+- 2026-03-20: 将四阶段提示词外置到 `.omega/prompt/step/*.md`，并把阶段推进修正为真实的 `explore -> plan -> execute -> report` 受控执行序列。
 - 2026-03-20: 记录下一阶段规划，准备将固定阶段模型演进为通用 step definition，并把 tools/skills 收敛到 session 资产管理边界。
 - 2026-03-20: 补充 v1 之后的主线方向：所有 step 将继续收敛为统一的有界 agent loop，并引入 session-owned step context 作为 step-to-step 协同基础。
 - 2026-03-20: Task 15F-8 完成，workflow 主路径已统一到 bounded agent loop；legacy `single_response` / `tool_loop` 仅保留为配置兼容解析别名。

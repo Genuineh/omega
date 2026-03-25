@@ -8,7 +8,8 @@ use omega_observability::strip_ansi;
 use omega_session::{
     OverlayTarget, ResponseSection, ResponseSectionKind, ResponseSectionState, RuntimeUiEnvelope,
     StatusSlot, StatusValue, StepContextWrite, StepContextWriteKind, StepDiagnostics,
-    StepInputStatus, StepOutputStatus, ToolRun, ToolRunStatus, WorkflowRunRole,
+    StepInputStatus, StepOutputAttemptKind, StepOutputRecoveryDecision, StepOutputStatus, ToolRun,
+    ToolRunStatus, WorkflowRunRole,
 };
 
 use crate::overlay::{
@@ -1752,11 +1753,18 @@ fn sanitize_step_diagnostics(mut diagnostics: StepDiagnostics) -> StepDiagnostic
         .todo_state_preview
         .map(|text| strip_ansi(&text));
     diagnostics.input.error = diagnostics.input.error.map(|text| strip_ansi(&text));
-    diagnostics.output.extracted_preview = diagnostics
+    diagnostics.output.extracted_json_preview = diagnostics
         .output
-        .extracted_preview
+        .extracted_json_preview
         .map(|text| strip_ansi(&text));
-    diagnostics.output.error = diagnostics.output.error.map(|text| strip_ansi(&text));
+    diagnostics.output.previous_response_preview = diagnostics
+        .output
+        .previous_response_preview
+        .map(|text| strip_ansi(&text));
+    diagnostics.output.validation_error = diagnostics
+        .output
+        .validation_error
+        .map(|text| strip_ansi(&text));
     diagnostics.session_writes = diagnostics
         .session_writes
         .into_iter()
@@ -1791,8 +1799,17 @@ fn build_diagnostics_lines(diagnostics: &StepDiagnostics) -> Vec<DiagnosticsLine
         }
     );
     let output = format!(
-        "  output {} · retries={}/{} · writes={}",
+        "  output {} · attempt={}{} · retries={}/{} · writes={}",
         diagnostics_output_status_label(diagnostics.output.status),
+        diagnostics_output_attempt_kind_label(diagnostics.output.attempt_kind),
+        diagnostics
+            .output
+            .recovery_decision
+            .map(|decision| format!(
+                " · next={}",
+                diagnostics_output_recovery_decision_label(decision)
+            ))
+            .unwrap_or_default(),
         diagnostics.output.retry_count,
         diagnostics.output.max_retries,
         diagnostics.session_writes.len()
@@ -1815,7 +1832,7 @@ fn build_diagnostics_lines(diagnostics: &StepDiagnostics) -> Vec<DiagnosticsLine
         .input
         .error
         .as_deref()
-        .or(diagnostics.output.error.as_deref())
+        .or(diagnostics.output.validation_error.as_deref())
     {
         lines.push(DiagnosticsLine {
             text: format!("  error {}", truncate_preview(error, 96)),
@@ -1899,37 +1916,54 @@ fn build_step_diagnostics_detail_lines(diagnostics: &StepDiagnostics) -> Vec<Str
         "output: {}",
         diagnostics_output_status_label(diagnostics.output.status)
     ));
+    let attempt = format!(
+        " · attempt={}",
+        diagnostics_output_attempt_kind_label(diagnostics.output.attempt_kind)
+    );
+    let attempts = if diagnostics.output.max_retries > 0 {
+        format!(
+            " · attempts={} · retries={}/{}",
+            diagnostics.output.attempts,
+            diagnostics.output.retry_count,
+            diagnostics.output.max_retries
+        )
+    } else if diagnostics.output.attempts > 0 {
+        format!(" · attempts={}", diagnostics.output.attempts)
+    } else {
+        String::new()
+    };
+
     lines.push(format!(
-        "output_contract: {}{}{}",
+        "output_contract: {}{}{}{}",
         diagnostics_output_contract_label(
             diagnostics.output.status,
             diagnostics.output.format.as_deref()
         ),
+        attempt,
         diagnostics
             .output
             .schema_path
             .as_deref()
             .map(|path| format!(" · schema={path}"))
             .unwrap_or_default(),
-        if diagnostics.output.max_retries > 0 {
-            format!(
-                " · attempts={} · retries={}/{}",
-                diagnostics.output.attempts,
-                diagnostics.output.retry_count,
-                diagnostics.output.max_retries
-            )
-        } else if diagnostics.output.attempts > 0 {
-            format!(" · attempts={}", diagnostics.output.attempts)
-        } else {
-            String::new()
-        }
+        attempts
     ));
-    if let Some(preview) = diagnostics.output.extracted_preview.as_deref() {
-        lines.push("structured_output_preview:".to_string());
+    if let Some(recovery_decision) = diagnostics.output.recovery_decision {
+        lines.push(format!(
+            "recovery_decision: {}",
+            diagnostics_output_recovery_decision_label(recovery_decision)
+        ));
+    }
+    if let Some(preview) = diagnostics.output.previous_response_preview.as_deref() {
+        lines.push("previous_response_preview:".to_string());
         lines.extend(preview.lines().map(|line| format!("  {line}")));
     }
-    if let Some(error) = diagnostics.output.error.as_deref() {
-        lines.push(format!("output_error: {error}"));
+    if let Some(preview) = diagnostics.output.extracted_json_preview.as_deref() {
+        lines.push("extracted_json_preview:".to_string());
+        lines.extend(preview.lines().map(|line| format!("  {line}")));
+    }
+    if let Some(error) = diagnostics.output.validation_error.as_deref() {
+        lines.push(format!("validation_error: {error}"));
     }
 
     if diagnostics.session_writes.is_empty() {
@@ -1970,6 +2004,25 @@ fn diagnostics_output_status_label(status: StepOutputStatus) -> &'static str {
         StepOutputStatus::Valid => "valid",
         StepOutputStatus::Invalid => "invalid",
         StepOutputStatus::Skipped => "skipped",
+    }
+}
+
+fn diagnostics_output_attempt_kind_label(kind: StepOutputAttemptKind) -> &'static str {
+    match kind {
+        StepOutputAttemptKind::Primary => "primary",
+        StepOutputAttemptKind::Repair => "repair",
+        StepOutputAttemptKind::Regenerate => "regenerate",
+    }
+}
+
+fn diagnostics_output_recovery_decision_label(
+    decision: StepOutputRecoveryDecision,
+) -> &'static str {
+    match decision {
+        StepOutputRecoveryDecision::Repair => "repair",
+        StepOutputRecoveryDecision::Regenerate => "regenerate",
+        StepOutputRecoveryDecision::FallbackTextRouting => "fallback-text-routing",
+        StepOutputRecoveryDecision::Abort => "abort",
     }
 }
 
@@ -2122,8 +2175,9 @@ mod tests {
     use omega_session::{
         ActivityTarget, OverlayRequest, ResponseSectionDelta, ResponseSectionMetadata,
         RuntimeUiEffect, RuntimeUiMessage, StepDiagnostics, StepInputDiagnostics, StepInputStatus,
-        StepOutputContractMode, StepOutputDiagnostics, StepOutputStatus, StepSummarySource,
-        ToolRunDetail, UiContent, UiMessageKind, UiSource, UiTarget, WorkflowRunRole,
+        StepOutputAttemptKind, StepOutputContractMode, StepOutputDiagnostics,
+        StepOutputRecoveryDecision, StepOutputStatus, StepSummarySource, ToolRunDetail, UiContent,
+        UiMessageKind, UiSource, UiTarget, WorkflowRunRole,
     };
     use ratatui::layout::Rect;
 
@@ -2140,14 +2194,14 @@ mod tests {
                 status: StepInputStatus::Ready,
                 summary_sources: vec![StepSummarySource {
                     workflow_id: "feature".to_string(),
-                    step_id: "analysis".to_string(),
-                    title: "Analysis".to_string(),
+                    step_id: "explore".to_string(),
+                    title: "Explore".to_string(),
                 }],
-                expected_structured_sources: vec!["analysis".to_string()],
-                resolved_structured_sources: vec!["analysis".to_string()],
+                expected_structured_sources: vec!["explore".to_string()],
+                resolved_structured_sources: vec!["explore".to_string()],
                 missing_structured_sources: vec![],
                 structured_input_preview: Some(
-                    "{\"analysis\":{\"objective\":\"Ship\"}}".to_string(),
+                    "{\"explore\":{\"objective\":\"Ship\"}}".to_string(),
                 ),
                 todo_state_preview: None,
                 error: None,
@@ -2157,11 +2211,14 @@ mod tests {
                 format: Some("json".to_string()),
                 schema_path: Some(".omega/schema/step/plan.json".to_string()),
                 status: StepOutputStatus::Valid,
-                extracted_preview: Some("{\"tasks\":[{\"id\":\"task-1\"}]}".to_string()),
+                attempt_kind: StepOutputAttemptKind::Repair,
+                extracted_json_preview: Some("{\"tasks\":[{\"id\":\"task-1\"}]}".to_string()),
+                previous_response_preview: Some("{\"tasks\":[]}".to_string()),
                 attempts: 2,
                 retry_count: 1,
                 max_retries: 2,
-                error: Some("missing validation_targets".to_string()),
+                validation_error: Some("missing validation_targets".to_string()),
+                recovery_decision: Some(StepOutputRecoveryDecision::Regenerate),
             },
             session_writes: vec![StepContextWrite {
                 path: "step_outputs.plan".to_string(),
@@ -2204,6 +2261,10 @@ mod tests {
             .diagnostics_lines
             .iter()
             .any(|line| line.text.contains("child:feature 2/4 Plan")));
+        assert!(app
+            .diagnostics_lines
+            .iter()
+            .any(|line| line.text.contains("attempt=repair · next=regenerate")));
         assert_eq!(app.rail_badge(SidebarSection::Diagnostics), "D 1");
     }
 
@@ -2225,6 +2286,22 @@ mod tests {
                     .lines
                     .iter()
                     .any(|line| line.contains("step_outputs.plan")));
+                assert!(detail
+                    .lines
+                    .iter()
+                    .any(|line| line.contains("recovery_decision: regenerate")));
+                assert!(detail
+                    .lines
+                    .iter()
+                    .any(|line| line.contains("validation_error: missing validation_targets")));
+                assert!(detail
+                    .lines
+                    .iter()
+                    .any(|line| line.contains("previous_response_preview:")));
+                assert!(detail
+                    .lines
+                    .iter()
+                    .any(|line| line.contains("extracted_json_preview:")));
                 assert!(detail.lines.iter().any(|line| line.contains("(added)")));
                 assert!(detail
                     .lines

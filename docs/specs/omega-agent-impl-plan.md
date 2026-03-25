@@ -1263,13 +1263,13 @@ git commit -m "Refine app entry and tui boundaries"
 
 - [x] **Step 1: 创建 `omega-workflow` crate 与默认配置模型**
 
-    - 定义 canonical workflow steps：`analysis -> plan -> execute -> report`
+    - 定义 canonical workflow steps：`explore -> plan -> execute -> report`
     - 增加 `.omega/workflow.toml` 默认模板、加载、校验和 fallback 逻辑
     - 保持首期只支持线性四阶段，不引入任意 DAG
 
 - [x] **Step 2: 将工作流阶段推进接入 `omega-session`**
 
-    - 在 turn 生命周期中定义何时进入 `analysis`、`plan`、`execute`、`report`
+    - 在 turn 生命周期中定义何时进入 `explore`、`plan`、`execute`、`report`
     - 通过 typed `SessionUpdate` 暴露当前阶段、序号与用户可见 label
     - turn 完成或中断后正确清理当前 workflow run
 
@@ -1376,7 +1376,7 @@ cargo clippy -p omega-tools -p omega-core -p omega-session -p omega-skills --all
 - [x] **Step 1: 泛化 `WorkflowStep` 内部模型（enum → string-keyed）**
 
     - 将 `WorkflowStep.kind: WorkflowStepKind` 改为 `WorkflowStep.id: String` + `WorkflowStep.loop_mode: StepLoopMode`
-    - 保留 4 个 canonical id（`analysis`, `plan`, `execute`, `report`）作为内建默认值
+    - 保留 4 个 canonical id（`explore`, `plan`, `execute`, `report`）作为内建默认值
     - 将 `WorkflowPrompts` 从固定 4 字段改为 `HashMap<String, String>`，内建默认仍覆盖 4 个 canonical 的 prompt
     - TOML 配置校验**仍只允许** 4 个 canonical id（向后兼容，开放自定义 id 留到独立后续任务）
     - 移除对 `WorkflowStepKind` 枚举的硬编码依赖点（`prompt_for`、`default_label`、`file_stem`、`build_step_system_prompt`）
@@ -1601,7 +1601,7 @@ cargo test -p omega-tui -p omega-session -p omega-app
 cargo clippy -p omega-session -p omega-tui -p omega-app --all-targets -- -D warnings
 ```
 
-**Summary:** `Task 15B-19` 已把 scene-aware routing 从“后台逻辑”推进为稳定的运行态可见性：runtime UI contract 新增 `WorkflowRunRole`、带 `workflow_id + workflow_role` 的 `StatusValue::WorkflowStep` 与 `UiSource::WorkflowStep`，以及 `StatusValue::SessionRouting` / `UiSource::SessionRouting`；`omega-session` 现按结构化 routing state 发出 scene、selected workflow 和 active root/child workflow，`omega-tui` 则在底部状态带展示 `flow child:feature Analyze 1/4`、`route feature -> feature` 这类摘要，并在 Activity/Logs 中区分 `[route] ...`、`[root:root ...]`、`[child:feature ...]` 的轨迹。验证已通过 `cargo test -p omega-session -p omega-tui -p omega-app` 与 `cargo clippy -p omega-session -p omega-tui -p omega-app --all-targets -- -D warnings`。
+**Summary:** `Task 15B-19` 已把 scene-aware routing 从“后台逻辑”推进为稳定的运行态可见性：runtime UI contract 新增 `WorkflowRunRole`、带 `workflow_id + workflow_role` 的 `StatusValue::WorkflowStep` 与 `UiSource::WorkflowStep`，以及 `StatusValue::SessionRouting` / `UiSource::SessionRouting`；`omega-session` 现按结构化 routing state 发出 scene、selected workflow 和 active root/child workflow，`omega-tui` 则在底部状态带展示 `flow child:feature Explore 1/4`、`route feature -> feature` 这类摘要，并在 Activity/Logs 中区分 `[route] ...`、`[root:root ...]`、`[child:feature ...]` 的轨迹。验证已通过 `cargo test -p omega-session -p omega-tui -p omega-app` 与 `cargo clippy -p omega-session -p omega-tui -p omega-app --all-targets -- -D warnings`。
 
 ---
 
@@ -1772,7 +1772,7 @@ cargo clippy -p omega-core -p omega-session -p omega-tui -p omega-app --all-targ
 - Updated: `.omega/prompt/step/scene-recognition.md`
 - Updated: `.omega/prompt/step/select-workflow.md`
 - Updated: `.omega/prompt/step/chat.md`
-- Updated: `.omega/prompt/step/analysis.md`
+- Updated: `.omega/prompt/step/explore.md`
 - Updated: `.omega/prompt/step/plan.md`
 - Updated: `.omega/prompt/step/report.md`
 - Updated: `docs/TODO.md`
@@ -1780,8 +1780,8 @@ cargo clippy -p omega-core -p omega-session -p omega-tui -p omega-app --all-targ
 
 - [x] **Step 1: 将内建 step 执行语义统一为有界最小循环**
 
-    - `scene-recognition`、`select-workflow`、`chat`、`analysis`、`plan`、`execute`、`report` 全部进入同一种 bounded agent loop
-    - 不再把 analysis / plan / report / routing step 固定为 `SingleResponse`
+    - `scene-recognition`、`select-workflow`、`chat`、`explore`、`plan`、`execute`、`report` 全部进入同一种 bounded agent loop
+    - 不再把 explore / plan / report / routing step 固定为 `SingleResponse`
 
 - [x] **Step 2: 用 step 级工具子集和循环预算约束行为**
 
@@ -1931,7 +1931,7 @@ cargo clippy -p omega-workflow -p omega-session --all-targets -- -D warnings
 **Files:**
 - Planned: `crates/omega-session/src/lib.rs`
 - Planned: `crates/omega-todo/src/lib.rs`
-- Planned: `.omega/prompt/step/analysis.md`
+- Planned: `.omega/prompt/step/explore.md`
 - Planned: `.omega/prompt/step/plan.md`
 - Planned: `.omega/prompt/step/execute.md`
 - Planned: `.omega/prompt/step/report.md`
@@ -1941,28 +1941,28 @@ cargo clippy -p omega-workflow -p omega-session --all-targets -- -D warnings
 
 **设计依据**：Step Data Contract 提供通用框架后，本任务把框架应用到 feature workflow 的具体 step 链路，定义各 step 的 JSON schema，更新 prompt 以配合结构化输出要求，并将 plan 输出与 TodoManager 集成。
 
-- [x] **Step 1: 定义 analysis / plan / execute 的输出 JSON 格式**
+- [x] **Step 1: 定义 explore / plan / execute 的输出 JSON 格式**
 
-    - analysis 输出：`{ objective, constraints[], risks[], affected_paths[] }`
+    - explore 输出：`{ objective, key_findings[], constraints[], risks[], affected_paths[] }`
     - plan 输出：`{ goal, tasks[{ id, title, description }], validation_targets[] }`
     - execute 输出（optional）：`{ completed_tasks[], open_tasks[], validation_results[], changed_paths[] }`
     - 格式定义可选放在 `.omega/schema/step/` 或直接通过 prompt 约定（首轮不要求完整 JSON Schema 文件）
 
 - [x] **Step 2: 更新 feature workflow TOML 配置**
 
-    - 为 analysis / plan / execute / report 添加 `input_contract` / `output_contract` 字段
+    - 为 explore / plan / execute / report 添加 `input_contract` / `output_contract` 字段
     - 更新 `.omega/workflows/feature.toml` 使用新的 contract 配置
 
 - [x] **Step 3: 更新 step prompt 文件**
 
-    - 更新 `analysis.md` / `plan.md` / `execute.md` / `report.md`，使其配合 data contract 和结构化输出需求
+    - 更新 `explore.md` / `plan.md` / `execute.md` / `report.md`，使其配合 data contract 和结构化输出需求
     - step prompt 主要描述任务目标和约束，格式要求由 data contract 自动注入
 
 - [x] **Step 4: Plan 输出与 TodoManager 集成**
 
     - 当 `plan` 产出结构化 tasks 时，映射到 `TodoManager`
     - `execute` 的 todo 更新与 structured output 对齐
-    - `report` 可从 step_outputs 中读取 analysis + plan + execute 的结构化数据
+    - `report` 可从 step_outputs 中读取 explore + plan + execute 的结构化数据
 
 - [x] **Step 5: 端到端验证**
 

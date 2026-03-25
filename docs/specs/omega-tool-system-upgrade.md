@@ -18,7 +18,7 @@ Omega 当前的 tool 主路径已经具备可用的 trait-based abstraction、st
 
 ## Goals
 
-- 降低 chat / analysis / routing step 对 `bash` 拼接命令的依赖。
+- 降低 chat / explore / routing step 对 `bash` 拼接命令的依赖。
 - 为仓库分析类任务提供稳定的结构化只读工具集合。
 - 让工具结果从“纯字符串”升级为“文本 + 元数据 + 诊断 + 截断信息”的稳定 contract。
 - 保持现有 workflow step tool filtering、runtime tool lifecycle 和安全边界不退化。

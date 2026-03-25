@@ -102,7 +102,7 @@ related_prds: []
 
 - `Skills: N`：本轮已加载 skill 数量
 - `Scene: chat`：当前识别出的工作场景
-- `Flow: Analyze`：当前工作流阶段
+- `Flow: Explore`：当前工作流阶段
 - `WF: feature/report`：当前 active workflow 或其关键阶段
 - `Ctx: 72%` 或 `Ctx: compacted`：上下文压力与压缩事件
 - `Subagents: 2 running`：委派中的子智能体数量
@@ -119,7 +119,7 @@ related_prds: []
 当前对 scene-aware routing 的落地规则：
 
 - `route` 徽章展示当前 recognized scene 与 selected workflow；在 scene 已识别但 child workflow 尚未选定时显示 `scene -> selecting`。
-- `flow` 徽章展示当前 active workflow step，并显式带出 `root` / `child` 角色与 workflow id，例如 `root:root Scene Recognition 1/2`、`child:feature Analyze 1/4`。
+- `flow` 徽章展示当前 active workflow step，并显式带出 `root` / `child` 角色与 workflow id，例如 `root:root Scene Recognition 1/2`、`child:feature Explore 1/4`。
 - 新 turn 开始时应清空上一轮 route 摘要，避免上一轮 scene/workflow 残留到当前 turn。
 
 ## Activity Views

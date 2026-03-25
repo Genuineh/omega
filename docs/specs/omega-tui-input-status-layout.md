@@ -80,7 +80,7 @@ related_prds: []
 
 - `primary slot`: 模型名
 - `state slot`: 运行态，例如 `Idle` / `Running`
-- `workflow slot`: 当前执行阶段，例如 `Analyze` / `Plan` / `Execute` / `Report`
+- `workflow slot`: 当前执行阶段，例如 `Explore` / `Plan` / `Execute` / `Report`
 - `extension slots`: 预留给后续功能的附加状态项
 
 扩展规则：

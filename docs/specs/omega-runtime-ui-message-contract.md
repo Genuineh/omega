@@ -449,7 +449,7 @@ pub struct ToolRunDetail {
 
 workflow 现在已经有两类不同输出：
 
-- 用户需要阅读的 step 正文结果，例如 `analysis` / `plan` / `execute` 的文字产物。
+- 用户需要阅读的 step 正文结果，例如 `explore` / `plan` / `execute` 的文字产物。
 - 仅用于运行态可见性的事件，例如 phase change、tool preview、todo refresh。
 
 这两类内容不应继续靠临时 `SessionUpdate` 分支混在一起。

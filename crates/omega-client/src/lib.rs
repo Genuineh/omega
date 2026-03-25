@@ -335,7 +335,7 @@ impl ChatResponseBuilder {
         match event {
             ChatEvent::MessageStart { id, model } => {
                 if self.id.is_some() {
-                    return Err(ClientError::Config(
+                    return Err(ClientError::Stream(
                         "chat stream emitted multiple message_start events".to_string(),
                     ));
                 }
@@ -389,7 +389,7 @@ impl ChatResponseBuilder {
     pub fn finish(mut self) -> Result<ChatResponse, ClientError> {
         self.flush_open_block();
         let id = self.id.ok_or_else(|| {
-            ClientError::Config("chat stream finished without message_start".to_string())
+            ClientError::Stream("chat stream finished without message_start".to_string())
         })?;
 
         Ok(ChatResponse {

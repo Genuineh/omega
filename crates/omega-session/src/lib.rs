@@ -1,18 +1,19 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 
 use omega_core::{
-    Agent, ChatEvent, CoreSharedTodoManager, DynLlmClient, Message, TodoItem, TodoManager,
-    TodoStatus,
+    Agent, ChatEvent, CoreSharedTodoManager, CoreToolResult, DynLlmClient, Message, TodoItem,
+    TodoManager, TodoStatus,
 };
 use omega_skills::SkillLoader;
 use omega_workflow::{
-    ANALYSIS_STEP_ID, DataFormat, EXECUTE_STEP_ID, FEATURE_WORKFLOW_ID, PLAN_STEP_ID,
-    REPORT_STEP_ID, SCENE_RECOGNITION_STEP_ID, SELECT_WORKFLOW_STEP_ID, SceneCatalog,
-    StepInputContract, StepOutputContract, WorkflowCatalog, WorkflowPromptCatalog, WorkflowPrompts,
-    WorkflowStep, WorkflowStepState,
+    DataFormat, OutputRecoveryMode, SceneCatalog, StepInputContract, StepOutputContract,
+    WorkflowCatalog, WorkflowPromptCatalog, WorkflowPrompts, WorkflowStep, WorkflowStepState,
+    EXECUTE_STEP_ID, EXPLORE_STEP_ID, FEATURE_SCENE_ID, FEATURE_WORKFLOW_ID, PLAN_STEP_ID,
+    REPORT_STEP_ID, RESEARCH_SCENE_ID, RESEARCH_WORKFLOW_ID, SCENE_RECOGNITION_STEP_ID,
+    SELECT_WORKFLOW_STEP_ID,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -22,6 +23,7 @@ use tracing::{debug, error, info};
 const SUMMARY_CHAR_LIMIT: usize = 2_000;
 const CONTEXT_SAFETY_MARGIN_TOKENS: u32 = 2_000;
 const TOKEN_ESTIMATE_DIVISOR: usize = 4;
+const REPAIR_PASS_MAX_ITERATIONS: u32 = 1;
 
 mod runtime_ui;
 mod skill_catalog;
@@ -33,9 +35,10 @@ pub use runtime_ui::{
     ResponseSectionKind, ResponseSectionMetadata, ResponseSectionState, RuntimeUiBridge,
     RuntimeUiEffect, RuntimeUiEnvelope, RuntimeUiMessage, RuntimeUiSink, SessionRuntimeContext,
     StatusSlot, StatusValue, StepContextWrite, StepContextWriteKind, StepDiagnostics,
-    StepInputDiagnostics, StepInputStatus, StepOutputContractMode, StepOutputDiagnostics,
-    StepOutputStatus, StepSummarySource, ToolRun, ToolRunDetail, ToolRunStatus, UiContent,
-    UiMessageKind, UiPriority, UiSource, UiTarget, WorkflowRunRole,
+    StepInputDiagnostics, StepInputStatus, StepOutputAttemptKind, StepOutputContractMode,
+    StepOutputDiagnostics, StepOutputRecoveryDecision, StepOutputStatus, StepSummarySource,
+    ToolRun, ToolRunDetail, ToolRunStatus, UiContent, UiMessageKind, UiPriority, UiSource,
+    UiTarget, WorkflowRunRole,
 };
 pub use skill_catalog::{ResolvedSkillSet, SessionSkillCatalog};
 pub use tool_catalog::{ResolvedToolSet, SessionToolCatalog};
@@ -51,6 +54,7 @@ pub struct AgentSessionConfig {
     pub context_window: u32,
     pub max_output_tokens: u32,
     pub bash_allowed_commands: Vec<String>,
+    pub batch_max_requests: usize,
 }
 
 struct AgentSlot {
@@ -137,6 +141,7 @@ struct StepSummary {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct StepExecutionInput {
     base_system: String,
+    cwd: PathBuf,
     resolved_tools: ResolvedToolSet,
     resolved_skills: ResolvedSkillSet,
     session_context: SessionContext,
@@ -167,26 +172,78 @@ struct StepDiagnosticContext<'a> {
 #[derive(Debug, Clone)]
 struct OutputDiagnosticState<'a> {
     status: StepOutputStatus,
+    attempt_kind: StepOutputAttemptKind,
     structured_output: Option<&'a Value>,
     attempts: u32,
     retry_count: u32,
     max_retries: u32,
-    error: Option<&'a str>,
+    validation_error: Option<&'a str>,
+    previous_response_preview: Option<&'a str>,
+    recovery_decision: Option<StepOutputRecoveryDecision>,
     session_writes: Vec<StepContextWrite>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutputValidationErrorKind {
+    ExtractFailed,
+    SchemaInvalid,
+    SemanticInvalid,
+}
+
+impl OutputValidationErrorKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ExtractFailed => "extract_failed",
+            Self::SchemaInvalid => "schema_invalid",
+            Self::SemanticInvalid => "semantic_invalid",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct OutputValidationFailure {
+    error_kind: OutputValidationErrorKind,
+    message: String,
+    previous_response_preview: String,
+    extracted_json: Option<Value>,
+}
+
+impl OutputValidationFailure {
+    fn new(
+        error_kind: OutputValidationErrorKind,
+        message: impl Into<String>,
+        previous_response: &str,
+        extracted_json: Option<Value>,
+    ) -> Self {
+        Self {
+            error_kind,
+            message: message.into(),
+            previous_response_preview: preview_text(previous_response.trim(), 600),
+            extracted_json,
+        }
+    }
+
+    fn extracted_json_preview(&self) -> Option<String> {
+        self.extracted_json
+            .as_ref()
+            .map(|value| preview_json_value(value, 600))
+    }
 }
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum StepTransition {
     Continue,
+    Repeat,
     StartWorkflow { workflow_id: String },
     FinishTurn,
     Error { message: String },
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-struct FeatureAnalysisOutput {
+struct FeatureExploreOutput {
     objective: String,
+    key_findings: Vec<String>,
     constraints: Vec<String>,
     risks: Vec<String>,
     affected_paths: Vec<String>,
@@ -227,10 +284,11 @@ impl AgentSession {
         let skill_loader = SkillLoader::from_repo_root(&config.cwd)?;
         let skill_catalog = Arc::new(SessionSkillCatalog::new(skill_loader));
         let todo_manager = Arc::new(Mutex::new(TodoManager::new()));
-        let dispatcher = omega_core::create_default_tools_with_todo_manager_and_bash_allowlist(
+        let dispatcher = omega_core::create_default_tools_with_todo_manager_and_tool_limits(
             config.cwd.clone(),
             todo_manager.clone(),
             config.bash_allowed_commands.clone(),
+            config.batch_max_requests,
         );
         let tool_catalog = Arc::new(SessionToolCatalog::new(
             dispatcher
@@ -664,9 +722,9 @@ impl<'a> ToolRunTracker<'a> {
         tool_use_id: &str,
         tool_name: &str,
         tool_input: &serde_json::Value,
-        output: &str,
+        tool_result: &CoreToolResult,
     ) {
-        let status = if output.starts_with("Error:") {
+        let status = if tool_result.is_error() {
             ToolRunStatus::Failed
         } else {
             ToolRunStatus::Complete
@@ -689,10 +747,10 @@ impl<'a> ToolRunTracker<'a> {
             });
 
         tool_run.status = status;
-        tool_run.result_preview = Some(preview_text(output, 100));
+        tool_run.result_preview = tool_result_preview(tool_result, 100);
         tool_run.detail = ToolRunDetail {
             title: format!(" Tool: {} ", tool_name),
-            lines: build_tool_run_detail_lines(tool_name, tool_input, Some(output)),
+            lines: build_tool_run_detail_lines(tool_name, tool_input, Some(tool_result)),
         };
 
         send_update_tool_run(self.tx, self.turn_id, tool_run.clone());
@@ -851,7 +909,8 @@ impl WorkflowTurnRunner<'_> {
                         return Err(error);
                     }
                 };
-            agent.set_system(build_step_system_prompt(&step_input));
+            let base_system_prompt = build_step_system_prompt(&step_input);
+            agent.set_system(base_system_prompt.clone());
 
             let checkpoint = if role == WorkflowRunRole::Root {
                 Some(agent.messages().to_vec())
@@ -872,11 +931,15 @@ impl WorkflowTurnRunner<'_> {
             let max_validation_retries = max_output_validation_retries(&step.output_contract);
             let mut validation_attempt = 0u32;
             let mut last_validation_error = None::<String>;
+            let mut last_validation_failure = None::<OutputValidationFailure>;
+            let mut current_attempt_kind = StepOutputAttemptKind::Primary;
+            let mut attempt_tools = step_input.resolved_tools.clone();
+            let mut attempt_max_iterations = step.max_iterations;
             let (stage_text, structured_output, validation_attempts) = loop {
                 let stage_text = match self.execute_step(
                     agent,
-                    &step,
-                    &step_input.resolved_tools,
+                    &attempt_tools,
+                    attempt_max_iterations,
                     &mut response_streamer,
                 ) {
                     Ok(stage_text) => stage_text,
@@ -895,8 +958,8 @@ impl WorkflowTurnRunner<'_> {
                             completed_output_attempts(&step.output_contract, validation_attempt),
                         );
                     }
-                    Err(validation_error) => {
-                        let validation_error_text = validation_error.to_string();
+                    Err(validation_failure) => {
+                        let validation_error_text = validation_failure.message.clone();
                         let attempts = validation_attempt + 1;
                         let can_retry = validation_attempt < max_validation_retries;
                         let retry_count = if can_retry {
@@ -909,15 +972,44 @@ impl WorkflowTurnRunner<'_> {
                             &step_input,
                             OutputDiagnosticState {
                                 status: StepOutputStatus::Invalid,
-                                structured_output: None,
+                                attempt_kind: current_attempt_kind,
+                                structured_output: validation_failure.extracted_json.as_ref(),
                                 attempts,
                                 retry_count,
                                 max_retries: max_validation_retries,
-                                error: Some(&validation_error_text),
+                                validation_error: Some(&validation_error_text),
+                                previous_response_preview: Some(
+                                    &validation_failure.previous_response_preview,
+                                ),
+                                recovery_decision: recovery_decision_for_failure(
+                                    can_retry,
+                                    allows_root_routing_text_fallback(role, &step),
+                                    next_retry_attempt_kind(
+                                        &step.output_contract,
+                                        validation_attempt + 1,
+                                    ),
+                                ),
                                 session_writes: Vec::new(),
                             },
                         );
                         last_validation_error = Some(validation_error_text.clone());
+                        last_validation_failure = Some(validation_failure.clone());
+
+                        emit_output_recovery_activity(
+                            self.tx_result,
+                            self.turn_id,
+                            &step,
+                            current_attempt_kind,
+                            recovery_decision_for_failure(
+                                can_retry,
+                                allows_root_routing_text_fallback(role, &step),
+                                next_retry_attempt_kind(
+                                    &step.output_contract,
+                                    validation_attempt + 1,
+                                ),
+                            ),
+                            &validation_failure,
+                        );
 
                         if !can_retry {
                             if allows_root_routing_text_fallback(role, &step) {
@@ -938,26 +1030,49 @@ impl WorkflowTurnRunner<'_> {
                                 "step '{}' failed output validation after {} attempt(s): {}",
                                 step.id,
                                 attempts,
-                                validation_error
+                                validation_failure.message
                             ));
                         }
 
                         validation_attempt += 1;
+                        let attempt_kind =
+                            next_retry_attempt_kind(&step.output_contract, validation_attempt);
                         send_warning_text(
                             self.tx_result,
                             self.turn_id,
-                            &format!(
-                                "Step '{}' produced invalid structured output. Retrying ({}/{}): {}",
-                                step.id,
+                            &retry_warning_message(
+                                &step,
+                                attempt_kind,
                                 validation_attempt,
                                 max_validation_retries,
-                                validation_error
+                                &validation_failure.message,
                             ),
                         );
                         agent.set_messages(step_attempt_checkpoint.clone());
-                        let validation_feedback =
-                            build_output_validation_feedback(&step, &validation_error.to_string());
-                        agent.add_user_message(&validation_feedback);
+
+                        match attempt_kind {
+                            StepOutputAttemptKind::Repair => {
+                                attempt_tools = ResolvedToolSet::new(Vec::new());
+                                attempt_max_iterations = REPAIR_PASS_MAX_ITERATIONS;
+                                agent.set_system(build_output_repair_system_prompt(
+                                    &step_input,
+                                    &validation_failure,
+                                ));
+                            }
+                            StepOutputAttemptKind::Regenerate => {
+                                attempt_tools = step_input.resolved_tools.clone();
+                                attempt_max_iterations = step.max_iterations;
+                                agent.set_system(base_system_prompt.clone());
+                                let validation_feedback = build_output_validation_feedback(
+                                    self.cwd,
+                                    &step,
+                                    &validation_failure.message,
+                                );
+                                agent.add_user_message(&validation_feedback);
+                            }
+                            StepOutputAttemptKind::Primary => {}
+                        }
+                        current_attempt_kind = attempt_kind;
                     }
                 }
             };
@@ -973,19 +1088,32 @@ impl WorkflowTurnRunner<'_> {
                 session_context,
             )?;
 
+            let output_status = final_output_status(
+                &step.output_contract,
+                step_result.structured_output.as_ref(),
+            );
+
             self.send_step_output_diagnostics(
                 &diagnostic_context,
                 &step_input,
                 OutputDiagnosticState {
-                    status: final_output_status(
-                        &step.output_contract,
-                        step_result.structured_output.as_ref(),
-                    ),
+                    status: output_status,
+                    attempt_kind: current_attempt_kind,
                     structured_output: step_result.structured_output.as_ref(),
                     attempts: validation_attempts,
                     retry_count: validation_attempt,
                     max_retries: max_validation_retries,
-                    error: last_validation_error.as_deref(),
+                    validation_error: matches!(output_status, StepOutputStatus::Invalid)
+                        .then_some(last_validation_error.as_deref())
+                        .flatten(),
+                    previous_response_preview: matches!(output_status, StepOutputStatus::Invalid)
+                        .then_some(
+                            last_validation_failure
+                                .as_ref()
+                                .map(|failure| failure.previous_response_preview.as_str()),
+                        )
+                        .flatten(),
+                    recovery_decision: None,
                     session_writes: step_result.session_writes.clone(),
                 },
             );
@@ -1032,6 +1160,7 @@ impl WorkflowTurnRunner<'_> {
                         break;
                     }
                 }
+                StepTransition::Repeat => {}
                 StepTransition::StartWorkflow { .. } | StepTransition::FinishTurn => break,
                 StepTransition::Error { message } => return Err(anyhow::anyhow!(message)),
             }
@@ -1043,13 +1172,13 @@ impl WorkflowTurnRunner<'_> {
     fn execute_step(
         &self,
         agent: &mut Agent,
-        step: &WorkflowStep,
         resolved_tools: &ResolvedToolSet,
+        max_iterations: u32,
         response_streamer: &mut StepResponseStreamer<'_>,
     ) -> anyhow::Result<String> {
         let tool_name_refs = resolved_tools.tool_name_refs();
         agent.set_visible_tools(Some(&tool_name_refs));
-        agent.set_max_iterations(step.max_iterations);
+        agent.set_max_iterations(max_iterations);
 
         let tool_runs = Arc::new(Mutex::new(ToolRunTracker::new(
             self.tx_callback,
@@ -1062,7 +1191,7 @@ impl WorkflowTurnRunner<'_> {
                 let tx_callback = self.tx_callback.clone();
                 let turn_id = self.turn_id;
                 let tool_runs = tool_runs.clone();
-                move |tool_use_id, name, tool_input, output| {
+                move |tool_use_id, name, tool_input, tool_result| {
                     let command = if name == "bash" {
                         tool_input
                             .get("command")
@@ -1077,18 +1206,18 @@ impl WorkflowTurnRunner<'_> {
                         turn_id,
                         name,
                         command,
-                        preview_text(output, 100),
+                        tool_result_preview(tool_result, 100).unwrap_or_default(),
                     );
 
                     tool_runs.lock().unwrap().complete_tool_run(
                         tool_use_id,
                         name,
                         tool_input,
-                        output,
+                        tool_result,
                     );
 
-                    if name == "todo" && !output.starts_with("Error:") {
-                        send_todo_snapshot(&tx_callback, turn_id, output);
+                    if name == "todo" && !tool_result.is_error() {
+                        send_todo_snapshot(&tx_callback, turn_id, &tool_result.output);
                     }
                 }
             },
@@ -1139,6 +1268,7 @@ impl WorkflowTurnRunner<'_> {
 
         Ok(StepExecutionInput {
             base_system: self.base_system.to_string(),
+            cwd: self.cwd.to_path_buf(),
             resolved_tools,
             resolved_skills,
             session_context: SessionContext {
@@ -1177,6 +1307,7 @@ impl WorkflowTurnRunner<'_> {
                 resolved_tools.tool_names(),
             )))
             .saturating_add(estimate_tokens(&render_output_contract(
+                self.cwd,
                 &step.output_contract,
             )));
 
@@ -1253,12 +1384,18 @@ impl WorkflowTurnRunner<'_> {
     ) {
         let output = build_step_output_diagnostics(
             &context.step.output_contract,
-            pending_output_status_for_contract(&context.step.output_contract),
-            None,
-            0,
-            0,
-            max_output_validation_retries(&context.step.output_contract),
-            None,
+            &OutputDiagnosticState {
+                status: pending_output_status_for_contract(&context.step.output_contract),
+                attempt_kind: StepOutputAttemptKind::Primary,
+                structured_output: None,
+                attempts: 0,
+                retry_count: 0,
+                max_retries: max_output_validation_retries(&context.step.output_contract),
+                validation_error: None,
+                previous_response_preview: None,
+                recovery_decision: None,
+                session_writes: Vec::new(),
+            },
         );
         self.send_step_diagnostics_effect(build_step_diagnostics(
             context,
@@ -1295,12 +1432,18 @@ impl WorkflowTurnRunner<'_> {
     ) {
         let output = build_step_output_diagnostics(
             &context.step.output_contract,
-            pending_output_status_for_contract(&context.step.output_contract),
-            None,
-            0,
-            0,
-            max_output_validation_retries(&context.step.output_contract),
-            None,
+            &OutputDiagnosticState {
+                status: pending_output_status_for_contract(&context.step.output_contract),
+                attempt_kind: StepOutputAttemptKind::Primary,
+                structured_output: None,
+                attempts: 0,
+                retry_count: 0,
+                max_retries: max_output_validation_retries(&context.step.output_contract),
+                validation_error: None,
+                previous_response_preview: None,
+                recovery_decision: None,
+                session_writes: Vec::new(),
+            },
         );
         self.send_step_diagnostics_effect(build_step_diagnostics(
             context,
@@ -1326,20 +1469,17 @@ impl WorkflowTurnRunner<'_> {
         let diagnostics = build_step_diagnostics(
             context,
             build_step_input_diagnostics(step_input),
-            build_step_output_diagnostics(
-                &context.step.output_contract,
-                output_state.status,
-                output_state.structured_output,
-                output_state.attempts,
-                output_state.retry_count,
-                output_state.max_retries,
-                output_state.error,
-            ),
+            build_step_output_diagnostics(&context.step.output_contract, &output_state),
             output_state.session_writes,
         );
-        let extracted_preview = diagnostics
+        let extracted_json_preview = diagnostics
             .output
-            .extracted_preview
+            .extracted_json_preview
+            .clone()
+            .unwrap_or_default();
+        let previous_response_preview = diagnostics
+            .output
+            .previous_response_preview
             .clone()
             .unwrap_or_default();
         let session_write_count = diagnostics.session_writes.len();
@@ -1350,10 +1490,13 @@ impl WorkflowTurnRunner<'_> {
             workflow_role = %context.workflow_role.as_str(),
             step_id = %context.step.id,
             validation_status = ?output_state.status,
+            attempt_kind = output_state.attempt_kind.as_str(),
             attempts = output_state.attempts,
             retry_count = output_state.retry_count,
-            error = output_state.error.unwrap_or(""),
-            extracted_preview,
+            validation_error = output_state.validation_error.unwrap_or(""),
+            recovery_decision = output_state.recovery_decision.map(|decision| decision.as_str()).unwrap_or(""),
+            previous_response_preview,
+            extracted_json_preview,
             session_write_count,
             session_writes = %session_writes,
             "step output diagnostics updated"
@@ -1399,12 +1542,18 @@ impl WorkflowTurnRunner<'_> {
                 "session context stored structured step output"
             );
             session_writes.extend(self.sync_todo_state_from_step(&workflow_id, step, output)?);
+            if self.should_repeat_execute_step(&workflow_id, role, step, &session_writes)? {
+                transition = StepTransition::Repeat;
+            }
         }
 
         let summary_text = match (role, step.id.as_str()) {
             (WorkflowRunRole::Root, SCENE_RECOGNITION_STEP_ID) => {
-                let scene_id =
-                    self.resolve_scene_from_output(structured_output.as_ref(), &final_text);
+                let scene_id = self.resolve_scene_from_output(
+                    structured_output.as_ref(),
+                    &final_text,
+                    &session_context.latest_user_turn,
+                );
                 session_context.routing.recognized_scene_id = Some(scene_id.clone());
                 session_context.routing.selected_workflow_id = None;
                 self.send_session_status(session_context);
@@ -1424,6 +1573,7 @@ impl WorkflowTurnRunner<'_> {
                     structured_output.as_ref(),
                     &final_text,
                     &scene_id,
+                    &session_context.latest_user_turn,
                 );
                 session_context.routing.selected_workflow_id = Some(selected_workflow_id.clone());
                 self.send_session_status(session_context);
@@ -1454,19 +1604,49 @@ impl WorkflowTurnRunner<'_> {
         })
     }
 
+    fn should_repeat_execute_step(
+        &self,
+        workflow_id: &str,
+        role: WorkflowRunRole,
+        step: &WorkflowStep,
+        session_writes: &[StepContextWrite],
+    ) -> anyhow::Result<bool> {
+        if role != WorkflowRunRole::Child
+            || step.id != EXECUTE_STEP_ID
+            || !matches!(workflow_id, FEATURE_WORKFLOW_ID | RESEARCH_WORKFLOW_ID)
+        {
+            return Ok(false);
+        }
+
+        let todo_changed = session_writes
+            .iter()
+            .any(|write| write.path == "todo.rendered");
+        if !todo_changed {
+            return Ok(false);
+        }
+
+        let manager = self
+            .todo_manager
+            .lock()
+            .map_err(|_| anyhow::anyhow!("todo manager lock poisoned"))?;
+        Ok(manager.has_open_items())
+    }
+
     fn sync_todo_state_from_step(
         &self,
         workflow_id: &str,
         step: &WorkflowStep,
         structured_output: &Value,
     ) -> anyhow::Result<Vec<StepContextWrite>> {
-        if workflow_id != FEATURE_WORKFLOW_ID {
-            return Ok(Vec::new());
-        }
-
         match step.id.as_str() {
-            PLAN_STEP_ID => self.sync_todo_manager_from_plan_output(structured_output),
-            EXECUTE_STEP_ID => self.sync_todo_manager_from_execute_output(structured_output),
+            PLAN_STEP_ID if matches!(workflow_id, FEATURE_WORKFLOW_ID | RESEARCH_WORKFLOW_ID) => {
+                self.sync_todo_manager_from_plan_output(structured_output)
+            }
+            EXECUTE_STEP_ID
+                if matches!(workflow_id, FEATURE_WORKFLOW_ID | RESEARCH_WORKFLOW_ID) =>
+            {
+                self.sync_todo_manager_from_execute_output(structured_output)
+            }
             _ => Ok(Vec::new()),
         }
     }
@@ -1576,7 +1756,7 @@ impl WorkflowTurnRunner<'_> {
         &self,
         step: &WorkflowStep,
         final_text: &str,
-    ) -> anyhow::Result<Option<Value>> {
+    ) -> Result<Option<Value>, OutputValidationFailure> {
         match &step.output_contract {
             StepOutputContract::None => Ok(None),
             StepOutputContract::Required {
@@ -1584,35 +1764,80 @@ impl WorkflowTurnRunner<'_> {
                 schema_path,
                 ..
             } => {
-                let value = parse_structured_output(*format, final_text).ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "expected {} output but response was not valid {}",
-                        format.as_str(),
-                        format.as_str()
-                    )
-                })?;
-                if let Some(schema_path) = schema_path {
-                    validate_schema_file(self.cwd, schema_path, &value)?;
+                let candidates = parse_structured_output_candidates(*format, final_text);
+                if candidates.is_empty() {
+                    return Err(OutputValidationFailure::new(
+                        OutputValidationErrorKind::ExtractFailed,
+                        format!(
+                            "expected {} output but response was not valid {}",
+                            format.as_str(),
+                            format.as_str()
+                        ),
+                        final_text,
+                        None,
+                    ));
                 }
-                validate_feature_step_output(step, &value)?;
-                Ok(Some(value))
+
+                let mut first_failure = None;
+                for value in candidates {
+                    if let Some(schema_path) = schema_path {
+                        if let Err(error) = validate_schema_file(self.cwd, schema_path, &value) {
+                            if first_failure.is_none() {
+                                first_failure = Some(OutputValidationFailure::new(
+                                    OutputValidationErrorKind::SchemaInvalid,
+                                    error.to_string(),
+                                    final_text,
+                                    Some(value.clone()),
+                                ));
+                            }
+                            continue;
+                        }
+                    }
+
+                    if let Err(error) = validate_feature_step_output(step, &value) {
+                        if first_failure.is_none() {
+                            first_failure = Some(OutputValidationFailure::new(
+                                OutputValidationErrorKind::SemanticInvalid,
+                                error.to_string(),
+                                final_text,
+                                Some(value.clone()),
+                            ));
+                        }
+                        continue;
+                    }
+
+                    return Ok(Some(value));
+                }
+
+                Err(first_failure.unwrap_or_else(|| {
+                    OutputValidationFailure::new(
+                        OutputValidationErrorKind::ExtractFailed,
+                        format!(
+                            "expected {} output but response was not valid {}",
+                            format.as_str(),
+                            format.as_str()
+                        ),
+                        final_text,
+                        None,
+                    )
+                }))
             }
             StepOutputContract::Optional {
                 format,
                 schema_path,
             } => {
-                let Some(value) = parse_structured_output(*format, final_text) else {
-                    return Ok(None);
-                };
-                if let Some(schema_path) = schema_path {
-                    if validate_schema_file(self.cwd, schema_path, &value).is_err() {
-                        return Ok(None);
+                for value in parse_structured_output_candidates(*format, final_text) {
+                    if let Some(schema_path) = schema_path {
+                        if validate_schema_file(self.cwd, schema_path, &value).is_err() {
+                            continue;
+                        }
                     }
+                    if validate_feature_step_output(step, &value).is_err() {
+                        continue;
+                    }
+                    return Ok(Some(value));
                 }
-                if validate_feature_step_output(step, &value).is_err() {
-                    return Ok(None);
-                }
-                Ok(Some(value))
+                Ok(None)
             }
         }
     }
@@ -1621,13 +1846,14 @@ impl WorkflowTurnRunner<'_> {
         &self,
         structured_output: Option<&Value>,
         stage_text: &str,
+        latest_user_turn: &str,
     ) -> String {
         if let Some(scene_id) =
             parse_structured_id_from_value(structured_output, &["recognized_scene_id", "scene_id"])
                 .or_else(|| parse_structured_id(stage_text, &["recognized_scene_id", "scene_id"]))
         {
             if self.scene_catalog.scene(&scene_id).is_some() {
-                return scene_id;
+                return self.maybe_align_scene_for_request_intent(scene_id, latest_user_turn);
             }
         }
 
@@ -1638,7 +1864,7 @@ impl WorkflowTurnRunner<'_> {
                 .iter()
                 .map(|scene| scene.id.as_str()),
         ) {
-            Some(scene_id) => scene_id,
+            Some(scene_id) => self.maybe_align_scene_for_request_intent(scene_id, latest_user_turn),
             None => {
                 let fallback = self.scene_catalog.default_scene_id.clone();
                 send_warning_text(
@@ -1649,7 +1875,7 @@ impl WorkflowTurnRunner<'_> {
                         fallback
                     ),
                 );
-                fallback
+                self.maybe_align_scene_for_request_intent(fallback, latest_user_turn)
             }
         }
     }
@@ -1659,6 +1885,7 @@ impl WorkflowTurnRunner<'_> {
         structured_output: Option<&Value>,
         stage_text: &str,
         scene_id: &str,
+        latest_user_turn: &str,
     ) -> String {
         let mapped_workflow = self
             .scene_catalog
@@ -1675,7 +1902,11 @@ impl WorkflowTurnRunner<'_> {
             if workflow_id != self.scene_catalog.root_workflow_id
                 && self.workflow_catalog.workflow(&workflow_id).is_some()
             {
-                return workflow_id;
+                return self.maybe_align_workflow_for_request_intent(
+                    workflow_id,
+                    &mapped_workflow,
+                    latest_user_turn,
+                );
             }
         }
 
@@ -1684,10 +1915,103 @@ impl WorkflowTurnRunner<'_> {
                 if workflow_id != self.scene_catalog.root_workflow_id
                     && self.workflow_catalog.workflow(&workflow_id).is_some() =>
             {
-                workflow_id
+                self.maybe_align_workflow_for_request_intent(
+                    workflow_id,
+                    &mapped_workflow,
+                    latest_user_turn,
+                )
             }
-            _ => mapped_workflow,
+            _ => self.maybe_align_workflow_for_request_intent(
+                mapped_workflow.clone(),
+                &mapped_workflow,
+                latest_user_turn,
+            ),
         }
+    }
+
+    fn maybe_align_scene_for_request_intent(
+        &self,
+        scene_id: String,
+        latest_user_turn: &str,
+    ) -> String {
+        if latest_user_turn_requires_feature_scene(latest_user_turn) {
+            let promoted_scene_id = self
+                .scene_catalog
+                .scene(FEATURE_SCENE_ID)
+                .map(|scene| scene.id.clone())
+                .unwrap_or_else(|| self.scene_catalog.default_scene_id.clone());
+            if promoted_scene_id != scene_id {
+                send_warning_text(
+                    self.tx_result,
+                    self.turn_id,
+                    &format!(
+                        "Scene recognition returned '{}' for an implementation-oriented request; promoting to '{}'.",
+                        scene_id, promoted_scene_id
+                    ),
+                );
+                return promoted_scene_id;
+            }
+        }
+
+        if latest_user_turn_prefers_research_scene(latest_user_turn) {
+            if let Some(promoted_scene_id) = self
+                .scene_catalog
+                .scene(RESEARCH_SCENE_ID)
+                .map(|scene| scene.id.clone())
+            {
+                if promoted_scene_id != scene_id {
+                    send_warning_text(
+                        self.tx_result,
+                        self.turn_id,
+                        &format!(
+                            "Scene recognition returned '{}' for a research-oriented request; promoting to '{}'.",
+                            scene_id, promoted_scene_id
+                        ),
+                    );
+                    return promoted_scene_id;
+                }
+            }
+        }
+
+        scene_id
+    }
+
+    fn maybe_align_workflow_for_request_intent(
+        &self,
+        workflow_id: String,
+        mapped_workflow: &str,
+        latest_user_turn: &str,
+    ) -> String {
+        if workflow_id != mapped_workflow
+            && latest_user_turn_requires_feature_scene(latest_user_turn)
+        {
+            send_warning_text(
+                self.tx_result,
+                self.turn_id,
+                &format!(
+                    "Workflow selection returned '{}' for an implementation-oriented request; promoting to '{}'.",
+                    workflow_id, mapped_workflow
+                ),
+            );
+            return mapped_workflow.to_string();
+        }
+
+        if workflow_id != mapped_workflow
+            && mapped_workflow == RESEARCH_WORKFLOW_ID
+            && latest_user_turn_prefers_research_scene(latest_user_turn)
+        {
+            send_warning_text(
+                self.tx_result,
+                self.turn_id,
+                &format!(
+                    "Workflow selection returned '{}' for a research-oriented request; promoting to '{}'.",
+                    workflow_id, mapped_workflow
+                ),
+            );
+            return mapped_workflow.to_string();
+        }
+
+        workflow_id
     }
 
     fn ensure_selected_workflow(&self, session_context: &mut SessionContext) -> String {
@@ -1859,22 +2183,28 @@ fn render_structured_input(structured_input: &Value) -> String {
     serde_json::to_string_pretty(structured_input).unwrap_or_else(|_| structured_input.to_string())
 }
 
-fn render_output_contract(output_contract: &StepOutputContract) -> String {
+fn render_output_contract(root: &std::path::Path, output_contract: &StepOutputContract) -> String {
     match output_contract {
         StepOutputContract::None => String::new(),
         StepOutputContract::Required {
             format,
             schema_path,
             max_retries,
+            recovery_mode,
         } => {
             let mut lines = vec![
                 "mode: required".to_string(),
                 format!("format: {}", format.as_str()),
                 format!("max_retries: {}", max_retries),
+                format!("recovery_mode: {}", recovery_mode.as_str()),
             ];
             lines.extend(render_output_format_rules(*format));
             if let Some(schema_path) = schema_path {
                 lines.push(format!("schema_path: {}", schema_path.display()));
+                if let Some(schema_contract) = render_output_schema_contract(root, schema_path) {
+                    lines.push("schema_json:".to_string());
+                    lines.extend(schema_contract.lines().map(|line| format!("  {line}")));
+                }
             }
             lines.join("\n")
         }
@@ -1889,10 +2219,28 @@ fn render_output_contract(output_contract: &StepOutputContract) -> String {
             lines.extend(render_output_format_rules(*format));
             if let Some(schema_path) = schema_path {
                 lines.push(format!("schema_path: {}", schema_path.display()));
+                if let Some(schema_contract) = render_output_schema_contract(root, schema_path) {
+                    lines.push("schema_json:".to_string());
+                    lines.extend(schema_contract.lines().map(|line| format!("  {line}")));
+                }
             }
             lines.join("\n")
         }
     }
+}
+
+fn render_output_schema_contract(
+    root: &std::path::Path,
+    schema_path: &std::path::Path,
+) -> Option<String> {
+    let path = if schema_path.is_absolute() {
+        schema_path.to_path_buf()
+    } else {
+        root.join(schema_path)
+    };
+    let raw = std::fs::read_to_string(path).ok()?;
+    let schema = serde_json::from_str::<Value>(&raw).ok()?;
+    serde_json::to_string_pretty(&schema).ok()
 }
 
 fn render_output_format_rules(format: DataFormat) -> Vec<String> {
@@ -1991,6 +2339,101 @@ fn completed_output_attempts(output_contract: &StepOutputContract, retry_count: 
         StepOutputContract::Required { .. } | StepOutputContract::Optional { .. } => {
             retry_count + 1
         }
+    }
+}
+
+fn next_retry_attempt_kind(
+    output_contract: &StepOutputContract,
+    retry_count: u32,
+) -> StepOutputAttemptKind {
+    match output_contract {
+        StepOutputContract::Required {
+            recovery_mode: OutputRecoveryMode::RepairThenRegenerate,
+            ..
+        } if retry_count == 1 => StepOutputAttemptKind::Repair,
+        StepOutputContract::Required { .. } | StepOutputContract::Optional { .. } => {
+            StepOutputAttemptKind::Regenerate
+        }
+        StepOutputContract::None => StepOutputAttemptKind::Primary,
+    }
+}
+
+fn recovery_decision_for_failure(
+    can_retry: bool,
+    allows_text_fallback: bool,
+    next_attempt_kind: StepOutputAttemptKind,
+) -> Option<StepOutputRecoveryDecision> {
+    if can_retry {
+        return Some(match next_attempt_kind {
+            StepOutputAttemptKind::Repair => StepOutputRecoveryDecision::Repair,
+            StepOutputAttemptKind::Regenerate => StepOutputRecoveryDecision::Regenerate,
+            StepOutputAttemptKind::Primary => StepOutputRecoveryDecision::Regenerate,
+        });
+    }
+
+    Some(if allows_text_fallback {
+        StepOutputRecoveryDecision::FallbackTextRouting
+    } else {
+        StepOutputRecoveryDecision::Abort
+    })
+}
+
+fn retry_warning_message(
+    step: &WorkflowStep,
+    attempt_kind: StepOutputAttemptKind,
+    retry_count: u32,
+    max_retries: u32,
+    validation_error: &str,
+) -> String {
+    match attempt_kind {
+        StepOutputAttemptKind::Repair => format!(
+            "Step '{}' produced invalid structured output. Running repair pass ({}/{}): {}",
+            step.id, retry_count, max_retries, validation_error
+        ),
+        StepOutputAttemptKind::Regenerate => format!(
+            "Step '{}' produced invalid structured output. Regenerating step ({}/{}): {}",
+            step.id, retry_count, max_retries, validation_error
+        ),
+        StepOutputAttemptKind::Primary => format!(
+            "Step '{}' produced invalid structured output. Retrying ({}/{}): {}",
+            step.id, retry_count, max_retries, validation_error
+        ),
+    }
+}
+
+fn emit_output_recovery_activity(
+    tx: &mpsc::Sender<RuntimeUiEnvelope>,
+    turn_id: u64,
+    step: &WorkflowStep,
+    attempt_kind: StepOutputAttemptKind,
+    recovery_decision: Option<StepOutputRecoveryDecision>,
+    failure: &OutputValidationFailure,
+) {
+    let mut summary = format!(
+        "Step '{}' structured output attempt={} error_kind={}",
+        step.id,
+        attempt_kind.as_str(),
+        failure.error_kind.as_str()
+    );
+    if let Some(recovery_decision) = recovery_decision {
+        summary.push_str(&format!(" next={}", recovery_decision.as_str()));
+    }
+    summary.push_str(&format!(" validation_error={}", failure.message));
+    send_system_log_text(tx, turn_id, &summary);
+    send_system_log_text(
+        tx,
+        turn_id,
+        &format!(
+            "previous_response_preview: {}",
+            failure.previous_response_preview
+        ),
+    );
+    if let Some(extracted_json_preview) = failure.extracted_json_preview() {
+        send_system_log_text(
+            tx,
+            turn_id,
+            &format!("extracted_json_preview: {extracted_json_preview}"),
+        );
     }
 }
 
@@ -2103,12 +2546,7 @@ fn expected_and_missing_sources(
 
 fn build_step_output_diagnostics(
     output_contract: &StepOutputContract,
-    status: StepOutputStatus,
-    structured_output: Option<&Value>,
-    attempts: u32,
-    retry_count: u32,
-    max_retries: u32,
-    error: Option<&str>,
+    output_state: &OutputDiagnosticState<'_>,
 ) -> StepOutputDiagnostics {
     let (contract_mode, format, schema_path) = match output_contract {
         StepOutputContract::None => (StepOutputContractMode::None, None, None),
@@ -2135,12 +2573,19 @@ fn build_step_output_diagnostics(
         contract_mode,
         format,
         schema_path,
-        status,
-        extracted_preview: structured_output.map(|value| preview_json_value(value, 160)),
-        attempts,
-        retry_count,
-        max_retries,
-        error: error.map(ToOwned::to_owned),
+        status: output_state.status,
+        attempt_kind: output_state.attempt_kind,
+        extracted_json_preview: output_state
+            .structured_output
+            .map(|value| preview_json_value(value, 160)),
+        previous_response_preview: output_state
+            .previous_response_preview
+            .map(ToOwned::to_owned),
+        attempts: output_state.attempts,
+        retry_count: output_state.retry_count,
+        max_retries: output_state.max_retries,
+        validation_error: output_state.validation_error.map(ToOwned::to_owned),
+        recovery_decision: output_state.recovery_decision,
     }
 }
 
@@ -2255,8 +2700,14 @@ fn validate_structured_output(
 }
 
 fn parse_structured_output(format: DataFormat, final_text: &str) -> Option<Value> {
+    parse_structured_output_candidates(format, final_text)
+        .into_iter()
+        .next()
+}
+
+fn parse_structured_output_candidates(format: DataFormat, final_text: &str) -> Vec<Value> {
     match format {
-        DataFormat::Json => parse_json_value(final_text),
+        DataFormat::Json => parse_json_values(final_text),
     }
 }
 
@@ -2371,8 +2822,8 @@ fn validate_schema_value(
 
 fn validate_feature_step_output(step: &WorkflowStep, value: &Value) -> anyhow::Result<()> {
     match step.id.as_str() {
-        ANALYSIS_STEP_ID => {
-            parse_feature_analysis_output(value.clone())?;
+        EXPLORE_STEP_ID => {
+            parse_feature_explore_output(value.clone())?;
             Ok(())
         }
         PLAN_STEP_ID => {
@@ -2387,24 +2838,32 @@ fn validate_feature_step_output(step: &WorkflowStep, value: &Value) -> anyhow::R
     }
 }
 
-fn parse_feature_analysis_output(value: Value) -> anyhow::Result<FeatureAnalysisOutput> {
-    let output = serde_json::from_value::<FeatureAnalysisOutput>(value)?;
+fn parse_feature_explore_output(value: Value) -> anyhow::Result<FeatureExploreOutput> {
+    let output = serde_json::from_value::<FeatureExploreOutput>(value)?;
     if output.objective.trim().is_empty() {
-        anyhow::bail!("analysis output objective must be non-empty");
+        anyhow::bail!("explore output objective must be non-empty");
+    }
+    if output.key_findings.is_empty() {
+        anyhow::bail!("explore output must include at least one key finding");
+    }
+    for finding in &output.key_findings {
+        if finding.trim().is_empty() {
+            anyhow::bail!("explore key_findings must be non-empty strings");
+        }
     }
     for constraint in &output.constraints {
         if constraint.trim().is_empty() {
-            anyhow::bail!("analysis constraints must be non-empty strings");
+            anyhow::bail!("explore constraints must be non-empty strings");
         }
     }
     for risk in &output.risks {
         if risk.trim().is_empty() {
-            anyhow::bail!("analysis risks must be non-empty strings");
+            anyhow::bail!("explore risks must be non-empty strings");
         }
     }
     for path in &output.affected_paths {
         if path.trim().is_empty() {
-            anyhow::bail!("analysis affected_paths must be non-empty strings");
+            anyhow::bail!("explore affected_paths must be non-empty strings");
         }
     }
     Ok(output)
@@ -2469,8 +2928,12 @@ fn parse_feature_execute_output(value: Value) -> anyhow::Result<FeatureExecuteOu
     Ok(output)
 }
 
-fn build_output_validation_feedback(step: &WorkflowStep, validation_error: &str) -> String {
-    let contract = render_output_contract(&step.output_contract);
+fn build_output_validation_feedback(
+    root: &std::path::Path,
+    step: &WorkflowStep,
+    validation_error: &str,
+) -> String {
+    let contract = render_output_contract(root, &step.output_contract);
     if contract.is_empty() {
         format!(
             "Your previous response for step '{}' failed validation: {}. Re-run the step and satisfy the expected structured output.",
@@ -2498,45 +2961,77 @@ fn summarize_step_text(text: &str) -> String {
 }
 
 fn parse_json_value(text: &str) -> Option<serde_json::Value> {
+    parse_json_values(text).into_iter().next()
+}
+
+fn parse_json_values(text: &str) -> Vec<serde_json::Value> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
-        return None;
+        return Vec::new();
     }
-    if let Ok(value) = serde_json::from_str(trimmed) {
-        return Some(value);
-    }
+
+    let mut values = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    push_json_candidate(trimmed, &mut values, &mut seen);
 
     for prefix in ["```json", "```JSON", "```"] {
         if let Some(rest) = trimmed.strip_prefix(prefix) {
             let body = rest.trim();
             if let Some(body) = body.strip_suffix("```") {
-                if let Ok(value) = serde_json::from_str(body.trim()) {
-                    return Some(value);
-                }
+                push_json_candidate(body.trim(), &mut values, &mut seen);
             }
         }
     }
 
-    extract_top_level_json(trimmed).and_then(|candidate| serde_json::from_str(candidate).ok())
+    for candidate in extract_top_level_json_candidates(trimmed) {
+        push_json_candidate(candidate, &mut values, &mut seen);
+    }
+
+    values
 }
 
-fn extract_top_level_json(text: &str) -> Option<&str> {
-    let start_indices = text
-        .char_indices()
-        .filter_map(|(index, character)| matches!(character, '{' | '[').then_some(index));
+fn push_json_candidate(
+    candidate: &str,
+    values: &mut Vec<Value>,
+    seen: &mut std::collections::BTreeSet<String>,
+) {
+    let Ok(value) = serde_json::from_str::<Value>(candidate) else {
+        return;
+    };
+    let fingerprint =
+        serde_json::to_string(&value).unwrap_or_else(|_| candidate.trim().to_string());
+    if seen.insert(fingerprint) {
+        values.push(value);
+    }
+}
 
-    for start in start_indices {
+fn extract_top_level_json_candidates(text: &str) -> Vec<&str> {
+    let mut candidates = Vec::new();
+    let mut search_start = 0;
+
+    while search_start < text.len() {
+        let Some((relative_start, _)) = text[search_start..]
+            .char_indices()
+            .find(|(_, character)| matches!(character, '{' | '['))
+        else {
+            break;
+        };
+        let start = search_start + relative_start;
         let candidate = &text[start..];
         let Some(end) = find_top_level_json_end(candidate) else {
+            search_start = start + 1;
             continue;
         };
         let candidate = &candidate[..end];
         if serde_json::from_str::<Value>(candidate).is_ok() {
-            return Some(candidate);
+            candidates.push(candidate);
+            search_start = start + end;
+        } else {
+            search_start = start + 1;
         }
     }
 
-    None
+    candidates
 }
 
 fn find_top_level_json_end(text: &str) -> Option<usize> {
@@ -2614,6 +3109,146 @@ fn find_catalog_match<'a>(
         })
 }
 
+fn latest_user_turn_requires_feature_scene(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    const ASCII_HINTS: &[&str] = &[
+        "fix",
+        "implement",
+        "update",
+        "edit",
+        "change",
+        "modify",
+        "add",
+        "create",
+        "write",
+        "refactor",
+        "rename",
+        "remove",
+        "delete",
+        "split",
+        "move",
+        "replace",
+        "wire",
+        "expose",
+        "support",
+        "patch",
+        "document",
+        "docs",
+        "test",
+    ];
+    const CJK_HINTS: &[&str] = &[
+        "修复",
+        "实现",
+        "更新",
+        "编辑",
+        "修改",
+        "调整",
+        "新增",
+        "添加",
+        "创建",
+        "编写",
+        "重构",
+        "重命名",
+        "删除",
+        "拆",
+        "迁移",
+        "补",
+        "改",
+        "文档",
+        "测试",
+        "暴露",
+    ];
+
+    let normalized = trimmed.to_ascii_lowercase();
+    let ascii_tokens = normalized
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    if ascii_tokens
+        .iter()
+        .any(|token| ASCII_HINTS.iter().any(|hint| token == hint))
+    {
+        return true;
+    }
+
+    CJK_HINTS.iter().any(|hint| trimmed.contains(hint))
+}
+
+fn latest_user_turn_prefers_research_scene(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    const ASCII_EXPLICIT_HINTS: &[&str] = &[
+        "research",
+        "investigate",
+        "investigation",
+        "explore",
+        "exploration",
+        "discovery",
+        "deepdive",
+    ];
+    const ASCII_ANALYSIS_HINTS: &[&str] = &[
+        "analyze",
+        "analysis",
+        "review",
+        "evaluate",
+        "comparison",
+        "compare",
+        "architecture",
+        "tradeoff",
+        "tradeoffs",
+        "survey",
+    ];
+    const ASCII_INTENSIFIERS: &[&str] = &[
+        "deep",
+        "complex",
+        "comprehensive",
+        "systematic",
+        "thorough",
+        "holistic",
+        "detailed",
+    ];
+    const CJK_EXPLICIT_HINTS: &[&str] = &["研究", "调研", "探索", "调查", "排查"];
+    const CJK_ANALYSIS_HINTS: &[&str] = &["分析", "评审", "架构", "对比", "比较", "梳理"];
+    const CJK_INTENSIFIERS: &[&str] = &["深度", "深入", "复杂", "综合", "系统性", "全面", "详细"];
+
+    let normalized = trimmed.to_ascii_lowercase();
+    let ascii_tokens = normalized
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+
+    if ascii_tokens
+        .iter()
+        .any(|token| ASCII_EXPLICIT_HINTS.iter().any(|hint| token == hint))
+    {
+        return true;
+    }
+
+    if ascii_tokens
+        .iter()
+        .any(|token| ASCII_ANALYSIS_HINTS.iter().any(|hint| token == hint))
+        && ascii_tokens
+            .iter()
+            .any(|token| ASCII_INTENSIFIERS.iter().any(|hint| token == hint))
+    {
+        return true;
+    }
+
+    if CJK_EXPLICIT_HINTS.iter().any(|hint| trimmed.contains(hint)) {
+        return true;
+    }
+
+    CJK_ANALYSIS_HINTS.iter().any(|hint| trimmed.contains(hint))
+        && CJK_INTENSIFIERS.iter().any(|hint| trimmed.contains(hint))
+}
+
 fn preview_text(text: &str, limit: usize) -> String {
     let mut chars = text.chars();
     let preview: String = chars.by_ref().take(limit).collect();
@@ -2626,11 +3261,33 @@ fn preview_text(text: &str, limit: usize) -> String {
 
 fn preview_tool_invocation(tool_name: &str, input: &serde_json::Value) -> String {
     match tool_name {
-        "bash" => input
-            .get("command")
-            .and_then(|value| value.as_str())
-            .map(|command| format!("$ {}", preview_text(command, 80)))
-            .unwrap_or_else(|| format!("{} {}", tool_name, preview_json_value(input, 80))),
+        "bash" => {
+            let command_preview = input
+                .get("command")
+                .and_then(|value| value.as_str())
+                .map(|command| format!("$ {}", preview_text(command, 80)));
+            let description = input
+                .get("description")
+                .and_then(|value| value.as_str())
+                .map(|value| preview_text(value.trim(), 40))
+                .filter(|value| !value.is_empty());
+            let workdir = input
+                .get("workdir")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty() && *value != ".")
+                .map(|value| preview_text(value, 30));
+
+            match (description, workdir, command_preview) {
+                (Some(description), Some(workdir), Some(command)) => {
+                    format!("{} @ {}: {}", description, workdir, command)
+                }
+                (Some(description), None, Some(command)) => format!("{}: {}", description, command),
+                (None, Some(workdir), Some(command)) => format!("{} @ {}", command, workdir),
+                (_, _, Some(command)) => command,
+                _ => format!("{} {}", tool_name, preview_json_value(input, 80)),
+            }
+        }
         _ => input
             .get("path")
             .and_then(|value| value.as_str())
@@ -2646,19 +3303,41 @@ fn preview_json_value(value: &serde_json::Value, limit: usize) -> String {
     )
 }
 
+fn tool_result_preview(tool_result: &CoreToolResult, limit: usize) -> Option<String> {
+    tool_result.preview.clone().or_else(|| {
+        let preview = preview_text(&tool_result.output, limit);
+        (!preview.is_empty()).then_some(preview)
+    })
+}
+
 fn build_tool_run_detail_lines(
     tool_name: &str,
     input: &serde_json::Value,
-    output: Option<&str>,
+    tool_result: Option<&CoreToolResult>,
 ) -> Vec<String> {
     let mut lines = vec![
         format!("tool: {}", tool_name),
         format!("invoke: {}", preview_tool_invocation(tool_name, input)),
     ];
 
-    if let Some(output) = output {
+    if let Some(tool_result) = tool_result {
+        if let Some(error_kind) = tool_result.error_kind {
+            lines.push(format!("error_kind: {}", error_kind.as_str()));
+        }
+        if tool_result.truncated {
+            lines.push("truncated: true".to_string());
+        }
+        if tool_result.has_metadata() {
+            lines.push("metadata:".to_string());
+            lines.extend(preview_lines(
+                &serde_json::to_string_pretty(&tool_result.metadata)
+                    .unwrap_or_else(|_| "{}".to_string()),
+                12,
+                160,
+            ));
+        }
         lines.push("result:".to_string());
-        lines.extend(preview_lines(output, 12, 160));
+        lines.extend(preview_lines(&tool_result.output, 12, 160));
     }
 
     lines
@@ -2849,6 +3528,19 @@ fn send_warning_text(tx: &mpsc::Sender<RuntimeUiEnvelope>, turn_id: u64, text: &
     ));
 }
 
+fn send_system_log_text(tx: &mpsc::Sender<RuntimeUiEnvelope>, turn_id: u64, text: &str) {
+    let _ = tx.send(RuntimeUiEnvelope::message(
+        turn_id,
+        RuntimeUiMessage {
+            target: UiTarget::Activity(ActivityTarget::Log),
+            source: UiSource::System,
+            kind: UiMessageKind::Log,
+            content: UiContent::Text(text.to_string()),
+            priority: None,
+        },
+    ));
+}
+
 fn send_tool_call_preview(
     tx: &mpsc::Sender<RuntimeUiEnvelope>,
     turn_id: u64,
@@ -2980,7 +3672,7 @@ fn build_step_system_prompt(input: &StepExecutionInput) -> String {
             input.step.id, todo_snapshot
         ));
     }
-    let output_contract = render_output_contract(&input.step.output_contract);
+    let output_contract = render_output_contract(&input.cwd, &input.step.output_contract);
     if !output_contract.is_empty() {
         sections.push(format!(
             "<output_contract step_id=\"{}\">\n{}\n</output_contract>",
@@ -2999,6 +3691,88 @@ fn build_step_system_prompt(input: &StepExecutionInput) -> String {
     sections.join("\n\n")
 }
 
+fn build_output_repair_system_prompt(
+    input: &StepExecutionInput,
+    failure: &OutputValidationFailure,
+) -> String {
+    let mut sections = vec![
+        input
+            .resolved_skills
+            .build_system_prompt(&input.base_system),
+        format!(
+            "Workflow phase: {} (structured output repair)",
+            input.step.label
+        ),
+        "Visible tools: none".to_string(),
+    ];
+    let session_context = render_session_context(&input.session_context);
+    if !session_context.trim().is_empty() {
+        sections.push(format!(
+            "<session_context>\n{}\n</session_context>",
+            session_context.trim_end()
+        ));
+    }
+    if let Some(structured_input) = input.structured_input.as_ref() {
+        sections.push(format!(
+            "<structured_input step_id=\"{}\">\n{}\n</structured_input>",
+            input.step.id,
+            render_structured_input(structured_input)
+        ));
+    }
+    if let Some(todo_snapshot) = input.todo_snapshot.as_deref() {
+        sections.push(format!(
+            "<todo_state step_id=\"{}\">\n{}\n</todo_state>",
+            input.step.id, todo_snapshot
+        ));
+    }
+    let output_contract = render_output_contract(&input.cwd, &input.step.output_contract);
+    if !output_contract.is_empty() {
+        sections.push(format!(
+            "<output_contract step_id=\"{}\">\n{}\n</output_contract>",
+            input.step.id, output_contract
+        ));
+    }
+    sections.push(render_output_repair_envelope(input, failure));
+
+    sections.join("\n\n")
+}
+
+fn render_output_repair_envelope(
+    input: &StepExecutionInput,
+    failure: &OutputValidationFailure,
+) -> String {
+    let mut lines = vec![
+        "mode: repair_structured_output".to_string(),
+        format!("error_kind: {}", failure.error_kind.as_str()),
+        format!("validation_error: {}", failure.message),
+        format!(
+            "previous_response_preview: {}",
+            failure.previous_response_preview
+        ),
+    ];
+    if let Some(extracted_json_preview) = failure.extracted_json_preview() {
+        lines.push(format!(
+            "extracted_json_preview: {}",
+            extracted_json_preview
+        ));
+    }
+    let required_contract = render_output_contract(&input.cwd, &input.step.output_contract);
+    if !required_contract.is_empty() {
+        lines.push("required_contract:".to_string());
+        lines.extend(required_contract.lines().map(ToOwned::to_owned));
+    }
+    lines.push(
+        "repair_rules: preserve the meaning of the previous answer when possible".to_string(),
+    );
+    lines.push("repair_rules: do not add prose before or after the JSON".to_string());
+    lines.push("repair_rules: if information is missing, infer only from the previous answer and existing structured_input".to_string());
+    format!(
+        "<output_repair step_id=\"{}\">\n{}\n</output_repair>",
+        input.step.id,
+        lines.join("\n")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -3013,19 +3787,20 @@ mod tests {
     };
     use omega_core::{DynLlmClient, LlmClient};
     use omega_workflow::{
-        ANALYSIS_STEP_ID, CHAT_STEP_ID, CHAT_WORKFLOW_ID, DEFAULT_ANALYSIS_SCHEMA_PATH, DataFormat,
-        EXECUTE_STEP_ID, FEATURE_WORKFLOW_ID, LoadedWorkflowCatalog, PLAN_STEP_ID, REPORT_STEP_ID,
-        ROOT_WORKFLOW_ID, SCENE_RECOGNITION_STEP_ID, SELECT_WORKFLOW_STEP_ID, StepInputContract,
-        StepLoopMode, StepOutputContract,
+        DataFormat, LoadedWorkflowCatalog, OutputRecoveryMode, StepInputContract, StepLoopMode,
+        StepOutputContract, CHAT_STEP_ID, CHAT_WORKFLOW_ID, DEFAULT_EXPLORE_SCHEMA_PATH,
+        EXECUTE_STEP_ID, EXPLORE_STEP_ID, FEATURE_WORKFLOW_ID, PLAN_STEP_ID, REPORT_STEP_ID,
+        RESEARCH_WORKFLOW_ID, ROOT_WORKFLOW_ID, SCENE_RECOGNITION_STEP_ID, SELECT_WORKFLOW_STEP_ID,
     };
 
     use super::{
-        AgentSession, AgentSessionConfig, ProviderMarkupSanitizer, ResponseSectionDelta,
-        ResponseSectionKind, ResponseSectionState, RuntimeUiEffect, RuntimeUiEnvelope,
-        SessionContext, SessionSkillCatalog, SessionToolCatalog, StatusSlot, StatusValue,
-        StepContextWriteKind, StepOutputStatus, StepSkillRequest, StepToolRequest, ToolRunStatus,
-        UiMessageKind, UiSource, UiTarget, WorkflowRunRole, preview_text, resolve_structured_input,
-        validate_schema_file, validate_structured_output,
+        parse_json_values, preview_text, render_output_contract, resolve_structured_input,
+        validate_schema_file, validate_structured_output, AgentSession, AgentSessionConfig,
+        ProviderMarkupSanitizer, ResponseSectionDelta, ResponseSectionKind, ResponseSectionState,
+        RuntimeUiEffect, RuntimeUiEnvelope, SessionContext, SessionSkillCatalog,
+        SessionToolCatalog, StatusSlot, StatusValue, StepContextWriteKind, StepOutputAttemptKind,
+        StepOutputStatus, StepSkillRequest, StepToolRequest, ToolRunStatus, UiMessageKind,
+        UiSource, UiTarget, WorkflowRunRole,
     };
 
     struct IdleClient;
@@ -3061,16 +3836,54 @@ mod tests {
         }
     }
 
-    fn feature_analysis_json() -> &'static str {
-        r#"{"objective":"Implement the requested change","constraints":["preserve existing behavior"],"risks":["regression risk"],"affected_paths":["crates/omega-session/src/lib.rs"]}"#
+    fn feature_explore_json() -> &'static str {
+        r#"{"objective":"Implement the requested change","key_findings":["The workflow runtime resolves plan input from the first step's structured output","Session tests assert the first child step's stable id and label"],"constraints":["preserve existing behavior"],"risks":["regression risk"],"affected_paths":["crates/omega-session/src/lib.rs"]}"#
     }
 
     fn feature_plan_json() -> &'static str {
         r#"{"goal":"Implement the requested change safely","tasks":[{"id":"task-1","title":"Inspect code","description":"Review the relevant workflow and session logic"},{"id":"task-2","title":"Apply changes","description":"Implement the requested code and test updates"}],"validation_targets":["cargo test -p omega-workflow -p omega-session"]}"#
     }
 
-    fn feature_execute_json() -> &'static str {
+    fn feature_execute_partial_json() -> &'static str {
         r#"{"completed_tasks":["task-1"],"open_tasks":["task-2"],"validation_results":[{"target":"cargo test -p omega-workflow -p omega-session","status":"passed"}],"changed_paths":["crates/omega-session/src/lib.rs"]}"#
+    }
+
+    fn feature_execute_complete_json() -> &'static str {
+        r#"{"completed_tasks":["task-1","task-2"],"open_tasks":[],"validation_results":[{"target":"cargo test -p omega-workflow -p omega-session","status":"passed"}],"changed_paths":["crates/omega-session/src/lib.rs"]}"#
+    }
+
+    fn research_execute_partial_json() -> &'static str {
+        r#"{"completed_tasks":["task-1"],"open_tasks":["task-2"],"validation_results":[{"target":"rg --files crates","status":"passed"}],"changed_paths":[]}"#
+    }
+
+    fn research_execute_complete_json() -> &'static str {
+        r#"{"completed_tasks":["task-1","task-2"],"open_tasks":[],"validation_results":[{"target":"rg --files crates","status":"passed"}],"changed_paths":[]}"#
+    }
+
+    #[test]
+    fn implementation_request_detector_prefers_feature_scene() {
+        assert!(super::latest_user_turn_requires_feature_scene(
+            "fix this bug"
+        ));
+        assert!(super::latest_user_turn_requires_feature_scene(
+            "请你更新相关文档，并修复这个 bug"
+        ));
+        assert!(!super::latest_user_turn_requires_feature_scene(
+            "分析下这个项目的优缺点"
+        ));
+    }
+
+    #[test]
+    fn research_request_detector_prefers_research_scene() {
+        assert!(super::latest_user_turn_prefers_research_scene(
+            "请对这个仓库做一次深度复杂的综合分析和探索"
+        ));
+        assert!(super::latest_user_turn_prefers_research_scene(
+            "Need a comprehensive architecture analysis and investigation"
+        ));
+        assert!(!super::latest_user_turn_prefers_research_scene(
+            "Explain what this function does"
+        ));
     }
 
     #[test]
@@ -3094,8 +3907,8 @@ mod tests {
     fn structured_contract_helpers_resolve_inputs_and_validate_required_json() {
         let mut session_context = SessionContext::new(ROOT_WORKFLOW_ID);
         session_context.step_outputs.insert(
-            ANALYSIS_STEP_ID.to_string(),
-            serde_json::json!({"summary": "analysis"}),
+            EXPLORE_STEP_ID.to_string(),
+            serde_json::json!({"summary": "explore"}),
         );
 
         let step = omega_workflow::WorkflowStep {
@@ -3107,12 +3920,13 @@ mod tests {
             tool_request: StepToolRequest::Block(Vec::new()),
             skill_request: StepSkillRequest::MatchTask,
             input_contract: StepInputContract::Required {
-                sources: vec![ANALYSIS_STEP_ID.to_string()],
+                sources: vec![EXPLORE_STEP_ID.to_string()],
             },
             output_contract: StepOutputContract::Required {
                 format: DataFormat::Json,
                 schema_path: None,
                 max_retries: 2,
+                recovery_mode: OutputRecoveryMode::RepairThenRegenerate,
             },
             enabled: true,
         };
@@ -3123,7 +3937,7 @@ mod tests {
         assert_eq!(
             structured_input,
             serde_json::json!({
-                ANALYSIS_STEP_ID: {"summary": "analysis"}
+                EXPLORE_STEP_ID: {"summary": "explore"}
             })
         );
 
@@ -3160,6 +3974,7 @@ mod tests {
                 format: DataFormat::Json,
                 schema_path: None,
                 max_retries: 1,
+                recovery_mode: OutputRecoveryMode::RepairThenRegenerate,
             },
             enabled: true,
         };
@@ -3186,12 +4001,206 @@ mod tests {
 
         let error = validate_schema_file(
             &root,
-            &PathBuf::from(DEFAULT_ANALYSIS_SCHEMA_PATH),
+            &PathBuf::from(DEFAULT_EXPLORE_SCHEMA_PATH),
             &serde_json::json!({"objective": "Ship feature"}),
         )
         .unwrap_err();
 
         assert!(error.to_string().contains("missing required key"));
+    }
+
+    #[test]
+    fn structured_contract_helpers_collect_multiple_json_candidates() {
+        let response = format!(
+            "Plan summary\n{}\n{}",
+            feature_explore_json(),
+            feature_plan_json()
+        );
+
+        let values = parse_json_values(&response);
+
+        assert_eq!(values.len(), 2);
+        assert_eq!(values[0]["objective"], "Implement the requested change");
+        assert_eq!(values[1]["goal"], "Implement the requested change safely");
+    }
+
+    #[test]
+    fn render_output_contract_inlines_plan_schema_details() {
+        let root = std::env::temp_dir().join("omega-agent-session-render-output-contract-test");
+        let _ = std::fs::remove_dir_all(&root);
+        let loaded = LoadedWorkflowCatalog::load(&root);
+        assert!(loaded.warnings.is_empty());
+
+        let workflow = loaded
+            .workflow_catalog
+            .workflow(RESEARCH_WORKFLOW_ID)
+            .expect("research workflow should exist");
+        let plan_step = workflow
+            .enabled_steps()
+            .find(|step| step.id == PLAN_STEP_ID)
+            .expect("plan step should exist");
+
+        let rendered = render_output_contract(&root, &plan_step.output_contract);
+
+        assert!(rendered.contains("schema_path: .omega/schema/step/plan.json"));
+        assert!(rendered.contains("schema_json:"));
+        assert!(rendered.contains("\"required\": ["));
+        assert!(rendered.contains("\"goal\""));
+        assert!(rendered.contains("\"tasks\""));
+        assert!(rendered.contains("\"id\""));
+        assert!(rendered.contains("\"title\""));
+        assert!(rendered.contains("\"description\""));
+    }
+
+    #[test]
+    fn spawn_turn_clears_plan_validation_error_after_successful_regenerate() {
+        let client: Arc<SequencedClient> = Arc::new(SequencedClient {
+            responses: Mutex::new(vec![
+                ChatResponse {
+                    id: "scene-1".to_string(),
+                    model: Some("test-model".to_string()),
+                    content: vec![ContentBlock::text("{\"recognized_scene_id\":\"research\"}")],
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                },
+                ChatResponse {
+                    id: "select-1".to_string(),
+                    model: Some("test-model".to_string()),
+                    content: vec![ContentBlock::text(
+                        "{\"selected_workflow_id\":\"research\"}",
+                    )],
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                },
+                ChatResponse {
+                    id: "analysis-1".to_string(),
+                    model: Some("test-model".to_string()),
+                    content: vec![ContentBlock::text(feature_explore_json())],
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                },
+                ChatResponse {
+                    id: "plan-1".to_string(),
+                    model: Some("test-model".to_string()),
+                    content: vec![ContentBlock::text(feature_explore_json())],
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                },
+                ChatResponse {
+                    id: "plan-2".to_string(),
+                    model: Some("test-model".to_string()),
+                    content: vec![ContentBlock::text(feature_explore_json())],
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                },
+                ChatResponse {
+                    id: "plan-3".to_string(),
+                    model: Some("test-model".to_string()),
+                    content: vec![ContentBlock::text(format!(
+                        "项目评估总结\n{}\n{}",
+                        feature_explore_json(),
+                        feature_plan_json()
+                    ))],
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                },
+                ChatResponse {
+                    id: "execute-1".to_string(),
+                    model: Some("test-model".to_string()),
+                    content: vec![ContentBlock::text(research_execute_complete_json())],
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                },
+                ChatResponse {
+                    id: "report-1".to_string(),
+                    model: Some("test-model".to_string()),
+                    content: vec![ContentBlock::text("done")],
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                },
+            ]),
+            systems: Mutex::new(Vec::new()),
+            max_tokens: Mutex::new(Vec::new()),
+        });
+        let client_dyn: DynLlmClient = client.clone();
+        let root = std::env::temp_dir().join("omega-agent-session-plan-validation-clear-test");
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::create_dir_all(&root);
+        let skills_dir = root.join(".claude/skills/review");
+        let _ = std::fs::create_dir_all(&skills_dir);
+        let _ = std::fs::write(
+            skills_dir.join("SKILL.md"),
+            "---\nname: review\ndescription: Review code\n---\nFind regressions.",
+        );
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+        let session = AgentSession::new(AgentSessionConfig {
+            client: client_dyn,
+            system: "system".to_string(),
+            cwd: root,
+            runtime_handle: runtime.handle().clone(),
+            scene_catalog: loaded_catalog.scene_catalog,
+            workflow_catalog: loaded_catalog.workflow_catalog,
+            prompt_catalog: loaded_catalog.prompt_catalog,
+            context_window: 200_000,
+            max_output_tokens: 32_000,
+            bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+            batch_max_requests: omega_core::default_batch_max_requests(),
+        })
+        .unwrap();
+        let (tx, rx) = mpsc::channel();
+
+        session
+            .spawn_turn("请你帮我仔细分析此项目的好坏".to_string(), 52, tx)
+            .unwrap();
+
+        let mut diagnostics = Vec::new();
+        loop {
+            match rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+                RuntimeUiEnvelope::Effect {
+                    turn_id,
+                    effect:
+                        RuntimeUiEffect::UpsertStepDiagnostics {
+                            diagnostics: update,
+                        },
+                } => {
+                    assert_eq!(turn_id, 52);
+                    diagnostics.push(*update);
+                }
+                RuntimeUiEnvelope::Effect {
+                    turn_id,
+                    effect:
+                        RuntimeUiEffect::SetStatusSlot {
+                            slot: StatusSlot::Agent,
+                            value: StatusValue::Label(label),
+                        },
+                } => {
+                    assert_eq!(turn_id, 52);
+                    assert_eq!(label, "Idle");
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        let plan_diagnostics = diagnostics
+            .iter()
+            .rev()
+            .find(|diagnostics| diagnostics.step_id == PLAN_STEP_ID)
+            .expect("plan diagnostics should be emitted");
+
+        assert_eq!(plan_diagnostics.output.status, StepOutputStatus::Valid);
+        assert_eq!(
+            plan_diagnostics.output.attempt_kind,
+            StepOutputAttemptKind::Regenerate
+        );
+        assert!(plan_diagnostics.output.validation_error.is_none());
+        assert!(plan_diagnostics.output.previous_response_preview.is_none());
+        assert!(plan_diagnostics
+            .output
+            .extracted_json_preview
+            .as_deref()
+            .is_some_and(|preview| preview.contains("Implement the requested change safely")));
     }
 
     #[test]
@@ -3215,14 +4224,14 @@ mod tests {
                 ChatResponse {
                     id: "analysis-1".to_string(),
                     model: Some("test-model".to_string()),
-                    content: vec![ContentBlock::text("analysis")],
+                    content: vec![ContentBlock::text("explore")],
                     stop_reason: Some(STOP_REASON_END_TURN.to_string()),
                     usage: None,
                 },
                 ChatResponse {
                     id: "analysis-2".to_string(),
                     model: Some("test-model".to_string()),
-                    content: vec![ContentBlock::text(feature_analysis_json())],
+                    content: vec![ContentBlock::text(feature_explore_json())],
                     stop_reason: Some(STOP_REASON_END_TURN.to_string()),
                     usage: None,
                 },
@@ -3251,7 +4260,7 @@ mod tests {
             systems: Mutex::new(Vec::new()),
             max_tokens: Mutex::new(Vec::new()),
         });
-        let client_dyn: DynLlmClient = client;
+        let client_dyn: DynLlmClient = client.clone();
         let root = std::env::temp_dir().join("omega-agent-session-structured-retry-test");
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::create_dir_all(&root);
@@ -3274,6 +4283,7 @@ mod tests {
             context_window: 200_000,
             max_output_tokens: 32_000,
             bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+            batch_max_requests: omega_core::default_batch_max_requests(),
         })
         .unwrap();
         let (tx, rx) = mpsc::channel();
@@ -3317,12 +4327,22 @@ mod tests {
             }
         }
 
+        let systems = client.systems.lock().unwrap().clone();
+
         assert!(warnings.iter().any(|warning| {
-            warning.contains("Step 'analysis' produced invalid structured output")
+            warning.contains("Step 'explore' produced invalid structured output")
+                && warning.contains("repair pass")
         }));
         assert!(diagnostics.iter().any(|diagnostics| {
-            diagnostics.step_id == ANALYSIS_STEP_ID
+            diagnostics.step_id == EXPLORE_STEP_ID
                 && diagnostics.output.status == StepOutputStatus::Invalid
+        }));
+        assert!(systems.iter().any(|system| {
+            system.as_ref().is_some_and(|system| {
+                system.contains("<output_repair step_id=\"explore\">")
+                    && system.contains("Visible tools: none")
+                    && system.contains("error_kind: extract_failed")
+            })
         }));
     }
 
@@ -3347,7 +4367,7 @@ mod tests {
                 ChatResponse {
                     id: "analysis-1".to_string(),
                     model: Some("test-model".to_string()),
-                    content: vec![ContentBlock::text(feature_analysis_json())],
+                    content: vec![ContentBlock::text(feature_explore_json())],
                     stop_reason: Some(STOP_REASON_END_TURN.to_string()),
                     usage: None,
                 },
@@ -3361,7 +4381,14 @@ mod tests {
                 ChatResponse {
                     id: "execute-1".to_string(),
                     model: Some("test-model".to_string()),
-                    content: vec![ContentBlock::text(feature_execute_json())],
+                    content: vec![ContentBlock::text(feature_execute_partial_json())],
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                },
+                ChatResponse {
+                    id: "execute-2".to_string(),
+                    model: Some("test-model".to_string()),
+                    content: vec![ContentBlock::text(feature_execute_complete_json())],
                     stop_reason: Some(STOP_REASON_END_TURN.to_string()),
                     usage: None,
                 },
@@ -3399,6 +4426,7 @@ mod tests {
             context_window: 200_000,
             max_output_tokens: 32_000,
             bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+            batch_max_requests: omega_core::default_batch_max_requests(),
         })
         .unwrap();
         let (tx, rx) = mpsc::channel();
@@ -3446,16 +4474,12 @@ mod tests {
             }
         }
 
-        assert!(
-            todo_panels
-                .iter()
-                .any(|panel| panel.contains("[x] #task-1"))
-        );
-        assert!(
-            todo_panels
-                .iter()
-                .any(|panel| panel.contains("[>] #task-2"))
-        );
+        assert!(todo_panels
+            .iter()
+            .any(|panel| { panel.contains("[x] #task-1") && panel.contains("[>] #task-2") }));
+        assert!(todo_panels
+            .iter()
+            .any(|panel| { panel.contains("[x] #task-1") && panel.contains("[x] #task-2") }));
         assert!(diagnostics.iter().any(|diagnostics| {
             diagnostics.step_id == PLAN_STEP_ID
                 && diagnostics.output.status == StepOutputStatus::Valid
@@ -3494,21 +4518,254 @@ mod tests {
                 })
         }));
         assert!(diagnostics.iter().any(|diagnostics| {
+            diagnostics.step_id == EXECUTE_STEP_ID
+                && diagnostics.session_writes.iter().any(|write| {
+                    write.path == "todo.rendered"
+                        && write.kind == StepContextWriteKind::Updated
+                        && write
+                            .before_preview
+                            .as_deref()
+                            .is_some_and(|preview| preview.contains("[>] #task-2"))
+                        && write
+                            .after_preview
+                            .as_deref()
+                            .is_some_and(|preview| preview.contains("[x] #task-2"))
+                })
+        }));
+        assert!(diagnostics.iter().any(|diagnostics| {
             diagnostics.step_id == REPORT_STEP_ID && diagnostics.input.todo_state_preview.is_some()
         }));
 
         let systems = client.systems.lock().unwrap();
+        assert!(systems
+            .iter()
+            .filter_map(|system| system.as_deref())
+            .any(|system| system.contains("<todo_state step_id=\"report\">")));
+        assert!(systems
+            .iter()
+            .filter_map(|system| system.as_deref())
+            .any(|system| system.contains("(2/2 completed)")));
         assert!(
             systems
                 .iter()
                 .filter_map(|system| system.as_deref())
-                .any(|system| system.contains("<todo_state step_id=\"report\">"))
+                .filter(|system| system.contains("<todo_state step_id=\"execute\">"))
+                .count()
+                >= 2
         );
+    }
+
+    #[test]
+    fn spawn_turn_syncs_research_execute_output_back_into_todo_state_for_report() {
+        let client: Arc<SequencedClient> = Arc::new(SequencedClient {
+            responses: Mutex::new(vec![
+                ChatResponse {
+                    id: "scene-1".to_string(),
+                    model: Some("test-model".to_string()),
+                    content: vec![ContentBlock::text("{\"recognized_scene_id\":\"research\"}")],
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                },
+                ChatResponse {
+                    id: "select-1".to_string(),
+                    model: Some("test-model".to_string()),
+                    content: vec![ContentBlock::text(
+                        "{\"selected_workflow_id\":\"research\"}",
+                    )],
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                },
+                ChatResponse {
+                    id: "analysis-1".to_string(),
+                    model: Some("test-model".to_string()),
+                    content: vec![ContentBlock::text(feature_explore_json())],
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                },
+                ChatResponse {
+                    id: "plan-1".to_string(),
+                    model: Some("test-model".to_string()),
+                    content: vec![ContentBlock::text(feature_plan_json())],
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                },
+                ChatResponse {
+                    id: "execute-1".to_string(),
+                    model: Some("test-model".to_string()),
+                    content: vec![ContentBlock::text(research_execute_partial_json())],
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                },
+                ChatResponse {
+                    id: "execute-2".to_string(),
+                    model: Some("test-model".to_string()),
+                    content: vec![ContentBlock::text(research_execute_complete_json())],
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                },
+                ChatResponse {
+                    id: "report-1".to_string(),
+                    model: Some("test-model".to_string()),
+                    content: vec![ContentBlock::text("done")],
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                },
+            ]),
+            systems: Mutex::new(Vec::new()),
+            max_tokens: Mutex::new(Vec::new()),
+        });
+        let client_dyn: DynLlmClient = client.clone();
+        let root = std::env::temp_dir().join("omega-agent-session-research-execute-todo-sync-test");
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::create_dir_all(&root);
+        let skills_dir = root.join(".claude/skills/review");
+        let _ = std::fs::create_dir_all(&skills_dir);
+        let _ = std::fs::write(
+            skills_dir.join("SKILL.md"),
+            "---\nname: review\ndescription: Review code\n---\nFind regressions.",
+        );
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+        let session = AgentSession::new(AgentSessionConfig {
+            client: client_dyn,
+            system: "system".to_string(),
+            cwd: root,
+            runtime_handle: runtime.handle().clone(),
+            scene_catalog: loaded_catalog.scene_catalog,
+            workflow_catalog: loaded_catalog.workflow_catalog,
+            prompt_catalog: loaded_catalog.prompt_catalog,
+            context_window: 200_000,
+            max_output_tokens: 32_000,
+            bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+            batch_max_requests: omega_core::default_batch_max_requests(),
+        })
+        .unwrap();
+        let (tx, rx) = mpsc::channel();
+
+        session
+            .spawn_turn("请你仔细帮我分析下此项目的好坏".to_string(), 43, tx)
+            .unwrap();
+
+        let mut todo_panels = Vec::new();
+        let mut diagnostics = Vec::new();
+        loop {
+            match rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+                RuntimeUiEnvelope::Effect {
+                    turn_id,
+                    effect:
+                        RuntimeUiEffect::ReplacePanel {
+                            target: UiTarget::Todo,
+                            content,
+                        },
+                } => {
+                    assert_eq!(turn_id, 43);
+                    todo_panels.push(content.as_text().to_string());
+                }
+                RuntimeUiEnvelope::Effect {
+                    turn_id,
+                    effect:
+                        RuntimeUiEffect::UpsertStepDiagnostics {
+                            diagnostics: update,
+                        },
+                } => {
+                    assert_eq!(turn_id, 43);
+                    diagnostics.push(*update);
+                }
+                RuntimeUiEnvelope::Effect {
+                    turn_id,
+                    effect:
+                        RuntimeUiEffect::SetStatusSlot {
+                            slot: StatusSlot::Agent,
+                            value: StatusValue::Label(label),
+                        },
+                } => {
+                    assert_eq!(turn_id, 43);
+                    assert_eq!(label, "Idle");
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        assert!(todo_panels
+            .iter()
+            .any(|panel| panel.contains("[>] #task-1")));
+        assert!(todo_panels
+            .iter()
+            .any(|panel| panel.contains("[ ] #task-2")));
+        assert!(todo_panels
+            .iter()
+            .any(|panel| panel.contains("[x] #task-1")));
+        assert!(todo_panels
+            .iter()
+            .any(|panel| panel.contains("[>] #task-2")));
+        assert!(todo_panels
+            .iter()
+            .any(|panel| panel.contains("[x] #task-2")));
+        assert!(diagnostics.iter().any(|diagnostics| {
+            diagnostics.step_id == PLAN_STEP_ID
+                && diagnostics.output.status == StepOutputStatus::Valid
+                && diagnostics.session_writes.iter().any(|write| {
+                    write.path == "todo.rendered"
+                        && write.kind == StepContextWriteKind::Added
+                        && write.before_preview.is_none()
+                        && write
+                            .after_preview
+                            .as_deref()
+                            .is_some_and(|preview| preview.contains("#task-1"))
+                })
+        }));
+        assert!(diagnostics.iter().any(|diagnostics| {
+            diagnostics.step_id == EXECUTE_STEP_ID
+                && diagnostics.output.status == StepOutputStatus::Valid
+                && diagnostics.session_writes.iter().any(|write| {
+                    write.path == "todo.rendered"
+                        && write.kind == StepContextWriteKind::Updated
+                        && write
+                            .before_preview
+                            .as_deref()
+                            .is_some_and(|preview| preview.contains("[>] #task-1"))
+                        && write.after_preview.as_deref().is_some_and(|preview| {
+                            preview.contains("[x] #task-1") && preview.contains("[>] #task-2")
+                        })
+                })
+        }));
+        assert!(diagnostics.iter().any(|diagnostics| {
+            diagnostics.step_id == EXECUTE_STEP_ID
+                && diagnostics.output.status == StepOutputStatus::Valid
+                && diagnostics.session_writes.iter().any(|write| {
+                    write.path == "todo.rendered"
+                        && write.kind == StepContextWriteKind::Updated
+                        && write
+                            .before_preview
+                            .as_deref()
+                            .is_some_and(|preview| preview.contains("[>] #task-2"))
+                        && write
+                            .after_preview
+                            .as_deref()
+                            .is_some_and(|preview| preview.contains("[x] #task-2"))
+                })
+        }));
+        assert!(diagnostics.iter().any(|diagnostics| {
+            diagnostics.step_id == REPORT_STEP_ID && diagnostics.input.todo_state_preview.is_some()
+        }));
+
+        let systems = client.systems.lock().unwrap();
+        assert!(systems
+            .iter()
+            .filter_map(|system| system.as_deref())
+            .any(|system| system.contains("<todo_state step_id=\"report\">")));
+        assert!(systems
+            .iter()
+            .filter_map(|system| system.as_deref())
+            .any(|system| system.contains("(2/2 completed)")));
         assert!(
             systems
                 .iter()
                 .filter_map(|system| system.as_deref())
-                .any(|system| system.contains("(1/2 completed)"))
+                .filter(|system| system.contains("<todo_state step_id=\"execute\">"))
+                .count()
+                >= 2
         );
     }
 
@@ -3537,6 +4794,7 @@ mod tests {
             context_window: 200_000,
             max_output_tokens: 32_000,
             bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+            batch_max_requests: omega_core::default_batch_max_requests(),
         })
         .unwrap();
 
@@ -3575,7 +4833,7 @@ mod tests {
                 ChatResponse {
                     id: "analysis-1".to_string(),
                     model: Some("test-model".to_string()),
-                    content: vec![ContentBlock::text(feature_analysis_json())],
+                    content: vec![ContentBlock::text(feature_explore_json())],
                     stop_reason: Some(STOP_REASON_END_TURN.to_string()),
                     usage: None,
                 },
@@ -3638,6 +4896,7 @@ mod tests {
             context_window: 200_000,
             max_output_tokens: 32_000,
             bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+            batch_max_requests: omega_core::default_batch_max_requests(),
         })
         .unwrap();
         let (tx, rx) = mpsc::channel();
@@ -3772,8 +5031,8 @@ mod tests {
                 (
                     FEATURE_WORKFLOW_ID.to_string(),
                     WorkflowRunRole::Child,
-                    ANALYSIS_STEP_ID.to_string(),
-                    "Analyze".to_string(),
+                    EXPLORE_STEP_ID.to_string(),
+                    "Explore".to_string(),
                 ),
                 (
                     FEATURE_WORKFLOW_ID.to_string(),
@@ -3801,9 +5060,9 @@ mod tests {
                 (
                     FEATURE_WORKFLOW_ID.to_string(),
                     WorkflowRunRole::Child,
-                    ANALYSIS_STEP_ID.to_string(),
-                    "Analyze".to_string(),
-                    feature_analysis_json().to_string(),
+                    EXPLORE_STEP_ID.to_string(),
+                    "Explore".to_string(),
+                    feature_explore_json().to_string(),
                 ),
                 (
                     FEATURE_WORKFLOW_ID.to_string(),
@@ -3852,80 +5111,54 @@ mod tests {
                     Some(FEATURE_WORKFLOW_ID.to_string()),
                 )
         }));
-        assert!(
-            logs.iter()
-                .any(|line| line.contains("Recognized scene 'feature'"))
-        );
-        assert!(
-            logs.iter()
-                .any(|line| line.contains("Selected workflow 'feature'"))
-        );
+        assert!(logs
+            .iter()
+            .any(|line| line.contains("Recognized scene 'feature'")));
+        assert!(logs
+            .iter()
+            .any(|line| line.contains("Selected workflow 'feature'")));
         assert!(todo_panels.iter().any(|panel| panel.contains("#task-1")));
         assert!(todo_panels.iter().any(|panel| panel.contains("#task-2")));
         let systems = client.systems.lock().unwrap();
         assert_eq!(systems.len(), 7);
-        assert!(
-            systems[0]
-                .as_deref()
-                .is_some_and(|system| system.contains("Workflow role: root"))
-        );
-        assert!(
-            systems[0]
-                .as_deref()
-                .is_some_and(|system| system.contains("Visible tools: none"))
-        );
-        assert!(
-            systems[1]
-                .as_deref()
-                .is_some_and(|system| system.contains("Recognized scene: feature"))
-        );
-        assert!(
-            systems[1]
-                .as_deref()
-                .is_some_and(|system| system.contains("Recognized scene: feature."))
-        );
-        assert!(
-            systems[1]
-                .as_deref()
-                .is_some_and(|system| system.contains("Visible tools: none"))
-        );
-        assert!(
-            systems[2]
-                .as_deref()
-                .is_some_and(|system| system.contains("Workflow role: child"))
-        );
-        assert!(
-            systems[2]
-                .as_deref()
-                .is_some_and(|system| system.contains("Active workflow: feature"))
-        );
-        assert!(
-            systems[2]
-                .as_deref()
-                .is_some_and(|system| system.contains("Selected workflow: feature."))
-        );
-        assert!(
-            systems[2]
-                .as_deref()
-                .is_some_and(|system| system.contains("hello"))
-        );
-        assert!(
-            systems
-                .iter()
-                .filter_map(|system| system.as_deref())
-                .any(|system| system.contains("<todo_state step_id=\"execute\">"))
-        );
-        assert!(
-            systems
-                .iter()
-                .filter_map(|system| system.as_deref())
-                .any(|system| system.contains("#task-1"))
-        );
-        assert!(
-            systems[6]
-                .as_deref()
-                .is_some_and(|system| system.contains("Workflow phase: Report"))
-        );
+        assert!(systems[0]
+            .as_deref()
+            .is_some_and(|system| system.contains("Workflow role: root")));
+        assert!(systems[0]
+            .as_deref()
+            .is_some_and(|system| system.contains("Visible tools: none")));
+        assert!(systems[1]
+            .as_deref()
+            .is_some_and(|system| system.contains("Recognized scene: feature")));
+        assert!(systems[1]
+            .as_deref()
+            .is_some_and(|system| system.contains("Recognized scene: feature.")));
+        assert!(systems[1]
+            .as_deref()
+            .is_some_and(|system| system.contains("Visible tools: none")));
+        assert!(systems[2]
+            .as_deref()
+            .is_some_and(|system| system.contains("Workflow role: child")));
+        assert!(systems[2]
+            .as_deref()
+            .is_some_and(|system| system.contains("Active workflow: feature")));
+        assert!(systems[2]
+            .as_deref()
+            .is_some_and(|system| system.contains("Selected workflow: feature.")));
+        assert!(systems[2]
+            .as_deref()
+            .is_some_and(|system| system.contains("hello")));
+        assert!(systems
+            .iter()
+            .filter_map(|system| system.as_deref())
+            .any(|system| system.contains("<todo_state step_id=\"execute\">")));
+        assert!(systems
+            .iter()
+            .filter_map(|system| system.as_deref())
+            .any(|system| system.contains("#task-1")));
+        assert!(systems[6]
+            .as_deref()
+            .is_some_and(|system| system.contains("Workflow phase: Report")));
     }
 
     #[test]
@@ -3980,6 +5213,7 @@ mod tests {
             context_window: 200_000,
             max_output_tokens: 24_000,
             bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+            batch_max_requests: omega_core::default_batch_max_requests(),
         })
         .unwrap();
         let (tx, rx) = mpsc::channel();
@@ -4095,28 +5329,427 @@ mod tests {
         }));
         let systems = client.systems.lock().unwrap();
         assert_eq!(systems.len(), 3);
-        assert!(
-            systems[0]
-                .as_deref()
-                .is_some_and(|system| system.contains("Visible tools: none"))
-        );
-        assert!(
-            systems[1]
-                .as_deref()
-                .is_some_and(|system| system.contains("Visible tools: none"))
-        );
-        assert!(
-            systems[2]
-                .as_deref()
-                .is_some_and(|system| system.contains("Active workflow: chat"))
-        );
-        assert!(
-            systems[2]
-                .as_deref()
-                .is_some_and(|system| system.contains("Selected workflow: chat."))
-        );
+        assert!(systems[0]
+            .as_deref()
+            .is_some_and(|system| system.contains("Visible tools: none")));
+        assert!(systems[1]
+            .as_deref()
+            .is_some_and(|system| system.contains("Visible tools: none")));
+        assert!(systems[2]
+            .as_deref()
+            .is_some_and(|system| system.contains("Active workflow: chat")));
+        assert!(systems[2]
+            .as_deref()
+            .is_some_and(|system| system.contains("Selected workflow: chat.")));
         let max_tokens = client.max_tokens.lock().unwrap();
         assert_eq!(*max_tokens, vec![24_000, 24_000, 24_000]);
+    }
+
+    #[test]
+    fn unresolved_scene_and_workflow_fallback_to_feature_not_chat() {
+        let client: Arc<SequencedClient> = Arc::new(SequencedClient {
+            responses: Mutex::new(vec![
+                ChatResponse {
+                    id: "scene-1".to_string(),
+                    model: Some("test-model".to_string()),
+                    content: vec![ContentBlock::text("{\"recognized_scene_id\":\"unknown\"}")],
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                },
+                ChatResponse {
+                    id: "select-1".to_string(),
+                    model: Some("test-model".to_string()),
+                    content: vec![ContentBlock::text("{\"selected_workflow_id\":\"unknown\"}")],
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                },
+                ChatResponse {
+                    id: "analysis-1".to_string(),
+                    model: Some("test-model".to_string()),
+                    content: vec![ContentBlock::text(feature_explore_json())],
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                },
+                ChatResponse {
+                    id: "plan-1".to_string(),
+                    model: Some("test-model".to_string()),
+                    content: vec![ContentBlock::text(feature_plan_json())],
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                },
+                ChatResponse {
+                    id: "execute-1".to_string(),
+                    model: Some("test-model".to_string()),
+                    content: vec![ContentBlock::text(feature_execute_complete_json())],
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                },
+                ChatResponse {
+                    id: "report-1".to_string(),
+                    model: Some("test-model".to_string()),
+                    content: vec![ContentBlock::text("done")],
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                },
+            ]),
+            systems: Mutex::new(Vec::new()),
+            max_tokens: Mutex::new(Vec::new()),
+        });
+        let client_dyn: DynLlmClient = client;
+        let root = std::env::temp_dir().join("omega-agent-session-default-feature-fallback-test");
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::create_dir_all(&root);
+        let skills_dir = root.join(".claude/skills/review");
+        let _ = std::fs::create_dir_all(&skills_dir);
+        let _ = std::fs::write(
+            skills_dir.join("SKILL.md"),
+            "---\nname: review\ndescription: Review code\n---\nFind regressions.",
+        );
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+        let session = AgentSession::new(AgentSessionConfig {
+            client: client_dyn,
+            system: "system".to_string(),
+            cwd: root,
+            runtime_handle: runtime.handle().clone(),
+            scene_catalog: loaded_catalog.scene_catalog,
+            workflow_catalog: loaded_catalog.workflow_catalog,
+            prompt_catalog: loaded_catalog.prompt_catalog,
+            context_window: 200_000,
+            max_output_tokens: 32_000,
+            bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+            batch_max_requests: omega_core::default_batch_max_requests(),
+        })
+        .unwrap();
+        let (tx, rx) = mpsc::channel();
+
+        session
+            .spawn_turn("fix this bug".to_string(), 74, tx)
+            .unwrap();
+
+        let mut warnings = Vec::new();
+        let mut routes = Vec::new();
+        loop {
+            match rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+                RuntimeUiEnvelope::Message { turn_id, message }
+                    if turn_id == 74
+                        && matches!(message.source, UiSource::System)
+                        && message.kind == UiMessageKind::Warning =>
+                {
+                    warnings.push(message.content.as_text().to_string());
+                }
+                RuntimeUiEnvelope::Effect {
+                    turn_id,
+                    effect:
+                        RuntimeUiEffect::SetStatusSlot {
+                            slot: StatusSlot::Session,
+                            value:
+                                StatusValue::SessionRouting {
+                                    recognized_scene_id,
+                                    selected_workflow_id,
+                                    ..
+                                },
+                        },
+                } => {
+                    assert_eq!(turn_id, 74);
+                    routes.push((recognized_scene_id, selected_workflow_id));
+                }
+                RuntimeUiEnvelope::Effect {
+                    turn_id,
+                    effect:
+                        RuntimeUiEffect::SetStatusSlot {
+                            slot: StatusSlot::Agent,
+                            value: StatusValue::Label(label),
+                        },
+                } => {
+                    assert_eq!(turn_id, 74);
+                    assert_eq!(label, "Idle");
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        assert!(warnings
+            .iter()
+            .any(|warning| { warning.contains("defaulting to 'feature'") }));
+        assert!(routes
+            .iter()
+            .any(|route| { route == &(Some("feature".to_string()), Some("feature".to_string())) }));
+    }
+
+    #[test]
+    fn implementation_requests_are_promoted_from_chat_to_feature() {
+        let client: Arc<SequencedClient> = Arc::new(SequencedClient {
+            responses: Mutex::new(vec![
+                ChatResponse {
+                    id: "scene-1".to_string(),
+                    model: Some("test-model".to_string()),
+                    content: vec![ContentBlock::text("{\"recognized_scene_id\":\"chat\"}")],
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                },
+                ChatResponse {
+                    id: "select-1".to_string(),
+                    model: Some("test-model".to_string()),
+                    content: vec![ContentBlock::text("{\"selected_workflow_id\":\"chat\"}")],
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                },
+                ChatResponse {
+                    id: "analysis-1".to_string(),
+                    model: Some("test-model".to_string()),
+                    content: vec![ContentBlock::text(feature_explore_json())],
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                },
+                ChatResponse {
+                    id: "plan-1".to_string(),
+                    model: Some("test-model".to_string()),
+                    content: vec![ContentBlock::text(feature_plan_json())],
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                },
+                ChatResponse {
+                    id: "execute-1".to_string(),
+                    model: Some("test-model".to_string()),
+                    content: vec![ContentBlock::text(feature_execute_complete_json())],
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                },
+                ChatResponse {
+                    id: "report-1".to_string(),
+                    model: Some("test-model".to_string()),
+                    content: vec![ContentBlock::text("done")],
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                },
+            ]),
+            systems: Mutex::new(Vec::new()),
+            max_tokens: Mutex::new(Vec::new()),
+        });
+        let client_dyn: DynLlmClient = client;
+        let root = std::env::temp_dir().join("omega-agent-session-scene-promotion-test");
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::create_dir_all(&root);
+        let skills_dir = root.join(".claude/skills/review");
+        let _ = std::fs::create_dir_all(&skills_dir);
+        let _ = std::fs::write(
+            skills_dir.join("SKILL.md"),
+            "---\nname: review\ndescription: Review code\n---\nFind regressions.",
+        );
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+        let session = AgentSession::new(AgentSessionConfig {
+            client: client_dyn,
+            system: "system".to_string(),
+            cwd: root,
+            runtime_handle: runtime.handle().clone(),
+            scene_catalog: loaded_catalog.scene_catalog,
+            workflow_catalog: loaded_catalog.workflow_catalog,
+            prompt_catalog: loaded_catalog.prompt_catalog,
+            context_window: 200_000,
+            max_output_tokens: 32_000,
+            bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+            batch_max_requests: omega_core::default_batch_max_requests(),
+        })
+        .unwrap();
+        let (tx, rx) = mpsc::channel();
+
+        session
+            .spawn_turn("请你更新相关文档，并修复这个 bug".to_string(), 75, tx)
+            .unwrap();
+
+        let mut warnings = Vec::new();
+        let mut routes = Vec::new();
+        loop {
+            match rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+                RuntimeUiEnvelope::Message { turn_id, message }
+                    if turn_id == 75
+                        && matches!(message.source, UiSource::System)
+                        && message.kind == UiMessageKind::Warning =>
+                {
+                    warnings.push(message.content.as_text().to_string());
+                }
+                RuntimeUiEnvelope::Effect {
+                    turn_id,
+                    effect:
+                        RuntimeUiEffect::SetStatusSlot {
+                            slot: StatusSlot::Session,
+                            value:
+                                StatusValue::SessionRouting {
+                                    recognized_scene_id,
+                                    selected_workflow_id,
+                                    ..
+                                },
+                        },
+                } => {
+                    assert_eq!(turn_id, 75);
+                    routes.push((recognized_scene_id, selected_workflow_id));
+                }
+                RuntimeUiEnvelope::Effect {
+                    turn_id,
+                    effect:
+                        RuntimeUiEffect::SetStatusSlot {
+                            slot: StatusSlot::Agent,
+                            value: StatusValue::Label(label),
+                        },
+                } => {
+                    assert_eq!(turn_id, 75);
+                    assert_eq!(label, "Idle");
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        assert!(warnings
+            .iter()
+            .any(|warning| { warning.contains("promoting to 'feature'") }));
+        assert!(routes
+            .iter()
+            .any(|route| { route == &(Some("feature".to_string()), Some("feature".to_string())) }));
+    }
+
+    #[test]
+    fn research_requests_are_promoted_to_research_scene_and_workflow() {
+        let client: Arc<SequencedClient> = Arc::new(SequencedClient {
+            responses: Mutex::new(vec![
+                ChatResponse {
+                    id: "scene-1".to_string(),
+                    model: Some("test-model".to_string()),
+                    content: vec![ContentBlock::text("{\"recognized_scene_id\":\"chat\"}")],
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                },
+                ChatResponse {
+                    id: "select-1".to_string(),
+                    model: Some("test-model".to_string()),
+                    content: vec![ContentBlock::text("{\"selected_workflow_id\":\"feature\"}")],
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                },
+                ChatResponse {
+                    id: "analysis-1".to_string(),
+                    model: Some("test-model".to_string()),
+                    content: vec![ContentBlock::text(feature_explore_json())],
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                },
+                ChatResponse {
+                    id: "plan-1".to_string(),
+                    model: Some("test-model".to_string()),
+                    content: vec![ContentBlock::text(feature_plan_json())],
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                },
+                ChatResponse {
+                    id: "execute-1".to_string(),
+                    model: Some("test-model".to_string()),
+                    content: vec![ContentBlock::text(research_execute_complete_json())],
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                },
+                ChatResponse {
+                    id: "report-1".to_string(),
+                    model: Some("test-model".to_string()),
+                    content: vec![ContentBlock::text("done")],
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                },
+            ]),
+            systems: Mutex::new(Vec::new()),
+            max_tokens: Mutex::new(Vec::new()),
+        });
+        let client_dyn: DynLlmClient = client;
+        let root = std::env::temp_dir().join("omega-agent-session-research-promotion-test");
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::create_dir_all(&root);
+        let skills_dir = root.join(".claude/skills/review");
+        let _ = std::fs::create_dir_all(&skills_dir);
+        let _ = std::fs::write(
+            skills_dir.join("SKILL.md"),
+            "---\nname: review\ndescription: Review code\n---\nFind regressions.",
+        );
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+        let session = AgentSession::new(AgentSessionConfig {
+            client: client_dyn,
+            system: "system".to_string(),
+            cwd: root,
+            runtime_handle: runtime.handle().clone(),
+            scene_catalog: loaded_catalog.scene_catalog,
+            workflow_catalog: loaded_catalog.workflow_catalog,
+            prompt_catalog: loaded_catalog.prompt_catalog,
+            context_window: 200_000,
+            max_output_tokens: 32_000,
+            bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+            batch_max_requests: omega_core::default_batch_max_requests(),
+        })
+        .unwrap();
+        let (tx, rx) = mpsc::channel();
+
+        session
+            .spawn_turn(
+                "请对这个仓库做一次深度复杂的综合分析和探索".to_string(),
+                76,
+                tx,
+            )
+            .unwrap();
+
+        let mut warnings = Vec::new();
+        let mut routes = Vec::new();
+        loop {
+            match rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+                RuntimeUiEnvelope::Message { turn_id, message }
+                    if turn_id == 76
+                        && matches!(message.source, UiSource::System)
+                        && message.kind == UiMessageKind::Warning =>
+                {
+                    warnings.push(message.content.as_text().to_string());
+                }
+                RuntimeUiEnvelope::Effect {
+                    turn_id,
+                    effect:
+                        RuntimeUiEffect::SetStatusSlot {
+                            slot: StatusSlot::Session,
+                            value:
+                                StatusValue::SessionRouting {
+                                    recognized_scene_id,
+                                    selected_workflow_id,
+                                    ..
+                                },
+                        },
+                } => {
+                    assert_eq!(turn_id, 76);
+                    routes.push((recognized_scene_id, selected_workflow_id));
+                }
+                RuntimeUiEnvelope::Effect {
+                    turn_id,
+                    effect:
+                        RuntimeUiEffect::SetStatusSlot {
+                            slot: StatusSlot::Agent,
+                            value: StatusValue::Label(label),
+                        },
+                } => {
+                    assert_eq!(turn_id, 76);
+                    assert_eq!(label, "Idle");
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        assert!(warnings
+            .iter()
+            .any(|warning| warning.contains("research-oriented")));
+        assert!(routes.iter().any(|route| {
+            route
+                == &(
+                    Some("research".to_string()),
+                    Some(RESEARCH_WORKFLOW_ID.to_string()),
+                )
+        }));
     }
 
     #[test]
@@ -4192,6 +5825,7 @@ mod tests {
             context_window: 200_000,
             max_output_tokens: 24_000,
             bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+            batch_max_requests: omega_core::default_batch_max_requests(),
         })
         .unwrap();
 
@@ -4218,21 +5852,15 @@ mod tests {
 
         let systems = client.systems.lock().unwrap();
         assert_eq!(systems.len(), 6);
-        assert!(
-            systems[3]
-                .as_deref()
-                .is_some_and(|system| system.contains("second question"))
-        );
-        assert!(
-            systems[3]
-                .as_deref()
-                .is_some_and(|system| system.contains("first answer"))
-        );
-        assert!(
-            systems[4]
-                .as_deref()
-                .is_some_and(|system| system.contains("Selected workflow: chat."))
-        );
+        assert!(systems[3]
+            .as_deref()
+            .is_some_and(|system| system.contains("second question")));
+        assert!(systems[3]
+            .as_deref()
+            .is_some_and(|system| system.contains("first answer")));
+        assert!(systems[4]
+            .as_deref()
+            .is_some_and(|system| system.contains("Selected workflow: chat.")));
     }
 
     #[test]
@@ -4293,6 +5921,7 @@ mod tests {
             context_window: 200_000,
             max_output_tokens: 32_000,
             bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+            batch_max_requests: omega_core::default_batch_max_requests(),
         })
         .unwrap();
         let (tx, rx) = mpsc::channel();
@@ -4492,6 +6121,7 @@ mod tests {
             context_window: 200_000,
             max_output_tokens: 32_000,
             bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+            batch_max_requests: omega_core::default_batch_max_requests(),
         })
         .unwrap();
         let (tx, rx) = mpsc::channel();
@@ -4580,7 +6210,7 @@ mod tests {
                 ChatResponse {
                     id: "analysis-1".to_string(),
                     model: Some("test-model".to_string()),
-                    content: vec![ContentBlock::text(feature_analysis_json())],
+                    content: vec![ContentBlock::text(feature_explore_json())],
                     stop_reason: Some(STOP_REASON_END_TURN.to_string()),
                     usage: None,
                 },
@@ -4632,6 +6262,7 @@ mod tests {
             context_window: 200_000,
             max_output_tokens: 32_000,
             bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+            batch_max_requests: omega_core::default_batch_max_requests(),
         })
         .unwrap();
         let (tx, rx) = mpsc::channel();
@@ -4713,7 +6344,7 @@ mod tests {
                 ChatResponse {
                     id: "analysis-1".to_string(),
                     model: Some("test-model".to_string()),
-                    content: vec![ContentBlock::text(feature_analysis_json())],
+                    content: vec![ContentBlock::text(feature_explore_json())],
                     stop_reason: Some(STOP_REASON_END_TURN.to_string()),
                     usage: None,
                 },
@@ -4785,6 +6416,7 @@ mod tests {
             context_window: 200_000,
             max_output_tokens: 32_000,
             bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+            batch_max_requests: omega_core::default_batch_max_requests(),
         })
         .unwrap();
         let (tx, rx) = mpsc::channel();
@@ -4863,12 +6495,20 @@ mod tests {
         assert_eq!(updated_runs.len(), 1);
         assert_eq!(updated_runs[0].id, "tool-1");
         assert_eq!(updated_runs[0].status, ToolRunStatus::Complete);
-        assert!(
-            updated_runs[0]
-                .result_preview
-                .as_deref()
-                .is_some_and(|preview| preview.contains("hi"))
-        );
+        assert!(updated_runs[0]
+            .result_preview
+            .as_deref()
+            .is_some_and(|preview| preview.contains("hi")));
+        assert!(updated_runs[0]
+            .detail
+            .lines
+            .iter()
+            .any(|line| line == "metadata:"));
+        assert!(updated_runs[0]
+            .detail
+            .lines
+            .iter()
+            .any(|line| line.contains("\"command\": \"echo hi\"")));
 
         assert_eq!(
             completed_runs,
@@ -4901,6 +6541,199 @@ mod tests {
     }
 
     #[test]
+    fn preview_tool_invocation_formats_bash_description_and_workdir() {
+        let preview = super::preview_tool_invocation(
+            "bash",
+            &serde_json::json!({
+                "command": "rg --files src",
+                "description": "List source files",
+                "workdir": "crates/omega-tools"
+            }),
+        );
+
+        assert_eq!(
+            preview,
+            "List source files @ crates/omega-tools: $ rg --files src"
+        );
+    }
+
+    #[test]
+    fn spawn_turn_emits_batch_tool_run_metadata() {
+        let client: Arc<SequencedClient> = Arc::new(SequencedClient {
+            responses: Mutex::new(vec![
+                ChatResponse {
+                    id: "scene-1".to_string(),
+                    model: Some("test-model".to_string()),
+                    content: vec![ContentBlock::text("{\"recognized_scene_id\":\"feature\"}")],
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                },
+                ChatResponse {
+                    id: "select-1".to_string(),
+                    model: Some("test-model".to_string()),
+                    content: vec![ContentBlock::text("{\"selected_workflow_id\":\"feature\"}")],
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                },
+                ChatResponse {
+                    id: "analysis-1".to_string(),
+                    model: Some("test-model".to_string()),
+                    content: vec![ContentBlock::text(feature_explore_json())],
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                },
+                ChatResponse {
+                    id: "plan-1".to_string(),
+                    model: Some("test-model".to_string()),
+                    content: vec![ContentBlock::text(feature_plan_json())],
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                },
+                ChatResponse {
+                    id: "execute-1".to_string(),
+                    model: Some("test-model".to_string()),
+                    content: vec![ContentBlock::tool_use(
+                        "tool-1",
+                        "batch",
+                        serde_json::json!({
+                            "requests": [
+                                {"tool": "list_dir", "input": {"path": "."}},
+                                {"tool": "read_file", "input": {"path": "notes.txt", "start_line": 1, "end_line": 1}}
+                            ]
+                        }),
+                    )],
+                    stop_reason: Some(STOP_REASON_TOOL_USE.to_string()),
+                    usage: None,
+                },
+                ChatResponse {
+                    id: "execute-2".to_string(),
+                    model: Some("test-model".to_string()),
+                    content: vec![ContentBlock::text("execution complete")],
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                },
+                ChatResponse {
+                    id: "report-1".to_string(),
+                    model: Some("test-model".to_string()),
+                    content: vec![ContentBlock::text("done")],
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                },
+            ]),
+            systems: Mutex::new(Vec::new()),
+            max_tokens: Mutex::new(Vec::new()),
+        });
+        let client_dyn: DynLlmClient = client;
+        let root = std::env::temp_dir().join("omega-agent-session-batch-tool-run-test");
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::create_dir_all(&root);
+        let skills_dir = root.join(".claude/skills/review");
+        let _ = std::fs::create_dir_all(&skills_dir);
+        let _ = std::fs::write(
+            skills_dir.join("SKILL.md"),
+            "---\nname: review\ndescription: Review code\n---\nFind regressions.",
+        );
+        let _ = std::fs::write(root.join("notes.txt"), "hello\nworld\n");
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+        let session = AgentSession::new(AgentSessionConfig {
+            client: client_dyn,
+            system: "system".to_string(),
+            cwd: root,
+            runtime_handle: runtime.handle().clone(),
+            scene_catalog: loaded_catalog.scene_catalog,
+            workflow_catalog: loaded_catalog.workflow_catalog,
+            prompt_catalog: loaded_catalog.prompt_catalog,
+            context_window: 200_000,
+            max_output_tokens: 32_000,
+            bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+            batch_max_requests: omega_core::default_batch_max_requests(),
+        })
+        .unwrap();
+        let (tx, rx) = mpsc::channel();
+
+        session.spawn_turn("hello".to_string(), 13, tx).unwrap();
+
+        let mut began_runs = Vec::new();
+        let mut updated_runs = Vec::new();
+        let mut tool_logs = Vec::new();
+        loop {
+            match rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+                RuntimeUiEnvelope::Effect {
+                    turn_id,
+                    effect: RuntimeUiEffect::BeginToolRun { tool_run },
+                } => {
+                    assert_eq!(turn_id, 13);
+                    began_runs.push(tool_run);
+                }
+                RuntimeUiEnvelope::Effect {
+                    turn_id,
+                    effect: RuntimeUiEffect::UpdateToolRun { tool_run },
+                } => {
+                    assert_eq!(turn_id, 13);
+                    updated_runs.push(tool_run);
+                }
+                RuntimeUiEnvelope::Message { turn_id, message }
+                    if matches!(message.source, UiSource::Tool { .. })
+                        && message.kind == UiMessageKind::Log =>
+                {
+                    assert_eq!(turn_id, 13);
+                    tool_logs.push(message.content.as_text().to_string());
+                }
+                RuntimeUiEnvelope::Effect {
+                    turn_id,
+                    effect:
+                        RuntimeUiEffect::SetStatusSlot {
+                            slot: StatusSlot::Agent,
+                            value: StatusValue::Label(label),
+                        },
+                } => {
+                    assert_eq!(turn_id, 13);
+                    assert_eq!(label, "Idle");
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        assert_eq!(began_runs.len(), 1);
+        assert_eq!(began_runs[0].tool_name, "batch");
+        assert!(began_runs[0].invocation_preview.contains("requests"));
+
+        assert_eq!(updated_runs.len(), 1);
+        assert_eq!(updated_runs[0].tool_name, "batch");
+        assert_eq!(updated_runs[0].status, ToolRunStatus::Complete);
+        assert!(updated_runs[0]
+            .result_preview
+            .as_deref()
+            .is_some_and(|preview| preview.contains("Batch completed 2 requests")));
+        assert!(updated_runs[0]
+            .detail
+            .lines
+            .iter()
+            .any(|line| line == "metadata:"));
+        assert!(updated_runs[0]
+            .detail
+            .lines
+            .iter()
+            .any(|line| line.contains("\"request_count\": 2")));
+        assert!(updated_runs[0]
+            .detail
+            .lines
+            .iter()
+            .any(|line| line.contains("=== [1] list_dir ===")));
+        assert!(updated_runs[0]
+            .detail
+            .lines
+            .iter()
+            .any(|line| line.contains("=== [2] read_file ===")));
+        assert!(tool_logs
+            .iter()
+            .any(|line| line.contains("Batch completed 2 requests")));
+    }
+
+    #[test]
     fn session_tool_catalog_matches_current_default_tool_set() {
         let dispatcher = omega_core::create_default_tools(std::env::temp_dir());
         let catalog = SessionToolCatalog::new(
@@ -4920,8 +6753,14 @@ mod tests {
         assert_eq!(
             inherit.tool_names(),
             [
+                "apply_patch",
                 "bash",
+                "batch",
+                "create_file",
                 "edit_file",
+                "glob_search",
+                "grep_search",
+                "list_dir",
                 "load_skill",
                 "read_file",
                 "todo",
@@ -4930,7 +6769,18 @@ mod tests {
         );
         assert_eq!(
             blocked.tool_names(),
-            ["edit_file", "load_skill", "todo", "write_file"]
+            [
+                "apply_patch",
+                "batch",
+                "create_file",
+                "edit_file",
+                "glob_search",
+                "grep_search",
+                "list_dir",
+                "load_skill",
+                "todo",
+                "write_file"
+            ]
         );
     }
 

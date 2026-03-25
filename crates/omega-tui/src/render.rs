@@ -1349,8 +1349,8 @@ mod tests {
         app.workflow_summary = Some(crate::app::WorkflowSummary {
             workflow_id: "feature".to_string(),
             workflow_role: omega_session::WorkflowRunRole::Child,
-            id: "analysis".to_string(),
-            label: "Analyze".to_string(),
+            id: "explore".to_string(),
+            label: "Explore".to_string(),
             index: 1,
             total: 4,
         });
@@ -1359,7 +1359,7 @@ mod tests {
 
         assert!(text.contains("test-model"));
         assert!(text.contains("Running…"));
-        assert!(text.contains("child:feature Analyze 1/4"));
+        assert!(text.contains("child:feature Explore 1/4"));
         assert!(!text.contains("Omega Agent"));
         assert!(!text.contains("Mode:"));
         assert!(!text.contains("Focus:"));

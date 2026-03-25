@@ -2,7 +2,7 @@
 status: draft
 owner: omega-team
 created: 2026-03-20
-updated: 2026-03-23
+updated: 2026-03-24
 version: 0.1
 supersedes: []
 related_prds: []
@@ -14,17 +14,19 @@ related_prds: []
 
 当前 Omega 的执行入口仍然默认直接进入单个 execution workflow。这对 feature-oriented coding task 是可行的，但对纯对话、轻量澄清或未来其他工作模式并不合适。下一阶段需要在 workflow 之上新增 `scene` 概念，把“当前是什么工作场景”作为显式路由前提。
 
-本规格定义一个 scene-aware routing 层：session 在每次收到用户新输入后，都先运行 root workflow，依次执行 `scene-recognition` 与 `select-workflow` 两个 step；识别出 scene 后，再委派到匹配的 child workflow 中稳定执行。scene 允许用户配置，并预置两种场景：`chat` 与 `feature`。
+本规格定义一个 scene-aware routing 层：session 在每次收到用户新输入后，都先运行 root workflow，依次执行 `scene-recognition` 与 `select-workflow` 两个 step；识别出 scene 后，再委派到匹配的 child workflow 中稳定执行。scene 允许用户配置，并预置三种场景：`chat`、`research` 与 `feature`。
 
 默认预置映射：
 
 - `chat` -> `chat`
+- `research` -> `research`
 - `feature` -> `feature`
 
 其中：
 
 - `chat` workflow = `chat`
-- `feature` workflow = `analysis -> plan -> execute -> report`
+- `research` workflow = `explore -> plan -> execute -> report`
+- `feature` workflow = `explore -> plan -> execute -> report`
 
 同时，本规格预留后续扩展点：未来某个 step 内部也可以再次做 scene judgment，并触发 child workflow / subworkflow delegation，而不需要重写整个编排模型。
 
@@ -33,7 +35,7 @@ related_prds: []
 - 在 execution workflow 之上引入 `scene` 作为顶层工作路由概念。
 - 让系统先识别 scene，再选择匹配 workflow，而不是默认把所有输入都送入同一条 feature flow。
 - 允许用户通过配置声明 scene catalog 与 scene -> workflow 绑定关系。
-- 预置 `chat` 与 `feature` 两种 scene，并分别映射到轻量 chat workflow 与四阶段 feature workflow。
+- 预置 `chat`、`research` 与 `feature` 三种 scene，并分别映射到轻量 chat workflow、只读四阶段 research workflow 与四阶段 feature workflow。
 - 明确 session / root workflow / child workflow 的生命周期关系：session 持续存在，root workflow 是每个用户 turn 的统一入口，child workflow 是 root workflow 触发的本轮执行流。
 - 让 routing 结果进入 session-owned 的 typed context，而不是继续依赖弱结构化自由文本传递 scene / workflow 决策。
 - 保持 `omega-workflow` 拥有 scene/workflow definition，`omega-session` 拥有执行与 delegation，`omega-tui` 只消费可见状态。
@@ -51,7 +53,7 @@ related_prds: []
 当前模型的主要缺口是：
 
 - 所有输入默认走单一 execution workflow，无法区分聊天场景与实现/交付场景。
-- `chat` 这类轻量场景不应该承担 `analysis -> plan -> execute -> report` 的完整成本。
+- `chat` 这类轻量场景不应该承担 `explore -> plan -> execute -> report` 的完整成本。
 - 未来某些 step 可能需要按 scene 或局部语义触发 child workflow，但当前没有显式 delegation 模型。
 - scene 目前既不可配置，也不是前端可见状态，用户无法确认系统为什么选择了某条 workflow。
 - root routing 当前仍主要消费自由文本结果再做 token 级解析，scene / workflow 关系没有沉淀为稳定的 session context。
@@ -67,7 +69,7 @@ related_prds: []
 
 ### Core Model
 
-- `scene`: 工作场景，如 `chat`、`feature`。
+- `scene`: 工作场景，如 `chat`、`research`、`feature`。
 - `root workflow`: 主路由 workflow，首轮固定为 `scene-recognition -> select-workflow`。
 - `child workflow`: scene 选中后真正执行的 workflow，例如 `chat` 或 `feature`。
 - `workflow delegation`: 某个 step 结束后启动另一个 workflow 的行为。首轮只要求 `select-workflow` 使用该能力，但模型要允许未来其他 step 复用。
@@ -92,6 +94,7 @@ related_prds: []
 | Scene | Purpose | Selected Workflow |
 |-------|---------|-------------------|
 | `chat` | 纯对话、问答、澄清、轻量讨论 | `chat` |
+| `research` | 深度、复杂、综合性的只读分析与探索任务 | `research` |
 | `feature` | 需要分析、计划、执行与汇报的交付型任务 | `feature` |
 
 ### Workflows
@@ -100,7 +103,8 @@ related_prds: []
 |----------|-------|
 | `root` | `scene-recognition`, `select-workflow` |
 | `chat` | `chat` |
-| `feature` | `analysis`, `plan`, `execute`, `report` |
+| `research` | `explore`, `plan`, `execute`, `report` |
+| `feature` | `explore`, `plan`, `execute`, `report` |
 
 说明：当前已经实现的四阶段 execution workflow，在本规格落地后应被重新解释为内建 `feature` workflow，而不是默认唯一 workflow。
 
@@ -111,6 +115,7 @@ related_prds: []
 - `.omega/scenes.toml`: scene catalog、root workflow id、default scene、scene -> workflow binding
 - `.omega/workflows/root.toml`: 主路由 workflow
 - `.omega/workflows/chat.toml`: chat workflow
+- `.omega/workflows/research.toml`: research workflow
 - `.omega/workflows/feature.toml`: feature workflow
 
 默认 prompt 文件则扩展为：
@@ -118,7 +123,7 @@ related_prds: []
 - `.omega/prompt/step/scene-recognition.md`
 - `.omega/prompt/step/select-workflow.md`
 - `.omega/prompt/step/chat.md`
-- 现有 `.omega/prompt/step/analysis.md`
+- 现有 `.omega/prompt/step/explore.md`
 - 现有 `.omega/prompt/step/plan.md`
 - 现有 `.omega/prompt/step/execute.md`
 - 现有 `.omega/prompt/step/report.md`
@@ -145,6 +150,11 @@ label = "Chat"
 workflow = "chat"
 
 [[scenes]]
+id = "research"
+label = "Research"
+workflow = "research"
+
+[[scenes]]
 id = "feature"
 label = "Feature"
 workflow = "feature"
@@ -165,13 +175,20 @@ workflow = "feature"
 
 ### Routing Result Contract
 
-scene routing 的目标不是继续让 root workflow 依赖“assistant 文本里碰巧出现 `chat` / `feature` token”来完成路由，而是让 root step 写出 typed routing result：
+scene routing 的目标不是继续让 root workflow 依赖“assistant 文本里碰巧出现 `chat` / `research` / `feature` token”来完成路由，而是让 root step 写出 typed routing result：
 
 - `scene-recognition` 写入 `recognized_scene_id`
 - `select-workflow` 写入 `selected_workflow_id`
 - `select-workflow` 产出 `StartWorkflow { workflow_id }`
 
 当前 token matching 只应被视为兼容路径，而不是长期主模型。
+
+### Ambiguity And Fallback Policy
+
+- builtin scene catalog 的 `default_scene` 是 `feature`，因此当 `scene-recognition` 没有解析出已配置 scene 时，runtime fallback 应落到 `feature`，而不是 `chat`。
+- `chat` 只用于明确的轻量只读对话、解释和直接问答；深度、复杂、综合性的只读分析/探索请求应落到 `research`，而明确要求修改代码、文档、配置、prompt、测试或其他仓库文件的请求应落到 `feature`。
+- 为避免模型把 research / implementation 请求误分到错误 scene，`omega-session` 可以在 root routing 结果落地前做 domain-specific promotion：当最新用户请求明显要求深度研究而模型仍返回 `chat` 或 `feature` 时，runtime 会提升回 `research`；当最新用户请求明显要求交付或变更而模型仍返回 `chat` / `research` 时，runtime 会提升回 `feature` scene 及其映射 workflow。
+- 这种 promotion 是收敛性保护，不替代 typed routing contract；主路径仍然要求 `scene-recognition` / `select-workflow` 输出结构化结果。
 
 ### Runtime State Direction
 
@@ -208,7 +225,7 @@ enum StepTransition {
 }
 ```
 
-这样未来即使 `analysis`、`chat` 或其他自定义 step 需要再次触发 scene judgment、verify flow、delegate flow，也不需要推翻现有 session 编排边界。对 scene routing 来说，`scene-recognition` 与 `select-workflow` 只是第一个写入 `SessionContext.routing` 并触发 `StartWorkflow` 的 step 组合。
+这样未来即使 `explore`、`chat` 或其他自定义 step 需要再次触发 scene judgment、verify flow、delegate flow，也不需要推翻现有 session 编排边界。对 scene routing 来说，`scene-recognition` 与 `select-workflow` 只是第一个写入 `SessionContext.routing` 并触发 `StartWorkflow` 的 step 组合。
 
 ## Runtime UI Implications
 
@@ -225,8 +242,8 @@ scene-aware routing 是 runtime-visible 行为，因此后续实现至少要让�
 ### Phase 1: Scene / Workflow Catalog Model
 
 - 新增 scene definition 与 workflow catalog 规格
-- 固定 `root` / `chat` / `feature` 三个内建 workflow preset
-- 固定 `chat` / `feature` 两个内建 scene preset
+- 固定 `root` / `chat` / `research` / `feature` 四个内建 workflow preset
+- 固定 `chat` / `research` / `feature` 三个内建 scene preset
 - 明确旧 `.omega/workflow.toml` 的兼容回退策略
 
 ### Phase 2: Root Workflow Execution
@@ -251,6 +268,10 @@ scene-aware routing 是 runtime-visible 行为，因此后续实现至少要让�
 | Risk | Level | Mitigation |
 |------|-------|------------|
 | scene routing 逻辑回流到 `omega-app` / `omega-tui` | High | 明确只允许 `omega-session` 执行 router workflow |
+
+## Changelog
+
+- 2026-03-24: 新增 `research` scene 与 `research` workflow，用于承接深度复杂的综合分析和探索型只读任务；builtin / repo-local scene catalog、workflow preset 与 routing ambiguity policy 已同步更新。
 | scene config 与 workflow config 耦合过重 | Medium | scene 只绑定 workflow id，workflow 定义保持独立 catalog |
 | 兼容迁移打断现有 `.omega/workflow.toml` 用户 | High | 保留 `feature` workflow fallback，并自动生成新配置 |
 | step-level delegation 以后扩展困难 | Medium | 首轮就预留通用 `StartWorkflow` 语义，而不是只写 `select-workflow` 特例 |
@@ -269,3 +290,4 @@ scene-aware routing 是 runtime-visible 行为，因此后续实现至少要让�
 - 2026-03-20: 初版规格，提出 `scene` 作为 workflow 之上的顶层工作场景，并规划 `scene-recognition -> select-workflow -> child workflow` 的主路由模型。
 - 2026-03-20: 明确 session / root workflow / child workflow 的生命周期关系：session 持续存在，root workflow 是每个用户 turn 的统一入口，child workflow 是 root workflow 触发的本轮执行流；routing 结果应进入 typed session context。
 - 2026-03-23: Task 15F-9 实现完成：`scene-recognition` / `select-workflow` 现以 JSON 为主路径产出结构化 routing handoff，`RoutingContext` 成为 `omega-session` 的唯一路由状态容器，child workflow delegation 与跨 turn session context 已在运行时落地。
+- 2026-03-24: 明确 scene ambiguity policy：未识别 scene 的 fallback 继续落到 builtin `default_scene = feature`，而不是 `chat`；同时为明显的实现类请求补充了 `chat -> feature` 的 runtime promotion 保护，减少 root routing 误判。

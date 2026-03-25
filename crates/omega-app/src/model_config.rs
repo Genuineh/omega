@@ -27,6 +27,14 @@ max_tokens = 32000
 # still blocked even when a command name appears in this list.
 [tools.bash]
 allowed_commands = ["cat", "echo", "false", "find", "grep", "head", "ls", "printf", "pwd", "rg", "sleep", "tail", "touch", "tr", "true", "wait", "wc", "yes"]
+
+[tools.batch]
+max_requests = 8
+
+[tools.groups]
+root_routing_blocked = ["bash", "batch", "read_file", "list_dir", "glob_search", "grep_search", "apply_patch", "create_file", "edit_file", "todo", "write_file", "load_skill"]
+chat_blocked = ["apply_patch", "create_file", "edit_file", "todo", "write_file"]
+feature_non_execute_blocked = ["bash", "apply_patch", "create_file", "edit_file", "todo", "write_file"]
 "#;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -258,20 +266,16 @@ mod tests {
         assert!(loaded.warnings.is_empty());
         assert_eq!(loaded.config.max_output_tokens, 32_000);
         assert_eq!(loaded.config.context_window, 200_000);
-        assert!(
-            loaded
-                .config
-                .bash_allowed_commands
-                .iter()
-                .any(|command| command == "find")
-        );
-        assert!(
-            loaded
-                .config
-                .bash_allowed_commands
-                .iter()
-                .any(|command| command == "grep")
-        );
+        assert!(loaded
+            .config
+            .bash_allowed_commands
+            .iter()
+            .any(|command| command == "find"));
+        assert!(loaded
+            .config
+            .bash_allowed_commands
+            .iter()
+            .any(|command| command == "grep"));
         assert!(written.contains("max_tokens = 32000"));
         assert!(written.contains("context_window = 200000"));
         assert!(written.contains("allowed_commands"));
