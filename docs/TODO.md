@@ -315,29 +315,35 @@ _2026-03-25 补充：已按仓库当前真实体量做过一轮扫描；当前�
 - **Related**: docs/specs/omega-tui-runtime-experience.md, docs/specs/omega-tui-collapsible-sidebar.md, docs/specs/omega-tui-overlay-popups.md
 
 ### Task 2B: omega-client — Provider Client Module Split
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-03-25
 - **Priority**: Medium
 - **Description**: 将 `omega-client/src/anthropic.rs` 拆为 `provider models`、`services`、`transport`、`stream parsing` 模块，并把 `omega-client/src/lib.rs` 中的 provider-neutral chat contract、response builder 与 `Minimax` adapter 进一步分离。
 - **Complexity**: L
 - **Planning Note**: 当前 client 层仍可读，但 `anthropic.rs` 已同时承载 typed models、service surface、transport 与 SSE parser；继续增加 provider 行为差异会快速把这个文件推向第二个 `omega-session`。
 - **Blocked by**: Task 15F-15
+- **Summary**: `omega-client` 现已把 provider-neutral chat contract、`ChatResponseBuilder` 与 `Minimax` adapter 分别抽到 `src/types.rs`、`src/builder.rs` 与 `src/minimax.rs`，并将 `anthropic.rs` 收瘦为模块入口，拆出 `anthropic/types.rs`、`anthropic/client.rs`、`anthropic/transport.rs` 与 `anthropic/stream.rs`；`omega_client::...` 与 `omega_client::anthropic::...` 现有导出面保持稳定，原有 `lib_tests.rs` seam 也继续保留。验证已通过 `cargo fmt --all --check` 与 `cargo test -p omega-client`。
 - **Related**: docs/specs/omega-client-anthropic-api-abstraction.md, docs/specs/omega-agent-impl-plan.md
 
 ### Task 14A: omega-core — Agent Loop / Tool Factory Split
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-03-25
 - **Priority**: Medium
 - **Description**: 将 `omega-core` 根文件中的 `Agent` loop、tool result glue、默认 tool factory 与测试拆开，保持 `Agent` 对外语义稳定，但让核心循环与工具装配不再同文件演化。
 - **Complexity**: M
 - **Planning Note**: `omega-core` 目前还没有 `omega-session` 那么紧急，但已经出现“核心 loop + 默认 tool wiring + 大量测试”共存的趋势，应该在继续扩展前先做边界收口。
 - **Blocked by**: Task 15F-15
+- **Summary**: `omega-core` 现已将原单体 `lib.rs` 收敛为薄入口层，并拆出 `agent.rs`、`tool_factory.rs` 与 `helpers.rs` 三个内部模块，分别承接 `Agent` loop、默认 builtin tool 装配与 tool-result/todo reminder 辅助逻辑；root 级 public API 与 sibling `lib_tests.rs` seam 保持兼容。验证已通过 `cargo fmt --all --check` 与 `cargo test -p omega-core`。
 - **Related**: docs/specs/omega-agent-impl-plan.md, docs/specs/omega-runtime-ui-message-contract.md
 
 ### Task 15F-18: docs/specs — Large Spec Split And Index Cleanup
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-03-25
 - **Priority**: Medium
 - **Description**: 将 `docs/specs/omega-agent-impl-plan.md` 与 `docs/specs/omega-step-session-asset-model.md` 拆为“索引页 + 主题子文档”，把实现计划、runtime contract、session asset 演进、routing/repair/diagnostics 等主题从单体 spec 中分离出来。
 - **Complexity**: M
 - **Planning Note**: 当前两份 spec 已明显超出“单主题文档”规模；如果不先拆，后续在实现 Task 10 / Task 11 和 runtime follow-up 时会继续把设计历史、当前契约与未来计划混写在一起。
+- **Summary**: 原路径已保留为稳定入口页，并新增 `docs/specs/omega-agent-impl-plan/` 与 `docs/specs/omega-step-session-asset-model/` 两组主题子文档，分别收敛实现计划、session asset/context contract 与 routing/repair/diagnostics 细节；同时已更新 `docs/README.md` 与相关 spec 链接，避免继续由单体大文件承担导航与细节双重职责。
 - **Related**: docs/specs/omega-agent-impl-plan.md, docs/specs/omega-step-session-asset-model.md, docs/README.md
 
 ### ── M2D: Step Lifecycle Hooks And Gate Follow-up ──

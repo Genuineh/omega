@@ -210,7 +210,7 @@ scene routing 的目标不是继续让 root workflow 依赖“assistant 文本�
 - `select-workflow` step 完成后更新 `session_context.routing.selected_workflow_id`
 - child workflow delegation 从 `session_context.routing` 取值，不再维护独立的 `WorkflowRoutingState`
 
-详见 [omega-step-session-asset-model.md](omega-step-session-asset-model.md) 中 "Routing State Convergence" 小节。
+详见 [omega-step-session-asset-model.md](omega-step-session-asset-model.md) 的入口说明，以及 [omega-step-session-asset-model/routing-repair-and-diagnostics.md](omega-step-session-asset-model/routing-repair-and-diagnostics.md) 中的 "Routing State Convergence" 小节。
 
 ## Step-Level Delegation Direction
 

@@ -18,7 +18,7 @@ related_prds: []
 
 截至当前实现，这四个 canonical steps 实际上对应内建的 `feature` execution workflow。下一阶段若要在其之上加入 `scene`、`chat` workflow 与主路由 workflow，应以 [docs/specs/omega-scene-routing.md](omega-scene-routing.md) 为规划基线，而不是直接改写本规格中的“当前已实现状态”。
 
-同样需要明确的是：`Task 15F-8` 已把 workflow 主路径的 step 运行方式收敛到统一的有界 agent loop。当前 `loop_mode = "single_response"` / `"tool_loop"` 只作为配置兼容别名存在，真正的运行时差异已经下沉为 `tool_request + max_iterations + step prompt`；后续主线将继续以 [docs/specs/omega-step-session-asset-model.md](omega-step-session-asset-model.md) 为准，引入 session-owned step context。
+同样需要明确的是：`Task 15F-8` 已把 workflow 主路径的 step 运行方式收敛到统一的有界 agent loop。当前 `loop_mode = "single_response"` / `"tool_loop"` 只作为配置兼容别名存在，真正的运行时差异已经下沉为 `tool_request + max_iterations + step prompt`；后续主线将继续以 [docs/specs/omega-step-session-asset-model.md](omega-step-session-asset-model.md) 及其 [session-context-and-data-contracts](omega-step-session-asset-model/session-context-and-data-contracts.md) 子文档为准，引入 session-owned step context。
 
 ## Goals
 
@@ -286,7 +286,7 @@ SessionUpdate::WorkflowStepChanged {
 - step 执行语义会从“部分 single-response、部分 tool-loop”继续收敛为“所有 step 共用有界最小 agent loop”。
 - 后续 step 输入会显式消费 session-owned step context，而不再只把 raw message history 当作唯一上下文来源。
 - workflow 产生的 step 正文结果、phase change 与 tool-preview 邻接输出，后续应通过统一 runtime UI message/effect contract 接入前端，而不是继续为 TUI 单独加特例 update。
-- 该演进以 `docs/specs/omega-step-session-asset-model.md` 为主规格，当前文档继续作为已实现 v1 行为的说明。
+- 该演进以 `docs/specs/omega-step-session-asset-model.md` 为主入口规格，其中 step/session contract 细节见 `docs/specs/omega-step-session-asset-model/session-context-and-data-contracts.md`；当前文档继续作为已实现 v1 行为的说明。
 
 ## Technical Decisions
 
