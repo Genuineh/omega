@@ -220,6 +220,130 @@ tool 可以更新 todo、写入上下文、产生验证结果，但不能直接�
 - advance 判定需要聚合 output contract、todo 状态、storage、hook 诊断
 - 把流程控制塞进 tool 会形成隐式 contract，难以测试和调试
 
+## Execute Item Loop Follow-up
+
+### Problem After Task 15F-22
+
+当前 `todo_managed_execute` 已能把 `BeforeAdvance` deny/allow 收敛为统一 hook gate，但 runtime 仍把整个 `execute` 当成单个 step：
+
+- repeat budget 仍直接作用于整个 `execute`，而不是某个明确的 todo item / work item
+- `Contract Diagnostics` 只能解释“当前 step 被拒绝前进”，还不能稳定解释“总共有多少 todo、完成了几个、当前正在推进哪个 item、为什么这一轮算 no progress”
+- 当 step 结束、失败或耗尽 `max_step_repeats` 时，前端只能看到 whole-step 结果，难以区分“部分 item 已完成”与“整个 execute 已完成”
+
+这说明 `BeforeAdvance` gate 已经是正确方向，但还需要从 **whole-step repeat** 继续收敛到 **itemized execute loop**。
+
+### Design Goal
+
+对用户语义来说，这看起来像是“`loop_mode` 支持基于列表循环”；但在 contract 上，不应把“单次 agent/tool loop”与“按 item 展开外层循环”混在一个字段里。更稳妥的目标是：
+
+- 保留当前 step 内部的 `agent_loop` / max_iterations 语义，继续表示一次 item 执行中的模型-工具回合
+- 为 `execute` 新增显式的 item loop contract，声明“这个 step 应围绕哪个列表 source 逐项推进”
+- runtime 将逻辑上的单个 `execute` 展开为共享上下文的 item runs，例如 `execute-1`、`execute-2`
+
+这样既满足“配置后可以循环这个 loop 完成任务”的产品语义，也不会把两层循环语义塞进同一个布尔/字符串开关里。
+
+### Proposed Contract Shape
+
+建议新增 step 级 loop contract，首轮只覆盖 todo / plan task 驱动的 execute：
+
+```toml
+[[steps]]
+id = "execute"
+label = "Execute"
+loop_mode = "agent_loop"
+loop_contract = { kind = "todo_items", source = "plan.tasks", child_step_prefix = "execute", max_item_repeats = 3 }
+hooks = ["todo_managed_execute"]
+max_step_repeats = 10
+```
+
+其中：
+
+- `loop_mode = "agent_loop"` 继续表示单个 item 内部仍由 bounded agent/tool loop 驱动
+- `loop_contract.kind = "todo_items"` 表示外层按 todo/item 列表展开
+- `source = "plan.tasks"` 表示首轮从 `plan` 输出与共享 todo state 推导 loop items
+- `child_step_prefix = "execute"` 约定运行态子 id，形成 `execute-1`、`execute-2` 这类稳定 identity
+- `max_item_repeats = 3` 是单个 item 被 deny 后的最大重试上限；`max_step_repeats` 仍保留为整个 execute 的安全总预算，两层分别控制
+
+`max_step_repeats` 与 `max_item_repeats` 的关系：`max_step_repeats` 是所有 item 累计消耗的总重试次数上限，`max_item_repeats` 是单个 item 连续 deny 的独立上限。当任一层级触顶时，runtime 以 step failure 结束。这避免了单个难解 item 独占全部重试预算。
+
+如后续确实需要把 `loop_mode` 升级成更复杂的复合类型，也应在保持这两个维度分离的前提下演进，而不是继续复用当前 parse-only alias。
+
+### Runtime Behavior
+
+当 step 配置了 item loop contract 时，runtime 规则应变为：
+
+1. 父级 `execute` 进入时，先解析 loop items（首轮来自 todo / `plan.tasks`）
+2. 为当前 item 生成稳定子 id，例如 `execute-1`
+3. 单个 item run 内部继续使用现有 `agent_loop + BeforeAdvance + output contract + hook storage`
+4. item 完成后，更新 todo state、item diagnostics 与 loop cursor，再决定是否进入下一个 item
+5. 只有当 required items 全部完成后，父级 `execute` 才允许进入 `report`
+
+#### BeforeAdvance 双层语义过渡
+
+引入 item loop 后，`BeforeAdvance` 的语义从"整个 execute 能否前进"变为两阶段判定：
+
+1. **per-item gate**: hook 继续回答"当前 item 是否已满足完成条件"（deny = 当前 item 继续重试，allow = 当前 item 完成）
+2. **item progression**: runtime 接管 item 推进——当前 item 完成后，runtime 查看 loop cursor，决定切到下一个 item 还是全部完成后允许父级 advance
+
+hook 不需要理解 item loop 的 orchestration 逻辑。`todo_managed_execute` 只需获知 `current_item_id` 并据此缩窄判断范围（例如只检查当前 todo item 的完成状态），item 切换与父级 advance 由 runtime 负责。为此，`HookDispatchInput` 应新增 item context 字段（additive-only change，不需要 `api_version` bump）：
+
+```rust
+pub struct HookDispatchInput {
+    // ...existing fields...
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_item_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item_index: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item_total: Option<usize>,
+}
+```
+
+现有外部 hook 不受影响：JSON-over-C-ABI 加 `#[serde(default)]` 保证 additive 兼容。
+
+#### Loop Source Resolution Ownership
+
+`loop_contract.source` 的解析由 `runner.rs` 负责，而非 hook 或 workflow 层。Runner 已持有 `session_context.step_outputs` 与 `todo_manager`，且解析应封装为可测试的纯函数：
+
+```rust
+// crates/omega-session/src/runner.rs
+fn resolve_loop_items(
+    loop_contract: &StepLoopContract,
+    step_outputs: &BTreeMap<String, Value>,
+    todo_manager: &CoreSharedTodoManager,
+) -> anyhow::Result<Vec<LoopItem>>
+```
+
+这让 item 解析与 runtime loop 编排可以独立测试，同时保持 hook host 不参与 orchestration。
+
+### Visibility And Diagnostics Requirements
+
+`Contract Diagnostics` 和 runtime-visible activity 至少应新增以下 execute 级字段：
+
+- `todo_total`
+- `todo_completed`
+- `todo_open`
+- `current_item_id`
+- `current_item_index` / `current_item_total`
+- `repeat_count_for_item`
+- `no_progress_streak_for_item`
+- `completion_source`（tool call / structured output / hook decision / manual todo update）
+
+TUI/Activity 层应能同时展示父级 `execute` 与当前子 item，例如：
+
+- `step  child:research  Execute  [streaming]`
+- `item  execute-1  #risk-1  [streaming]`
+
+这样用户看到的不再只是“Execute repeated / finished”，而是“当前在做哪个 item、已完成多少、为什么继续循环”。
+
+### Rollout Extension
+
+在 `Task 15F-22` 之后继续追加：
+
+6. `Task 15F-26`: 扩展 execute diagnostics，先把 todo 进展与 repeat/no-progress 指标稳定暴露到 diagnostics / tracing / runtime activity。
+7. `Task 15F-27`: 在 `omega-workflow` / `omega-session` 中引入 item loop contract，固定 `execute` 的外层列表循环模型与子 step identity。
+8. `Task 15F-28`: 落地 itemized execute loop runtime、visibility 和 deterministic tests，用 item-level completion 取代 whole-step repeat 的最终 stopgap。
+
 ## Hook Loading Model
 
 ### Workspace Layout
@@ -353,10 +477,13 @@ LLM 不可控性不能成为 workflow runtime 行为不可验证的理由。为�
 - v1 是否需要 workflow-scoped hook storage，还是 step-scoped 已足够
 - hook diagnostics 是否需要在保留当前 Activity/Log 输出之外，再同步进入 `RuntimeUiEffect::UpsertStepDiagnostics`
 - build helper 是放进 `omega-tools-builtin`、单独 crate，还是晚些再做
+- ~~item loop contract 首轮是否只允许 `todo_items`，还是在 v1 就支持任意 `structured_output` 列表 source~~ → 已定：v1 只允许 `todo_items`，source 限 `plan.tasks`；解析由 `runner.rs` 负责
 
 ---
 
 ### Change Log
+- 2026-03-26: 架构评审后补充：明确 `BeforeAdvance` 双层语义过渡（per-item gate + runtime-owned item progression）、`max_item_repeats` 与 `max_step_repeats` 双层预算关系、`runner.rs` 拥有 loop source resolution、`HookDispatchInput` 新增 item context 为 additive-only change、关闭 v1 loop source scope open question。
+- 2026-03-26: 新增 execute item loop follow-up，明确 `Task 15F-26 ~ 15F-28` 的方向：先补 execute todo progress diagnostics，再把 whole-step repeat 收敛为 itemized execute loop 与子 step identity。
 - 2026-03-25: `Task 15F-22` 落地 `BeforeAdvance` runtime gate、repeat budget enforcement 与 `todo_managed_execute` 内建 fallback；默认 `feature` / `research` execute 现显式绑定该 hook，并补齐 `omega-hooks` / `omega-workflow` / `omega-session` 回归测试。
 - 2026-03-25: `Task 15F-21` 落地独立 `omega-hooks` crate、`.omega/hooks/*/Hook.toml` manifest catalog、JSON-over-C-ABI loader、step-scoped storage 与 `omega-session` 的 `BeforeStep` / `AfterToolCall` / `AfterStep` / `StepFailed` lifecycle dispatch，并补齐真实 fixture + session integration tests。
 - 2026-03-25: `Task 15F-20` 落地 `WorkflowStep::{hooks,max_step_repeats}`、TOML 解析与默认 execute contract，并把 `.omega/hooks/<hook-id>/Hook.toml` 的最小 manifest 字段固定为 `id/package/artifact/api_version`。

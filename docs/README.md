@@ -30,8 +30,9 @@ This directory contains the working documentation set for the Omega Rust project
 | `docs/specs/omega-tui-todo-sidebar-layout.md` | Specification | Todo/Logs split-panel layout for the TUI sidebar |
 | `docs/specs/omega-tui-non-ui-extraction.md` | Specification | Historical Task 15D extraction baseline; keep for boundary rationale, not as the latest runtime-path source of truth |
 | `docs/specs/omega-app-package.md` | Specification | Implemented `omega-app` assembly package and main-entry boundary |
+| `docs/specs/omega-runtime-message-pipeline.md` | Specification | Implemented runtime message pipeline v0.3: session produces frontend-neutral `RuntimeMessageEnvelope`, app owns message policy, TUI keeps runtime shell and engine |
 | `docs/specs/omega-scene-routing.md` | Specification | Planned scene-aware routing layer above execution workflows |
-| `docs/specs/omega-runtime-ui-message-contract.md` | Specification | Current source of truth for `omega-tui` / `omega-session` / `omega-core` runtime-path relations and unified UI contract planning |
+| `docs/specs/omega-runtime-ui-message-contract.md` | Specification | Implemented legacy/compat `RuntimeUiEnvelope` baseline and historical bridge-to-reducer contract |
 | `docs/specs/omega-step-session-asset-model.md` | Index | Entry point for the split step/session asset model specification |
 | `docs/specs/omega-step-session-asset-model/step-assets-and-execution.md` | Specification | Step definition, session asset ownership, dynamic tool visibility, and shared execution model |
 | `docs/specs/omega-step-session-asset-model/session-context-and-data-contracts.md` | Specification | Session context, summary budget, structured step input/output, and todo-driven execute contract |
@@ -55,5 +56,5 @@ This directory contains the working documentation set for the Omega Rust project
 - `docs/guide/` contains contributor-facing usage documentation.
 - `docs/decisions/` records architecture choices and tradeoffs.
 - Step lifecycle note: `omega-step-session-asset-model.md` remains the entrypoint for the current step/session asset baseline; the split child docs under `docs/specs/omega-step-session-asset-model/` now hold the detailed asset, context, routing, repair, and diagnostics contracts, while `omega-step-lifecycle-hooks.md` captures the planned hook-driven lifecycle and advance-gate direction.
-- Interaction-layer note: use `omega-runtime-ui-message-contract.md` for the current runtime path and `omega-app-package.md` for the implemented app-entry boundary; treat `omega-tui-non-ui-extraction.md` as the completed Task 15D baseline rather than the newest planning source.
+- Interaction-layer note: use `omega-runtime-message-pipeline.md` for the current runtime message main path, `omega-runtime-ui-message-contract.md` for the legacy/compat baseline contract, and `omega-app-package.md` for the implemented app-entry boundary; treat `omega-tui-non-ui-extraction.md` as the completed Task 15D baseline rather than the newest planning source.
 - Historical note: the earlier `omega-repl` split plan has been archived to `docs/archive/omega-interaction-layer-refactor.md`; it is no longer an active architecture target.

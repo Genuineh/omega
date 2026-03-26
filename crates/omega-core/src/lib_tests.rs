@@ -1,15 +1,65 @@
 use super::*;
 use async_trait::async_trait;
+use futures_util::Stream;
 use omega_client::ChatEvent;
 use omega_client::{
-    ChatResponse, ClientError, MessageContent, Usage, STOP_REASON_END_TURN, STOP_REASON_TOOL_USE,
+    ChatEventStream, ChatResponse, ClientError, MessageContent, Usage, STOP_REASON_END_TURN,
+    STOP_REASON_TOOL_USE,
 };
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::task::{Context, Poll};
+use tokio::sync::watch;
 
 type RecordedToolCall = (String, String, String, Option<String>, String);
 
 struct MockLlmClient {
     responses: Mutex<Vec<ChatResponse>>,
+}
+
+struct HangingStreamClient {
+    started_tx: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    dropped: Arc<AtomicBool>,
+}
+
+struct HangingEventStream {
+    dropped: Arc<AtomicBool>,
+}
+
+impl Stream for HangingEventStream {
+    type Item = Result<ChatEvent, ClientError>;
+
+    fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        Poll::Pending
+    }
+}
+
+impl Drop for HangingEventStream {
+    fn drop(&mut self) {
+        self.dropped.store(true, Ordering::SeqCst);
+    }
+}
+
+#[async_trait]
+impl LlmClient for HangingStreamClient {
+    async fn chat(&self, _request: ChatRequest) -> Result<ChatResponse, ClientError> {
+        panic!("chat should not be called in HangingStreamClient");
+    }
+
+    async fn chat_stream(&self, _request: ChatRequest) -> Result<ChatEventStream, ClientError> {
+        if let Some(tx) = self.started_tx.lock().unwrap().take() {
+            let _ = tx.send(());
+        }
+
+        Ok(Box::pin(HangingEventStream {
+            dropped: self.dropped.clone(),
+        }))
+    }
+
+    fn provider_name(&self) -> &'static str {
+        "hanging"
+    }
 }
 
 impl MockLlmClient {
@@ -245,6 +295,49 @@ async fn response_event_callback_receives_text_and_completion() {
                 }),
             },
         ]
+    );
+}
+
+#[tokio::test]
+async fn interrupt_cancels_in_flight_streaming_turn() {
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let dropped = Arc::new(AtomicBool::new(false));
+    let client: DynLlmClient = Arc::new(HangingStreamClient {
+        started_tx: Mutex::new(Some(started_tx)),
+        dropped: dropped.clone(),
+    });
+    let tmp = std::env::temp_dir().join("omega-core-cancel-test");
+    let _ = std::fs::create_dir_all(&tmp);
+    let dispatcher = create_default_tools(tmp);
+    let mut agent = Agent::new(client, "Test".to_string(), dispatcher).unwrap();
+    agent.add_user_message("go");
+
+    let (turn_tx, mut turn_rx) = watch::channel(91u64);
+    let join = tokio::spawn(async move {
+        agent
+            .run_loop_with_events_until_turn_change(|_, _, _, _| {}, |_| {}, Some(&mut turn_rx), Some(91))
+            .await
+    });
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), started_rx)
+        .await
+        .expect("streaming request should start promptly")
+        .expect("streaming start signal should arrive");
+
+    turn_tx.send(92).unwrap();
+
+    let result = tokio::time::timeout(std::time::Duration::from_secs(2), join)
+        .await
+        .expect("canceled agent task should finish promptly")
+        .expect("join should succeed");
+
+    assert!(
+        result.is_err(),
+        "canceled streaming turn should exit with an error"
+    );
+    assert!(
+        dropped.load(Ordering::SeqCst),
+        "canceling the turn should drop the in-flight chat stream"
     );
 }
 

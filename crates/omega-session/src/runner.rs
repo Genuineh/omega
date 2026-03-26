@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex};
 
 use omega_core::{Agent, CoreSharedTodoManager, TodoItem, TodoStatus};
 use omega_hooks::{HookAdvanceOutcome, HookHost};
@@ -12,6 +12,7 @@ use omega_workflow::{
 };
 use serde_json::Value;
 use tokio::runtime::Handle;
+use tokio::sync::watch;
 use tracing::{debug, error, info};
 
 use crate::output::{
@@ -34,8 +35,8 @@ use crate::ui_emit::{
     ToolRunTracker,
 };
 use crate::{
-    ResolvedSkillSet, ResolvedToolSet, RuntimeUiEffect, RuntimeUiEnvelope, SessionSkillCatalog,
-    SessionToolCatalog, StepContextWrite, StepContextWriteKind, StepDiagnostics,
+    ResolvedSkillSet, ResolvedToolSet, RuntimeMessageBridge, SessionSkillCatalog,
+    SessionToolCatalog, SharedRuntimeMessageBridge, StepContextWrite, StepContextWriteKind, StepDiagnostics,
     StepInputDiagnostics, StepInputStatus, StepOutputAttemptKind, StepOutputContractMode,
     StepOutputDiagnostics, StepOutputRecoveryDecision, StepOutputStatus, StepSummarySource,
     WorkflowRunRole, CONTEXT_SAFETY_MARGIN_TOKENS, REPAIR_PASS_MAX_ITERATIONS,
@@ -159,8 +160,9 @@ pub(crate) struct WorkflowTurnRunner<'a> {
     context_window: u32,
     max_output_tokens: u32,
     turn_id: u64,
-    tx_callback: &'a mpsc::Sender<RuntimeUiEnvelope>,
-    tx_result: &'a mpsc::Sender<RuntimeUiEnvelope>,
+    cancel_turn_rx: watch::Receiver<u64>,
+    tx_callback: SharedRuntimeMessageBridge,
+    tx_result: SharedRuntimeMessageBridge,
 }
 
 impl<'a> WorkflowTurnRunner<'a> {
@@ -179,8 +181,9 @@ impl<'a> WorkflowTurnRunner<'a> {
         context_window: u32,
         max_output_tokens: u32,
         turn_id: u64,
-        tx_callback: &'a mpsc::Sender<RuntimeUiEnvelope>,
-        tx_result: &'a mpsc::Sender<RuntimeUiEnvelope>,
+        cancel_turn_rx: watch::Receiver<u64>,
+        tx_callback: SharedRuntimeMessageBridge,
+        tx_result: SharedRuntimeMessageBridge,
     ) -> Self {
         Self {
             handle,
@@ -197,6 +200,7 @@ impl<'a> WorkflowTurnRunner<'a> {
             context_window,
             max_output_tokens,
             turn_id,
+            cancel_turn_rx,
             tx_callback,
             tx_result,
         }
@@ -207,6 +211,7 @@ impl<'a> WorkflowTurnRunner<'a> {
         agent: &mut Agent,
         session_context: &mut SessionContext,
     ) -> anyhow::Result<String> {
+        self.ensure_turn_active()?;
         let hook_session = Arc::new(Mutex::new(self.hook_host.start_session()));
         self.update_active_workflow(
             session_context,
@@ -225,6 +230,8 @@ impl<'a> WorkflowTurnRunner<'a> {
             session_context,
             hook_session.clone(),
         )?;
+
+        self.ensure_turn_active()?;
 
         let selected_workflow_id = self.ensure_selected_workflow(session_context);
         self.send_routing_log(format!(
@@ -256,6 +263,7 @@ impl<'a> WorkflowTurnRunner<'a> {
         let mut run = definition.start_run();
 
         loop {
+            self.ensure_turn_active()?;
             let Some(step_state) = run.current_step() else {
                 break;
             };
@@ -272,7 +280,7 @@ impl<'a> WorkflowTurnRunner<'a> {
             };
 
             send_workflow_step(
-                self.tx_result,
+                &*self.tx_result,
                 self.turn_id,
                 Some(step_state.clone()),
                 workflow_id,
@@ -320,7 +328,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                 None
             };
             let mut response_streamer = StepResponseStreamer::new(
-                self.tx_result,
+                &*self.tx_result,
                 self.turn_id,
                 workflow_id,
                 role,
@@ -400,7 +408,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                         last_validation_failure = Some(validation_failure.clone());
 
                         emit_output_recovery_activity(
-                            self.tx_result,
+                            &*self.tx_result,
                             self.turn_id,
                             &step,
                             current_attempt_kind,
@@ -418,7 +426,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                         if !can_retry {
                             if allows_root_routing_text_fallback(role, &step) {
                                 send_warning_text(
-                                    self.tx_result,
+                                    &*self.tx_result,
                                     self.turn_id,
                                     &format!(
                                         "Step '{}' failed structured output validation after {} attempt(s); falling back to text routing.",
@@ -448,7 +456,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                         let attempt_kind =
                             next_retry_attempt_kind(&step.output_contract, validation_attempt);
                         send_warning_text(
-                            self.tx_result,
+                            &*self.tx_result,
                             self.turn_id,
                             &retry_warning_message(
                                 &step,
@@ -585,7 +593,7 @@ impl<'a> WorkflowTurnRunner<'a> {
             if !step_result.final_text.is_empty() {
                 if role == WorkflowRunRole::Child && !is_final_step {
                     send_step_text(
-                        self.tx_result,
+                        &*self.tx_result,
                         self.turn_id,
                         workflow_id,
                         role,
@@ -627,13 +635,14 @@ impl<'a> WorkflowTurnRunner<'a> {
         agent.set_max_iterations(max_iterations);
 
         let tool_runs = Arc::new(Mutex::new(ToolRunTracker::new(
-            self.tx_callback,
+            &*self.tx_callback,
             self.turn_id,
             response_streamer.primary_section_id().to_string(),
         )));
         let hook_error = Arc::new(Mutex::new(None::<String>));
+        let mut cancel_turn_rx = self.cancel_turn_rx.clone();
 
-        let stage_text = self.handle.block_on(agent.run_loop_with_events(
+        let stage_text = self.handle.block_on(agent.run_loop_with_events_until_turn_change(
             {
                 let tx_callback = self.tx_callback.clone();
                 let turn_id = self.turn_id;
@@ -691,6 +700,8 @@ impl<'a> WorkflowTurnRunner<'a> {
                     response_streamer.push_chat_event(event);
                 }
             },
+            Some(&mut cancel_turn_rx),
+            Some(self.turn_id),
         ))?;
 
         if let Some(error) = hook_error.lock().unwrap().take() {
@@ -698,6 +709,14 @@ impl<'a> WorkflowTurnRunner<'a> {
         }
 
         Ok(stage_text)
+    }
+
+    fn ensure_turn_active(&self) -> anyhow::Result<()> {
+        if *self.cancel_turn_rx.borrow() != self.turn_id {
+            anyhow::bail!("agent turn canceled")
+        }
+
+        Ok(())
     }
 
     fn resolve_workflow_bundle(
@@ -838,9 +857,9 @@ impl<'a> WorkflowTurnRunner<'a> {
     }
 
     fn send_step_diagnostics_effect(&self, diagnostics: StepDiagnostics) {
-        let _ = self.tx_result.send(RuntimeUiEnvelope::effect(
+        self.tx_result.send(crate::RuntimeMessageEnvelope::state(
             self.turn_id,
-            RuntimeUiEffect::UpsertStepDiagnostics {
+            crate::StateMessage::Diagnostics {
                 diagnostics: Box::new(diagnostics),
             },
         ));
@@ -1049,7 +1068,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                 }
 
                 send_warning_text(
-                    self.tx_result,
+                    &*self.tx_result,
                     self.turn_id,
                     &format!(
                         "Step '{}' advance denied; repeating ({}/{}): {}",
@@ -1060,7 +1079,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                     ),
                 );
                 send_system_log_text(
-                    self.tx_result,
+                    &*self.tx_result,
                     self.turn_id,
                     &format!(
                         "step '{}' advance_gate=deny repeat_count={} max_step_repeats={} reasons={}",
@@ -1130,7 +1149,7 @@ impl<'a> WorkflowTurnRunner<'a> {
         .into_iter()
         .collect::<Vec<_>>();
         drop(manager);
-        send_todo_snapshot(self.tx_result, self.turn_id, &rendered);
+        send_todo_snapshot(&*self.tx_result, self.turn_id, &rendered);
         Ok(writes)
     }
 
@@ -1198,7 +1217,7 @@ impl<'a> WorkflowTurnRunner<'a> {
         .into_iter()
         .collect::<Vec<_>>();
         drop(manager);
-        send_todo_snapshot(self.tx_result, self.turn_id, &rendered);
+        send_todo_snapshot(&*self.tx_result, self.turn_id, &rendered);
         Ok(writes)
     }
 
@@ -1318,7 +1337,7 @@ impl<'a> WorkflowTurnRunner<'a> {
             None => {
                 let fallback = self.scene_catalog.default_scene_id.clone();
                 send_warning_text(
-                    self.tx_result,
+                    &*self.tx_result,
                     self.turn_id,
                     &format!(
                         "Scene recognition did not resolve a configured scene; defaulting to '{}'.",
@@ -1392,7 +1411,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                 .unwrap_or_else(|| self.scene_catalog.default_scene_id.clone());
             if promoted_scene_id != scene_id {
                 send_warning_text(
-                    self.tx_result,
+                    &*self.tx_result,
                     self.turn_id,
                     &format!(
                         "Scene recognition returned '{}' for an implementation-oriented request; promoting to '{}'.",
@@ -1411,7 +1430,7 @@ impl<'a> WorkflowTurnRunner<'a> {
             {
                 if promoted_scene_id != scene_id {
                     send_warning_text(
-                        self.tx_result,
+                        &*self.tx_result,
                         self.turn_id,
                         &format!(
                             "Scene recognition returned '{}' for a research-oriented request; promoting to '{}'.",
@@ -1436,7 +1455,7 @@ impl<'a> WorkflowTurnRunner<'a> {
             && latest_user_turn_requires_feature_scene(latest_user_turn)
         {
             send_warning_text(
-                self.tx_result,
+                &*self.tx_result,
                 self.turn_id,
                 &format!(
                     "Workflow selection returned '{}' for an implementation-oriented request; promoting to '{}'.",
@@ -1451,7 +1470,7 @@ impl<'a> WorkflowTurnRunner<'a> {
             && latest_user_turn_prefers_research_scene(latest_user_turn)
         {
             send_warning_text(
-                self.tx_result,
+                &*self.tx_result,
                 self.turn_id,
                 &format!(
                     "Workflow selection returned '{}' for a research-oriented request; promoting to '{}'.",
@@ -1532,7 +1551,7 @@ impl<'a> WorkflowTurnRunner<'a> {
 
     fn send_session_status(&self, session_context: &SessionContext) {
         send_session_status(
-            self.tx_result,
+            &*self.tx_result,
             self.turn_id,
             &self.scene_catalog.root_workflow_id,
             session_context,
@@ -1540,7 +1559,7 @@ impl<'a> WorkflowTurnRunner<'a> {
     }
 
     fn send_routing_log(&self, text: String) {
-        send_routing_log(self.tx_result, self.turn_id, text);
+        send_routing_log(&*self.tx_result, self.turn_id, text);
     }
 }
 
@@ -1701,7 +1720,7 @@ fn retry_warning_message(
 }
 
 fn emit_output_recovery_activity(
-    tx: &mpsc::Sender<RuntimeUiEnvelope>,
+    tx: &dyn RuntimeMessageBridge,
     turn_id: u64,
     step: &WorkflowStep,
     attempt_kind: StepOutputAttemptKind,

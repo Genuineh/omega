@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use futures_util::StreamExt;
 use omega_client::{ChatRequest, ChatResponse, ContentBlock, ToolDefinition};
 use omega_tools::{ToolDispatcher, ToolErrorKind, ToolResult};
+use tokio::sync::watch;
 use tracing::{error, info, instrument};
 use uuid::Uuid;
 
@@ -63,7 +64,9 @@ impl Agent {
             .with_system(&self.system)
             .with_max_tokens(self.max_tokens);
 
-        let response = self.stream_chat_response(request, on_chat_event).await?;
+        let response = self
+            .stream_chat_response(request, on_chat_event, None, None)
+            .await?;
 
         if response.is_tool_use() {
             return Err(anyhow!(
@@ -98,8 +101,28 @@ impl Agent {
 
     pub async fn run_loop_with_events<F, E>(
         &mut self,
+        on_tool_call: F,
+        on_chat_event: E,
+    ) -> Result<String>
+    where
+        F: FnMut(&str, &str, &serde_json::Value, &ToolResult),
+        E: FnMut(&ChatEvent),
+    {
+        self.run_loop_with_events_until_turn_change(
+            on_tool_call,
+            on_chat_event,
+            None,
+            None,
+        )
+        .await
+    }
+
+    pub async fn run_loop_with_events_until_turn_change<F, E>(
+        &mut self,
         mut on_tool_call: F,
         mut on_chat_event: E,
+        mut turn_guard: Option<&mut watch::Receiver<u64>>,
+        active_turn_id: Option<u64>,
     ) -> Result<String>
     where
         F: FnMut(&str, &str, &serde_json::Value, &ToolResult),
@@ -137,7 +160,12 @@ impl Agent {
                 .with_max_tokens(self.max_tokens);
 
             let response = self
-                .stream_chat_response(request, &mut on_chat_event)
+                .stream_chat_response(
+                    request,
+                    &mut on_chat_event,
+                    turn_guard.as_deref_mut(),
+                    active_turn_id,
+                )
                 .await?;
 
             if let Some(ref stop_reason) = response.stop_reason {
@@ -215,6 +243,8 @@ impl Agent {
         &self,
         request: ChatRequest,
         mut on_chat_event: F,
+        mut turn_guard: Option<&mut watch::Receiver<u64>>,
+        active_turn_id: Option<u64>,
     ) -> Result<ChatResponse>
     where
         F: FnMut(&ChatEvent),
@@ -226,7 +256,39 @@ impl Agent {
             .map_err(|error| anyhow!("{error}"))?;
         let mut builder = ChatResponseBuilder::new();
 
-        while let Some(event) = stream.next().await {
+        loop {
+            if turn_guard
+                .as_ref()
+                .zip(active_turn_id)
+                .is_some_and(|(guard, turn_id)| *guard.borrow() != turn_id)
+            {
+                return Err(anyhow!("agent turn canceled"));
+            }
+
+            let next_event = match turn_guard.as_mut().zip(active_turn_id) {
+                Some((guard, turn_id)) => {
+                    tokio::select! {
+                        changed = guard.changed() => {
+                            match changed {
+                                Ok(()) if *guard.borrow() != turn_id => {
+                                    return Err(anyhow!("agent turn canceled"));
+                                }
+                                Ok(()) => {
+                                    continue;
+                                }
+                                Err(_) => stream.next().await,
+                            }
+                        }
+                        event = stream.next() => event,
+                    }
+                }
+                None => stream.next().await,
+            };
+
+            let Some(event) = next_event else {
+                break;
+            };
+
             let event = event.map_err(|error| anyhow!("{error}"))?;
             on_chat_event(&event);
             builder

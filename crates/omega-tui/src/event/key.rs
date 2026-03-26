@@ -6,7 +6,7 @@ pub(super) fn handle_key_event(
     key: KeyEvent,
     app: &Arc<Mutex<App>>,
     session: &AgentSession,
-    tx: &mpsc::Sender<RuntimeUiEnvelope>,
+    tx: &mpsc::Sender<RuntimeMessageEnvelope>,
     keymap: &KeymapManager,
 ) -> anyhow::Result<bool> {
     if app.lock().unwrap().overlay_active() {
@@ -152,7 +152,7 @@ pub(super) fn handle_key_event(
 pub(super) fn handle_submit(
     app: &Arc<Mutex<App>>,
     session: &AgentSession,
-    tx: &mpsc::Sender<RuntimeUiEnvelope>,
+    tx: &mpsc::Sender<RuntimeMessageEnvelope>,
 ) -> anyhow::Result<bool> {
     let agent_ready = session.is_ready();
     let still_running = app.lock().unwrap().is_running;
@@ -244,7 +244,7 @@ fn execute_action(
     action: KeyAction,
     app: &Arc<Mutex<App>>,
     session: &AgentSession,
-    tx: &mpsc::Sender<RuntimeUiEnvelope>,
+    tx: &mpsc::Sender<RuntimeMessageEnvelope>,
 ) -> anyhow::Result<bool> {
     match action {
         KeyAction::Quit => {

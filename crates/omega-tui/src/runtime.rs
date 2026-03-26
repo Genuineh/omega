@@ -2,18 +2,21 @@ use std::sync::{mpsc, Arc, Mutex};
 
 use crossterm::event;
 use omega_keymap::KeymapManager;
-use omega_session::{AgentSession, RuntimeUiEnvelope};
+use omega_session::{AgentSession, RuntimeMessageEnvelope};
 use omega_theme::OmegaTheme;
 use tracing::info;
 
 use crate::app::App;
+use crate::engine::TuiEngine;
 use crate::event::handle_event;
+use crate::pipeline::{apply_runtime_message_with_policy, RuntimeMessagePolicy};
 use crate::render::render;
 use crate::terminal::TerminalGuard;
 
 pub struct TuiLaunchConfig {
     pub model_name: String,
     pub session: AgentSession,
+    pub runtime_message_policy: Arc<dyn RuntimeMessagePolicy>,
     pub keymap: KeymapManager,
     pub theme: OmegaTheme,
     pub show_thinking: bool,
@@ -26,6 +29,7 @@ pub fn run(config: TuiLaunchConfig) -> anyhow::Result<()> {
     let TuiLaunchConfig {
         model_name,
         session,
+        runtime_message_policy,
         keymap,
         theme,
         show_thinking,
@@ -49,14 +53,22 @@ pub fn run(config: TuiLaunchConfig) -> anyhow::Result<()> {
             app_guard.set_status_notice(startup_warnings.join(" | "));
         }
     }
-    let (tx, rx) = mpsc::channel::<RuntimeUiEnvelope>();
+    let (tx, rx) = mpsc::channel::<RuntimeMessageEnvelope>();
     let mut terminal = TerminalGuard::enter()?;
     let trace_rx = trace_rx;
 
     loop {
         for _ in 0..20 {
             if let Ok(update) = rx.try_recv() {
-                app.lock().unwrap().apply_runtime_envelope(update);
+                let mut app_guard = app.lock().unwrap();
+                let active_turn_id = app_guard.active_turn_id;
+                let mut engine = TuiEngine::new(&mut app_guard);
+                let _ = apply_runtime_message_with_policy(
+                    active_turn_id,
+                    update,
+                    runtime_message_policy.as_ref(),
+                    &mut engine,
+                );
             } else {
                 break;
             }

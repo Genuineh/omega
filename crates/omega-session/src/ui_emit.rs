@@ -1,14 +1,15 @@
 use std::collections::BTreeMap;
-use std::sync::mpsc;
 
 use omega_core::{ChatEvent, CoreToolResult};
 use omega_workflow::{WorkflowStep, WorkflowStepState};
 
+use crate::runtime_message::{
+    ConversationMessage, RuntimeContentKind, RuntimeMessageBridge, RuntimeMessageEnvelope,
+    RuntimePriority, RuntimeSource, SessionRoutingStatus, StateMessage, WorkflowStepStatus,
+};
 use crate::runtime_ui::{
-    ActivityTarget, ResponseSection, ResponseSectionDelta, ResponseSectionKind,
-    ResponseSectionMetadata, ResponseSectionState, RuntimeUiEffect, RuntimeUiEnvelope,
-    RuntimeUiMessage, StatusSlot, StatusValue, ToolRun, ToolRunDetail, ToolRunStatus, UiContent,
-    UiMessageKind, UiPriority, UiSource, UiTarget, WorkflowRunRole,
+    ResponseSection, ResponseSectionDelta, ResponseSectionKind, ResponseSectionMetadata,
+    ResponseSectionState, ToolRun, ToolRunDetail, ToolRunStatus, WorkflowRunRole,
 };
 use crate::session_state::SessionContext;
 use crate::{preview_json_value, preview_text};
@@ -106,36 +107,36 @@ fn build_tool_run_detail_lines(
 }
 
 pub(crate) fn send_begin_tool_run(
-    tx: &mpsc::Sender<RuntimeUiEnvelope>,
+    tx: &dyn RuntimeMessageBridge,
     turn_id: u64,
     tool_run: ToolRun,
 ) {
-    let _ = tx.send(RuntimeUiEnvelope::effect(
+    tx.send(RuntimeMessageEnvelope::conversation(
         turn_id,
-        RuntimeUiEffect::BeginToolRun { tool_run },
+        ConversationMessage::BeginToolRun { tool_run },
     ));
 }
 
 pub(crate) fn send_update_tool_run(
-    tx: &mpsc::Sender<RuntimeUiEnvelope>,
+    tx: &dyn RuntimeMessageBridge,
     turn_id: u64,
     tool_run: ToolRun,
 ) {
-    let _ = tx.send(RuntimeUiEnvelope::effect(
+    tx.send(RuntimeMessageEnvelope::conversation(
         turn_id,
-        RuntimeUiEffect::UpdateToolRun { tool_run },
+        ConversationMessage::UpdateToolRun { tool_run },
     ));
 }
 
 pub(crate) fn send_complete_tool_run(
-    tx: &mpsc::Sender<RuntimeUiEnvelope>,
+    tx: &dyn RuntimeMessageBridge,
     turn_id: u64,
     id: &str,
     status: ToolRunStatus,
 ) {
-    let _ = tx.send(RuntimeUiEnvelope::effect(
+    tx.send(RuntimeMessageEnvelope::conversation(
         turn_id,
-        RuntimeUiEffect::CompleteToolRun {
+        ConversationMessage::CompleteToolRun {
             id: id.to_string(),
             status,
         },
@@ -174,7 +175,7 @@ fn tail_fragment(text: &str, keep: usize) -> String {
 }
 
 pub(crate) fn send_workflow_step(
-    tx: &mpsc::Sender<RuntimeUiEnvelope>,
+    tx: &dyn RuntimeMessageBridge,
     turn_id: u64,
     step: Option<WorkflowStepState>,
     workflow_id: &str,
@@ -184,25 +185,21 @@ pub(crate) fn send_workflow_step(
         return;
     };
 
-    let _ = tx.send(RuntimeUiEnvelope::effect(
+    tx.send(RuntimeMessageEnvelope::state(
         turn_id,
-        RuntimeUiEffect::SetStatusSlot {
-            slot: StatusSlot::Workflow,
-            value: StatusValue::WorkflowStep {
-                workflow_id: workflow_id.to_string(),
-                workflow_role: role,
-                step_id: step.id.clone(),
-                step_label: step.label.clone(),
-                index: step.index,
-                total: step.total,
-            },
-        },
+        StateMessage::WorkflowStep(WorkflowStepStatus {
+            workflow_id: workflow_id.to_string(),
+            workflow_role: role,
+            step_id: step.id.clone(),
+            step_label: step.label.clone(),
+            index: step.index,
+            total: step.total,
+        }),
     ));
-    let _ = tx.send(RuntimeUiEnvelope::message(
+    tx.send(RuntimeMessageEnvelope::state(
         turn_id,
-        RuntimeUiMessage {
-            target: UiTarget::Activity(ActivityTarget::Log),
-            source: UiSource::WorkflowStep {
+        StateMessage::Activity {
+            source: RuntimeSource::WorkflowStep {
                 workflow_id: workflow_id.to_string(),
                 workflow_role: role,
                 step_id: step.id.clone(),
@@ -210,26 +207,25 @@ pub(crate) fn send_workflow_step(
                 index: step.index,
                 total: step.total,
             },
-            kind: UiMessageKind::Summary,
-            content: UiContent::Text(step.label.clone()),
+            kind: RuntimeContentKind::Summary,
+            text: step.label.clone(),
             priority: None,
         },
     ));
 }
 
 pub(crate) fn send_step_text(
-    tx: &mpsc::Sender<RuntimeUiEnvelope>,
+    tx: &dyn RuntimeMessageBridge,
     turn_id: u64,
     workflow_id: &str,
     role: WorkflowRunRole,
     step: &WorkflowStep,
     text: &str,
 ) {
-    let _ = tx.send(RuntimeUiEnvelope::message(
+    tx.send(RuntimeMessageEnvelope::conversation(
         turn_id,
-        RuntimeUiMessage {
-            target: UiTarget::Response,
-            source: UiSource::WorkflowStep {
+        ConversationMessage::Text {
+            source: RuntimeSource::WorkflowStep {
                 workflow_id: workflow_id.to_string(),
                 workflow_role: role,
                 step_id: step.id.clone(),
@@ -237,135 +233,128 @@ pub(crate) fn send_step_text(
                 index: 0,
                 total: 0,
             },
-            kind: UiMessageKind::Narrative,
-            content: UiContent::Text(text.to_string()),
+            kind: RuntimeContentKind::Narrative,
+            text: text.to_string(),
             priority: None,
         },
     ));
 }
 
-pub(crate) fn send_assistant_text(tx: &mpsc::Sender<RuntimeUiEnvelope>, turn_id: u64, text: &str) {
-    let _ = tx.send(RuntimeUiEnvelope::message(
+pub(crate) fn send_assistant_text(tx: &dyn RuntimeMessageBridge, turn_id: u64, text: &str) {
+    tx.send(RuntimeMessageEnvelope::conversation(
         turn_id,
-        RuntimeUiMessage {
-            target: UiTarget::Response,
-            source: UiSource::Assistant,
-            kind: UiMessageKind::Result,
-            content: UiContent::Text(text.to_string()),
+        ConversationMessage::Text {
+            source: RuntimeSource::Assistant,
+            kind: RuntimeContentKind::Result,
+            text: text.to_string(),
             priority: None,
         },
     ));
 }
 
-pub(crate) fn send_error_text(tx: &mpsc::Sender<RuntimeUiEnvelope>, turn_id: u64, text: &str) {
-    let _ = tx.send(RuntimeUiEnvelope::message(
+pub(crate) fn send_error_text(tx: &dyn RuntimeMessageBridge, turn_id: u64, text: &str) {
+    tx.send(RuntimeMessageEnvelope::conversation(
         turn_id,
-        RuntimeUiMessage {
-            target: UiTarget::Response,
-            source: UiSource::System,
-            kind: UiMessageKind::Error,
-            content: UiContent::Text(text.to_string()),
-            priority: Some(UiPriority::High),
+        ConversationMessage::Text {
+            source: RuntimeSource::System,
+            kind: RuntimeContentKind::Error,
+            text: text.to_string(),
+            priority: Some(RuntimePriority::High),
         },
     ));
 }
 
-pub(crate) fn send_warning_text(tx: &mpsc::Sender<RuntimeUiEnvelope>, turn_id: u64, text: &str) {
-    let _ = tx.send(RuntimeUiEnvelope::message(
+pub(crate) fn send_warning_text(tx: &dyn RuntimeMessageBridge, turn_id: u64, text: &str) {
+    tx.send(RuntimeMessageEnvelope::state(
         turn_id,
-        RuntimeUiMessage {
-            target: UiTarget::Activity(ActivityTarget::Log),
-            source: UiSource::System,
-            kind: UiMessageKind::Warning,
-            content: UiContent::Text(text.to_string()),
-            priority: Some(UiPriority::Normal),
+        StateMessage::Activity {
+            source: RuntimeSource::System,
+            kind: RuntimeContentKind::Warning,
+            text: text.to_string(),
+            priority: Some(RuntimePriority::Normal),
         },
     ));
 }
 
-pub(crate) fn send_system_log_text(tx: &mpsc::Sender<RuntimeUiEnvelope>, turn_id: u64, text: &str) {
-    let _ = tx.send(RuntimeUiEnvelope::message(
+pub(crate) fn send_system_log_text(tx: &dyn RuntimeMessageBridge, turn_id: u64, text: &str) {
+    tx.send(RuntimeMessageEnvelope::state(
         turn_id,
-        RuntimeUiMessage {
-            target: UiTarget::Activity(ActivityTarget::Log),
-            source: UiSource::System,
-            kind: UiMessageKind::Log,
-            content: UiContent::Text(text.to_string()),
+        StateMessage::Activity {
+            source: RuntimeSource::System,
+            kind: RuntimeContentKind::Log,
+            text: text.to_string(),
             priority: None,
         },
     ));
 }
 
 pub(crate) fn send_tool_call_preview(
-    tx: &mpsc::Sender<RuntimeUiEnvelope>,
+    tx: &dyn RuntimeMessageBridge,
     turn_id: u64,
     tool_name: &str,
     command: Option<String>,
     preview: String,
 ) {
-    let source = UiSource::Tool {
+    let source = RuntimeSource::Tool {
         tool_name: tool_name.to_string(),
     };
 
     if let Some(command) = command {
-        let _ = tx.send(RuntimeUiEnvelope::message(
+        tx.send(RuntimeMessageEnvelope::state(
             turn_id,
-            RuntimeUiMessage {
-                target: UiTarget::Activity(ActivityTarget::Log),
+            StateMessage::Activity {
                 source: source.clone(),
-                kind: UiMessageKind::Log,
-                content: UiContent::Text(format!("$ {command}")),
+                kind: RuntimeContentKind::Log,
+                text: format!("$ {command}"),
                 priority: None,
             },
         ));
     }
 
-    let _ = tx.send(RuntimeUiEnvelope::message(
+    tx.send(RuntimeMessageEnvelope::state(
         turn_id,
-        RuntimeUiMessage {
-            target: UiTarget::Activity(ActivityTarget::Log),
+        StateMessage::Activity {
             source,
-            kind: UiMessageKind::Log,
-            content: UiContent::Text(preview),
+            kind: RuntimeContentKind::Log,
+            text: preview,
             priority: None,
         },
     ));
 }
 
 pub(crate) fn send_todo_snapshot(
-    tx: &mpsc::Sender<RuntimeUiEnvelope>,
+    tx: &dyn RuntimeMessageBridge,
     turn_id: u64,
     rendered: &str,
 ) {
-    let _ = tx.send(RuntimeUiEnvelope::effect(
+    tx.send(RuntimeMessageEnvelope::state(
         turn_id,
-        RuntimeUiEffect::ReplacePanel {
-            target: UiTarget::Todo,
-            content: UiContent::Text(rendered.to_string()),
+        StateMessage::TodoSnapshot {
+            rendered: rendered.to_string(),
         },
     ));
 }
 
 pub(crate) fn send_begin_response_section(
-    tx: &mpsc::Sender<RuntimeUiEnvelope>,
+    tx: &dyn RuntimeMessageBridge,
     turn_id: u64,
     section: ResponseSection,
 ) {
-    let _ = tx.send(RuntimeUiEnvelope::effect(
+    tx.send(RuntimeMessageEnvelope::conversation(
         turn_id,
-        RuntimeUiEffect::BeginResponseSection { section },
+        ConversationMessage::BeginSection { section },
     ));
 }
 
 pub(crate) fn send_append_response_section(
-    tx: &mpsc::Sender<RuntimeUiEnvelope>,
+    tx: &dyn RuntimeMessageBridge,
     turn_id: u64,
     id: &str,
     delta: ResponseSectionDelta,
 ) {
-    let _ = tx.send(RuntimeUiEnvelope::effect(
+    tx.send(RuntimeMessageEnvelope::conversation(
         turn_id,
-        RuntimeUiEffect::AppendResponseSection {
+        ConversationMessage::AppendSection {
             id: id.to_string(),
             delta,
         },
@@ -373,72 +362,59 @@ pub(crate) fn send_append_response_section(
 }
 
 pub(crate) fn send_complete_response_section(
-    tx: &mpsc::Sender<RuntimeUiEnvelope>,
+    tx: &dyn RuntimeMessageBridge,
     turn_id: u64,
     id: &str,
     state: ResponseSectionState,
 ) {
-    let _ = tx.send(RuntimeUiEnvelope::effect(
+    tx.send(RuntimeMessageEnvelope::conversation(
         turn_id,
-        RuntimeUiEffect::CompleteResponseSection {
+        ConversationMessage::CompleteSection {
             id: id.to_string(),
             state,
         },
     ));
 }
 
-pub(crate) fn send_turn_finished(tx: &mpsc::Sender<RuntimeUiEnvelope>, turn_id: u64) {
-    let _ = tx.send(RuntimeUiEnvelope::effect(
+pub(crate) fn send_turn_finished(tx: &dyn RuntimeMessageBridge, turn_id: u64) {
+    tx.send(RuntimeMessageEnvelope::state(
         turn_id,
-        RuntimeUiEffect::ClearStatusSlot {
-            slot: StatusSlot::Workflow,
-        },
-    ));
-    let _ = tx.send(RuntimeUiEnvelope::effect(
-        turn_id,
-        RuntimeUiEffect::SetStatusSlot {
-            slot: StatusSlot::Agent,
-            value: StatusValue::Label("Idle".to_string()),
-        },
+        StateMessage::TurnFinished,
     ));
 }
 
 pub(crate) fn send_session_status(
-    tx: &mpsc::Sender<RuntimeUiEnvelope>,
+    tx: &dyn RuntimeMessageBridge,
     turn_id: u64,
     root_workflow_id: &str,
     session_context: &SessionContext,
 ) {
-    let _ = tx.send(RuntimeUiEnvelope::effect(
+    tx.send(RuntimeMessageEnvelope::state(
         turn_id,
-        RuntimeUiEffect::SetStatusSlot {
-            slot: StatusSlot::Session,
-            value: StatusValue::SessionRouting {
-                root_workflow_id: root_workflow_id.to_string(),
-                active_workflow_id: session_context.routing.active_workflow_id.clone(),
-                active_workflow_role: session_context.routing.active_workflow_role,
-                recognized_scene_id: session_context.routing.recognized_scene_id.clone(),
-                selected_workflow_id: session_context.routing.selected_workflow_id.clone(),
-            },
-        },
+        StateMessage::SessionRouting(SessionRoutingStatus {
+            root_workflow_id: root_workflow_id.to_string(),
+            active_workflow_id: session_context.routing.active_workflow_id.clone(),
+            active_workflow_role: session_context.routing.active_workflow_role,
+            recognized_scene_id: session_context.routing.recognized_scene_id.clone(),
+            selected_workflow_id: session_context.routing.selected_workflow_id.clone(),
+        }),
     ));
 }
 
-pub(crate) fn send_routing_log(tx: &mpsc::Sender<RuntimeUiEnvelope>, turn_id: u64, text: String) {
-    let _ = tx.send(RuntimeUiEnvelope::message(
+pub(crate) fn send_routing_log(tx: &dyn RuntimeMessageBridge, turn_id: u64, text: String) {
+    tx.send(RuntimeMessageEnvelope::state(
         turn_id,
-        RuntimeUiMessage {
-            target: UiTarget::Activity(ActivityTarget::Log),
-            source: UiSource::SessionRouting,
-            kind: UiMessageKind::Summary,
-            content: UiContent::Text(text),
+        StateMessage::Activity {
+            source: RuntimeSource::SessionRouting,
+            kind: RuntimeContentKind::Summary,
+            text,
             priority: None,
         },
     ));
 }
 
 pub(crate) struct StepResponseStreamer<'a> {
-    tx: &'a mpsc::Sender<RuntimeUiEnvelope>,
+    tx: &'a dyn RuntimeMessageBridge,
     turn_id: u64,
     primary_section_id: String,
     thinking_section_id: String,
@@ -451,7 +427,7 @@ pub(crate) struct StepResponseStreamer<'a> {
 
 impl<'a> StepResponseStreamer<'a> {
     pub(crate) fn new(
-        tx: &'a mpsc::Sender<RuntimeUiEnvelope>,
+        tx: &'a dyn RuntimeMessageBridge,
         turn_id: u64,
         workflow_id: &str,
         role: WorkflowRunRole,
@@ -610,7 +586,7 @@ impl<'a> StepResponseStreamer<'a> {
 }
 
 pub(crate) struct ToolRunTracker<'a> {
-    tx: &'a mpsc::Sender<RuntimeUiEnvelope>,
+    tx: &'a dyn RuntimeMessageBridge,
     turn_id: u64,
     parent_section_id: String,
     tool_runs: BTreeMap<String, ToolRun>,
@@ -618,7 +594,7 @@ pub(crate) struct ToolRunTracker<'a> {
 
 impl<'a> ToolRunTracker<'a> {
     pub(crate) fn new(
-        tx: &'a mpsc::Sender<RuntimeUiEnvelope>,
+        tx: &'a dyn RuntimeMessageBridge,
         turn_id: u64,
         parent_section_id: String,
     ) -> Self {

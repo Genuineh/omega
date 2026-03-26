@@ -6,6 +6,7 @@ use omega_hooks::HookHost;
 use omega_skills::SkillLoader;
 use omega_workflow::{SceneCatalog, WorkflowCatalog, WorkflowPromptCatalog};
 use tokio::runtime::Handle;
+use tokio::sync::watch;
 use tracing::{error, info};
 
 const SUMMARY_CHAR_LIMIT: usize = 2_000;
@@ -16,6 +17,7 @@ const REPAIR_PASS_MAX_ITERATIONS: u32 = 1;
 mod output;
 mod prompt_builder;
 mod routing;
+mod runtime_message;
 mod runner;
 mod runtime_ui;
 mod hook_adapter;
@@ -38,6 +40,11 @@ pub use runtime_ui::{
     StepOutputDiagnostics, StepOutputRecoveryDecision, StepOutputStatus, StepSummarySource,
     ToolRun, ToolRunDetail, ToolRunStatus, UiContent, UiMessageKind, UiPriority, UiSource,
     UiTarget, WorkflowRunRole,
+};
+pub use runtime_message::{
+    ConversationMessage, LegacyRuntimeUiBridge, RuntimeContentKind, RuntimeMessage,
+    RuntimeMessageBridge, RuntimeMessageEnvelope, RuntimePriority, RuntimeSource,
+    SessionRoutingStatus, SharedRuntimeMessageBridge, StateMessage, WorkflowStepStatus,
 };
 pub use skill_catalog::{ResolvedSkillSet, SessionSkillCatalog};
 pub use tool_catalog::{ResolvedToolSet, SessionToolCatalog};
@@ -81,6 +88,7 @@ struct AgentSlot {
 pub struct AgentSession {
     agent_slot: Arc<Mutex<AgentSlot>>,
     turn_checkpoint: Arc<Mutex<Vec<Message>>>,
+    active_turn_tx: watch::Sender<u64>,
     session_context: Arc<Mutex<SessionContext>>,
     client: DynLlmClient,
     base_system: String,
@@ -122,6 +130,7 @@ impl AgentSession {
         let mut agent = Agent::new(config.client.clone(), initial_system, dispatcher)?;
         agent.set_max_tokens(config.max_output_tokens);
         let checkpoint = agent.messages().to_vec();
+        let (active_turn_tx, _active_turn_rx) = watch::channel(0u64);
 
         if config
             .workflow_catalog
@@ -150,6 +159,7 @@ impl AgentSession {
                 agent: Some(agent),
             })),
             turn_checkpoint: Arc::new(Mutex::new(checkpoint)),
+            active_turn_tx,
             session_context: Arc::new(Mutex::new(SessionContext::new(
                 config.scene_catalog.root_workflow_id.clone(),
             ))),
@@ -205,6 +215,7 @@ impl AgentSession {
         let mut slot = self.agent_slot.lock().unwrap();
         slot.turn_id = replacement_turn_id;
         slot.agent = Some(replacement);
+        self.active_turn_tx.send_replace(replacement_turn_id);
         Ok(())
     }
 
@@ -212,19 +223,40 @@ impl AgentSession {
         &self,
         input: String,
         turn_id: u64,
+        tx: mpsc::Sender<RuntimeMessageEnvelope>,
+    ) -> anyhow::Result<()> {
+        self.spawn_turn_with_bridge(input, turn_id, Arc::new(tx))
+    }
+
+    pub fn spawn_turn_ui_compat(
+        &self,
+        input: String,
+        turn_id: u64,
         tx: mpsc::Sender<RuntimeUiEnvelope>,
     ) -> anyhow::Result<()> {
-        self.agent_slot.lock().unwrap().turn_id = turn_id;
+        self.spawn_turn_with_bridge(input, turn_id, Arc::new(LegacyRuntimeUiBridge::new(tx)))
+    }
 
+    fn spawn_turn_with_bridge(
+        &self,
+        input: String,
+        turn_id: u64,
+        tx: SharedRuntimeMessageBridge,
+    ) -> anyhow::Result<()> {
         let agent_slot = self.agent_slot.clone();
-        let mut agent = match self.agent_slot.lock().unwrap().agent.take() {
+        let mut slot = self.agent_slot.lock().unwrap();
+        slot.turn_id = turn_id;
+        let mut agent = match slot.agent.take() {
             Some(agent) => agent,
             None => return Err(anyhow::anyhow!("agent turn already in progress")),
         };
+        drop(slot);
+        self.active_turn_tx.send_replace(turn_id);
 
         let tx_callback = tx.clone();
         let tx_result = tx;
         let handle = self.runtime_handle.clone();
+        let cancel_turn_rx = self.active_turn_tx.subscribe();
         let base_system = self.base_system.clone();
         let cwd = self.cwd.clone();
         let todo_manager = self.todo_manager.clone();
@@ -238,6 +270,7 @@ impl AgentSession {
         let context_window = self.context_window;
         let max_output_tokens = self.max_output_tokens;
         thread::spawn(move || {
+            let thread_turn_rx = cancel_turn_rx.clone();
             agent.add_user_message(&input);
             let mut turn_context = {
                 let mut shared = session_context.lock().unwrap();
@@ -266,12 +299,14 @@ impl AgentSession {
                 context_window,
                 max_output_tokens,
                 turn_id,
-                &tx_callback,
-                &tx_result,
+                cancel_turn_rx,
+                tx_callback.clone(),
+                tx_result.clone(),
             );
             let result = runner.run(&mut agent, &mut turn_context);
+            let turn_still_active = *thread_turn_rx.borrow() == turn_id;
 
-            {
+            if turn_still_active {
                 let mut shared = session_context.lock().unwrap();
                 *shared = turn_context;
                 info!(
@@ -283,16 +318,22 @@ impl AgentSession {
                     stored_step_summaries = shared.step_summaries.len(),
                     "session turn context committed"
                 );
+            } else {
+                info!(turn_id, "discarding canceled turn result");
             }
 
             match result {
-                Ok(text) if !text.is_empty() => {
-                    ui_emit::send_assistant_text(&tx_result, turn_id, &text);
+                Ok(text) if turn_still_active && !text.is_empty() => {
+                    ui_emit::send_assistant_text(&*tx_result, turn_id, &text);
                 }
                 Ok(_) => {}
                 Err(e) => {
-                    error!(error = %e, "agent loop error");
-                    ui_emit::send_error_text(&tx_result, turn_id, &format!("Error: {e}"));
+                    if turn_still_active {
+                        error!(error = %e, "agent loop error");
+                        ui_emit::send_error_text(&*tx_result, turn_id, &format!("Error: {e}"));
+                    } else {
+                        info!(turn_id, error = %e, "canceled turn stopped before completion");
+                    }
                 }
             }
 
@@ -301,7 +342,9 @@ impl AgentSession {
                 slot.agent = Some(agent);
             }
 
-            ui_emit::send_turn_finished(&tx_result, turn_id);
+            if turn_still_active {
+                ui_emit::send_turn_finished(&*tx_result, turn_id);
+            }
         });
 
         Ok(())

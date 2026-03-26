@@ -4,7 +4,7 @@ use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use omega_keymap::{InteractionMode, KeyAction, KeyContext, KeyResolution, KeymapManager};
-use omega_session::{AgentSession, RuntimeUiEnvelope};
+use omega_session::{AgentSession, RuntimeMessageEnvelope};
 use tracing::info;
 
 use crate::app::{App, MsgKind, Panel, ResponseActivation};
@@ -26,7 +26,7 @@ pub fn handle_event(
     event: Event,
     app: &Arc<Mutex<App>>,
     session: &AgentSession,
-    tx: &mpsc::Sender<RuntimeUiEnvelope>,
+    tx: &mpsc::Sender<RuntimeMessageEnvelope>,
     keymap: &KeymapManager,
 ) -> anyhow::Result<bool> {
     match event {

@@ -2,21 +2,22 @@
 
 ## Current Priorities
 
-_按当前仓库真实主路径重排。判断依据：`cargo test` 全工作区通过；s02 文件工具与 s03 todo 管理已完成；`Task 15C`、`Task 15C-2`、`Task 15C-3`、`Task 15D`、`Task 15F-3`、`Task 15F-4`、`Task 15F-5`、`Task 15B-18`、`Task 15B-19`、`Task 15F-6`、`Task 15B-20`、`Task 15B-21`、`Task 15F-7`、`Task 15F-8`、`Task 15F-9`、`Task 15F-10`、`Task 15F-11`、`Task 15F-12`、`Task 15F-13`、`Task 15F-14`、`Task 15B-22`、`Task 15B-23`、`Task 8C`、`Task 8D`、`Task 8E`、`Task 8F`、`Task 8G`、`Task 8H` 与 `Task 15F-19 ~ 15F-22` 已完成，交互层当前主边界已落到 `omega-app -> omega-tui + omega-session + omega-observability`，并已用 `RuntimeUiEnvelope` + `TuiUpdateReducer` 收敛 workflow/tool/todo/runtime 状态通道；scene-aware 主路径现在不仅能在底部状态带与 Activity 中稳定显示 routing，也已经在 `Agent Response` 中按 `route / step / final / thinking` 渲染 turn timeline，其中 provider-exposed thinking 支持实时追加、完成态默认折叠、Response 面板内 `Enter/x` 展开与 `.omega/tui.toml` 开关控制，step block 已消费 `ToolRun` lifecycle 渲染结构化工具摘要并支持 detail overlay drill-down，thinking block 也已补齐更清晰的 reasoning 标识、collapsed 摘要和 streaming / done / failed 视觉区分；本轮又补齐了 step input/output contract 诊断、`SessionContext.step_outputs` / todo snapshot diff 观测，以及 TUI Diagnostics drill-down 对 before/after context write 的呈现，并把 structured output recovery 的 repair / regenerate / fallback 运行态显式暴露到 tracing、Activity 与 Diagnostics 侧栏和 detail overlay 中。主线路径现在已经具备 step-level structured I/O、feature workflow schema 绑定，以及 plan→todo→execute→report 的最小结构化闭环；`feature` / `research` 的 execute 现已统一通过 `BeforeAdvance` hook gate 与 `max_step_repeats` 控制重复执行，而不是依赖 scene-specific stopgap；同时 `omega-app` 已新增 `.omega/env.toml` 启动加载与环境注入，统一收口 provider / observability / session bootstrap 对 `from_env` 配置的依赖；当前下一优先级回到 `Task 10` 与 `Task 11`。_
+_按当前仓库真实主路径重排。判断依据：`cargo test` 全工作区通过；s02 文件工具与 s03 todo 管理已完成；`Task 15C`、`Task 15C-2`、`Task 15C-3`、`Task 15D`、`Task 15F-3`、`Task 15F-4`、`Task 15F-5`、`Task 15B-18`、`Task 15B-19`、`Task 15F-6`、`Task 15B-20`、`Task 15B-21`、`Task 15F-7`、`Task 15F-8`、`Task 15F-9`、`Task 15F-10`、`Task 15F-11`、`Task 15F-12`、`Task 15F-13`、`Task 15F-14`、`Task 15B-22`、`Task 15B-23`、`Task 8C`、`Task 8D`、`Task 8E`、`Task 8F`、`Task 8G`、`Task 8H`、`Task 15F-19 ~ 15F-22` 与 `Task 15F-23 ~ 15F-25 / 15B-27` 已完成。交互层当前主边界仍是 `omega-app -> omega-tui + omega-session + omega-observability`，runtime 可见性主路径已收敛到 `RuntimeMessageEnvelope { turn_id, message }`，但 `feature/research.execute` 仍停留在“单 step + todo-driven repeat gate”语义：Diagnostics 还缺少 execute 级 todo 汇总指标，repeat 预算仍作用在整个 step，而不是稳定的 itemized execute loop。下一优先级先补 `Task 15F-26 ~ 15F-28`，把 execute todo 监控、itemized loop contract 与 runtime visibility 收敛成稳定主路径，再回到 `Task 10` 与 `Task 11`。_
 
 _任务编号以 `docs/specs/omega-agent-impl-plan.md` 为准；为支持可运行里程碑拆分，`TODO` 中允许使用 `8A/8B`、`15A/15B/15C/15D` 这类子任务后缀。_
 
 ### High
 
+- **Task 15F-26 ~ 15F-28**: 当前 `feature/research.execute` 虽已具备 hook-driven repeat，但诊断粒度仍停留在 step 级，且 repeat budget 仍直接作用于整个 `execute` step。应先补 execute todo progress diagnostics，并把“围绕 todo 列表逐项完成”的运行态收敛为 itemized execute loop，而不是继续依赖 whole-step repeat。
 - **Task 10**: `omega-subagent` 仍重要，但应建立在新的 all-step loop + step context 主路径之上推进，避免继续绑定 v1 workflow 假设；当前 execute 的 runtime repeat 已经补齐，剩余 gap 更集中在跨 step / 跨 workflow 的自治编排。
 - **Task 11**: 上下文压缩仍重要，但应建立在新的 session context 边界之上，而不是只对 raw transcript 做早期补丁。
 
 ### Medium
 
 - **Task 4**: `omega-tasks` 作为持久化任务层，价值明确，但不应先于 skills/subagent。
-- **Task 12**: `omega-background` 排在任务系统附近，属于把 Agent 从同步单轮执行推进到更实用执行模型的下一步。
-- **Task 3**: `omega-message` 仍重要，但它真正释放价值要等到 subagent 与 team 机制接入，因此不再放在最前。
-- **Task 13**: `omega-team` 保持中优先级，但应建立在 `omega-subagent` 与 `omega-message` 之上推进。
+- **Task 12**: `omega-background` 排在任务系统附近，但它的 runtime-visible 状态在当前前端上如何投射，应建立在新的 app-owned runtime message policy 之上。
+- **Task 3**: `omega-message` 仍重要，但它真正释放价值要等到 subagent、team 与 runtime message boundary 都接通，因此不再放在最前。
+- **Task 13**: `omega-team` 保持中优先级，但应建立在 `omega-subagent`、`omega-message` 与新的 runtime message boundary 之上推进。
 
 ### Low
 
@@ -394,6 +395,85 @@ _2026-03-25 复审补充：相关方案已先记录到 `docs/specs/omega-step-li
 - **Planning Note**: 这是把当前 `feature/research execute` 的 todo-driven repeat 从 localized stopgap 提升为通用 contract 的关键一步；当前特例已经基本收敛在 `runner.rs`，因此本任务的目标不是重写整个 session，而是把 repeat/gate 判定替换成统一 lifecycle dispatch，并同步接入现有 diagnostics / runtime UI contract。
 - **Related**: docs/specs/omega-step-lifecycle-hooks.md, docs/specs/omega-step-session-asset-model.md, docs/specs/omega-runtime-ui-message-contract.md
 - **Summary**: `omega-session::runner` 现已在 output contract 通过后统一调用 `BeforeAdvance` gate，并按 `WorkflowStep.max_step_repeats` 处理 deny → repeat / exhaust → fail；旧的 `should_repeat_execute_step()` 与 `EXECUTE_REPEAT_MAX_NO_PROGRESS_ATTEMPTS` stopgap 已删除。`omega-hooks` 侧新增内建 `todo_managed_execute` fallback，默认 `feature` / `research` execute workflow 与 repo-local `.omega/workflows/*.toml` 现显式绑定 `hooks = ["todo_managed_execute"]`，从而在没有 repo-local manifest 时仍保留 todo-driven repeat 语义；同时补齐了 `omega-hooks`、`omega-workflow` 与 `omega-session` 的回归测试。验证已通过 `cargo test -p omega-hooks -p omega-workflow -p omega-session`。
+
+### ── M2E: Runtime Message Pipeline ──
+
+> 验证方式：routing / response / thinking / tool / todo / diagnostics 先产出 frontend-neutral 的 `RuntimeMessageEnvelope { turn_id, message }`；`omega-tui` runtime 保持 current-turn 过滤；`omega-app` 装配消息策略；`omega-tui` 通过 `TuiEngine` 执行渲染
+> 对标：`omega-session` = 消息生产者，`omega-app` = 策略装配者，`omega-tui` = runtime shell + 渲染引擎
+
+_2026-03-26 实现更新：runtime message pipeline 已按该收敛方案落地。当前主路径由 `RuntimeMessageEnvelope -> current-turn filter -> RuntimeMessagePolicy -> TuiEngine` 组成：session 产出 frontend-neutral message，app 装配消息到渲染的 policy，tui 继续拥有 event loop、turn 过滤和渲染执行；旧 `RuntimeUiEnvelope` 降为 compat surface，供 legacy consumer 与回归测试继续使用。后续 `subagent/background/message/team` 等 runtime-visible producer 应直接接入该消息管道。_
+
+### Task 15F-23: omega-session / omega-app / docs — Runtime Message Pipeline Plan
+- **Status**: Completed
+- **Completed**: 2026-03-26
+- **Priority**: High
+- **Description**: 固化更小的 v0.3 收敛方案：frontend-neutral `RuntimeMessageEnvelope { turn_id, message }`、`omega-app` 的消息策略 ownership，以及 `omega-tui` 继续拥有 runtime shell + `TuiEngine` 的边界，替换当前 `RuntimeUiEnvelope` 同时承担 runtime event 与 TUI command 的混合语义。
+- **Complexity**: M
+- **Summary**: 已固定并实现 v0.3 收敛方案：保留 `turn_id` transport envelope、`omega-tui` runtime shell ownership 与 app-owned message policy，同时同步更新 `TODO`、Task 15 runtime visibility 计划和实现计划入口页，使文档与代码主路径一致。
+- **Related**: docs/specs/omega-runtime-message-pipeline.md, docs/specs/omega-runtime-ui-message-contract.md, docs/specs/omega-app-package.md, docs/specs/omega-tui-runtime-experience.md
+
+### Task 15F-24: omega-session / omega-core / omega-workflow — Frontend-Neutral RuntimeMessage Contract
+- **Status**: Completed
+- **Completed**: 2026-03-26
+- **Priority**: High
+- **Description**: 将当前 session-owned `RuntimeUiEnvelope` baseline 收敛为 frontend-neutral `RuntimeMessageEnvelope { turn_id, message }`，其中 `message` 拆分为 `ConversationMessage`（response panel timeline 流）和 `StateMessage`（status / sidebar / log 状态更新）；迁移期间保留 compat adapter，避免一次性切断现有 TUI 主路径。
+- **Complexity**: XL
+- **Summary**: `omega-session` 已新增 frontend-neutral `runtime_message.rs`，主路径改为发出 `RuntimeMessageEnvelope`、`ConversationMessage` 与 `StateMessage`；`LegacyRuntimeUiBridge` 与 `spawn_turn_ui_compat()` 保留 `RuntimeUiEnvelope` 兼容路径，producer tests 已覆盖 streaming sections、tool activity 与 turn-finish transport。
+- **Related**: docs/specs/omega-runtime-message-pipeline.md, docs/specs/omega-runtime-ui-message-contract.md, docs/specs/omega-agent-impl-plan/task-15-runtime-visibility.md
+
+### Task 15B-27: omega-tui / omega-app — TuiEngine Surface API And App Policy
+- **Status**: Completed
+- **Completed**: 2026-03-26
+- **Priority**: High
+- **Description**: 在保留 `omega-tui` event loop / terminal lifecycle / current-turn 过滤的前提下，引入 `TuiEngine` surface-oriented API，并由 `omega-app` 装配 `RuntimeMessagePolicy` 来组织渲染；逐步替代当前 reducer 中对 surface-heavy envelope 的语义分流。
+- **Complexity**: L
+- **Summary**: `omega-tui` 已新增 `TuiSurface` / `TuiEngine` 与 `apply_runtime_message_with_policy()` helper，runtime loop 现直接消费 `RuntimeMessageEnvelope`；`omega-app` 已注入 `DefaultRuntimeMessagePolicy`，接管 message → response/activity/status/todo/diagnostics 的渲染策略。
+- **Related**: docs/specs/omega-runtime-message-pipeline.md, docs/specs/omega-tui-runtime-experience.md, docs/specs/omega-tui-response-thinking-experience.md
+
+### Task 15F-25: omega-session / omega-app / omega-tui — Runtime Message Pipeline Tests
+- **Status**: Completed
+- **Completed**: 2026-03-26
+- **Priority**: High
+- **Description**: 建立 deterministic 的 `RuntimeMessageEnvelope -> current-turn filter -> app policy -> TuiEngine` 测试矩阵，覆盖 routing、step response、thinking、tool run、todo snapshot、diagnostics、stale turn drop 以及 future module stub 的渲染规则，防止收敛后再次回到按 feature 堆特例。
+- **Complexity**: M
+- **Summary**: `omega-app` 已新增 deterministic matrix tests，锁定 stale turn drop、routing activity、response section、tool lifecycle、todo snapshot、diagnostics 与 `TurnFinished` 映射；`omega-session` 同步补充 producer-path tests，并以 `cargo test -p omega-session -p omega-tui -p omega-app --color never` 验证通过。
+- **Related**: docs/specs/omega-runtime-message-pipeline.md, docs/specs/omega-agent-impl-plan/task-15-runtime-visibility.md
+
+### ── M2F: Execute Todo Loop Follow-up ──
+
+> 验证方式：`feature/research.execute` 的 Diagnostics 能稳定显示 `todo_total / completed / open / current_item / repeat_count / no_progress_streak`；当 step 配置为基于 todo 列表循环时，runtime 会把单个 `execute` 展开为稳定的 itemized run（如 `execute-1`、`execute-2`），直到所有 required todo items 完成后才进入 `report`
+> 对标：把当前 `todo_managed_execute + max_step_repeats` 的 whole-step repeat 收敛成更稳定的 item-level contract，而不是在 `BeforeAdvance` deny 上继续堆特例
+
+_2026-03-26 规划补充：当前 `feature/research.execute` 已能围绕 todo 重试，但一个 step 完成、失败或耗尽 repeat budget 后，Diagnostics 仍不足以解释“总共有多少 todo、完成了几个、当前卡在哪个 item”，runtime 也仍把整个 `execute` 当作单个 step。下一轮 follow-up 先补 execute progress diagnostics，再引入 itemized execute loop contract，让 `execute` 在 runtime 中拥有稳定的子 id 和 per-item 完成语义。_
+_2026-03-26 架构评审后收敛：(1) `BeforeAdvance` 在 item loop 下变为 per-item gate，runtime 接管 item progression，hook 不需要理解 orchestration；(2) `max_step_repeats` 保留为总预算，`loop_contract.max_item_repeats` 为单项上限，双层控制；(3) loop source 解析由 `runner.rs` 拥有，封装为 `resolve_loop_items()` 纯函数；(4) 诊断结构从 15F-26 开始预留 optional item 粒度（`ExecuteProgressDiagnostics` 嵌套），避免 15F-28 重写；(5) `HookDispatchInput` 新增 item context 为 additive-only，不需 api_version bump。_
+### Task 15F-26: omega-session / omega-observability / omega-tui — Execute Todo Progress Diagnostics
+- **Status**: Pending
+- **Priority**: High
+- **Description**: 扩展 `Contract Diagnostics` 与 tracing / runtime activity，使 `feature/research.execute` 在每次模型尝试、hook deny、todo sync 与 advance 判定时都显式记录 `todo_total`、`todo_completed`、`todo_open`、`current_todo_ids`、`repeat_count`、`no_progress_streak`、`max_step_repeats` 与最终 completion source，避免用户只看到“Execute repeated/finished”却不知道 todo 维度上的真实进展。
+- **Complexity**: M
+- **Planning Note**: 该任务只补观测，不改变 loop 语义；目标是先让"为什么继续重试 / 为什么提前结束 / 为什么耗尽预算"在 Diagnostics 中可解释，为后续 itemized loop 改造提供基线。诊断结构须从一开始预留 optional item 粒度：在 `StepDiagnostics` 上新增 `execute_progress: Option<ExecuteProgressDiagnostics>` 嵌套结构，其中 `current_item_id` / `item_index` / `item_total` / `max_item_repeats` 在本任务中为 `None`，15F-28 填充后无需重写路径。
+- **Blocks**: Task 15F-27, Task 15F-28
+- **Related**: docs/specs/omega-step-session-asset-model/session-context-and-data-contracts.md, docs/specs/omega-step-lifecycle-hooks.md, docs/specs/omega-runtime-message-pipeline.md
+
+### Task 15F-27: omega-workflow / omega-session — Itemized Execute Loop Contract
+- **Status**: Pending
+- **Priority**: High
+- **Description**: 为 workflow step 增加 itemized execute loop contract，把当前“整个 `execute` step 重复直到 todo 收敛”的语义提升为显式可声明的外层 loop：step 可以绑定某个列表 source（首轮为 todo / plan.tasks），runtime 会把逻辑上的单个 `execute` 展开为共享上下文的 item runs，并为每个 item 提供稳定子 id（如 `execute-1`）与 per-item completion gate。
+- **Complexity**: XL
+- **Planning Note**: 不建议继续重载现有 `loop_mode` 字符串别名来同时表达"单次 agent/tool loop"和"按列表展开的外层循环"；更稳妥的方向是保留现有内层 agent loop 语义，再新增显式 loop contract / loop source 字段，避免把两个独立维度混进一个开关。设计约束：(1) loop source resolution 由 `runner.rs` 拥有，封装为纯函数 `resolve_loop_items()`；(2) `loop_contract` 新增 `max_item_repeats` 字段与 `max_step_repeats` 构成双层预算；(3) `HookDispatchInput` 新增 `current_item_id / item_index / item_total` 为 additive-only change，不需要 `api_version` bump；(4) v1 loop source 限 `todo_items` + `plan.tasks`。
+- **Blocked by**: Task 15F-26
+- **Blocks**: Task 15F-28, Task 10
+- **Related**: docs/specs/omega-step-lifecycle-hooks.md, docs/specs/omega-workflow-package.md, docs/specs/omega-step-session-asset-model/session-context-and-data-contracts.md
+
+### Task 15F-28: omega-session / omega-hooks / omega-tui — Itemized Execute Loop Runtime And Visibility
+- **Status**: Pending
+- **Priority**: High
+- **Description**: 在 runtime 中实现 itemized execute loop：`BeforeAdvance` 不再只对整个 `execute` 给出 allow/deny，而是先基于 loop contract 推进当前 item、同步 todo 与 step-scoped storage，并在前端中把 `execute` 展示为带子 id 的 item runs（例如 `execute-1` / `execute-2`）；只有当 required items 全部完成后，父级 `execute` 才允许进入 `report`。
+- **Complexity**: XL
+- **Planning Note**: 该任务是 execute 稳定性的主收敛点；实现时必须保留共享 `SessionContext`、structured input/output 与现有 hook storage，同时补齐 deterministic matrix tests，覆盖 no-progress、partial progress、all-complete、item fail、budget exhaustion 与 research read-only execute 路径。`BeforeAdvance` 在 item loop 下变为 per-item gate，runtime 接管 item progression（见 lifecycle hooks spec "BeforeAdvance 双层语义过渡"）。如实现复杂度超出单轮收敛范围，可拆为 15F-28a（runtime loop + tests）和 15F-28b（TUI item-level visibility），但优先尝试一次完成。
+- **Blocked by**: Task 15F-27
+- **Blocks**: Task 10, Task 11
+- **Related**: docs/specs/omega-step-lifecycle-hooks.md, docs/specs/omega-step-session-asset-model/session-context-and-data-contracts.md, docs/specs/omega-runtime-message-pipeline.md
 
 ### ── M3: Todo 管理 (s03) ──
 

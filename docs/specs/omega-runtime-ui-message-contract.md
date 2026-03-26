@@ -2,7 +2,7 @@
 status: implemented
 owner: omega-team
 created: 2026-03-20
-updated: 2026-03-20
+updated: 2026-03-26
 version: 0.4
 supersedes: []
 related_prds: []
@@ -12,9 +12,9 @@ related_prds: []
 
 ## Overview
 
-当前 `omega-workflow` 的 `step` 正文结果、workflow phase、tool preview、todo 刷新与 tracing 日志，已经开始同时影响 `Response`、`Activity & Logs`、底部状态带与右侧栏状态。该通道现在已通过 `RuntimeUiEnvelope` 落地到 `omega-session` 与 `omega-tui` 主路径中，替代继续扩张 `SessionUpdate` 特例。当前顶层应用入口已经迁移到 `omega-app` 装配包，因此本规格同时固定了两件事：UI 协议消费者可以是 `omega-tui`，而 bridge/sink wiring 与应用 bootstrap 由 `omega-app` 持有。
+当前 `RuntimeUiEnvelope` 已不再是默认主路径，而是保留为 compat surface：runtime 主链路现已切到 `docs/specs/omega-runtime-message-pipeline.md` 中定义并实现的 `RuntimeMessageEnvelope { turn_id, message }`，由 `omega-app` 装配 `RuntimeMessagePolicy`，再交给 `omega-tui` runtime + `TuiEngine` 消费。`RuntimeUiEnvelope` 仍保留在 `omega-session` 中，用于 legacy adapter、现有 reducer 测试与平滑迁移。
 
-本规格提出一个统一的运行态 UI 协议层，让各个非 UI 模块不再直接“适配 TUI”，而是向一个稳定的 runtime UI bridge 发送结构化消息和效果请求。`omega-tui` 只是这个协议的一个消费者，负责把协议映射为具体视图状态和渲染结果。这样既能改善当前 workflow 在 `Response` 的输出体验，也能为后续多种样式和多模块运行态信息建立统一扩展面。
+本规格保留为 `Task 15F-3` 的 implemented baseline 记录：它解释了 `RuntimeUiEnvelope` / `RuntimeUiEffect` / `TuiUpdateReducer` 这套旧 contract 是如何建立起来的，以及为什么它最终需要收敛到 message pipeline。当前要看运行中的主路径，请以 `omega-runtime-message-pipeline.md` 为准；当前要看 legacy/compat contract 或旧 reducer 的历史基线，请继续看本文件。
 
 当前补充说明：本规格的已实现部分已经覆盖 workflow / tool / todo / routing，以及 `Task 15F-6` / `Task 15B-20` / `Task 15B-21` / `Task 15F-7` 组合出的 response timeline + tool lifecycle foundation：`omega-session` 现在不仅可以发出 `BeginResponseSection` / `AppendResponseSection` / `CompleteResponseSection`，也可以发出 `BeginToolRun` / `UpdateToolRun` / `CompleteToolRun`。其中 `ToolRun` 以 stable `tool_use_id`、`parent_section_id`、`status`、`invocation_preview`、`result_preview` 与 detail lines 描述 step 内工具调用；`omega-tui` 当前已经兼容该 effect 扩展，并继续保留现有 `ResponseSectionKind::{Routing, Step, FinalAnswer, Thinking}` timeline 渲染。`Thinking` section 在流式阶段实时可见，完成后默认折叠为摘要，并受 `.omega/tui.toml` 的 `[response].show_thinking` 开关控制。
 

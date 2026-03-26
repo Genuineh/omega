@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 mod env_config;
 mod model_config;
+mod runtime_message_policy;
 
 use omega_core::{DynLlmClient, MinimaxClient, MinimaxConfig};
 use omega_keymap::KeymapManager;
@@ -15,6 +16,7 @@ use tracing::{info, warn};
 
 use crate::env_config::AppEnvConfig;
 use crate::model_config::AgentModelConfig;
+use crate::runtime_message_policy::DefaultRuntimeMessagePolicy;
 
 pub fn default_system_prompt(cwd: &Path) -> String {
     format!(
@@ -119,6 +121,7 @@ pub async fn run() -> anyhow::Result<()> {
     run_tui(TuiLaunchConfig {
         model_name,
         session,
+        runtime_message_policy: Arc::new(DefaultRuntimeMessagePolicy),
         keymap: loaded_keymap.manager,
         theme: loaded_theme.theme,
         show_thinking: loaded_tui_config.config.show_thinking,

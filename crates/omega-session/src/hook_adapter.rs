@@ -1,4 +1,4 @@
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use omega_core::{CoreSharedTodoManager, CoreToolResult};
@@ -11,7 +11,7 @@ use omega_hooks::{
 use omega_workflow::WorkflowStep;
 use serde_json::Value;
 
-use crate::runtime_ui::{RuntimeUiEnvelope, WorkflowRunRole};
+use crate::{SharedRuntimeMessageBridge, WorkflowRunRole};
 use crate::session_state::SessionContext;
 use crate::ui_emit::{send_error_text, send_system_log_text, send_warning_text};
 use crate::ResolvedToolSet;
@@ -21,7 +21,7 @@ pub(crate) struct StepHookRuntime {
     host: Arc<HookHost>,
     session: Arc<Mutex<HookSession>>,
     todo_manager: CoreSharedTodoManager,
-    tx_result: mpsc::Sender<RuntimeUiEnvelope>,
+    tx_result: SharedRuntimeMessageBridge,
     turn_id: u64,
     workflow_id: String,
     workflow_role: WorkflowRunRole,
@@ -39,7 +39,7 @@ impl StepHookRuntime {
         host: Arc<HookHost>,
         session: Arc<Mutex<HookSession>>,
         todo_manager: CoreSharedTodoManager,
-        tx_result: mpsc::Sender<RuntimeUiEnvelope>,
+        tx_result: SharedRuntimeMessageBridge,
         turn_id: u64,
         workflow_id: &str,
         workflow_role: WorkflowRunRole,
@@ -184,8 +184,8 @@ impl StepHookRuntime {
         )
         .map_err(|dispatch_error| anyhow::anyhow!("{dispatch_error}"))?;
 
-        send_error_text(
-            &self.tx_result,
+            send_error_text(
+            &*self.tx_result,
             self.turn_id,
             &format!("Hook-managed step failed: {error}"),
         );
@@ -235,13 +235,13 @@ impl StepHookRuntime {
             );
             match diagnostic.level {
                 HookDiagnosticLevel::Info => {
-                    send_system_log_text(&self.tx_result, self.turn_id, &text);
+                    send_system_log_text(&*self.tx_result, self.turn_id, &text);
                 }
                 HookDiagnosticLevel::Warning => {
-                    send_warning_text(&self.tx_result, self.turn_id, &text);
+                    send_warning_text(&*self.tx_result, self.turn_id, &text);
                 }
                 HookDiagnosticLevel::Error => {
-                    send_error_text(&self.tx_result, self.turn_id, &text);
+                    send_error_text(&*self.tx_result, self.turn_id, &text);
                 }
             }
         }

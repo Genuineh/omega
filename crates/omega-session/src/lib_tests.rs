@@ -19,11 +19,12 @@ use omega_workflow::{
 use super::{
     parse_json_values, preview_text, render_output_contract, resolve_structured_input,
     validate_schema_file, validate_structured_output, AgentSession, AgentSessionConfig,
-    ProviderMarkupSanitizer, ResponseSectionDelta, ResponseSectionKind, ResponseSectionState,
-    RuntimeUiEffect, RuntimeUiEnvelope, SessionContext, SessionSkillCatalog, SessionToolCatalog,
-    StatusSlot, StatusValue, StepContextWriteKind, StepOutputAttemptKind, StepOutputStatus,
-    StepSkillRequest, StepToolRequest, ToolRunStatus, UiMessageKind, UiSource, UiTarget,
-    WorkflowRunRole,
+    ConversationMessage, ProviderMarkupSanitizer, ResponseSectionDelta, ResponseSectionKind,
+    ResponseSectionState, RuntimeContentKind, RuntimeMessage, RuntimeMessageEnvelope,
+    RuntimeSource, RuntimeUiEffect, RuntimeUiEnvelope, SessionContext, SessionSkillCatalog,
+    SessionToolCatalog, StateMessage, StatusSlot, StatusValue, StepContextWriteKind,
+    StepOutputAttemptKind, StepOutputStatus, StepSkillRequest, StepToolRequest, ToolRunStatus,
+    UiMessageKind, UiSource, UiTarget, WorkflowRunRole,
 };
 
 type SequencedClient = ScriptedLlmClient;
@@ -292,7 +293,9 @@ fn spawn_turn_emits_hook_diagnostics_for_execute_step() {
     .unwrap();
     let (tx, rx) = mpsc::channel();
 
-    session.spawn_turn("fix this bug".to_string(), 81, tx).unwrap();
+    session
+        .spawn_turn_ui_compat("fix this bug".to_string(), 81, tx)
+        .unwrap();
 
     let mut system_logs = Vec::new();
     loop {
@@ -622,7 +625,7 @@ fn spawn_turn_clears_plan_validation_error_after_successful_regenerate() {
     let (tx, rx) = mpsc::channel();
 
     session
-        .spawn_turn("请你帮我仔细分析此项目的好坏".to_string(), 52, tx)
+        .spawn_turn_ui_compat("请你帮我仔细分析此项目的好坏".to_string(), 52, tx)
         .unwrap();
 
     let mut diagnostics = Vec::new();
@@ -755,7 +758,9 @@ fn spawn_turn_retries_invalid_required_structured_output() {
     .unwrap();
     let (tx, rx) = mpsc::channel();
 
-    session.spawn_turn("hello".to_string(), 21, tx).unwrap();
+    session
+        .spawn_turn_ui_compat("hello".to_string(), 21, tx)
+        .unwrap();
 
     let mut warnings = Vec::new();
     let mut diagnostics = Vec::new();
@@ -894,7 +899,9 @@ fn spawn_turn_syncs_execute_output_back_into_todo_state_for_report() {
     .unwrap();
     let (tx, rx) = mpsc::channel();
 
-    session.spawn_turn("hello".to_string(), 41, tx).unwrap();
+    session
+        .spawn_turn_ui_compat("hello".to_string(), 41, tx)
+        .unwrap();
 
     let mut todo_panels = Vec::new();
     let mut diagnostics = Vec::new();
@@ -1102,7 +1109,7 @@ fn spawn_turn_syncs_research_execute_output_back_into_todo_state_for_report() {
     let (tx, rx) = mpsc::channel();
 
     session
-        .spawn_turn("请你仔细帮我分析下此项目的好坏".to_string(), 43, tx)
+        .spawn_turn_ui_compat("请你仔细帮我分析下此项目的好坏".to_string(), 43, tx)
         .unwrap();
 
     let mut todo_panels = Vec::new();
@@ -1312,7 +1319,7 @@ fn spawn_turn_repeats_research_execute_without_initial_todo_diff() {
     let (tx, rx) = mpsc::channel();
 
     session
-        .spawn_turn("请你仔细帮我分析下此项目的好坏".to_string(), 44, tx)
+        .spawn_turn_ui_compat("请你仔细帮我分析下此项目的好坏".to_string(), 44, tx)
         .unwrap();
 
     let mut todo_panels = Vec::new();
@@ -1442,7 +1449,9 @@ fn spawn_turn_fails_when_before_advance_denial_exhausts_repeat_budget() {
     .unwrap();
     let (tx, rx) = mpsc::channel();
 
-    session.spawn_turn("hello".to_string(), 45, tx).unwrap();
+    session
+        .spawn_turn_ui_compat("hello".to_string(), 45, tx)
+        .unwrap();
 
     let mut warnings = Vec::new();
     let mut errors = Vec::new();
@@ -1628,7 +1637,9 @@ fn spawn_turn_emits_root_then_child_workflow_steps_and_uses_phase_prompts() {
     .unwrap();
     let (tx, rx) = mpsc::channel();
 
-    session.spawn_turn("hello".to_string(), 7, tx).unwrap();
+    session
+        .spawn_turn_ui_compat("hello".to_string(), 7, tx)
+        .unwrap();
 
     let mut steps = Vec::new();
     let mut step_texts = Vec::new();
@@ -1940,7 +1951,9 @@ fn chat_scene_routes_to_chat_workflow_without_showing_root_text() {
     .unwrap();
     let (tx, rx) = mpsc::channel();
 
-    session.spawn_turn("just chat".to_string(), 9, tx).unwrap();
+    session
+        .spawn_turn_ui_compat("just chat".to_string(), 9, tx)
+        .unwrap();
 
     let mut steps = Vec::new();
     let mut root_narratives = Vec::new();
@@ -2142,7 +2155,7 @@ fn unresolved_scene_and_workflow_fallback_to_feature_not_chat() {
     let (tx, rx) = mpsc::channel();
 
     session
-        .spawn_turn("fix this bug".to_string(), 74, tx)
+        .spawn_turn_ui_compat("fix this bug".to_string(), 74, tx)
         .unwrap();
 
     let mut warnings = Vec::new();
@@ -2271,7 +2284,7 @@ fn implementation_requests_are_promoted_from_chat_to_feature() {
     let (tx, rx) = mpsc::channel();
 
     session
-        .spawn_turn("请你更新相关文档，并修复这个 bug".to_string(), 75, tx)
+        .spawn_turn_ui_compat("请你更新相关文档，并修复这个 bug".to_string(), 75, tx)
         .unwrap();
 
     let mut warnings = Vec::new();
@@ -2400,7 +2413,7 @@ fn research_requests_are_promoted_to_research_scene_and_workflow() {
     let (tx, rx) = mpsc::channel();
 
     session
-        .spawn_turn(
+        .spawn_turn_ui_compat(
             "请对这个仓库做一次深度复杂的综合分析和探索".to_string(),
             76,
             tx,
@@ -2537,7 +2550,9 @@ fn session_context_persists_step_summaries_across_turns() {
 
     for (turn_id, input) in [(31, "first question"), (32, "second question")] {
         let (tx, rx) = mpsc::channel();
-        session.spawn_turn(input.to_string(), turn_id, tx).unwrap();
+        session
+            .spawn_turn_ui_compat(input.to_string(), turn_id, tx)
+            .unwrap();
 
         loop {
             if let RuntimeUiEnvelope::Effect {
@@ -2627,7 +2642,9 @@ fn spawn_turn_emits_response_sections_for_routing_and_thinking() {
     })
     .unwrap();
     let (tx, rx) = mpsc::channel();
-    session.spawn_turn("just chat".to_string(), 11, tx).unwrap();
+    session
+        .spawn_turn_ui_compat("just chat".to_string(), 11, tx)
+        .unwrap();
 
     let mut began = Vec::new();
     let mut appended = Vec::new();
@@ -2825,7 +2842,7 @@ fn spawn_turn_falls_back_to_text_routing_when_root_json_validation_fails() {
     let (tx, rx) = mpsc::channel();
 
     session
-        .spawn_turn("分析下这个项目的优缺点".to_string(), 73, tx)
+        .spawn_turn_ui_compat("分析下这个项目的优缺点".to_string(), 73, tx)
         .unwrap();
 
     let mut diagnostics = Vec::new();
@@ -2962,7 +2979,7 @@ fn spawn_turn_accepts_root_json_when_model_adds_short_preface() {
     let (tx, rx) = mpsc::channel();
 
     session
-        .spawn_turn("fix this bug".to_string(), 71, tx)
+        .spawn_turn_ui_compat("fix this bug".to_string(), 71, tx)
         .unwrap();
 
     let mut warnings = Vec::new();
@@ -3111,7 +3128,9 @@ fn spawn_turn_emits_tool_runs_and_sanitizes_provider_markup() {
     .unwrap();
     let (tx, rx) = mpsc::channel();
 
-    session.spawn_turn("hello".to_string(), 12, tx).unwrap();
+    session
+        .spawn_turn_ui_compat("hello".to_string(), 12, tx)
+        .unwrap();
 
     let mut began_runs = Vec::new();
     let mut updated_runs = Vec::new();
@@ -3339,7 +3358,9 @@ fn spawn_turn_emits_batch_tool_run_metadata() {
     .unwrap();
     let (tx, rx) = mpsc::channel();
 
-    session.spawn_turn("hello".to_string(), 13, tx).unwrap();
+    session
+        .spawn_turn_ui_compat("hello".to_string(), 13, tx)
+        .unwrap();
 
     let mut began_runs = Vec::new();
     let mut updated_runs = Vec::new();
@@ -3417,6 +3438,262 @@ fn spawn_turn_emits_batch_tool_run_metadata() {
     assert!(tool_logs
         .iter()
         .any(|line| line.contains("Batch completed 2 requests")));
+}
+
+#[test]
+fn spawn_turn_emits_runtime_message_envelopes_for_streaming_text_and_turn_finish() {
+    let client: Arc<SequencedClient> = sequenced_client(vec![
+        ChatResponse {
+            id: "scene-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"recognized_scene_id\":\"chat\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"selected_workflow_id\":\"chat\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "chat-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![
+                ContentBlock::Thinking {
+                    thinking: "outline answer".to_string(),
+                    signature: None,
+                },
+                ContentBlock::text("chat answer"),
+            ],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+    ]);
+    let client_dyn: DynLlmClient = client;
+    let root = std::env::temp_dir().join("omega-agent-session-runtime-message-chat-test");
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::create_dir_all(&root);
+    write_review_skill(&root);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: client_dyn,
+        system: "system".to_string(),
+        cwd: root,
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+    let (tx, rx) = mpsc::channel();
+
+    session
+        .spawn_turn("just chat".to_string(), 31, tx)
+        .unwrap();
+
+    let mut began = Vec::new();
+    let mut appended = Vec::new();
+    let finished = loop {
+        match rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+            RuntimeMessageEnvelope {
+                turn_id,
+                message: RuntimeMessage::Conversation(ConversationMessage::BeginSection { section }),
+            } => {
+                assert_eq!(turn_id, 31);
+                began.push((section.id, section.kind));
+            }
+            RuntimeMessageEnvelope {
+                turn_id,
+                message:
+                    RuntimeMessage::Conversation(ConversationMessage::AppendSection { id, delta }),
+            } => {
+                assert_eq!(turn_id, 31);
+                appended.push((id, delta));
+            }
+            RuntimeMessageEnvelope {
+                turn_id,
+                message: RuntimeMessage::State(StateMessage::TurnFinished),
+            } => {
+                assert_eq!(turn_id, 31);
+                break true;
+            }
+            _ => {}
+        }
+    };
+
+    assert!(began.iter().any(|entry| {
+        entry
+            == &(
+                "turn-31:root:root:scene-recognition".to_string(),
+                ResponseSectionKind::Routing,
+            )
+    }));
+    assert!(began.iter().any(|entry| {
+        entry
+            == &(
+                "turn-31:child:chat:chat".to_string(),
+                ResponseSectionKind::FinalAnswer,
+            )
+    }));
+    assert!(appended.iter().any(|entry| {
+        entry
+            == &(
+                "turn-31:child:chat:chat:thinking".to_string(),
+                ResponseSectionDelta::Text("outline answer".to_string()),
+            )
+    }));
+    assert!(appended.iter().any(|entry| {
+        entry
+            == &(
+                "turn-31:child:chat:chat".to_string(),
+                ResponseSectionDelta::Text("chat answer".to_string()),
+            )
+    }));
+    assert!(finished);
+}
+
+#[test]
+fn spawn_turn_emits_runtime_message_tool_activity_and_completion() {
+    let client: Arc<SequencedClient> = sequenced_client(vec![
+        ChatResponse {
+            id: "scene-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"recognized_scene_id\":\"feature\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"selected_workflow_id\":\"feature\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "analysis-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_explore_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "plan-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_plan_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![
+                ContentBlock::text("before <invoke name=\"bash\">ignored</invoke> after"),
+                ContentBlock::tool_use(
+                    "tool-1",
+                    "bash",
+                    serde_json::json!({"command": "echo hi"}),
+                ),
+            ],
+            stop_reason: Some(STOP_REASON_TOOL_USE.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-2".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_execute_complete_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "report-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("done")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+    ]);
+    let client_dyn: DynLlmClient = client;
+    let root = std::env::temp_dir().join("omega-agent-session-runtime-message-tool-test");
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::create_dir_all(&root);
+    write_review_skill(&root);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: client_dyn,
+        system: "system".to_string(),
+        cwd: root,
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+    let (tx, rx) = mpsc::channel();
+
+    session.spawn_turn("hello".to_string(), 32, tx).unwrap();
+
+    let mut saw_tool_begin = false;
+    let mut saw_tool_complete = false;
+    let mut saw_tool_log = false;
+    loop {
+        match rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+            RuntimeMessageEnvelope {
+                turn_id,
+                message:
+                    RuntimeMessage::Conversation(ConversationMessage::BeginToolRun { tool_run }),
+            } => {
+                assert_eq!(turn_id, 32);
+                assert_eq!(tool_run.id, "tool-1");
+                saw_tool_begin = true;
+            }
+            RuntimeMessageEnvelope {
+                turn_id,
+                message:
+                    RuntimeMessage::Conversation(ConversationMessage::CompleteToolRun { id, status }),
+            } => {
+                assert_eq!(turn_id, 32);
+                assert_eq!(id, "tool-1");
+                assert_eq!(status, ToolRunStatus::Complete);
+                saw_tool_complete = true;
+            }
+            RuntimeMessageEnvelope {
+                turn_id,
+                message:
+                    RuntimeMessage::State(StateMessage::Activity { source, kind, text, .. }),
+            } => {
+                assert_eq!(turn_id, 32);
+                if let RuntimeSource::Tool { .. } = source {
+                    if kind == RuntimeContentKind::Log && text == "$ echo hi" {
+                        saw_tool_log = true;
+                    }
+                }
+            }
+            RuntimeMessageEnvelope {
+                turn_id,
+                message: RuntimeMessage::State(StateMessage::TurnFinished),
+            } => {
+                assert_eq!(turn_id, 32);
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    assert!(saw_tool_begin);
+    assert!(saw_tool_complete);
+    assert!(saw_tool_log);
 }
 
 #[test]
