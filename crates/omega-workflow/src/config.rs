@@ -171,6 +171,9 @@ pub(crate) struct WorkflowStepConfig {
     prompt: Option<PathBuf>,
     loop_mode: Option<StepLoopModeConfig>,
     max_iterations: Option<u32>,
+    max_step_repeats: Option<u32>,
+    #[serde(default)]
+    hooks: Vec<String>,
     tool_request: Option<StepToolRequestConfig>,
     skill_request: Option<StepSkillRequestConfig>,
     input_contract: Option<StepInputContractConfig>,
@@ -227,6 +230,10 @@ impl WorkflowDefinition {
                     .max_iterations
                     .unwrap_or_else(|| step.id.default_max_iterations())
                     .max(1),
+                max_step_repeats: step
+                    .max_step_repeats
+                    .unwrap_or_else(|| step.id.default_max_step_repeats()),
+                hooks: normalize_hook_ids(step.hooks)?,
                 tool_request: step
                     .tool_request
                     .map(|request| request.into_request(tool_policy))
@@ -275,6 +282,24 @@ impl WorkflowDefinition {
             steps,
         })
     }
+}
+
+fn normalize_hook_ids(hooks: Vec<String>) -> Result<Vec<String>> {
+    let mut normalized = Vec::with_capacity(hooks.len());
+    let mut seen = HashSet::new();
+
+    for hook in hooks {
+        let hook = hook.trim().to_string();
+        if hook.is_empty() {
+            bail!("workflow step hooks cannot contain empty ids");
+        }
+        if !seen.insert(hook.clone()) {
+            bail!("workflow step hook '{hook}' is duplicated");
+        }
+        normalized.push(hook);
+    }
+
+    Ok(normalized)
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]

@@ -1,14 +1,14 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use async_trait::async_trait;
 use omega_client::{
-    ChatRequest, ChatResponse, ClientError, ContentBlock, STOP_REASON_END_TURN,
-    STOP_REASON_TOOL_USE,
+    test_support::{IdleLlmClient, ScriptedLlmClient}, ChatResponse, ContentBlock,
+    STOP_REASON_END_TURN, STOP_REASON_TOOL_USE,
 };
-use omega_core::{DynLlmClient, LlmClient};
+use omega_core::DynLlmClient;
 use omega_workflow::{
     DataFormat, LoadedWorkflowCatalog, OutputRecoveryMode, StepInputContract, StepLoopMode,
     StepOutputContract, CHAT_STEP_ID, CHAT_WORKFLOW_ID, DEFAULT_EXPLORE_SCHEMA_PATH,
@@ -26,37 +26,14 @@ use super::{
     WorkflowRunRole,
 };
 
-struct IdleClient;
+type SequencedClient = ScriptedLlmClient;
 
-struct SequencedClient {
-    responses: Mutex<Vec<ChatResponse>>,
-    systems: Mutex<Vec<Option<String>>>,
-    max_tokens: Mutex<Vec<u32>>,
-}
+#[allow(non_upper_case_globals)]
+const IdleClient: IdleLlmClient =
+    IdleLlmClient::new("chat should not be called in AgentSession unit tests");
 
-#[async_trait]
-impl LlmClient for IdleClient {
-    async fn chat(&self, _request: ChatRequest) -> Result<ChatResponse, ClientError> {
-        panic!("chat should not be called in AgentSession unit tests");
-    }
-
-    fn provider_name(&self) -> &'static str {
-        "idle"
-    }
-}
-
-#[async_trait]
-impl LlmClient for SequencedClient {
-    async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, ClientError> {
-        self.systems.lock().unwrap().push(request.system.clone());
-        self.max_tokens.lock().unwrap().push(request.max_tokens);
-        let mut responses = self.responses.lock().unwrap();
-        Ok(responses.remove(0))
-    }
-
-    fn provider_name(&self) -> &'static str {
-        "sequenced"
-    }
+fn sequenced_client(responses: Vec<ChatResponse>) -> Arc<SequencedClient> {
+    Arc::new(SequencedClient::from_responses(responses))
 }
 
 fn feature_explore_json() -> &'static str {
@@ -85,6 +62,273 @@ fn research_execute_no_progress_json() -> &'static str {
 
 fn research_execute_complete_json() -> &'static str {
     r#"{"completed_tasks":["task-1","task-2"],"open_tasks":[],"validation_results":[{"target":"rg --files crates","status":"passed"}],"changed_paths":[]}"#
+}
+
+fn unique_session_test_root(name: &str) -> PathBuf {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("omega-agent-session-{name}-{unique}"));
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::create_dir_all(&root);
+    root
+}
+
+fn write_review_skill(root: &Path) {
+    let skills_dir = root.join(".claude/skills/review");
+    let _ = std::fs::create_dir_all(&skills_dir);
+    let _ = std::fs::write(
+        skills_dir.join("SKILL.md"),
+        "---\nname: review\ndescription: Review code\n---\nFind regressions.",
+    );
+}
+
+fn compile_hook_fixture(hook_dir: &Path, crate_name: &str) -> PathBuf {
+    let _ = std::fs::create_dir_all(hook_dir);
+    let source_path = hook_dir.join("fixture.rs");
+    let artifact_path = hook_dir.join(format!("lib{crate_name}.so"));
+    let _ = std::fs::write(&source_path, hook_fixture_source());
+
+    let status = Command::new("rustc")
+        .args([
+            "--crate-type",
+            "cdylib",
+            "--edition",
+            "2021",
+            source_path.to_str().unwrap(),
+            "-o",
+            artifact_path.to_str().unwrap(),
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success(), "failed to compile hook fixture");
+
+    artifact_path
+}
+
+fn write_hook_manifest(root: &Path, hook_id: &str, artifact_path: &Path) {
+    let hook_dir = root.join(".omega/hooks").join(hook_id);
+    let _ = std::fs::create_dir_all(&hook_dir);
+    let _ = std::fs::write(
+        hook_dir.join("Hook.toml"),
+        format!(
+            "id = \"{hook_id}\"\npackage = \"{hook_id}\"\nartifact = \"{}\"\napi_version = 1\n",
+            artifact_path.file_name().unwrap().to_string_lossy()
+        ),
+    );
+}
+
+fn write_feature_workflow_with_hook(root: &Path, hook_id: &str, max_step_repeats: u32) {
+    let workflows_dir = root.join(".omega/workflows");
+    let _ = std::fs::create_dir_all(&workflows_dir);
+    let _ = std::fs::write(
+        workflows_dir.join("feature.toml"),
+        format!(
+            r#"# Test feature workflow
+name = "feature"
+
+[[steps]]
+id = "explore"
+label = "Explore"
+prompt = ".omega/prompt/step/explore.md"
+loop_mode = "agent_loop"
+max_iterations = 200
+tool_request = {{ mode = "block", groups = ["feature_non_execute_blocked"] }}
+skill_request = {{ mode = "match_task" }}
+output_contract = {{ mode = "required", format = "json", schema_path = ".omega/schema/step/explore.json", max_retries = 2, recovery_mode = "repair_then_regenerate" }}
+enabled = true
+
+[[steps]]
+id = "plan"
+label = "Plan"
+prompt = ".omega/prompt/step/plan.md"
+loop_mode = "agent_loop"
+max_iterations = 200
+tool_request = {{ mode = "block", groups = ["feature_non_execute_blocked"] }}
+skill_request = {{ mode = "match_task" }}
+input_contract = {{ mode = "required", sources = ["explore"] }}
+output_contract = {{ mode = "required", format = "json", schema_path = ".omega/schema/step/plan.json", max_retries = 2, recovery_mode = "repair_then_regenerate" }}
+enabled = true
+
+[[steps]]
+id = "execute"
+label = "Execute"
+prompt = ".omega/prompt/step/execute.md"
+loop_mode = "agent_loop"
+max_iterations = 200
+max_step_repeats = {max_step_repeats}
+hooks = ["{hook_id}"]
+tool_request = {{ mode = "inherit" }}
+skill_request = {{ mode = "match_task" }}
+input_contract = {{ mode = "required", sources = ["plan"] }}
+output_contract = {{ mode = "optional", format = "json", schema_path = ".omega/schema/step/execute.json" }}
+enabled = true
+
+[[steps]]
+id = "report"
+label = "Report"
+prompt = ".omega/prompt/step/report.md"
+loop_mode = "agent_loop"
+max_iterations = 200
+tool_request = {{ mode = "block", groups = ["feature_non_execute_blocked"] }}
+skill_request = {{ mode = "match_task" }}
+input_contract = {{ mode = "optional", sources = ["explore", "plan", "execute"] }}
+enabled = true
+"#
+        ),
+    );
+}
+
+fn hook_fixture_source() -> &'static str {
+    r#"
+use std::ffi::{CStr, CString};
+use std::os::raw::c_char;
+
+#[no_mangle]
+pub extern "C" fn omega_hook_api_version() -> u32 {
+    1
+}
+
+#[no_mangle]
+pub extern "C" fn omega_hook_invoke_json(input: *const c_char) -> *mut c_char {
+    let input = unsafe { CStr::from_ptr(input) }.to_str().unwrap_or("");
+    let response = if input.contains("\"event\":\"before_step\"") {
+        "{\"diagnostics\":[{\"level\":\"info\",\"message\":\"fixture before step\"}],\"storage\":{\"seen\":1}}".to_string()
+    } else if input.contains("\"event\":\"before_advance\"") && input.contains("\"seen\":1") {
+        "{\"diagnostics\":[],\"storage\":{\"seen\":1}}".to_string()
+    } else if input.contains("\"event\":\"after_step\"") && input.contains("\"seen\":1") {
+        "{\"diagnostics\":[{\"level\":\"info\",\"message\":\"fixture after step\"}],\"storage\":{}}".to_string()
+    } else if input.contains("\"event\":\"step_failed\"") {
+        "{\"diagnostics\":[{\"level\":\"error\",\"message\":\"fixture saw failure\"}],\"storage\":{}}".to_string()
+    } else {
+        "{\"diagnostics\":[],\"storage\":{}}".to_string()
+    };
+
+    CString::new(response).unwrap().into_raw()
+}
+
+#[no_mangle]
+pub extern "C" fn omega_hook_free_string(ptr: *mut c_char) {
+    if ptr.is_null() {
+        return;
+    }
+    unsafe {
+        let _ = CString::from_raw(ptr);
+    }
+}
+"#
+}
+
+#[test]
+fn spawn_turn_emits_hook_diagnostics_for_execute_step() {
+    let client: Arc<SequencedClient> = sequenced_client(vec![
+        ChatResponse {
+            id: "scene-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"recognized_scene_id\":\"feature\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"selected_workflow_id\":\"feature\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "explore-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_explore_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "plan-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_plan_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("execution complete")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "report-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("done")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+    ]);
+    let client_dyn: DynLlmClient = client;
+    let root = unique_session_test_root("hook-runtime");
+    write_review_skill(&root);
+    let hook_dir = root.join(".omega/hooks/todo_managed_execute");
+    let artifact_path = compile_hook_fixture(&hook_dir, "session_fixture_hook");
+    write_hook_manifest(&root, "todo_managed_execute", &artifact_path);
+    write_feature_workflow_with_hook(&root, "todo_managed_execute", 8);
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: client_dyn,
+        system: "system".to_string(),
+        cwd: root,
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+    let (tx, rx) = mpsc::channel();
+
+    session.spawn_turn("fix this bug".to_string(), 81, tx).unwrap();
+
+    let mut system_logs = Vec::new();
+    loop {
+        match rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+            RuntimeUiEnvelope::Message { turn_id, message }
+                if turn_id == 81
+                    && matches!(message.source, UiSource::System)
+                    && matches!(
+                        message.kind,
+                        UiMessageKind::Log | UiMessageKind::Warning | UiMessageKind::Error
+                    ) =>
+            {
+                system_logs.push(message.content.as_text().to_string());
+            }
+            RuntimeUiEnvelope::Effect {
+                turn_id,
+                effect:
+                    RuntimeUiEffect::SetStatusSlot {
+                        slot: StatusSlot::Agent,
+                        value: StatusValue::Label(label),
+                    },
+            } => {
+                assert_eq!(turn_id, 81);
+                assert_eq!(label, "Idle");
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    assert!(system_logs.iter().any(|line| {
+        line.contains("Hook todo_managed_execute [info] fixture before step")
+    }));
+    assert!(system_logs.iter().any(|line| {
+        line.contains("Hook todo_managed_execute [info] fixture after step")
+    }));
 }
 
 #[test]
@@ -144,6 +388,8 @@ fn structured_contract_helpers_resolve_inputs_and_validate_required_json() {
         prompt_path: PathBuf::from(".omega/prompt/step/plan.md"),
         loop_mode: StepLoopMode::AgentLoop,
         max_iterations: 8,
+        max_step_repeats: 0,
+        hooks: Vec::new(),
         tool_request: StepToolRequest::Block(Vec::new()),
         skill_request: StepSkillRequest::MatchTask,
         input_contract: StepInputContract::Required {
@@ -194,6 +440,8 @@ fn structured_contract_helpers_extract_embedded_json_value() {
         prompt_path: PathBuf::from(".omega/prompt/step/scene-recognition.md"),
         loop_mode: StepLoopMode::AgentLoop,
         max_iterations: 2,
+        max_step_repeats: 0,
+        hooks: Vec::new(),
         tool_request: StepToolRequest::Block(Vec::new()),
         skill_request: StepSkillRequest::MatchTask,
         input_contract: StepInputContract::None,
@@ -281,8 +529,7 @@ fn render_output_contract_inlines_plan_schema_details() {
 
 #[test]
 fn spawn_turn_clears_plan_validation_error_after_successful_regenerate() {
-    let client: Arc<SequencedClient> = Arc::new(SequencedClient {
-        responses: Mutex::new(vec![
+    let client: Arc<SequencedClient> = sequenced_client(vec![
             ChatResponse {
                 id: "scene-1".to_string(),
                 model: Some("test-model".to_string()),
@@ -345,10 +592,7 @@ fn spawn_turn_clears_plan_validation_error_after_successful_regenerate() {
                 stop_reason: Some(STOP_REASON_END_TURN.to_string()),
                 usage: None,
             },
-        ]),
-        systems: Mutex::new(Vec::new()),
-        max_tokens: Mutex::new(Vec::new()),
-    });
+        ]);
     let client_dyn: DynLlmClient = client.clone();
     let root = std::env::temp_dir().join("omega-agent-session-plan-validation-clear-test");
     let _ = std::fs::remove_dir_all(&root);
@@ -432,8 +676,7 @@ fn spawn_turn_clears_plan_validation_error_after_successful_regenerate() {
 
 #[test]
 fn spawn_turn_retries_invalid_required_structured_output() {
-    let client: Arc<SequencedClient> = Arc::new(SequencedClient {
-        responses: Mutex::new(vec![
+    let client: Arc<SequencedClient> = sequenced_client(vec![
             ChatResponse {
                 id: "scene-1".to_string(),
                 model: Some("test-model".to_string()),
@@ -483,10 +726,7 @@ fn spawn_turn_retries_invalid_required_structured_output() {
                 stop_reason: Some(STOP_REASON_END_TURN.to_string()),
                 usage: None,
             },
-        ]),
-        systems: Mutex::new(Vec::new()),
-        max_tokens: Mutex::new(Vec::new()),
-    });
+        ]);
     let client_dyn: DynLlmClient = client.clone();
     let root = std::env::temp_dir().join("omega-agent-session-structured-retry-test");
     let _ = std::fs::remove_dir_all(&root);
@@ -554,7 +794,7 @@ fn spawn_turn_retries_invalid_required_structured_output() {
         }
     }
 
-    let systems = client.systems.lock().unwrap().clone();
+    let systems = client.recorded_systems();
 
     assert!(warnings.iter().any(|warning| {
         warning.contains("Step 'explore' produced invalid structured output")
@@ -575,8 +815,7 @@ fn spawn_turn_retries_invalid_required_structured_output() {
 
 #[test]
 fn spawn_turn_syncs_execute_output_back_into_todo_state_for_report() {
-    let client: Arc<SequencedClient> = Arc::new(SequencedClient {
-        responses: Mutex::new(vec![
+    let client: Arc<SequencedClient> = sequenced_client(vec![
             ChatResponse {
                 id: "scene-1".to_string(),
                 model: Some("test-model".to_string()),
@@ -626,10 +865,7 @@ fn spawn_turn_syncs_execute_output_back_into_todo_state_for_report() {
                 stop_reason: Some(STOP_REASON_END_TURN.to_string()),
                 usage: None,
             },
-        ]),
-        systems: Mutex::new(Vec::new()),
-        max_tokens: Mutex::new(Vec::new()),
-    });
+        ]);
     let client_dyn: DynLlmClient = client.clone();
     let root = std::env::temp_dir().join("omega-agent-session-execute-todo-sync-test");
     let _ = std::fs::remove_dir_all(&root);
@@ -763,7 +999,7 @@ fn spawn_turn_syncs_execute_output_back_into_todo_state_for_report() {
         diagnostics.step_id == REPORT_STEP_ID && diagnostics.input.todo_state_preview.is_some()
     }));
 
-    let systems = client.systems.lock().unwrap();
+    let systems = client.recorded_systems();
     assert!(systems
         .iter()
         .filter_map(|system| system.as_deref())
@@ -784,8 +1020,7 @@ fn spawn_turn_syncs_execute_output_back_into_todo_state_for_report() {
 
 #[test]
 fn spawn_turn_syncs_research_execute_output_back_into_todo_state_for_report() {
-    let client: Arc<SequencedClient> = Arc::new(SequencedClient {
-        responses: Mutex::new(vec![
+    let client: Arc<SequencedClient> = sequenced_client(vec![
             ChatResponse {
                 id: "scene-1".to_string(),
                 model: Some("test-model".to_string()),
@@ -837,10 +1072,7 @@ fn spawn_turn_syncs_research_execute_output_back_into_todo_state_for_report() {
                 stop_reason: Some(STOP_REASON_END_TURN.to_string()),
                 usage: None,
             },
-        ]),
-        systems: Mutex::new(Vec::new()),
-        max_tokens: Mutex::new(Vec::new()),
-    });
+        ]);
     let client_dyn: DynLlmClient = client.clone();
     let root = std::env::temp_dir().join("omega-agent-session-research-execute-todo-sync-test");
     let _ = std::fs::remove_dir_all(&root);
@@ -977,7 +1209,7 @@ fn spawn_turn_syncs_research_execute_output_back_into_todo_state_for_report() {
         diagnostics.step_id == REPORT_STEP_ID && diagnostics.input.todo_state_preview.is_some()
     }));
 
-    let systems = client.systems.lock().unwrap();
+    let systems = client.recorded_systems();
     assert!(systems
         .iter()
         .filter_map(|system| system.as_deref())
@@ -998,8 +1230,7 @@ fn spawn_turn_syncs_research_execute_output_back_into_todo_state_for_report() {
 
 #[test]
 fn spawn_turn_repeats_research_execute_without_initial_todo_diff() {
-    let client: Arc<SequencedClient> = Arc::new(SequencedClient {
-        responses: Mutex::new(vec![
+    let client: Arc<SequencedClient> = sequenced_client(vec![
             ChatResponse {
                 id: "scene-1".to_string(),
                 model: Some("test-model".to_string()),
@@ -1051,10 +1282,7 @@ fn spawn_turn_repeats_research_execute_without_initial_todo_diff() {
                 stop_reason: Some(STOP_REASON_END_TURN.to_string()),
                 usage: None,
             },
-        ]),
-        systems: Mutex::new(Vec::new()),
-        max_tokens: Mutex::new(Vec::new()),
-    });
+        ]);
     let client_dyn: DynLlmClient = client.clone();
     let root = std::env::temp_dir().join("omega-agent-session-research-execute-repeat-test");
     let _ = std::fs::remove_dir_all(&root);
@@ -1127,7 +1355,7 @@ fn spawn_turn_repeats_research_execute_without_initial_todo_diff() {
         .iter()
         .any(|panel| panel.contains("[x] #task-2")));
 
-    let systems = client.systems.lock().unwrap();
+    let systems = client.recorded_systems();
     assert!(
         systems
             .iter()
@@ -1136,6 +1364,140 @@ fn spawn_turn_repeats_research_execute_without_initial_todo_diff() {
             .count()
             >= 2
     );
+}
+
+#[test]
+fn spawn_turn_fails_when_before_advance_denial_exhausts_repeat_budget() {
+    let client: Arc<SequencedClient> = sequenced_client(vec![
+        ChatResponse {
+            id: "scene-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"recognized_scene_id\":\"feature\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"selected_workflow_id\":\"feature\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "explore-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_explore_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "plan-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_plan_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_execute_no_progress_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-2".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_execute_no_progress_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "report-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("unused report")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+    ]);
+    let client_dyn: DynLlmClient = client.clone();
+    let root = unique_session_test_root("before-advance-repeat-exhaustion");
+    write_review_skill(&root);
+    write_feature_workflow_with_hook(&root, "todo_managed_execute", 1);
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: client_dyn,
+        system: "system".to_string(),
+        cwd: root,
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+    let (tx, rx) = mpsc::channel();
+
+    session.spawn_turn("hello".to_string(), 45, tx).unwrap();
+
+    let mut warnings = Vec::new();
+    let mut errors = Vec::new();
+    loop {
+        match rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+            RuntimeUiEnvelope::Message { turn_id, message }
+                if turn_id == 45
+                    && matches!(message.source, UiSource::System)
+                    && message.kind == UiMessageKind::Warning =>
+            {
+                warnings.push(message.content.as_text().to_string());
+            }
+            RuntimeUiEnvelope::Message { turn_id, message }
+                if turn_id == 45
+                    && matches!(message.source, UiSource::System)
+                    && message.kind == UiMessageKind::Error =>
+            {
+                errors.push(message.content.as_text().to_string());
+            }
+            RuntimeUiEnvelope::Effect {
+                turn_id,
+                effect:
+                    RuntimeUiEffect::SetStatusSlot {
+                        slot: StatusSlot::Agent,
+                        value: StatusValue::Label(label),
+                    },
+            } => {
+                assert_eq!(turn_id, 45);
+                assert_eq!(label, "Idle");
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    assert!(warnings.iter().any(|warning| {
+        warning.contains("Step 'execute' advance denied; repeating (1/1)")
+    }));
+    assert!(errors.iter().any(|error| {
+        error.contains("Hook-managed step failed: step 'execute' exhausted max_step_repeats=1")
+    }));
+    assert!(errors.iter().any(|error| {
+        error.contains("Error: step 'execute' exhausted max_step_repeats=1")
+    }));
+
+    let systems = client.recorded_systems();
+    assert!(
+        systems
+            .iter()
+            .filter_map(|system| system.as_deref())
+            .filter(|system| system.contains("<todo_state step_id=\"execute\">"))
+            .count()
+            >= 2
+    );
+    assert_eq!(client.remaining_steps(), 1);
 }
 
 #[test]
@@ -1183,8 +1545,7 @@ fn interrupt_restores_checkpoint_messages() {
 
 #[test]
 fn spawn_turn_emits_root_then_child_workflow_steps_and_uses_phase_prompts() {
-    let client: Arc<SequencedClient> = Arc::new(SequencedClient {
-        responses: Mutex::new(vec![
+    let client: Arc<SequencedClient> = sequenced_client(vec![
             ChatResponse {
                 id: "scene-1".to_string(),
                 model: Some("test-model".to_string()),
@@ -1227,7 +1588,7 @@ fn spawn_turn_emits_root_then_child_workflow_steps_and_uses_phase_prompts() {
             ChatResponse {
                 id: "execute-2".to_string(),
                 model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("execution complete")],
+                content: vec![ContentBlock::text(feature_execute_complete_json())],
                 stop_reason: Some(STOP_REASON_END_TURN.to_string()),
                 usage: None,
             },
@@ -1238,10 +1599,7 @@ fn spawn_turn_emits_root_then_child_workflow_steps_and_uses_phase_prompts() {
                 stop_reason: Some(STOP_REASON_END_TURN.to_string()),
                 usage: None,
             },
-        ]),
-        systems: Mutex::new(Vec::new()),
-        max_tokens: Mutex::new(Vec::new()),
-    });
+        ]);
     let client_dyn: DynLlmClient = client.clone();
     let root = std::env::temp_dir().join("omega-agent-session-workflow-test");
     let _ = std::fs::remove_dir_all(&root);
@@ -1444,7 +1802,7 @@ fn spawn_turn_emits_root_then_child_workflow_steps_and_uses_phase_prompts() {
                 WorkflowRunRole::Child,
                 EXECUTE_STEP_ID.to_string(),
                 "Execute".to_string(),
-                "execution complete".to_string(),
+                feature_execute_complete_json().to_string(),
             ),
         ]
     );
@@ -1487,7 +1845,7 @@ fn spawn_turn_emits_root_then_child_workflow_steps_and_uses_phase_prompts() {
         .any(|line| line.contains("Selected workflow 'feature'")));
     assert!(todo_panels.iter().any(|panel| panel.contains("#task-1")));
     assert!(todo_panels.iter().any(|panel| panel.contains("#task-2")));
-    let systems = client.systems.lock().unwrap();
+    let systems = client.recorded_systems();
     assert_eq!(systems.len(), 7);
     assert!(systems[0]
         .as_deref()
@@ -1531,8 +1889,7 @@ fn spawn_turn_emits_root_then_child_workflow_steps_and_uses_phase_prompts() {
 
 #[test]
 fn chat_scene_routes_to_chat_workflow_without_showing_root_text() {
-    let client: Arc<SequencedClient> = Arc::new(SequencedClient {
-        responses: Mutex::new(vec![
+    let client: Arc<SequencedClient> = sequenced_client(vec![
             ChatResponse {
                 id: "scene-1".to_string(),
                 model: Some("test-model".to_string()),
@@ -1554,10 +1911,7 @@ fn chat_scene_routes_to_chat_workflow_without_showing_root_text() {
                 stop_reason: Some(STOP_REASON_END_TURN.to_string()),
                 usage: None,
             },
-        ]),
-        systems: Mutex::new(Vec::new()),
-        max_tokens: Mutex::new(Vec::new()),
-    });
+        ]);
     let client_dyn: DynLlmClient = client.clone();
     let root = std::env::temp_dir().join("omega-agent-session-chat-test");
     let _ = std::fs::remove_dir_all(&root);
@@ -1695,7 +2049,7 @@ fn chat_scene_routes_to_chat_workflow_without_showing_root_text() {
                 Some(CHAT_WORKFLOW_ID.to_string()),
             )
     }));
-    let systems = client.systems.lock().unwrap();
+    let systems = client.recorded_systems();
     assert_eq!(systems.len(), 3);
     assert!(systems[0]
         .as_deref()
@@ -1709,14 +2063,13 @@ fn chat_scene_routes_to_chat_workflow_without_showing_root_text() {
     assert!(systems[2]
         .as_deref()
         .is_some_and(|system| system.contains("Selected workflow: chat.")));
-    let max_tokens = client.max_tokens.lock().unwrap();
-    assert_eq!(*max_tokens, vec![24_000, 24_000, 24_000]);
+    let max_tokens = client.recorded_max_tokens();
+    assert_eq!(max_tokens, vec![24_000, 24_000, 24_000]);
 }
 
 #[test]
 fn unresolved_scene_and_workflow_fallback_to_feature_not_chat() {
-    let client: Arc<SequencedClient> = Arc::new(SequencedClient {
-        responses: Mutex::new(vec![
+    let client: Arc<SequencedClient> = sequenced_client(vec![
             ChatResponse {
                 id: "scene-1".to_string(),
                 model: Some("test-model".to_string()),
@@ -1759,10 +2112,7 @@ fn unresolved_scene_and_workflow_fallback_to_feature_not_chat() {
                 stop_reason: Some(STOP_REASON_END_TURN.to_string()),
                 usage: None,
             },
-        ]),
-        systems: Mutex::new(Vec::new()),
-        max_tokens: Mutex::new(Vec::new()),
-    });
+        ]);
     let client_dyn: DynLlmClient = client;
     let root = std::env::temp_dir().join("omega-agent-session-default-feature-fallback-test");
     let _ = std::fs::remove_dir_all(&root);
@@ -1848,8 +2198,7 @@ fn unresolved_scene_and_workflow_fallback_to_feature_not_chat() {
 
 #[test]
 fn implementation_requests_are_promoted_from_chat_to_feature() {
-    let client: Arc<SequencedClient> = Arc::new(SequencedClient {
-        responses: Mutex::new(vec![
+    let client: Arc<SequencedClient> = sequenced_client(vec![
             ChatResponse {
                 id: "scene-1".to_string(),
                 model: Some("test-model".to_string()),
@@ -1892,10 +2241,7 @@ fn implementation_requests_are_promoted_from_chat_to_feature() {
                 stop_reason: Some(STOP_REASON_END_TURN.to_string()),
                 usage: None,
             },
-        ]),
-        systems: Mutex::new(Vec::new()),
-        max_tokens: Mutex::new(Vec::new()),
-    });
+        ]);
     let client_dyn: DynLlmClient = client;
     let root = std::env::temp_dir().join("omega-agent-session-scene-promotion-test");
     let _ = std::fs::remove_dir_all(&root);
@@ -1981,8 +2327,7 @@ fn implementation_requests_are_promoted_from_chat_to_feature() {
 
 #[test]
 fn research_requests_are_promoted_to_research_scene_and_workflow() {
-    let client: Arc<SequencedClient> = Arc::new(SequencedClient {
-        responses: Mutex::new(vec![
+    let client: Arc<SequencedClient> = sequenced_client(vec![
             ChatResponse {
                 id: "scene-1".to_string(),
                 model: Some("test-model".to_string()),
@@ -2025,10 +2370,7 @@ fn research_requests_are_promoted_to_research_scene_and_workflow() {
                 stop_reason: Some(STOP_REASON_END_TURN.to_string()),
                 usage: None,
             },
-        ]),
-        systems: Mutex::new(Vec::new()),
-        max_tokens: Mutex::new(Vec::new()),
-    });
+        ]);
     let client_dyn: DynLlmClient = client;
     let root = std::env::temp_dir().join("omega-agent-session-research-promotion-test");
     let _ = std::fs::remove_dir_all(&root);
@@ -2122,8 +2464,7 @@ fn research_requests_are_promoted_to_research_scene_and_workflow() {
 
 #[test]
 fn session_context_persists_step_summaries_across_turns() {
-    let client: Arc<SequencedClient> = Arc::new(SequencedClient {
-        responses: Mutex::new(vec![
+    let client: Arc<SequencedClient> = sequenced_client(vec![
             ChatResponse {
                 id: "scene-1".to_string(),
                 model: Some("test-model".to_string()),
@@ -2166,10 +2507,7 @@ fn session_context_persists_step_summaries_across_turns() {
                 stop_reason: Some(STOP_REASON_END_TURN.to_string()),
                 usage: None,
             },
-        ]),
-        systems: Mutex::new(Vec::new()),
-        max_tokens: Mutex::new(Vec::new()),
-    });
+        ]);
     let client_dyn: DynLlmClient = client.clone();
     let root = std::env::temp_dir().join("omega-agent-session-context-persistence-test");
     let _ = std::fs::remove_dir_all(&root);
@@ -2218,7 +2556,7 @@ fn session_context_persists_step_summaries_across_turns() {
         }
     }
 
-    let systems = client.systems.lock().unwrap();
+    let systems = client.recorded_systems();
     assert_eq!(systems.len(), 6);
     assert!(systems[3]
         .as_deref()
@@ -2233,8 +2571,7 @@ fn session_context_persists_step_summaries_across_turns() {
 
 #[test]
 fn spawn_turn_emits_response_sections_for_routing_and_thinking() {
-    let client: Arc<SequencedClient> = Arc::new(SequencedClient {
-        responses: Mutex::new(vec![
+    let client: Arc<SequencedClient> = sequenced_client(vec![
             ChatResponse {
                 id: "scene-1".to_string(),
                 model: Some("test-model".to_string()),
@@ -2262,10 +2599,7 @@ fn spawn_turn_emits_response_sections_for_routing_and_thinking() {
                 stop_reason: Some(STOP_REASON_END_TURN.to_string()),
                 usage: None,
             },
-        ]),
-        systems: Mutex::new(Vec::new()),
-        max_tokens: Mutex::new(Vec::new()),
-    });
+        ]);
     let client_dyn: DynLlmClient = client;
     let root = std::env::temp_dir().join("omega-agent-session-response-section-test");
     let _ = std::fs::remove_dir_all(&root);
@@ -2425,8 +2759,7 @@ fn spawn_turn_emits_response_sections_for_routing_and_thinking() {
 
 #[test]
 fn spawn_turn_falls_back_to_text_routing_when_root_json_validation_fails() {
-    let client: Arc<SequencedClient> = Arc::new(SequencedClient {
-        responses: Mutex::new(vec![
+    let client: Arc<SequencedClient> = sequenced_client(vec![
             ChatResponse {
                 id: "scene-1".to_string(),
                 model: Some("test-model".to_string()),
@@ -2462,10 +2795,7 @@ fn spawn_turn_falls_back_to_text_routing_when_root_json_validation_fails() {
                 stop_reason: Some(STOP_REASON_END_TURN.to_string()),
                 usage: None,
             },
-        ]),
-        systems: Mutex::new(Vec::new()),
-        max_tokens: Mutex::new(Vec::new()),
-    });
+        ]);
     let client_dyn: DynLlmClient = client;
     let root = std::env::temp_dir().join("omega-agent-session-root-routing-fallback-test");
     let _ = std::fs::remove_dir_all(&root);
@@ -2555,8 +2885,7 @@ fn spawn_turn_falls_back_to_text_routing_when_root_json_validation_fails() {
 
 #[test]
 fn spawn_turn_accepts_root_json_when_model_adds_short_preface() {
-    let client: Arc<SequencedClient> = Arc::new(SequencedClient {
-        responses: Mutex::new(vec![
+    let client: Arc<SequencedClient> = sequenced_client(vec![
             ChatResponse {
                 id: "scene-1".to_string(),
                 model: Some("test-model".to_string()),
@@ -2603,10 +2932,7 @@ fn spawn_turn_accepts_root_json_when_model_adds_short_preface() {
                 stop_reason: Some(STOP_REASON_END_TURN.to_string()),
                 usage: None,
             },
-        ]),
-        systems: Mutex::new(Vec::new()),
-        max_tokens: Mutex::new(Vec::new()),
-    });
+        ]);
     let client_dyn: DynLlmClient = client;
     let root = std::env::temp_dir().join("omega-agent-session-root-embedded-json-test");
     let _ = std::fs::remove_dir_all(&root);
@@ -2693,8 +3019,7 @@ fn spawn_turn_accepts_root_json_when_model_adds_short_preface() {
 
 #[test]
 fn spawn_turn_emits_tool_runs_and_sanitizes_provider_markup() {
-    let client: Arc<SequencedClient> = Arc::new(SequencedClient {
-            responses: Mutex::new(vec![
+    let client: Arc<SequencedClient> = sequenced_client(vec![
                 ChatResponse {
                     id: "scene-1".to_string(),
                     model: Some("test-model".to_string()),
@@ -2757,10 +3082,7 @@ fn spawn_turn_emits_tool_runs_and_sanitizes_provider_markup() {
                     stop_reason: Some(STOP_REASON_END_TURN.to_string()),
                     usage: None,
                 },
-            ]),
-            systems: Mutex::new(Vec::new()),
-            max_tokens: Mutex::new(Vec::new()),
-        });
+            ]);
     let client_dyn: DynLlmClient = client;
     let root = std::env::temp_dir().join("omega-agent-session-tool-run-test");
     let _ = std::fs::remove_dir_all(&root);
@@ -2927,8 +3249,7 @@ fn preview_tool_invocation_formats_bash_description_and_workdir() {
 
 #[test]
 fn spawn_turn_emits_batch_tool_run_metadata() {
-    let client: Arc<SequencedClient> = Arc::new(SequencedClient {
-        responses: Mutex::new(vec![
+    let client: Arc<SequencedClient> = sequenced_client(vec![
             ChatResponse {
                 id: "scene-1".to_string(),
                 model: Some("test-model".to_string()),
@@ -2987,10 +3308,7 @@ fn spawn_turn_emits_batch_tool_run_metadata() {
                 stop_reason: Some(STOP_REASON_END_TURN.to_string()),
                 usage: None,
             },
-        ]),
-        systems: Mutex::new(Vec::new()),
-        max_tokens: Mutex::new(Vec::new()),
-    });
+        ]);
     let client_dyn: DynLlmClient = client;
     let root = std::env::temp_dir().join("omega-agent-session-batch-tool-run-test");
     let _ = std::fs::remove_dir_all(&root);

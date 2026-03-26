@@ -5,7 +5,8 @@ use super::{
     LoadedWorkflow, LoadedWorkflowCatalog, OutputRecoveryMode, SceneCatalog, StepInputContract,
     StepLoopMode, StepOutputContract, StepSkillRequest, StepToolRequest, WorkflowDefinition,
     WorkflowPrompts, WorkflowSource, CHAT_WORKFLOW_ID, DEFAULT_EXECUTE_SCHEMA_PATH,
-    DEFAULT_EXPLORE_SCHEMA_PATH, DEFAULT_PLAN_SCHEMA_PATH, DEFAULT_SCENES_PATH,
+    DEFAULT_EXPLORE_SCHEMA_PATH, DEFAULT_HOOK_MANIFEST_FILE, DEFAULT_HOOKS_DIR,
+    DEFAULT_PLAN_SCHEMA_PATH, DEFAULT_SCENES_PATH,
     DEFAULT_WORKFLOW_PATH, EXECUTE_STEP_ID, EXPLORE_STEP_ID, FEATURE_SCENE_ID, FEATURE_WORKFLOW_ID,
     PLAN_STEP_ID, REPORT_STEP_ID, RESEARCH_SCENE_ID, RESEARCH_WORKFLOW_ID, ROOT_WORKFLOW_ID,
     SCENE_RECOGNITION_STEP_ID,
@@ -86,6 +87,11 @@ fn default_research_workflow_has_four_enabled_steps_with_read_only_execute() {
             ..
         } if schema_path == &PathBuf::from(DEFAULT_EXECUTE_SCHEMA_PATH)
     ));
+    assert_eq!(research_steps[2].max_step_repeats, 8);
+    assert_eq!(
+        research_steps[2].hooks,
+        vec!["todo_managed_execute".to_string()]
+    );
     assert!(matches!(
         &research_steps[3].input_contract,
         StepInputContract::Optional { sources }
@@ -268,7 +274,12 @@ fn builtin_workflows_default_to_agent_loop_with_step_budgets() {
     );
     assert_eq!(feature_steps[2].id, EXECUTE_STEP_ID);
     assert_eq!(feature_steps[2].max_iterations, 200);
+    assert_eq!(feature_steps[2].max_step_repeats, 8);
     assert_eq!(feature_steps[2].tool_request, StepToolRequest::Inherit);
+    assert_eq!(
+        feature_steps[2].hooks,
+        vec!["todo_managed_execute".to_string()]
+    );
     assert!(matches!(
         &feature_steps[0].output_contract,
         StepOutputContract::Required {
@@ -319,7 +330,7 @@ fn workflow_file_supports_labels_disabled_steps_and_requests() {
     std::fs::create_dir_all(workflow_path.parent().unwrap()).unwrap();
     std::fs::write(
         &workflow_path,
-        "name = \"trimmed\"\n\n[[steps]]\nid = \"explore\"\nlabel = \"Scope\"\nprompt = \".omega/prompt/step/explore.md\"\nloop_mode = \"agent_loop\"\nmax_iterations = 5\nskill_request = { mode = \"append\", items = [\"review\"] }\noutput_contract = { mode = \"required\", format = \"json\", max_retries = 3, recovery_mode = \"regenerate_only\" }\nenabled = true\n\n[[steps]]\nid = \"plan\"\nenabled = false\n\n[[steps]]\nid = \"execute\"\nlabel = \"Build\"\nprompt = \".omega/prompt/step/execute.md\"\nloop_mode = \"agent_loop\"\nmax_iterations = 12\ntool_request = { mode = \"extend\", items = [\"todo\"] }\nenabled = true\n",
+        "name = \"trimmed\"\n\n[[steps]]\nid = \"explore\"\nlabel = \"Scope\"\nprompt = \".omega/prompt/step/explore.md\"\nloop_mode = \"agent_loop\"\nmax_iterations = 5\nskill_request = { mode = \"append\", items = [\"review\"] }\noutput_contract = { mode = \"required\", format = \"json\", max_retries = 3, recovery_mode = \"regenerate_only\" }\nenabled = true\n\n[[steps]]\nid = \"plan\"\nenabled = false\n\n[[steps]]\nid = \"execute\"\nlabel = \"Build\"\nprompt = \".omega/prompt/step/execute.md\"\nloop_mode = \"agent_loop\"\nmax_iterations = 12\nmax_step_repeats = 4\nhooks = [\"todo_managed_execute\", \"artifact_gate\"]\ntool_request = { mode = \"extend\", items = [\"todo\"] }\nenabled = true\n",
     )
     .unwrap();
 
@@ -346,6 +357,14 @@ fn workflow_file_supports_labels_disabled_steps_and_requests() {
     ));
     assert_eq!(steps[1].loop_mode, StepLoopMode::AgentLoop);
     assert_eq!(steps[1].max_iterations, 12);
+    assert_eq!(steps[1].max_step_repeats, 4);
+    assert_eq!(
+        steps[1].hooks,
+        vec![
+            "todo_managed_execute".to_string(),
+            "artifact_gate".to_string(),
+        ]
+    );
     assert_eq!(
         steps[1].tool_request,
         StepToolRequest::Extend(vec!["todo".to_string()])
@@ -380,6 +399,46 @@ fn missing_prompt_file_is_created_from_builtin_prompt() {
         .prompts
         .prompt_for(EXECUTE_STEP_ID)
         .is_some_and(|prompt| prompt.contains("execute phase")));
+}
+
+#[test]
+fn default_feature_workflow_file_documents_hook_manifest_contract() {
+    let root = unique_test_root("default-hook-contract");
+
+    let _ = LoadedWorkflowCatalog::load(&root);
+
+    let workflow_text = std::fs::read_to_string(root.join(".omega/workflows/feature.toml")).unwrap();
+    assert!(workflow_text.contains("max_step_repeats = 8"));
+    assert!(workflow_text.contains("hooks = [\"todo_managed_execute\"]"));
+    assert!(workflow_text.contains(DEFAULT_HOOKS_DIR));
+    assert!(workflow_text.contains(DEFAULT_HOOK_MANIFEST_FILE));
+}
+
+#[test]
+fn workflow_file_rejects_invalid_hook_ids() {
+    let root = unique_test_root("invalid-hook-ids");
+    let workflow_path = root.join(DEFAULT_WORKFLOW_PATH);
+    std::fs::create_dir_all(workflow_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &workflow_path,
+        "name = \"bad\"\n\n[[steps]]\nid = \"execute\"\nmax_step_repeats = 2\nhooks = [\"todo_managed_execute\", \" \", \"todo_managed_execute\"]\nenabled = true\n",
+    )
+    .unwrap();
+
+    let error = WorkflowDefinition::load_from_file(
+        &workflow_path,
+        &super::ToolPolicyConfig::builtin_default(),
+    )
+    .unwrap_err();
+    let messages = error.chain().map(|cause| cause.to_string()).collect::<Vec<_>>();
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("workflow step hooks cannot contain empty ids"))
+            || messages.iter().any(|message| {
+                message.contains("workflow step hook 'todo_managed_execute' is duplicated")
+            })
+    );
 }
 
 #[test]

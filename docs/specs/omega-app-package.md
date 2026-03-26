@@ -2,7 +2,7 @@
 status: implemented
 owner: omega-team
 created: 2026-03-20
-updated: 2026-03-20
+updated: 2026-03-26
 version: 0.1
 supersedes: []
 related_prds: []
@@ -21,6 +21,7 @@ related_prds: []
 - 新增 `omega-app` 作为唯一用户入口与顶层装配包。
 - 将 `main` 从 `omega-tui` 迁移到 `omega-app`，让 `omega-tui` 成为纯 UI crate。
 - 让 runtime bootstrap、config 加载、tracing 初始化、session/runtime bridge 装配都由 `omega-app` 负责。
+- 让仓库级启动环境覆盖也通过 `omega-app` 统一注入，避免 `from_env` 配置散落在下游 crate 的各自入口。
 - 保持 `omega-session` 负责 orchestration，`omega-tui` 负责 UI，避免出现新的 God crate。
 - 为未来接入其他前端或 launcher 模式保留清晰的顶层应用边界。
 
@@ -98,9 +99,10 @@ flowchart LR
 ### `omega-app` Should Assemble
 
 - LLM client/provider config
+- `.omega/env.toml` -> process env 注入（shell env 优先，repo-local 文件只补缺省值）
 - cwd / system prompt / runtime handle
 - tracing init and log sink setup
-- keymap/theme/workflow config loading 入口
+- keymap/theme/workflow/model config loading 入口
 - `RuntimeUiBridge` 与 `RuntimeUiSink` 的 concrete channel wiring
 - `AgentSession` 与 TUI runtime 的装配
 
@@ -115,6 +117,7 @@ flowchart LR
 
 - 自己创建顶层 `main`
 - 自己决定 provider/config/cwd 的装配流程
+- 自己解析或注入仓库级启动环境变量
 - 自己初始化全局 tracing
 - 自己成为其他 runtime 模块的协调中心
 
@@ -166,6 +169,7 @@ flowchart LR
 - `omega-app` 成为唯一 `main` 所在 crate。
 - `omega-tui` 不再拥有应用入口，只保留 UI 相关代码。
 - 顶层 config/bootstrap/tracing/session wiring 都迁入 `omega-app`。
+- `.omega/env.toml` 在 `omega-app` 启动期加载，并在 tracing / provider bootstrap 前生效；显式 shell env 保持更高优先级。
 - Task 15 后续文档与 TODO 全部以 `omega-app -> omega-tui + omega-session + omega-observability` 为目标路径。
 
 ---
@@ -174,3 +178,4 @@ flowchart LR
 
 - 2026-03-20: 初版规格，定义 `omega-app` 作为新的唯一应用装配包与 `main` 入口。
 - 2026-03-20: 规格已落地实现；`omega-app` 已加入 workspace，`omega-tui` binary entry 已迁出。
+- 2026-03-26: 补充 `.omega/env.toml` 启动加载边界，明确由 `omega-app` 统一注入进程环境且 shell env 优先。

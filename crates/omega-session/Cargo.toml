@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 omega-core = { path = "../omega-core" }
+omega-hooks = { path = "../omega-hooks" }
 omega-skills = { path = "../omega-skills" }
 omega-workflow = { path = "../omega-workflow" }
 anyhow.workspace = true
@@ -15,4 +16,4 @@ tracing.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true
-omega-client = { path = "../omega-client" }
+omega-client = { path = "../omega-client", features = ["test-support"] }

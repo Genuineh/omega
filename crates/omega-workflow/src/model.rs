@@ -178,6 +178,8 @@ pub struct WorkflowStep {
     pub prompt_path: PathBuf,
     pub loop_mode: StepLoopMode,
     pub max_iterations: u32,
+    pub max_step_repeats: u32,
+    pub hooks: Vec<String>,
     pub tool_request: StepToolRequest,
     pub skill_request: StepSkillRequest,
     pub input_contract: StepInputContract,

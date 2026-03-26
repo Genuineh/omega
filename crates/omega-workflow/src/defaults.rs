@@ -111,6 +111,9 @@ label = "Execute"
 prompt = ".omega/prompt/step/execute.md"
 loop_mode = "agent_loop"
 max_iterations = 200
+# Hook manifests live under .omega/hooks/<hook-id>/Hook.toml and declare id, package, artifact, and api_version.
+max_step_repeats = 8
+hooks = ["todo_managed_execute"]
 tool_request = { mode = "block", groups = ["feature_non_execute_blocked"] }
 skill_request = { mode = "match_task" }
 input_contract = { mode = "required", sources = ["plan"] }
@@ -161,6 +164,9 @@ label = "Execute"
 prompt = ".omega/prompt/step/execute.md"
 loop_mode = "agent_loop"
 max_iterations = 200
+# Hook manifests live under .omega/hooks/<hook-id>/Hook.toml and declare id, package, artifact, and api_version.
+max_step_repeats = 8
+hooks = ["todo_managed_execute"]
 tool_request = { mode = "inherit" }
 skill_request = { mode = "match_task" }
 input_contract = { mode = "required", sources = ["plan"] }
@@ -213,6 +219,9 @@ label = "Execute"
 prompt = ".omega/prompt/step/execute.md"
 loop_mode = "agent_loop"
 max_iterations = 200
+# Hook manifests live under .omega/hooks/<hook-id>/Hook.toml and declare id, package, artifact, and api_version.
+max_step_repeats = 8
+hooks = ["todo_managed_execute"]
 tool_request = { mode = "inherit" }
 skill_request = { mode = "match_task" }
 input_contract = { mode = "required", sources = ["plan"] }
@@ -499,6 +508,30 @@ impl BuiltinWorkflowStepId {
         }
     }
 
+    pub(crate) fn default_max_step_repeats(self) -> u32 {
+        match self {
+            Self::Execute => 8,
+            Self::SceneRecognition
+            | Self::SelectWorkflow
+            | Self::Chat
+            | Self::Explore
+            | Self::Plan
+            | Self::Report => 0,
+        }
+    }
+
+    pub(crate) fn default_hooks(self) -> Vec<String> {
+        match self {
+            Self::Execute => vec!["todo_managed_execute".to_string()],
+            Self::SceneRecognition
+            | Self::SelectWorkflow
+            | Self::Chat
+            | Self::Explore
+            | Self::Plan
+            | Self::Report => Vec::new(),
+        }
+    }
+
     pub(crate) fn default_tool_request(self, tool_policy: &ToolPolicyConfig) -> StepToolRequest {
         match self {
             Self::Execute => StepToolRequest::Inherit,
@@ -588,6 +621,8 @@ impl WorkflowStep {
             prompt_path: PathBuf::from(step.default_prompt_path()),
             loop_mode: step.default_loop_mode(),
             max_iterations: step.default_max_iterations(),
+            max_step_repeats: step.default_max_step_repeats(),
+            hooks: step.default_hooks(),
             tool_request: step.default_tool_request(tool_policy),
             skill_request: step.default_skill_request(),
             input_contract: step.default_input_contract(),

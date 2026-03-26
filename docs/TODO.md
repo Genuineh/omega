@@ -2,13 +2,12 @@
 
 ## Current Priorities
 
-_按当前仓库真实主路径重排。判断依据：`cargo test` 全工作区通过；s02 文件工具与 s03 todo 管理已完成；`Task 15C`、`Task 15C-2`、`Task 15D`、`Task 15F-3`、`Task 15F-4`、`Task 15F-5`、`Task 15B-18`、`Task 15B-19`、`Task 15F-6`、`Task 15B-20`、`Task 15B-21`、`Task 15F-7`、`Task 15F-8`、`Task 15F-9`、`Task 15F-10`、`Task 15F-11`、`Task 15F-12`、`Task 15F-13`、`Task 15F-14`、`Task 15B-22`、`Task 15B-23`、`Task 8C`、`Task 8D`、`Task 8E`、`Task 8F`、`Task 8G` 与 `Task 8H` 已完成，交互层当前主边界已落到 `omega-app -> omega-tui + omega-session + omega-observability`，并已用 `RuntimeUiEnvelope` + `TuiUpdateReducer` 收敛 workflow/tool/todo/runtime 状态通道；scene-aware 主路径现在不仅能在底部状态带与 Activity 中稳定显示 routing，也已经在 `Agent Response` 中按 `route / step / final / thinking` 渲染 turn timeline，其中 provider-exposed thinking 支持实时追加、完成态默认折叠、Response 面板内 `Enter/x` 展开与 `.omega/tui.toml` 开关控制，step block 已消费 `ToolRun` lifecycle 渲染结构化工具摘要并支持 detail overlay drill-down，thinking block 也已补齐更清晰的 reasoning 标识、collapsed 摘要和 streaming / done / failed 视觉区分；本轮又补齐了 step input/output contract 诊断、`SessionContext.step_outputs` / todo snapshot diff 观测，以及 TUI Diagnostics drill-down 对 before/after context write 的呈现，并把 structured output recovery 的 repair / regenerate / fallback 运行态显式暴露到 tracing、Activity 与 Diagnostics 侧栏和 detail overlay 中。主线路径现在已经具备 step-level structured I/O、feature workflow schema 绑定，以及 plan→todo→execute→report 的最小结构化闭环；`feature` / `research` 的 execute 也已能在 runtime 中根据 todo 实际推进情况重复执行，而不是在首轮 partial execute 后直接落到 report；当前下一优先级回到 `Task 10` 与 `Task 11`。_
+_按当前仓库真实主路径重排。判断依据：`cargo test` 全工作区通过；s02 文件工具与 s03 todo 管理已完成；`Task 15C`、`Task 15C-2`、`Task 15C-3`、`Task 15D`、`Task 15F-3`、`Task 15F-4`、`Task 15F-5`、`Task 15B-18`、`Task 15B-19`、`Task 15F-6`、`Task 15B-20`、`Task 15B-21`、`Task 15F-7`、`Task 15F-8`、`Task 15F-9`、`Task 15F-10`、`Task 15F-11`、`Task 15F-12`、`Task 15F-13`、`Task 15F-14`、`Task 15B-22`、`Task 15B-23`、`Task 8C`、`Task 8D`、`Task 8E`、`Task 8F`、`Task 8G`、`Task 8H` 与 `Task 15F-19 ~ 15F-22` 已完成，交互层当前主边界已落到 `omega-app -> omega-tui + omega-session + omega-observability`，并已用 `RuntimeUiEnvelope` + `TuiUpdateReducer` 收敛 workflow/tool/todo/runtime 状态通道；scene-aware 主路径现在不仅能在底部状态带与 Activity 中稳定显示 routing，也已经在 `Agent Response` 中按 `route / step / final / thinking` 渲染 turn timeline，其中 provider-exposed thinking 支持实时追加、完成态默认折叠、Response 面板内 `Enter/x` 展开与 `.omega/tui.toml` 开关控制，step block 已消费 `ToolRun` lifecycle 渲染结构化工具摘要并支持 detail overlay drill-down，thinking block 也已补齐更清晰的 reasoning 标识、collapsed 摘要和 streaming / done / failed 视觉区分；本轮又补齐了 step input/output contract 诊断、`SessionContext.step_outputs` / todo snapshot diff 观测，以及 TUI Diagnostics drill-down 对 before/after context write 的呈现，并把 structured output recovery 的 repair / regenerate / fallback 运行态显式暴露到 tracing、Activity 与 Diagnostics 侧栏和 detail overlay 中。主线路径现在已经具备 step-level structured I/O、feature workflow schema 绑定，以及 plan→todo→execute→report 的最小结构化闭环；`feature` / `research` 的 execute 现已统一通过 `BeforeAdvance` hook gate 与 `max_step_repeats` 控制重复执行，而不是依赖 scene-specific stopgap；同时 `omega-app` 已新增 `.omega/env.toml` 启动加载与环境注入，统一收口 provider / observability / session bootstrap 对 `from_env` 配置的依赖；当前下一优先级回到 `Task 10` 与 `Task 11`。_
 
 _任务编号以 `docs/specs/omega-agent-impl-plan.md` 为准；为支持可运行里程碑拆分，`TODO` 中允许使用 `8A/8B`、`15A/15B/15C/15D` 这类子任务后缀。_
 
 ### High
 
-- **Task 15F-19 ~ 15F-22**: 大文件拆分完成后，应立即进入 step lifecycle hook / advance gate / deterministic mock harness 路线，而不是继续把 scene-specific execute 语义硬编码进 `omega-session`；这组任务为 Task 10 / Task 11 和未来不同工作场景下的 step 完成判据提供统一入口。
 - **Task 10**: `omega-subagent` 仍重要，但应建立在新的 all-step loop + step context 主路径之上推进，避免继续绑定 v1 workflow 假设；当前 execute 的 runtime repeat 已经补齐，剩余 gap 更集中在跨 step / 跨 workflow 的自治编排。
 - **Task 11**: 上下文压缩仍重要，但应建立在新的 session context 边界之上，而不是只对 raw transcript 做早期补丁。
 
@@ -351,47 +350,50 @@ _2026-03-25 补充：已按仓库当前真实体量做过一轮扫描；当前�
 > 验证方式：通过 deterministic mock LLM harness 稳定复现 no-progress execute、partial progress、hook deny/allow advance、structured output retry、tool side effects 等场景；`feature` / `research` execute 的完成判据不再依赖散落在 session 中的特例分支
 > 对标：把当前“prompt 说要围绕 todo 执行”提升为 runtime-owned step lifecycle contract，同时允许 repo-local Rust hooks 在 `.omega/hooks/` 下参与工程控制
 
-_2026-03-25 规划补充：相关方案已先记录到 `docs/specs/omega-step-lifecycle-hooks.md`。当前共识是：不额外引入 `runtime_policy` 配置对象，而是以生命周期 hook + advance gate 统一 step 退出判据；但该方向应当建立在 15F-15~18 的大文件拆分之后推进。_
+_2026-03-25 复审补充：相关方案已先记录到 `docs/specs/omega-step-lifecycle-hooks.md`。`Task 15F-15 ~ 15F-18` 已解除原先的结构阻塞，因此后续应按当前真实模块边界推进：`15F-19` 先把 `omega-session/src/lib_tests.rs` 中现有 scripted mock client 抽成稳定 test-support，`15F-20` 只负责 workflow contract 与 manifest 约定，`15F-21` 再落地独立 hook host / storage，`15F-22` 最后替换 `runner.rs` 中现有 execute repeat stopgap。_
 
-### Task 15F-19: omega-session / omega-client — Deterministic Mock LLM Workflow Harness
-- **Status**: Pending
+### Task 15F-19: omega-session / omega-client — Deterministic Scripted Workflow Harness
+- **Status**: Completed
+- **Completed**: 2026-03-25
 - **Priority**: High
-- **Description**: 将当前散落在 `omega-session` 测试中的 ad-hoc mock client 提炼为稳定的 scripted workflow harness，支持脚本化模拟 response、streaming、structured output retry、tool_use、execute repeat、hook deny/allow advance 等场景。
-- **Complexity**: L
-- **Planning Note**: 该能力不是附属测试优化，而是后续 hook/gate 方案的前置安全网；未来 workflow 编排逻辑不应再依赖真实 LLM 的偶然稳定性做回归验证。
-- **Blocked by**: Task 15F-15, Task 15F-16
+- **Description**: 将当前集中在 `omega-session/src/lib_tests.rs` 的 `SequencedClient` / `IdleClient` 与 response 向量脚本提炼为稳定的 scripted workflow test-support，首轮优先服务 `omega-session::runner` 与 `omega-client` streaming/compat 路径，支持脚本化模拟 response、streaming、structured output repair/regenerate、tool_use、execute repeat，以及后续 hook deny/allow advance 等场景。
+- **Complexity**: M
+- **Planning Note**: 该能力不是附属测试优化，而是后续 hook/gate 方案的前置安全网；当前已有大量 repair/repeat 测试覆盖，但 mock 支撑仍散落在 sibling tests 中。首轮不强求新 crate，先收敛出可复用 test-support API，再视跨 crate 复用程度决定是否提升为共享测试包。
 - **Blocks**: Task 15F-21, Task 15F-22, Task 10, Task 11
 - **Related**: docs/specs/omega-step-lifecycle-hooks.md, docs/specs/omega-step-session-asset-model.md
+- **Summary**: `omega-client` 已新增 feature-gated 的 `test_support` 模块，提供可录制请求元数据的 `ScriptedLlmClient`、支持 stream/script 混合脚本的 step builder，以及共享 `IdleLlmClient`；`omega-session` 原本散落在 `lib_tests.rs` 中的 `SequencedClient` / `IdleClient` 已切到该共享 harness，`omega-tui` event tests 也复用同一 idle client。验证已通过 `cargo test -p omega-client -p omega-session -p omega-tui`。
 
 ### Task 15F-20: omega-workflow / .omega — Hook-Aware Step Lifecycle Contract
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-03-25
 - **Priority**: High
-- **Description**: 为 step 配置增加 `hooks[]` 与 `max_step_repeats` 这类最小生命周期字段，并定义 `.omega/hooks/` 下 repo-local Rust hook 的发现与 manifest 约定，让“step 绑定哪些 hook”成为 workflow contract 的正式部分。
+- **Description**: 在 `omega-workflow/src/model.rs`、`config.rs` 与 `defaults.rs` 中为 step 配置增加 `hooks[]` 与 `max_step_repeats` 这类最小生命周期字段，并定义 `.omega/hooks/*/Hook.toml` 的声明式 manifest contract，让“step 绑定哪些 hook”成为 workflow contract 的正式部分。
 - **Complexity**: L
-- **Planning Note**: 本任务只负责配置与 contract，不负责真正执行 hook；核心目标是把生命周期扩展点从硬编码条件分支提升为显式可声明的 step 结构。
-- **Blocked by**: Task 15F-17, Task 15F-18
+- **Planning Note**: 本任务只负责 workflow model / config / defaults 与 repo-local manifest 约定，不负责真正执行 hook；核心目标是把生命周期扩展点从 runtime 特例提升为显式可声明的 step 结构。filesystem discovery、artifact loading 与 ABI 细节留给 Task 15F-21。
 - **Blocks**: Task 15F-21, Task 15F-22
 - **Related**: docs/specs/omega-step-lifecycle-hooks.md, docs/specs/omega-workflow-package.md
+- **Summary**: `omega-workflow` 已为 `WorkflowStep` 新增 `hooks` 与 `max_step_repeats`，`config.rs` 已支持相应 TOML 解析与 hook id 校验，builtin execute step 默认 repeat budget 为 `8`，默认写盘的 `feature/research` workflow TOML 也已显式包含 `max_step_repeats = 8` 与 `hooks = []`，并在注释中固定 `.omega/hooks/<hook-id>/Hook.toml` 的 manifest 约定。验证已通过 `cargo test -p omega-workflow -p omega-session`。
 
 ### Task 15F-21: omega-hooks / omega-session — Rust Hook Host And Step-Scoped Storage
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-03-25
 - **Priority**: High
-- **Description**: 引入 Rust hook host/SDK（建议以 ABI-safe 边界承载），实现单方法 lifecycle hook、step-scoped runtime storage，以及对当前 step 可见工具、session context、todo 系统的受控访问。
+- **Description**: 引入独立的 Rust hook host（必要时同时提供轻量 `omega-hook-sdk` / fixture 支撑），实现 manifest 解析、ABI-safe artifact loading、单方法 lifecycle hook dispatch、step-scoped runtime storage，以及对当前 step 可见工具、session context、todo 系统的受控访问。
 - **Complexity**: XL
-- **Planning Note**: hook host 不应继续塞进已经膨胀的 `omega-session` 单体文件；应在 15F-16 拆分后以独立模块或新 crate 落地，避免再造一个 God object。
-- **Blocked by**: Task 15F-16, Task 15F-19, Task 15F-20
+- **Planning Note**: 由于 `omega-session` 已拆出 `runner.rs` / `session_state.rs` / `ui_emit.rs`，hook host 不应重新并回 session 根模块；更合理的边界是由独立 host crate 提供 loader/dispatch/storage，`omega-session` 只通过窄接口消费 hook 决策与 diagnostics。
 - **Blocks**: Task 15F-22, Task 10, Task 11
 - **Related**: docs/specs/omega-step-lifecycle-hooks.md, docs/specs/omega-step-session-asset-model.md
+- **Summary**: 已新增独立 `omega-hooks` crate，落地 `.omega/hooks/*/Hook.toml` manifest catalog、JSON-over-C-ABI artifact loading、`HookHost` / `HookSession` dispatch 与 step-scoped storage；`omega-session` 侧新增 `hook_adapter` 窄接口并在 `runner` 中接入 `BeforeStep`、`AfterToolCall`、`AfterStep`、`StepFailed` lifecycle dispatch，repeat 期间保留 step storage，`AfterStep/StepFailed` 才清理；同时补齐真实编译 fixture 的 `omega-hooks` loader 测试与 `omega-session` runtime integration test。验证已通过 `cargo test -p omega-hooks -p omega-session`。
 
 ### Task 15F-22: omega-session / omega-workflow — Hook-Driven Advance Gate And Step Repeat
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-03-25
 - **Priority**: High
-- **Description**: 在 output contract 满足之后统一走 `BeforeAdvance` lifecycle gate，由 hook 决定是否允许进入下一步；若被拒绝，则保持当前 step 重复执行直到 `max_step_repeats` 耗尽，而不是继续在 session 中堆叠 scene-specific execute 特例分支。
+- **Description**: 在 `omega-session/src/runner.rs` 中于 output contract 满足之后统一走 `BeforeAdvance` lifecycle gate，由 hook 决定是否允许进入下一步；若被拒绝，则保持当前 step 重复执行直到 `max_step_repeats` 耗尽，并替换当前 `should_repeat_execute_step()` 与 `EXECUTE_REPEAT_MAX_NO_PROGRESS_ATTEMPTS` 这类 scene-specific execute stopgap。
 - **Complexity**: XL
-- **Planning Note**: 这是把当前 `feature/research execute` 的 todo-driven repeat 从 stopgap 提升为通用 contract 的关键一步；实现完成后，新的 step 完成判据应优先通过 hook/gate 落地，而不是继续新增 ad-hoc runtime flags。
-- **Blocked by**: Task 15F-19, Task 15F-20, Task 15F-21
-- **Blocks**: Task 10, Task 11
+- **Planning Note**: 这是把当前 `feature/research execute` 的 todo-driven repeat 从 localized stopgap 提升为通用 contract 的关键一步；当前特例已经基本收敛在 `runner.rs`，因此本任务的目标不是重写整个 session，而是把 repeat/gate 判定替换成统一 lifecycle dispatch，并同步接入现有 diagnostics / runtime UI contract。
 - **Related**: docs/specs/omega-step-lifecycle-hooks.md, docs/specs/omega-step-session-asset-model.md, docs/specs/omega-runtime-ui-message-contract.md
+- **Summary**: `omega-session::runner` 现已在 output contract 通过后统一调用 `BeforeAdvance` gate，并按 `WorkflowStep.max_step_repeats` 处理 deny → repeat / exhaust → fail；旧的 `should_repeat_execute_step()` 与 `EXECUTE_REPEAT_MAX_NO_PROGRESS_ATTEMPTS` stopgap 已删除。`omega-hooks` 侧新增内建 `todo_managed_execute` fallback，默认 `feature` / `research` execute workflow 与 repo-local `.omega/workflows/*.toml` 现显式绑定 `hooks = ["todo_managed_execute"]`，从而在没有 repo-local manifest 时仍保留 todo-driven repeat 语义；同时补齐了 `omega-hooks`、`omega-workflow` 与 `omega-session` 的回归测试。验证已通过 `cargo test -p omega-hooks -p omega-workflow -p omega-session`。
 
 ### ── M3: Todo 管理 (s03) ──
 
@@ -516,6 +518,15 @@ _基础体验已在 M1.7 完成，此处保留高级特性。_
 - **Related**: docs/specs/omega-app-package.md, docs/specs/omega-runtime-ui-message-contract.md, docs/specs/omega-agent-impl-plan.md, docs/decisions/006-omega-tui-ui-boundary.md
 - **Blocks**: Task 15B-18, Task 15B-8, Task 15B-9, Task 15B-10, Task 15B-11, Task 15B-12
 - **Summary**: 已新增 `crates/omega-app` 作为唯一应用入口 crate，将原 `omega-tui/src/main.rs` 的 provider/config/bootstrap、trace channel 初始化与 `TuiLaunchConfig` 装配迁入 `omega-app`；`omega-tui` 已删除 binary target，仅保留 UI 库与运行时壳层。默认运行命令现为 `cargo run -p omega-app`
+
+### Task 15C-3: omega-app — 启动加载 `.omega/env.toml` 并注入环境变量
+- **Status**: Completed
+- **Completed**: 2026-03-26
+- **Priority**: Medium
+- **Description**: 在 `omega-app` 启动期新增 `.omega/env.toml` 加载入口，将仓库/工作目录级环境变量在 provider/client、observability 与 session runtime bootstrap 前注入到进程环境中，避免 `from_env` 类配置继续分散依赖外部 shell 手工导出
+- **Complexity**: M
+- **Related**: docs/specs/omega-app-package.md, docs/decisions/006-omega-tui-ui-boundary.md
+- **Summary**: `omega-app` 已新增独立 `env_config` 模块，在启动早期统一创建/加载 `.omega/env.toml`，并在 tracing、provider client 与 session bootstrap 前把其中声明的环境变量注入到进程环境；缺失文件会自动写入默认模板，非法配置会回退为“无 env override”并产生日志/启动告警，且现有 shell/process 环境变量优先级高于 `env.toml`，避免仓库级默认值意外覆盖显式外部配置。验证已通过 `cargo test -p omega-app`。
 
 ### Task 15D: `omega-tui` 非 UI 职责剥离
 - **Status**: Completed

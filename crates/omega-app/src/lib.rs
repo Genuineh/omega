@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+mod env_config;
 mod model_config;
 
 use omega_core::{DynLlmClient, MinimaxClient, MinimaxConfig};
@@ -12,6 +13,7 @@ use omega_tui::{run as run_tui, TuiBehaviorConfig, TuiLaunchConfig};
 use omega_workflow::LoadedWorkflowCatalog;
 use tracing::{info, warn};
 
+use crate::env_config::AppEnvConfig;
 use crate::model_config::AgentModelConfig;
 
 pub fn default_system_prompt(cwd: &Path) -> String {
@@ -22,14 +24,33 @@ pub fn default_system_prompt(cwd: &Path) -> String {
 }
 
 pub async fn run() -> anyhow::Result<()> {
+    let cwd = std::env::current_dir()?;
+    let loaded_env_config = AppEnvConfig::load_and_apply(&cwd);
+    let trace_rx = init_tracing_channel()?;
+    for warning in &loaded_env_config.warnings {
+        warn!(%warning, source = %loaded_env_config.source_label(), "env config fallback activated");
+    }
+    if !loaded_env_config.applied_keys.is_empty() {
+        info!(
+            source = %loaded_env_config.source_label(),
+            keys = %loaded_env_config.applied_keys.join(", "),
+            "startup env config applied"
+        );
+    }
+    if !loaded_env_config.skipped_existing_keys.is_empty() {
+        info!(
+            source = %loaded_env_config.source_label(),
+            keys = %loaded_env_config.skipped_existing_keys.join(", "),
+            "startup env config skipped already-set variables"
+        );
+    }
+
     let config = MinimaxConfig::from_env().map_err(|e| anyhow::anyhow!("{e}"))?;
     let model_name = config.model.clone();
     let client: DynLlmClient =
         Arc::new(MinimaxClient::new(config).map_err(|e| anyhow::anyhow!("{e}"))?);
 
-    let cwd = std::env::current_dir()?;
     let system = default_system_prompt(&cwd);
-    let trace_rx = init_tracing_channel()?;
     info!(model = %model_name, cwd = %cwd.display(), "app config loaded");
 
     let loaded_keymap = KeymapManager::load(&cwd);
@@ -72,6 +93,7 @@ pub async fn run() -> anyhow::Result<()> {
     if let Some(warning) = loaded_keymap.warning {
         startup_warnings.push(warning);
     }
+    startup_warnings.extend(loaded_env_config.warnings.iter().cloned());
     startup_warnings.extend(loaded_theme.warnings.iter().cloned());
     startup_warnings.extend(loaded_tui_config.warnings.iter().cloned());
     startup_warnings.extend(loaded_workflow_catalog.warnings.iter().cloned());

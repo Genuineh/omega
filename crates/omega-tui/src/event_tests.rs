@@ -1,7 +1,6 @@
-use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use omega_client::{ChatRequest, ChatResponse, ClientError};
-use omega_core::{DynLlmClient, LlmClient};
+use omega_client::test_support::IdleLlmClient;
+use omega_core::DynLlmClient;
 use omega_keymap::{InteractionMode, KeymapManager};
 use omega_workflow::LoadedWorkflowCatalog;
 
@@ -27,18 +26,8 @@ impl ClipboardBackend for FakeClipboard {
     }
 }
 
-struct IdleClient;
-
-#[async_trait]
-impl LlmClient for IdleClient {
-    async fn chat(&self, _request: ChatRequest) -> Result<ChatResponse, ClientError> {
-        panic!("chat should not run in wait-message test");
-    }
-
-    fn provider_name(&self) -> &'static str {
-        "idle"
-    }
-}
+#[allow(non_upper_case_globals)]
+const IdleClient: IdleLlmClient = IdleLlmClient::new("chat should not run in wait-message test");
 
 fn press_key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
     KeyEvent {

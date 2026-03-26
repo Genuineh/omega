@@ -14,6 +14,8 @@ mod types;
 
 pub mod anthropic;
 pub mod compat;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 
 pub use anthropic::{
     parse_sse_events, AnthropicBatchResult, AnthropicCacheControl, AnthropicClient,

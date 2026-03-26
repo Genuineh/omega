@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::{mpsc, Arc, Mutex};
 
 use omega_core::{Agent, CoreSharedTodoManager, TodoItem, TodoStatus};
+use omega_hooks::{HookAdvanceOutcome, HookHost};
 use omega_workflow::{
     OutputRecoveryMode, SceneCatalog, StepInputContract, StepOutputContract, WorkflowCatalog,
     WorkflowPromptCatalog, WorkflowPrompts, WorkflowStep, EXECUTE_STEP_ID, FEATURE_SCENE_ID,
@@ -17,6 +18,7 @@ use crate::output::{
     build_output_validation_feedback, parse_feature_execute_output, parse_feature_plan_output,
     parse_structured_output_candidates, validate_feature_step_output, validate_schema_file,
 };
+use crate::hook_adapter::StepHookRuntime;
 use crate::prompt_builder::{
     build_output_repair_system_prompt, build_step_system_prompt, render_output_contract,
     render_routing_context, render_structured_input, render_visible_tools,
@@ -36,8 +38,8 @@ use crate::{
     SessionToolCatalog, StepContextWrite, StepContextWriteKind, StepDiagnostics,
     StepInputDiagnostics, StepInputStatus, StepOutputAttemptKind, StepOutputContractMode,
     StepOutputDiagnostics, StepOutputRecoveryDecision, StepOutputStatus, StepSummarySource,
-    WorkflowRunRole, CONTEXT_SAFETY_MARGIN_TOKENS, EXECUTE_REPEAT_MAX_NO_PROGRESS_ATTEMPTS,
-    REPAIR_PASS_MAX_ITERATIONS, SUMMARY_CHAR_LIMIT, TOKEN_ESTIMATE_DIVISOR,
+    WorkflowRunRole, CONTEXT_SAFETY_MARGIN_TOKENS, REPAIR_PASS_MAX_ITERATIONS,
+    SUMMARY_CHAR_LIMIT, TOKEN_ESTIMATE_DIVISOR,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -150,6 +152,7 @@ pub(crate) struct WorkflowTurnRunner<'a> {
     input: &'a str,
     cwd: &'a PathBuf,
     todo_manager: &'a CoreSharedTodoManager,
+    hook_host: &'a Arc<HookHost>,
     scene_catalog: &'a SceneCatalog,
     workflow_catalog: &'a WorkflowCatalog,
     prompt_catalog: &'a WorkflowPromptCatalog,
@@ -169,6 +172,7 @@ impl<'a> WorkflowTurnRunner<'a> {
         input: &'a str,
         cwd: &'a PathBuf,
         todo_manager: &'a CoreSharedTodoManager,
+        hook_host: &'a Arc<HookHost>,
         scene_catalog: &'a SceneCatalog,
         workflow_catalog: &'a WorkflowCatalog,
         prompt_catalog: &'a WorkflowPromptCatalog,
@@ -186,6 +190,7 @@ impl<'a> WorkflowTurnRunner<'a> {
             input,
             cwd,
             todo_manager,
+            hook_host,
             scene_catalog,
             workflow_catalog,
             prompt_catalog,
@@ -202,6 +207,7 @@ impl<'a> WorkflowTurnRunner<'a> {
         agent: &mut Agent,
         session_context: &mut SessionContext,
     ) -> anyhow::Result<String> {
+        let hook_session = Arc::new(Mutex::new(self.hook_host.start_session()));
         self.update_active_workflow(
             session_context,
             self.scene_catalog.root_workflow_id.clone(),
@@ -217,6 +223,7 @@ impl<'a> WorkflowTurnRunner<'a> {
             &self.scene_catalog.root_workflow_id,
             WorkflowRunRole::Root,
             session_context,
+            hook_session.clone(),
         )?;
 
         let selected_workflow_id = self.ensure_selected_workflow(session_context);
@@ -230,6 +237,7 @@ impl<'a> WorkflowTurnRunner<'a> {
             &selected_workflow_id,
             WorkflowRunRole::Child,
             session_context,
+            hook_session,
         )
     }
 
@@ -239,10 +247,12 @@ impl<'a> WorkflowTurnRunner<'a> {
         workflow_id: &str,
         role: WorkflowRunRole,
         session_context: &mut SessionContext,
+        hook_session: Arc<Mutex<omega_hooks::HookSession>>,
     ) -> anyhow::Result<String> {
         self.update_active_workflow(session_context, workflow_id.to_string(), role);
         let (definition, prompts) = self.resolve_workflow_bundle(workflow_id)?;
         let mut last_text = String::new();
+        let mut step_repeat_counts: BTreeMap<String, u32> = BTreeMap::new();
         let mut run = definition.start_run();
 
         loop {
@@ -264,7 +274,7 @@ impl<'a> WorkflowTurnRunner<'a> {
             send_workflow_step(
                 self.tx_result,
                 self.turn_id,
-                Some(step_state),
+                Some(step_state.clone()),
                 workflow_id,
                 role,
             );
@@ -285,6 +295,22 @@ impl<'a> WorkflowTurnRunner<'a> {
                         return Err(error);
                     }
                 };
+            let hook_runtime = StepHookRuntime::new(
+                self.hook_host.clone(),
+                hook_session.clone(),
+                self.todo_manager.clone(),
+                self.tx_result.clone(),
+                self.turn_id,
+                workflow_id,
+                role,
+                &step,
+                step_state.index,
+                step_state.total,
+                &step_input.resolved_tools,
+                step_input.structured_input.as_ref(),
+                session_context,
+            );
+            hook_runtime.before_step()?;
             let base_system_prompt = build_step_system_prompt(&step_input);
             agent.set_system(base_system_prompt.clone());
 
@@ -317,9 +343,11 @@ impl<'a> WorkflowTurnRunner<'a> {
                     &attempt_tools,
                     attempt_max_iterations,
                     &mut response_streamer,
+                    Some(hook_runtime.clone()),
                 ) {
                     Ok(stage_text) => stage_text,
                     Err(error) => {
+                        let _ = hook_runtime.step_failed(&error.to_string());
                         response_streamer.fail();
                         return Err(error);
                     }
@@ -402,6 +430,12 @@ impl<'a> WorkflowTurnRunner<'a> {
                             }
 
                             response_streamer.fail();
+                            let _ = hook_runtime.step_failed(&format!(
+                                "step '{}' failed output validation after {} attempt(s): {}",
+                                step.id,
+                                attempts,
+                                validation_failure.message
+                            ));
                             return Err(anyhow::anyhow!(
                                 "step '{}' failed output validation after {} attempt(s): {}",
                                 step.id,
@@ -456,7 +490,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                 agent.set_messages(checkpoint);
             }
 
-            let step_result = self.finalize_step(
+            let mut step_result = self.finalize_step(
                 &step,
                 is_final_step,
                 stage_text,
@@ -494,6 +528,31 @@ impl<'a> WorkflowTurnRunner<'a> {
                 },
             );
 
+            let repeat_count = *step_repeat_counts.get(&step.id).unwrap_or(&0);
+            step_result.transition = match self.apply_before_advance_gate(
+                &step,
+                step_result.transition.clone(),
+                &step_result.final_text,
+                step_result.structured_output.as_ref(),
+                &hook_runtime,
+                repeat_count,
+            ) {
+                Ok(transition) => transition,
+                Err(error) => {
+                    let _ = hook_runtime.step_failed(&error.to_string());
+                    return Err(error);
+                }
+            };
+
+            match step_result.transition {
+                StepTransition::Repeat => {
+                    step_repeat_counts.insert(step.id.clone(), repeat_count + 1);
+                }
+                _ => {
+                    step_repeat_counts.remove(&step.id);
+                }
+            }
+
             if !step_result.summary.summary.is_empty() {
                 session_context
                     .step_summaries
@@ -515,6 +574,13 @@ impl<'a> WorkflowTurnRunner<'a> {
                 session_context,
                 &step_result.session_writes,
             );
+
+            if !matches!(step_result.transition, StepTransition::Repeat) {
+                hook_runtime.after_step(
+                    &step_result.final_text,
+                    step_result.structured_output.as_ref(),
+                )?;
+            }
 
             if !step_result.final_text.is_empty() {
                 if role == WorkflowRunRole::Child && !is_final_step {
@@ -554,6 +620,7 @@ impl<'a> WorkflowTurnRunner<'a> {
         resolved_tools: &ResolvedToolSet,
         max_iterations: u32,
         response_streamer: &mut StepResponseStreamer<'_>,
+        hook_runtime: Option<StepHookRuntime>,
     ) -> anyhow::Result<String> {
         let tool_name_refs = resolved_tools.tool_name_refs();
         agent.set_visible_tools(Some(&tool_name_refs));
@@ -564,12 +631,15 @@ impl<'a> WorkflowTurnRunner<'a> {
             self.turn_id,
             response_streamer.primary_section_id().to_string(),
         )));
+        let hook_error = Arc::new(Mutex::new(None::<String>));
 
-        self.handle.block_on(agent.run_loop_with_events(
+        let stage_text = self.handle.block_on(agent.run_loop_with_events(
             {
                 let tx_callback = self.tx_callback.clone();
                 let turn_id = self.turn_id;
                 let tool_runs = tool_runs.clone();
+                let hook_runtime = hook_runtime.clone();
+                let hook_error = hook_error.clone();
                 move |tool_use_id, name, tool_input, tool_result| {
                     let command = if name == "bash" {
                         tool_input
@@ -604,6 +674,14 @@ impl<'a> WorkflowTurnRunner<'a> {
                     if name == "todo" && !tool_result.is_error() {
                         send_todo_snapshot(&tx_callback, turn_id, &tool_result.output);
                     }
+
+                    if let Some(hook_runtime) = &hook_runtime {
+                        if let Err(error) =
+                            hook_runtime.after_tool_call(tool_use_id, name, tool_input, tool_result)
+                        {
+                            *hook_error.lock().unwrap() = Some(error.to_string());
+                        }
+                    }
                 }
             },
             {
@@ -613,7 +691,13 @@ impl<'a> WorkflowTurnRunner<'a> {
                     response_streamer.push_chat_event(event);
                 }
             },
-        ))
+        ))?;
+
+        if let Some(error) = hook_error.lock().unwrap().take() {
+            return Err(anyhow::anyhow!(error));
+        }
+
+        Ok(stage_text)
     }
 
     fn resolve_workflow_bundle(
@@ -871,9 +955,6 @@ impl<'a> WorkflowTurnRunner<'a> {
                 .step_outputs
                 .insert(step.id.clone(), output.clone());
             session_writes.extend(self.sync_todo_state_from_step(&workflow_id, step, output)?);
-            if self.should_repeat_execute_step(&workflow_id, role, step, &session_writes)? {
-                transition = StepTransition::Repeat;
-            }
         }
 
         let summary_text = match (role, step.id.as_str()) {
@@ -933,40 +1014,66 @@ impl<'a> WorkflowTurnRunner<'a> {
         })
     }
 
-    fn should_repeat_execute_step(
+    fn apply_before_advance_gate(
         &self,
-        workflow_id: &str,
-        role: WorkflowRunRole,
         step: &WorkflowStep,
-        session_writes: &[StepContextWrite],
-    ) -> anyhow::Result<bool> {
-        if role != WorkflowRunRole::Child
-            || step.id != EXECUTE_STEP_ID
-            || !matches!(workflow_id, FEATURE_WORKFLOW_ID | RESEARCH_WORKFLOW_ID)
-        {
-            return Ok(false);
+        base_transition: StepTransition,
+        final_text: &str,
+        structured_output: Option<&Value>,
+        hook_runtime: &StepHookRuntime,
+        repeat_count: u32,
+    ) -> anyhow::Result<StepTransition> {
+        if !matches!(
+            base_transition,
+            StepTransition::Continue | StepTransition::StartWorkflow { .. } | StepTransition::FinishTurn
+        ) {
+            return Ok(base_transition);
         }
 
-        let todo_changed = session_writes
-            .iter()
-            .any(|write| write.path == "todo.rendered");
-        if !todo_changed {
-            return Ok(false);
-        }
+        match hook_runtime.before_advance(final_text, structured_output)? {
+            HookAdvanceOutcome::Allow => Ok(base_transition),
+            HookAdvanceOutcome::Deny { reasons } => {
+                let reason_text = reasons
+                    .iter()
+                    .map(|denial| format!("{}: {}", denial.hook_id, denial.reason))
+                    .collect::<Vec<_>>()
+                    .join("; ");
 
-        let manager = self
-            .todo_manager
-            .lock()
-            .map_err(|_| anyhow::anyhow!("todo manager lock poisoned"))?;
-        if !manager.has_open_items() {
-            return Ok(false);
-        }
+                if repeat_count >= step.max_step_repeats {
+                    return Err(anyhow::anyhow!(
+                        "step '{}' exhausted max_step_repeats={} after advance denial: {}",
+                        step.id,
+                        step.max_step_repeats,
+                        reason_text
+                    ));
+                }
 
-        if todo_changed {
-            return Ok(true);
-        }
+                send_warning_text(
+                    self.tx_result,
+                    self.turn_id,
+                    &format!(
+                        "Step '{}' advance denied; repeating ({}/{}): {}",
+                        step.id,
+                        repeat_count + 1,
+                        step.max_step_repeats,
+                        reason_text
+                    ),
+                );
+                send_system_log_text(
+                    self.tx_result,
+                    self.turn_id,
+                    &format!(
+                        "step '{}' advance_gate=deny repeat_count={} max_step_repeats={} reasons={}",
+                        step.id,
+                        repeat_count + 1,
+                        step.max_step_repeats,
+                        reason_text
+                    ),
+                );
 
-        Ok(manager.rounds_without_update() < EXECUTE_REPEAT_MAX_NO_PROGRESS_ATTEMPTS)
+                Ok(StepTransition::Repeat)
+            }
+        }
     }
 
     fn sync_todo_state_from_step(

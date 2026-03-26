@@ -1,6 +1,8 @@
 pub const DEFAULT_WORKFLOW_PATH: &str = ".omega/workflow.toml";
 pub const DEFAULT_SCENES_PATH: &str = ".omega/scenes.toml";
 pub const DEFAULT_WORKFLOWS_DIR: &str = ".omega/workflows";
+pub const DEFAULT_HOOKS_DIR: &str = ".omega/hooks";
+pub const DEFAULT_HOOK_MANIFEST_FILE: &str = "Hook.toml";
 pub const DEFAULT_ROOT_WORKFLOW_PATH: &str = ".omega/workflows/root.toml";
 pub const DEFAULT_CHAT_WORKFLOW_PATH: &str = ".omega/workflows/chat.toml";
 pub const DEFAULT_RESEARCH_WORKFLOW_PATH: &str = ".omega/workflows/research.toml";

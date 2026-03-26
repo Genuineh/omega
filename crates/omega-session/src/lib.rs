@@ -2,6 +2,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 
 use omega_core::{Agent, CoreSharedTodoManager, DynLlmClient, Message, TodoManager};
+use omega_hooks::HookHost;
 use omega_skills::SkillLoader;
 use omega_workflow::{SceneCatalog, WorkflowCatalog, WorkflowPromptCatalog};
 use tokio::runtime::Handle;
@@ -11,13 +12,13 @@ const SUMMARY_CHAR_LIMIT: usize = 2_000;
 const CONTEXT_SAFETY_MARGIN_TOKENS: u32 = 2_000;
 const TOKEN_ESTIMATE_DIVISOR: usize = 4;
 const REPAIR_PASS_MAX_ITERATIONS: u32 = 1;
-const EXECUTE_REPEAT_MAX_NO_PROGRESS_ATTEMPTS: usize = 3;
 
 mod output;
 mod prompt_builder;
 mod routing;
 mod runner;
 mod runtime_ui;
+mod hook_adapter;
 mod session_state;
 mod skill_catalog;
 mod tool_catalog;
@@ -85,6 +86,7 @@ pub struct AgentSession {
     base_system: String,
     cwd: std::path::PathBuf,
     todo_manager: CoreSharedTodoManager,
+    hook_host: Arc<HookHost>,
     skill_catalog: Arc<SessionSkillCatalog>,
     tool_catalog: Arc<SessionToolCatalog>,
     runtime_handle: Handle,
@@ -101,6 +103,7 @@ impl AgentSession {
         let skill_loader = SkillLoader::from_repo_root(&config.cwd)?;
         let skill_catalog = Arc::new(SessionSkillCatalog::new(skill_loader));
         let todo_manager = Arc::new(Mutex::new(TodoManager::new()));
+        let hook_host = Arc::new(HookHost::load(&config.cwd)?);
         let dispatcher = omega_core::create_default_tools_with_todo_manager_and_tool_limits(
             config.cwd.clone(),
             todo_manager.clone(),
@@ -154,6 +157,7 @@ impl AgentSession {
             base_system: config.system,
             cwd: config.cwd,
             todo_manager,
+            hook_host,
             skill_catalog,
             tool_catalog,
             runtime_handle: config.runtime_handle,
@@ -224,6 +228,7 @@ impl AgentSession {
         let base_system = self.base_system.clone();
         let cwd = self.cwd.clone();
         let todo_manager = self.todo_manager.clone();
+        let hook_host = self.hook_host.clone();
         let skill_catalog = self.skill_catalog.clone();
         let tool_catalog = self.tool_catalog.clone();
         let scene_catalog = self.scene_catalog.clone();
@@ -254,6 +259,7 @@ impl AgentSession {
                 &input,
                 &cwd,
                 &todo_manager,
+                &hook_host,
                 &scene_catalog,
                 &workflow_catalog,
                 &prompt_catalog,

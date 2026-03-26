@@ -1,9 +1,9 @@
 ---
-status: draft
+status: implemented
 owner: omega-team
 created: 2026-03-25
 updated: 2026-03-25
-version: 0.1
+version: 0.5
 supersedes: []
 related_prds: []
 ---
@@ -15,6 +15,22 @@ related_prds: []
 当前 Omega 已经具备 `step prompt + tool_request + input/output contract + max_iterations` 的基础工作流模型，也已经为 `feature` / `research` 补上了最小可用的 todo-driven execute repeat。但这条主路径仍然把“什么时候允许离开当前 step”写死在 runtime 里，导致不同工作场景一旦出现不同的执行判据，就只能继续往 `omega-session` 里叠加条件分支。
 
 本规格定义下一阶段的收敛方向：不引入独立的 `runtime_policy` 对象，而是把 **step 生命周期** 和 **能否进入下一步的判定** 收敛为显式的 Rust hook 机制。workflow 继续声明 step 的静态结构，runtime 继续拥有最终编排权；用户可以在 `.omega/hooks/` 下编写 Rust hook，通过统一的单方法接口参与 step 生命周期，并在 `BeforeAdvance` 阶段决定是否允许进入下一步。
+
+## Current Baseline After Module Split
+
+`Task 15F-15 ~ 15F-18` 已完成，因此本规格不再建立在 `omega-session` / `omega-workflow` 单体文件的假设之上。当前与 hook/gate 方向直接相关的真实落点如下：
+
+- `crates/omega-session/src/runner.rs`: 当前 step 编排、output repair/regenerate、`StepTransition::Repeat` 与 `should_repeat_execute_step()` stopgap 所在位置，也是未来 `BeforeAdvance` gate 的主要接线点。
+- `crates/omega-session/src/session_state.rs`: `SessionContext` 与后续 step-scoped hook storage 最自然的宿主边界。
+- `crates/omega-session/src/ui_emit.rs` 与 `runtime_ui.rs`: hook diagnostics、advance deny/repeat decision 进入 Activity / Diagnostics / reducer 的稳定输出面。
+- `crates/omega-workflow/src/model.rs`、`config.rs`、`defaults.rs`: `hooks[]`、`max_step_repeats` 与 builtin workflow 默认值应落到这里，而不是回到已拆解的 monolith。
+- `crates/omega-session/src/lib_tests.rs`: 当前已存在 `SequencedClient`、`IdleClient`、repair/repeat 测试样式；Task 15F-19 应先从这里抽离稳定 test-support，而不是从零重新发明一套完全脱离现有用例的 harness。
+
+这意味着后续任务的重点已经从“先拆大文件”转为“沿现有 split 模块继续收口 contract 与 runtime 注入点”。
+
+`Task 15F-20` 已在 `omega-workflow` 侧落地最小 contract：`WorkflowStep` 现在显式携带 `max_step_repeats` 与 `hooks`，`WorkflowConfig` 已支持对应 TOML 字段，builtin `feature/research` execute 默认会写出 `max_step_repeats = 8` 与 `hooks = ["todo_managed_execute"]`，从而先把生命周期扩展点固定为声明式 step 结构。
+
+`Task 15F-21` 与 `Task 15F-22` 现已把 host/runtime 边界与 advance gate 都落地到真实代码：workspace 新增独立 `omega-hooks` crate，负责 `.omega/hooks/*/Hook.toml` manifest catalog、artifact loading、`HookHost` / `HookSession` dispatch 与 step-scoped storage；`omega-session` 则通过 `hook_adapter.rs` 在 `runner.rs` 中接入 `BeforeStep`、`AfterToolCall`、`BeforeAdvance`、`AfterStep` 与 `StepFailed`，并用 `BeforeAdvance` deny 统一驱动 repeat / fail 判定，替换原先 execute repeat stopgap。
 
 ## Goals
 
@@ -62,9 +78,9 @@ hook 可以影响 step 是否继续停留在当前阶段，但不能绕过 sessi
 
 - `omega-workflow`: 解析 step 级 `hooks` 与 `max_step_repeats` 配置。
 - `omega-session`: 在 step 生命周期边界分发 hook 事件，收集 advance 决策，并维持 step-scoped runtime storage。
-- `omega-hooks`（planned）: 负责 hook manifest 解析、ABI-safe 动态加载、hook dispatch 和 host-side adapters。
-- `.omega/hooks/`: 用户编写的 Rust hook 源码与构建产物所在目录。
-- deterministic workflow test harness（planned）: 为 hook/gate/repeat/repair 路径提供可预测的脚本化验证环境。
+- `omega-hooks`: 负责 hook manifest 解析、artifact 动态加载、hook dispatch 和 step-scoped storage。
+- `.omega/hooks/`: 用户编写的 Rust hook 源码、manifest 与构建产物所在目录。
+- deterministic workflow test harness: 已由 `omega-client::test_support` 与现有 session tests 提供，为 hook/gate/repeat/repair 路径提供可预测的脚本化验证环境。
 
 ### Lifecycle Events
 
@@ -227,9 +243,24 @@ tool 可以更新 todo、写入上下文、产生验证结果，但不能直接�
 - compiled artifact path
 - supported host API version
 
+推荐的最小 manifest 形状为：
+
+```toml
+id = "todo_managed_execute"
+package = "todo_managed_execute"
+artifact = "target/release/libtodo_managed_execute.so"
+api_version = 1
+```
+
+其中 step 中的 `hooks = ["todo_managed_execute"]` 直接引用这里的 `id`，manifest 目录约定为 `.omega/hooks/todo_managed_execute/Hook.toml`。
+
+当前实现还提供了一层 host 内建 fallback：若 step 绑定了 `todo_managed_execute` 且 workspace 中不存在对应 manifest，`omega-hooks` 会使用内建 hook 逻辑继续执行 `BeforeAdvance` deny/allow 判定。这样默认 `feature` / `research` execute workflow 不需要先在仓库中物化 hook artifact，也能保留 todo-driven repeat 语义；repo-local manifest 一旦存在，仍以 manifest + artifact 路径为准。
+
 ### ABI Strategy
 
-运行时加载用户 Rust hook 不能依赖原生 Rust trait object ABI。v1 推荐使用 `abi_stable` 一类稳定 ABI 边界，而不是直接通过 `libloading + Box<dyn Trait>` 交换对象。
+运行时加载用户 Rust hook 不能依赖原生 Rust trait object ABI。`Task 15F-21` 的当前实现已采用更窄的 JSON-over-C-ABI 边界：host 通过 `libloading` 调用导出的 `omega_hook_api_version`、`omega_hook_invoke_json` 与 `omega_hook_free_string`，以 JSON payload 交换 lifecycle input/output，并用真实编译 fixture 覆盖 manifest/loader/dispatch 路径。
+
+这让 v1 先把 host/runtime contract 固定下来，而不把插件侧绑定到不稳定的 Rust trait object ABI；如后续需要更丰富的 typed SDK，再在保持该边界或兼容升级路径的前提下演进。
 
 ### Build Strategy
 
@@ -277,8 +308,8 @@ LLM 不可控性不能成为 workflow runtime 行为不可验证的理由。为�
 
 ### Recommended Shape
 
-- 把当前 `omega-session` 内部 ad-hoc 的 `SequencedClient` / `IdleClient` 抽成稳定的测试支持模块或独立 crate
-- 提供 `ScriptedLlmClient` builder，而不是继续在每个测试里手写 response 向量
+- 先把当前 `omega-session/src/lib_tests.rs` 内部 ad-hoc 的 `SequencedClient` / `IdleClient` 抽成稳定的测试支持模块；只有在 `omega-session`、`omega-client`、`omega-core` 都开始复用后，再提升为独立 crate
+- 提供 `ScriptedLlmClient` / `ScriptedWorkflowHarness` builder，而不是继续在每个测试里手写 response 向量
 - 为 hook host 提供两类测试：
   - in-process fake hook，用于快测 lifecycle dispatch
   - real compiled fixture hook，用于验证 loader/ABI/manifest
@@ -289,20 +320,45 @@ LLM 不可控性不能成为 workflow runtime 行为不可验证的理由。为�
 
 ## Rollout Plan
 
-1. 先完成大文件拆分（特别是 `omega-session` / `omega-workflow` / 相关 specs）
-2. 抽离 deterministic mock LLM workflow harness
-3. 在 `omega-workflow` 中引入 `hooks[]` 与 `max_step_repeats`
-4. 实现 hook host、storage 与 lifecycle dispatch
-5. 用 `BeforeAdvance` 替换当前零散的 execute repeat 条件
-6. 为 `feature.execute` / `research.execute` 落地首个 `todo_managed_execute` hook
+1. `Task 15F-19`: 抽离 deterministic scripted workflow harness，优先复用 `omega-session` 现有 repair/repeat 场景而不是重写测试语料。
+2. `Task 15F-20`: 已完成，在 `omega-workflow::{model,config,defaults}` 与 `.omega/workflows/*.toml` 中引入 `hooks[]` / `max_step_repeats` / manifest contract。
+3. `Task 15F-21`: 已完成，独立 hook host、step-scoped storage、manifest 解析与 lifecycle dispatch adapter 已落地；`omega-session` 已通过窄接口接入 `BeforeStep`、`AfterToolCall`、`AfterStep` 与 `StepFailed`。
+4. `Task 15F-22`: 已完成，在 `omega-session::runner` 中用 `BeforeAdvance` gate 替换当前 `should_repeat_execute_step()` stopgap，并把 deny/repeat diagnostics 通过现有 runtime UI warning/error/log 通道暴露出来。
+5. 已完成：`feature.execute` / `research.execute` 已绑定 `todo_managed_execute`，并由 host 内建 fallback 提供首个 stopgap → hook contract 的迁移验证。
+
+## Task Mapping After Split
+
+### Task 15F-19
+
+- 输出物应首先是稳定 test-support，而不是立即引入新的 production crate。
+- 目标是为 `runner.rs` 的 repair/regenerate、tool_use、repeat 与后续 hook gate 提供 deterministic regression safety。
+
+### Task 15F-20
+
+- 已完成：workflow step contract 现已显式携带 `hooks[]` 与 `max_step_repeats`，并在默认 execute workflow TOML 中留下 manifest 约定。
+- 仍然不在本任务内承担 artifact loading、ABI 选择或 host runtime 接线。
+
+### Task 15F-21
+
+- 已完成：`omega-hooks` 已承接 hook host、loader、dispatch、storage 与 fixture testing；`omega-session` 通过 `hook_adapter` 消费 host，而没有把 loader 细节重新塞回 session 根模块。
+- 当前已接入的 runtime 事件是 `BeforeStep`、`AfterToolCall`、`BeforeAdvance`、`AfterStep` 与 `StepFailed`。
+
+### Task 15F-22
+
+- 已完成：`runner.rs` 现已在 output contract 通过后统一调用 `BeforeAdvance` gate，并按 `max_step_repeats` 处理 deny → repeat / deny exhaustion → fail。
+- 旧的 `should_repeat_execute_step()` 与 `EXECUTE_REPEAT_MAX_NO_PROGRESS_ATTEMPTS` special-case 路径已删除；默认 execute workflow 改为显式依赖 `hooks = ["todo_managed_execute"]`。
 
 ## Open Questions
 
 - v1 是否需要 workflow-scoped hook storage，还是 step-scoped 已足够
-- hook diagnostics 是否应进入 `RuntimeUiEffect::UpsertStepDiagnostics`，还是先走 Activity/Log
+- hook diagnostics 是否需要在保留当前 Activity/Log 输出之外，再同步进入 `RuntimeUiEffect::UpsertStepDiagnostics`
 - build helper 是放进 `omega-tools-builtin`、单独 crate，还是晚些再做
 
 ---
 
 ### Change Log
+- 2026-03-25: `Task 15F-22` 落地 `BeforeAdvance` runtime gate、repeat budget enforcement 与 `todo_managed_execute` 内建 fallback；默认 `feature` / `research` execute 现显式绑定该 hook，并补齐 `omega-hooks` / `omega-workflow` / `omega-session` 回归测试。
+- 2026-03-25: `Task 15F-21` 落地独立 `omega-hooks` crate、`.omega/hooks/*/Hook.toml` manifest catalog、JSON-over-C-ABI loader、step-scoped storage 与 `omega-session` 的 `BeforeStep` / `AfterToolCall` / `AfterStep` / `StepFailed` lifecycle dispatch，并补齐真实 fixture + session integration tests。
+- 2026-03-25: `Task 15F-20` 落地 `WorkflowStep::{hooks,max_step_repeats}`、TOML 解析与默认 execute contract，并把 `.omega/hooks/<hook-id>/Hook.toml` 的最小 manifest 字段固定为 `id/package/artifact/api_version`。
+- 2026-03-25: 结合 `Task 15F-15 ~ 15F-18` 完成后的真实模块边界，补充 post-split insertion points，并把 15F-19~22 的 rollout/task mapping 收敛到 `runner`、workflow model/config/defaults 与独立 hook host 的明确职责划分。
 - 2026-03-25: 初版规格，提出用单方法 Rust hook + lifecycle events + `BeforeAdvance` gate 统一 step 生命周期，并明确 deterministic mock LLM harness 是该方向的前置测试能力。

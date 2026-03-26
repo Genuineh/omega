@@ -1,0 +1,11 @@
+[package]
+name = "omega-hooks"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+libloading.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
