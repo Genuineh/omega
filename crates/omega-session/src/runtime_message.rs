@@ -4,6 +4,7 @@ use crate::runtime_ui::{
     ResponseSection, ResponseSectionDelta, ResponseSectionState, RuntimeUiEffect,
     RuntimeUiEnvelope, RuntimeUiMessage, StatusSlot, StatusValue, StepDiagnostics, ToolRun,
     ToolRunStatus, UiContent, UiMessageKind, UiPriority, UiSource, UiTarget, WorkflowRunRole,
+    StepSubflowStatus,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,6 +55,7 @@ pub enum ConversationMessage {
 pub enum StateMessage {
     WorkflowStep(WorkflowStepStatus),
     ClearWorkflowStep,
+    StepSubflow { subflow: StepSubflowStatus },
     AgentStatus { label: Option<String> },
     SessionRouting(SessionRoutingStatus),
     TodoSnapshot { rendered: String },
@@ -259,6 +261,10 @@ fn legacy_ui_envelopes_from_state(turn_id: u64, message: StateMessage) -> Vec<Ru
             RuntimeUiEffect::ClearStatusSlot {
                 slot: StatusSlot::Workflow,
             },
+        )],
+        StateMessage::StepSubflow { subflow } => vec![RuntimeUiEnvelope::effect(
+            turn_id,
+            RuntimeUiEffect::UpsertStepSubflow { subflow },
         )],
         StateMessage::AgentStatus { label } => {
             let effect = match label {

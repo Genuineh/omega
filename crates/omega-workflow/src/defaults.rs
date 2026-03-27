@@ -14,8 +14,8 @@ use crate::constants::{
     SELECT_WORKFLOW_STEP_ID,
 };
 use crate::model::{
-    DataFormat, OutputRecoveryMode, StepInputContract, StepLoopMode, StepOutputContract,
-    StepSkillRequest, StepToolRequest, WorkflowSource, WorkflowStep,
+    DataFormat, OutputRecoveryMode, StepInputContract, StepLoopContract, StepLoopMode,
+    StepOutputContract, StepSkillRequest, StepToolRequest, WorkflowSource, WorkflowStep,
 };
 use crate::policy::ToolPolicyConfig;
 
@@ -110,6 +110,7 @@ id = "execute"
 label = "Execute"
 prompt = ".omega/prompt/step/execute.md"
 loop_mode = "agent_loop"
+loop_contract = { kind = "todo_items", source = "plan.tasks", child_step_prefix = "execute", max_item_repeats = 3 }
 max_iterations = 200
 # Hook manifests live under .omega/hooks/<hook-id>/Hook.toml and declare id, package, artifact, and api_version.
 max_step_repeats = 8
@@ -117,7 +118,7 @@ hooks = ["todo_managed_execute"]
 tool_request = { mode = "block", groups = ["feature_non_execute_blocked"] }
 skill_request = { mode = "match_task" }
 input_contract = { mode = "required", sources = ["plan"] }
-output_contract = { mode = "optional", format = "json", schema_path = ".omega/schema/step/execute.json" }
+output_contract = { mode = "optional", format = "json", schema_path = ".omega/schema/step/execute.json", max_retries = 2, recovery_mode = "repair_then_regenerate" }
 enabled = true
 
 [[steps]]
@@ -163,6 +164,7 @@ id = "execute"
 label = "Execute"
 prompt = ".omega/prompt/step/execute.md"
 loop_mode = "agent_loop"
+loop_contract = { kind = "todo_items", source = "plan.tasks", child_step_prefix = "execute", max_item_repeats = 3 }
 max_iterations = 200
 # Hook manifests live under .omega/hooks/<hook-id>/Hook.toml and declare id, package, artifact, and api_version.
 max_step_repeats = 8
@@ -170,7 +172,7 @@ hooks = ["todo_managed_execute"]
 tool_request = { mode = "inherit" }
 skill_request = { mode = "match_task" }
 input_contract = { mode = "required", sources = ["plan"] }
-output_contract = { mode = "optional", format = "json", schema_path = ".omega/schema/step/execute.json" }
+output_contract = { mode = "optional", format = "json", schema_path = ".omega/schema/step/execute.json", max_retries = 2, recovery_mode = "repair_then_regenerate" }
 enabled = true
 
 [[steps]]
@@ -218,6 +220,7 @@ id = "execute"
 label = "Execute"
 prompt = ".omega/prompt/step/execute.md"
 loop_mode = "agent_loop"
+loop_contract = { kind = "todo_items", source = "plan.tasks", child_step_prefix = "execute", max_item_repeats = 3 }
 max_iterations = 200
 # Hook manifests live under .omega/hooks/<hook-id>/Hook.toml and declare id, package, artifact, and api_version.
 max_step_repeats = 8
@@ -225,7 +228,7 @@ hooks = ["todo_managed_execute"]
 tool_request = { mode = "inherit" }
 skill_request = { mode = "match_task" }
 input_contract = { mode = "required", sources = ["plan"] }
-output_contract = { mode = "optional", format = "json", schema_path = ".omega/schema/step/execute.json" }
+output_contract = { mode = "optional", format = "json", schema_path = ".omega/schema/step/execute.json", max_retries = 2, recovery_mode = "repair_then_regenerate" }
 enabled = true
 
 [[steps]]
@@ -314,6 +317,9 @@ Produce only the internal plan needed for execution.
 The plan must be directly mappable to the todo system.
 Use the explore context, especially key findings, risks, constraints, and affected paths, to decide what should happen next.
 Each task should be actionable, ordered, and small enough to complete or validate in one execution slice.
+If the active workflow is read-only or the visible tools do not include write/edit tools, every task must stay read-only: inspect, compare, validate, summarize, or gather evidence.
+In read-only workflows, do not ask execute to edit files, create patches, update docs, modify code, or run other write-capable actions.
+In read-only workflows, keep validation_targets satisfiable with the visible read-only tools.
 Set `goal` to the overall outcome, `tasks` to the ordered worklist, and `validation_targets` to the checks execute/report should verify.
 "#;
 
@@ -324,7 +330,10 @@ Do not produce the final user-facing wrap-up yet.
 Leave the final summary for the report phase.
 Treat the todo list as the execution anchor.
 Focus first on the current in-progress item, keep todo state aligned as work advances, and use validation_targets from the plan when verifying changes.
+In itemized execute loops, only mark the current todo item as newly completed in completed_tasks; never mark future items complete before their own execute slice runs.
 If this workflow is read-only, gather evidence instead of editing files and leave changed_paths empty when no workspace files changed.
+In a read-only workflow, mark the current todo item as completed once you have gathered the requested evidence or finished the read-only validation for that item.
+Do not keep a read-only todo item open merely because no files changed.
 Prefer `apply_patch` and `create_file` for workspace edits, and use structured read-only tools for inspection. Use `bash` mainly for validation commands or gaps the structured tools do not cover.
 If you emit structured output, report completed_tasks, open_tasks, validation_results, and changed_paths using the configured JSON contract.
 "#;
@@ -501,6 +510,22 @@ impl BuiltinWorkflowStepId {
         StepLoopMode::AgentLoop
     }
 
+    pub(crate) fn default_loop_contract(self) -> Option<StepLoopContract> {
+        match self {
+            Self::Execute => Some(StepLoopContract::TodoItems {
+                source: "plan.tasks".to_string(),
+                child_step_prefix: EXECUTE_STEP_ID.to_string(),
+                max_item_repeats: 3,
+            }),
+            Self::SceneRecognition
+            | Self::SelectWorkflow
+            | Self::Chat
+            | Self::Explore
+            | Self::Plan
+            | Self::Report => None,
+        }
+    }
+
     pub(crate) fn default_max_iterations(self) -> u32 {
         match self {
             Self::SceneRecognition | Self::SelectWorkflow => 2,
@@ -604,6 +629,8 @@ impl BuiltinWorkflowStepId {
             Self::Execute => StepOutputContract::Optional {
                 format: DataFormat::Json,
                 schema_path: Some(PathBuf::from(DEFAULT_EXECUTE_SCHEMA_PATH)),
+                max_retries: 2,
+                recovery_mode: OutputRecoveryMode::RepairThenRegenerate,
             },
             Self::Chat | Self::Report => StepOutputContract::None,
         }
@@ -620,6 +647,7 @@ impl WorkflowStep {
             label: step.default_label().to_string(),
             prompt_path: PathBuf::from(step.default_prompt_path()),
             loop_mode: step.default_loop_mode(),
+            loop_contract: step.default_loop_contract(),
             max_iterations: step.default_max_iterations(),
             max_step_repeats: step.default_max_step_repeats(),
             hooks: step.default_hooks(),

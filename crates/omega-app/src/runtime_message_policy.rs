@@ -1,5 +1,6 @@
 use omega_session::{
     ConversationMessage, RuntimeContentKind, RuntimeMessage, RuntimeSource, StateMessage,
+    StepSubflowState, StepSubflowStatus,
 };
 use omega_tui::{RuntimeMessagePolicy, TuiSurface};
 
@@ -51,6 +52,10 @@ fn apply_state(surface: &mut dyn TuiSurface, message: StateMessage) {
         StateMessage::SessionRouting(routing) => surface.set_session_routing(routing),
         StateMessage::TodoSnapshot { rendered } => surface.set_todo_snapshot(&rendered),
         StateMessage::Diagnostics { diagnostics } => surface.upsert_diagnostics(*diagnostics),
+        StateMessage::StepSubflow { subflow } => {
+            surface.add_activity_line(format_step_subflow_line(&subflow));
+            surface.upsert_step_subflow(subflow);
+        }
         StateMessage::Activity {
             source,
             kind,
@@ -59,6 +64,32 @@ fn apply_state(surface: &mut dyn TuiSurface, message: StateMessage) {
         } => surface.add_activity_line(format_activity_line(&source, kind, text)),
         StateMessage::TurnFinished => surface.mark_turn_finished(),
     }
+}
+
+fn format_step_subflow_line(subflow: &StepSubflowStatus) -> String {
+    let mut line = format!(
+        "[item] {}:{} {} {}/{} {}",
+        subflow.workflow_role.as_str(),
+        subflow.workflow_id,
+        subflow.subflow_id,
+        subflow.item_index,
+        subflow.item_total,
+        match subflow.status {
+            StepSubflowState::Queued => "queued",
+            StepSubflowState::Running => "running",
+            StepSubflowState::Complete => "done",
+            StepSubflowState::Failed => "failed",
+        }
+    );
+
+    if let Some(item_id) = subflow.item_id.as_deref() {
+        line.push_str(&format!(" #{item_id}"));
+    }
+    if subflow.repeat_count_for_item > 0 {
+        line.push_str(&format!(" r{}", subflow.repeat_count_for_item));
+    }
+
+    line
 }
 
 fn format_activity_line(source: &RuntimeSource, kind: RuntimeContentKind, text: String) -> String {
@@ -99,8 +130,8 @@ mod tests {
         SessionRoutingStatus, StateMessage, StepContextWrite, StepContextWriteKind,
         StepDiagnostics, StepInputDiagnostics, StepInputStatus, StepOutputAttemptKind,
         StepOutputContractMode, StepOutputDiagnostics, StepOutputRecoveryDecision,
-        StepOutputStatus, StepSummarySource, ToolRun, ToolRunDetail, ToolRunStatus,
-        WorkflowRunRole, WorkflowStepStatus,
+        StepOutputStatus, StepSubflowState, StepSubflowStatus, StepSummarySource, ToolRun,
+        ToolRunDetail, ToolRunStatus, WorkflowRunRole, WorkflowStepStatus,
     };
     use omega_tui::{apply_runtime_message_with_policy, TuiSurface};
 
@@ -120,6 +151,7 @@ mod tests {
         SessionRouting(String),
         TodoSnapshot(String),
         Diagnostics(String),
+        StepSubflow(String, String),
         Activity(String),
         AgentText(String),
         ErrorText(String),
@@ -189,6 +221,11 @@ mod tests {
             self.ops.push(SurfaceOp::Diagnostics(diagnostics.id));
         }
 
+        fn upsert_step_subflow(&mut self, subflow: StepSubflowStatus) {
+            self.ops
+                .push(SurfaceOp::StepSubflow(subflow.step_id, subflow.subflow_id));
+        }
+
         fn add_activity_line(&mut self, line: String) {
             self.ops.push(SurfaceOp::Activity(line));
         }
@@ -215,6 +252,7 @@ mod tests {
             step_label: "Plan".to_string(),
             index: 2,
             total: 4,
+            execute_progress: None,
             input: StepInputDiagnostics {
                 status: StepInputStatus::Ready,
                 summary_sources: vec![StepSummarySource {
@@ -284,6 +322,7 @@ mod tests {
                 workflow_role: WorkflowRunRole::Child,
                 step_id: Some("plan".to_string()),
                 step_label: Some("Plan".to_string()),
+                subflow_ref: None,
             },
         };
 
@@ -363,6 +402,26 @@ mod tests {
                     diagnostics: Box::new(sample_diagnostics()),
                 },
             ),
+            RuntimeMessageEnvelope::state(
+                42,
+                StateMessage::StepSubflow {
+                    subflow: StepSubflowStatus {
+                        workflow_id: "feature".to_string(),
+                        workflow_role: WorkflowRunRole::Child,
+                        step_id: "execute".to_string(),
+                        step_label: "Execute".to_string(),
+                        subflow_id: "execute-2".to_string(),
+                        item_id: Some("risk-2".to_string()),
+                        item_label: Some("Validate risk".to_string()),
+                        item_index: 2,
+                        item_total: 5,
+                        status: StepSubflowState::Running,
+                        repeat_count_for_item: 1,
+                        no_progress_streak_for_item: 0,
+                        completion_source: None,
+                    },
+                },
+            ),
             RuntimeMessageEnvelope::conversation(
                 42,
                 ConversationMessage::CompleteSection {
@@ -398,6 +457,8 @@ mod tests {
                 SurfaceOp::CompleteToolRun("tool-1".to_string(), ToolRunStatus::Complete),
                 SurfaceOp::TodoSnapshot("[>] #1: Code".to_string()),
                 SurfaceOp::Diagnostics("child:feature:plan".to_string()),
+                SurfaceOp::Activity("[item] child:feature execute-2 2/5 running #risk-2 r1".to_string()),
+                SurfaceOp::StepSubflow("execute".to_string(), "execute-2".to_string()),
                 SurfaceOp::CompleteSection(
                     "turn-42:child:feature:plan".to_string(),
                     ResponseSectionState::Complete,

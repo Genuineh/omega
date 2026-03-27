@@ -2,13 +2,12 @@
 
 ## Current Priorities
 
-_按当前仓库真实主路径重排。判断依据：`cargo test` 全工作区通过；s02 文件工具与 s03 todo 管理已完成；`Task 15C`、`Task 15C-2`、`Task 15C-3`、`Task 15D`、`Task 15F-3`、`Task 15F-4`、`Task 15F-5`、`Task 15B-18`、`Task 15B-19`、`Task 15F-6`、`Task 15B-20`、`Task 15B-21`、`Task 15F-7`、`Task 15F-8`、`Task 15F-9`、`Task 15F-10`、`Task 15F-11`、`Task 15F-12`、`Task 15F-13`、`Task 15F-14`、`Task 15B-22`、`Task 15B-23`、`Task 8C`、`Task 8D`、`Task 8E`、`Task 8F`、`Task 8G`、`Task 8H`、`Task 15F-19 ~ 15F-22` 与 `Task 15F-23 ~ 15F-25 / 15B-27` 已完成。交互层当前主边界仍是 `omega-app -> omega-tui + omega-session + omega-observability`，runtime 可见性主路径已收敛到 `RuntimeMessageEnvelope { turn_id, message }`，但 `feature/research.execute` 仍停留在“单 step + todo-driven repeat gate”语义：Diagnostics 还缺少 execute 级 todo 汇总指标，repeat 预算仍作用在整个 step，而不是稳定的 itemized execute loop。下一优先级先补 `Task 15F-26 ~ 15F-28`，把 execute todo 监控、itemized loop contract 与 runtime visibility 收敛成稳定主路径，再回到 `Task 10` 与 `Task 11`。_
+_按当前仓库真实主路径重排。判断依据：`cargo test` 全工作区通过；s02 文件工具与 s03 todo 管理已完成；`Task 15C`、`Task 15C-2`、`Task 15C-3`、`Task 15D`、`Task 15F-3`、`Task 15F-4`、`Task 15F-5`、`Task 15B-18`、`Task 15B-19`、`Task 15F-6`、`Task 15B-20`、`Task 15B-21`、`Task 15F-7`、`Task 15F-8`、`Task 15F-9`、`Task 15F-10`、`Task 15F-11`、`Task 15F-12`、`Task 15F-13`、`Task 15F-14`、`Task 15B-22`、`Task 15B-23`、`Task 8C`、`Task 8D`、`Task 8E`、`Task 8F`、`Task 8G`、`Task 8H`、`Task 15F-19 ~ 15F-22`、`Task 15F-23 ~ 15F-25 / 15B-27` 与 `Task 15F-26 ~ 15F-28` 已完成。交互层当前主边界仍是 `omega-app -> omega-tui + omega-session + omega-observability`，`feature/research.execute` 已收敛到 itemized execute loop：workflow step 显式声明 `loop_contract`，runtime diagnostics 可见 `execute_progress`，hook gate 具备 item context，repeat 预算拆分为 step 总预算与 per-item 上限。下一优先级回到 `Task 10` 与 `Task 11`。_
 
 _任务编号以 `docs/specs/omega-agent-impl-plan.md` 为准；为支持可运行里程碑拆分，`TODO` 中允许使用 `8A/8B`、`15A/15B/15C/15D` 这类子任务后缀。_
 
 ### High
 
-- **Task 15F-26 ~ 15F-28**: 当前 `feature/research.execute` 虽已具备 hook-driven repeat，但诊断粒度仍停留在 step 级，且 repeat budget 仍直接作用于整个 `execute` step。应先补 execute todo progress diagnostics，并把“围绕 todo 列表逐项完成”的运行态收敛为 itemized execute loop，而不是继续依赖 whole-step repeat。
 - **Task 10**: `omega-subagent` 仍重要，但应建立在新的 all-step loop + step context 主路径之上推进，避免继续绑定 v1 workflow 假设；当前 execute 的 runtime repeat 已经补齐，剩余 gap 更集中在跨 step / 跨 workflow 的自治编排。
 - **Task 11**: 上下文压缩仍重要，但应建立在新的 session context 边界之上，而不是只对 raw transcript 做早期补丁。
 
@@ -447,33 +446,67 @@ _2026-03-26 实现更新：runtime message pipeline 已按该收敛方案落地�
 _2026-03-26 规划补充：当前 `feature/research.execute` 已能围绕 todo 重试，但一个 step 完成、失败或耗尽 repeat budget 后，Diagnostics 仍不足以解释“总共有多少 todo、完成了几个、当前卡在哪个 item”，runtime 也仍把整个 `execute` 当作单个 step。下一轮 follow-up 先补 execute progress diagnostics，再引入 itemized execute loop contract，让 `execute` 在 runtime 中拥有稳定的子 id 和 per-item 完成语义。_
 _2026-03-26 架构评审后收敛：(1) `BeforeAdvance` 在 item loop 下变为 per-item gate，runtime 接管 item progression，hook 不需要理解 orchestration；(2) `max_step_repeats` 保留为总预算，`loop_contract.max_item_repeats` 为单项上限，双层控制；(3) loop source 解析由 `runner.rs` 拥有，封装为 `resolve_loop_items()` 纯函数；(4) 诊断结构从 15F-26 开始预留 optional item 粒度（`ExecuteProgressDiagnostics` 嵌套），避免 15F-28 重写；(5) `HookDispatchInput` 新增 item context 为 additive-only，不需 api_version bump。_
 ### Task 15F-26: omega-session / omega-observability / omega-tui — Execute Todo Progress Diagnostics
-- **Status**: Pending
+- **Status**: Completed
 - **Priority**: High
 - **Description**: 扩展 `Contract Diagnostics` 与 tracing / runtime activity，使 `feature/research.execute` 在每次模型尝试、hook deny、todo sync 与 advance 判定时都显式记录 `todo_total`、`todo_completed`、`todo_open`、`current_todo_ids`、`repeat_count`、`no_progress_streak`、`max_step_repeats` 与最终 completion source，避免用户只看到“Execute repeated/finished”却不知道 todo 维度上的真实进展。
 - **Complexity**: M
 - **Planning Note**: 该任务只补观测，不改变 loop 语义；目标是先让"为什么继续重试 / 为什么提前结束 / 为什么耗尽预算"在 Diagnostics 中可解释，为后续 itemized loop 改造提供基线。诊断结构须从一开始预留 optional item 粒度：在 `StepDiagnostics` 上新增 `execute_progress: Option<ExecuteProgressDiagnostics>` 嵌套结构，其中 `current_item_id` / `item_index` / `item_total` / `max_item_repeats` 在本任务中为 `None`，15F-28 填充后无需重写路径。
-- **Blocks**: Task 15F-27, Task 15F-28
+- **Completed Note**: `StepDiagnostics` 已新增 `execute_progress`，`omega-session` 在 input/output diagnostics 中稳定填充 todo totals、open/completed、current item、repeat/no-progress、budget 与 completion source，`omega-tui` sidebar/detail overlay 也已展示该结构。
 - **Related**: docs/specs/omega-step-session-asset-model/session-context-and-data-contracts.md, docs/specs/omega-step-lifecycle-hooks.md, docs/specs/omega-runtime-message-pipeline.md
 
 ### Task 15F-27: omega-workflow / omega-session — Itemized Execute Loop Contract
-- **Status**: Pending
+- **Status**: Completed
 - **Priority**: High
 - **Description**: 为 workflow step 增加 itemized execute loop contract，把当前“整个 `execute` step 重复直到 todo 收敛”的语义提升为显式可声明的外层 loop：step 可以绑定某个列表 source（首轮为 todo / plan.tasks），runtime 会把逻辑上的单个 `execute` 展开为共享上下文的 item runs，并为每个 item 提供稳定子 id（如 `execute-1`）与 per-item completion gate。
 - **Complexity**: XL
 - **Planning Note**: 不建议继续重载现有 `loop_mode` 字符串别名来同时表达"单次 agent/tool loop"和"按列表展开的外层循环"；更稳妥的方向是保留现有内层 agent loop 语义，再新增显式 loop contract / loop source 字段，避免把两个独立维度混进一个开关。设计约束：(1) loop source resolution 由 `runner.rs` 拥有，封装为纯函数 `resolve_loop_items()`；(2) `loop_contract` 新增 `max_item_repeats` 字段与 `max_step_repeats` 构成双层预算；(3) `HookDispatchInput` 新增 `current_item_id / item_index / item_total` 为 additive-only change，不需要 `api_version` bump；(4) v1 loop source 限 `todo_items` + `plan.tasks`。
-- **Blocked by**: Task 15F-26
-- **Blocks**: Task 15F-28, Task 10
+- **Completed Note**: `WorkflowStep` / workflow TOML 已支持 `loop_contract = { kind = "todo_items", source = "plan.tasks", child_step_prefix = "execute", max_item_repeats = N }`，builtin `feature` / `research` execute 默认开启该 contract，并由 tests 锁定 parse/default 行为。
+- **Blocks**: Task 10
 - **Related**: docs/specs/omega-step-lifecycle-hooks.md, docs/specs/omega-workflow-package.md, docs/specs/omega-step-session-asset-model/session-context-and-data-contracts.md
 
 ### Task 15F-28: omega-session / omega-hooks / omega-tui — Itemized Execute Loop Runtime And Visibility
-- **Status**: Pending
+- **Status**: Completed
 - **Priority**: High
 - **Description**: 在 runtime 中实现 itemized execute loop：`BeforeAdvance` 不再只对整个 `execute` 给出 allow/deny，而是先基于 loop contract 推进当前 item、同步 todo 与 step-scoped storage，并在前端中把 `execute` 展示为带子 id 的 item runs（例如 `execute-1` / `execute-2`）；只有当 required items 全部完成后，父级 `execute` 才允许进入 `report`。
 - **Complexity**: XL
 - **Planning Note**: 该任务是 execute 稳定性的主收敛点；实现时必须保留共享 `SessionContext`、structured input/output 与现有 hook storage，同时补齐 deterministic matrix tests，覆盖 no-progress、partial progress、all-complete、item fail、budget exhaustion 与 research read-only execute 路径。`BeforeAdvance` 在 item loop 下变为 per-item gate，runtime 接管 item progression（见 lifecycle hooks spec "BeforeAdvance 双层语义过渡"）。如实现复杂度超出单轮收敛范围，可拆为 15F-28a（runtime loop + tests）和 15F-28b（TUI item-level visibility），但优先尝试一次完成。
-- **Blocked by**: Task 15F-27
+- **Completed Note**: `omega-session` 现按当前 todo item 驱动 execute repeat，并在 item 完成后由 runtime 推进到下一个 item；`HookDispatchInput` 已带 `current_item_id / item_index / item_total`；builtin `todo_managed_execute` 改为 per-item gate；新增 deterministic tests 覆盖 execute progress diagnostics 与 `max_item_repeats` exhaustion。2026-03-27 follow-up：`execute` 的 optional structured output contract 现也支持 `max_retries / recovery_mode`，当模型错误地一次关闭 future items 时会先 repair/regenerate，而不是直接整步失败。后续又补了两层容错：itemized execute output 会自动把 future items 从 `completed_tasks` 挪回 `open_tasks`，`parse_json_values()` 也会在保留原数组候选的同时解包 array-of-object repair output，避免 `expected object at $` 这类 schema 失败反复中断 execute。
 - **Blocks**: Task 10, Task 11
 - **Related**: docs/specs/omega-step-lifecycle-hooks.md, docs/specs/omega-step-session-asset-model/session-context-and-data-contracts.md, docs/specs/omega-runtime-message-pipeline.md
+
+_2026-03-26 TUI follow-up planning：M2F 已把 execute 收敛为 itemized loop，但 `Response` 仍缺“step 内子流程”层级；下一轮需要把 item run 保持为父级 `execute` block 的 nested subflow，而不是新的顶层 workflow step。详细设计见 `docs/specs/omega-tui-step-subflow-visibility.md`。_
+
+### Task 15F-29: omega-session / omega-app / omega-tui — Step-Owned Subflow Presentation Contract
+- **Status**: Completed
+- **Completed**: 2026-03-26
+- **Priority**: Medium
+- **Description**: 为 itemized execute 和未来 step 内子流程建立 frontend-neutral 的 presentation contract：response section metadata 需可携带 `subflow_ref`，state channel 需能稳定表达当前 item run 的 identity 与状态，使 app policy / TuiEngine 不必再从 diagnostics 或日志文本推断子流程模型。
+- **Complexity**: M
+- **Planning Note**: 关键约束是“item run 属于父级 step，而不是新的 workflow step”。推荐新增通用 `StepSubflowStatus` state message，并为 response section metadata 增加 optional `subflow_ref`；`omega-app` 负责把它映射到 step header、bottom status、activity 与 TUI subflow lane。
+- **Completed Note**: `omega-session` 已新增 `StepSubflowStatus` / `subflow_ref` contract，并由 runner 在 itemized execute 期间发出稳定子流程状态；`omega-app` policy 与 `omega-tui` surface 已消费该 contract，无需再从 diagnostics 或日志文本反推当前 item run。
+- **Blocks**: Task 15B-28
+- **Related**: docs/specs/omega-tui-step-subflow-visibility.md, docs/specs/omega-runtime-message-pipeline.md, docs/specs/omega-step-session-asset-model/session-context-and-data-contracts.md
+
+### Task 15B-28: omega-tui / omega-app — Execute Step Nested Subflow Timeline
+- **Status**: Completed
+- **Completed**: 2026-03-26
+- **Priority**: Medium
+- **Description**: 在 `Response` 的 `execute` step block 内新增 nested subflow lane，把 `execute-1` / `execute-2` 等 item run 渲染为父级 step 的二级卡片；当前项默认展开、已完成项默认折叠、失败项保持展开，并与底部状态带及 `Todo` 当前项高亮共享同一 identity。
+- **Complexity**: M
+- **Completed Note**: `Response` 已将带 `subflow_ref` 的 itemized execute section 聚合为父级 `execute` block 下的 nested subflow lane；当前 item 默认展开、已完成项折叠、未开始项显示 queued token，底部状态带与 `Todo` 当前项高亮已对齐同一 item identity。
+- **Blocked by**: Task 15F-29
+- **Blocks**: Task 15B-29
+- **Related**: docs/specs/omega-tui-step-subflow-visibility.md, docs/specs/omega-tui-response-thinking-experience.md, docs/specs/omega-tui-runtime-experience.md
+
+### Task 15B-29: omega-tui — Subflow Detail Overlay And Navigation
+- **Status**: Completed
+- **Completed**: 2026-03-26
+- **Priority**: Low
+- **Description**: 为 step 内子流程补齐 detail overlay 与导航能力：允许在 `Response` 中展开某个 item run 的 compact diagnostics / tool summary / completion source，并支持在多个 item run 之间做稳定跳转与选择恢复。
+- **Complexity**: S
+- **Completed Note**: `Response` 中的 subflow header 已可直接激活 detail overlay，overlay 会展示 item identity、status、repeat/no-progress、completion source 与 tool/body 摘要；现有 response 选择态与滚动即可在多个 item run 之间稳定移动并恢复焦点。
+- **Blocked by**: Task 15B-28
+- **Related**: docs/specs/omega-tui-step-subflow-visibility.md, docs/specs/omega-tui-overlay-popups.md, docs/specs/omega-tui-modal-keymap.md
 
 ### ── M3: Todo 管理 (s03) ──
 

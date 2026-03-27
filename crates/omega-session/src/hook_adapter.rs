@@ -16,6 +16,15 @@ use crate::session_state::SessionContext;
 use crate::ui_emit::{send_error_text, send_system_log_text, send_warning_text};
 use crate::ResolvedToolSet;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExecuteLoopItemContext {
+    pub(crate) child_step_id: String,
+    pub(crate) item_id: String,
+    pub(crate) item_label: Option<String>,
+    pub(crate) item_index: usize,
+    pub(crate) item_total: usize,
+}
+
 #[derive(Clone)]
 pub(crate) struct StepHookRuntime {
     host: Arc<HookHost>,
@@ -31,6 +40,7 @@ pub(crate) struct StepHookRuntime {
     visible_tools: Vec<String>,
     structured_input: Option<Value>,
     session_context: SessionContext,
+    current_item: Option<ExecuteLoopItemContext>,
 }
 
 impl StepHookRuntime {
@@ -49,6 +59,7 @@ impl StepHookRuntime {
         resolved_tools: &ResolvedToolSet,
         structured_input: Option<&Value>,
         session_context: &SessionContext,
+        current_item: Option<ExecuteLoopItemContext>,
     ) -> Self {
         Self {
             host,
@@ -64,6 +75,7 @@ impl StepHookRuntime {
             visible_tools: resolved_tools.tool_names().to_vec(),
             structured_input: structured_input.cloned(),
             session_context: session_context.clone(),
+            current_item,
         }
     }
 
@@ -213,6 +225,9 @@ impl StepHookRuntime {
                 step_label: self.step.label.clone(),
                 step_index: self.step_index,
                 step_total: self.step_total,
+                current_item_id: self.current_item.as_ref().map(|item| item.item_id.clone()),
+                item_index: self.current_item.as_ref().map(|item| item.item_index),
+                item_total: self.current_item.as_ref().map(|item| item.item_total),
                 visible_tools: self.visible_tools.clone(),
                 structured_input: self.structured_input.clone(),
                 structured_output: structured_output.cloned(),

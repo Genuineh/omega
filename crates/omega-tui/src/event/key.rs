@@ -65,6 +65,12 @@ pub(super) fn handle_key_event(
                                 .set_status_notice(format!("Opened {tool_name} detail overlay."));
                             return Ok(false);
                         }
+                        Some(ResponseActivation::StepSubflowDetailOpened(label)) => {
+                            app_guard.set_status_notice(format!(
+                                "Opened subflow detail overlay for {label}."
+                            ));
+                            return Ok(false);
+                        }
                         None if app_guard.show_thinking => {
                             "Select a thinking block or tool summary before activating it."
                         }

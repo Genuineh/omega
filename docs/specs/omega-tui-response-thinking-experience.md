@@ -52,6 +52,7 @@ related_prds: []
 - `Turn header`: 当前 turn 的 scene / selected workflow 摘要。
 - `Routing summary`: root workflow 的 `scene-recognition -> select-workflow`，默认可折叠。
 - `Step blocks`: child workflow 中每个 step 一个稳定 block。
+- `Nested subflow lane`: 当某个 step 拥有 itemized subflow 时，在该 step block 内展示稳定的二级子流程轨迹，而不是把它提升为新的顶层 step。详细规则见 `docs/specs/omega-tui-step-subflow-visibility.md`。
 - `Thinking block`: 当 provider 返回 reasoning/thinking 时，挂在当前活跃 step 或 final answer 之下。
 - `Final answer block`: 始终作为 turn 末尾的显式结果块，默认展开。
 
@@ -71,6 +72,8 @@ related_prds: []
 - child workflow 当前活跃 step 默认展开。
 - 已完成 step 默认保持展开，但允许后续通过交互折叠。
 - final answer block 始终展开，优先保证可见。
+
+当 step 自身拥有 runtime-owned subflow 时，子流程必须作为该 step block 的内部层级显示。v1 首个使用者是 itemized execute loop；其 item run identity、折叠策略与 status/activity 对齐规则见 `docs/specs/omega-tui-step-subflow-visibility.md`。
 
 ### Thinking Presentation Rules
 
@@ -246,3 +249,4 @@ thinking 的展示规则：
 - 2026-03-20: `Task 15F-6` 完成，补齐 `ChatEvent` / `chat_stream()` 与 response section runtime contract；后续重点转移到 `omega-tui` 消费这些 section event。
 - 2026-03-20: `Task 15B-20` 完成，`omega-tui` 已消费 response section effect 并将 `Routing / Step / FinalAnswer` 渲染为结构化 timeline；后续重点聚焦 `Thinking` section 的可见性与折叠交互。
 - 2026-03-20: `Task 15B-21` 完成，`omega-tui` 已消费 `Thinking` section 并提供实时追加、完成态默认折叠、`Enter/x` 手动展开以及 `.omega/tui.toml` 的 `[response].show_thinking` 开关。
+- 2026-03-26: 补充 step-owned nested subflow 方向；当 step 内存在 itemized execute 这类子流程时，`Response` 继续保持顶层 `step block` 稳定，只在 block 内新增二级 subflow lane，详细设计见 `docs/specs/omega-tui-step-subflow-visibility.md`。

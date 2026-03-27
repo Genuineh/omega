@@ -27,6 +27,7 @@ This directory contains the working documentation set for the Omega Rust project
 | `docs/specs/omega-tui-overlay-popups.md` | Specification | Floating overlay / popup interaction plan for transient `omega-tui` workflows |
 | `docs/specs/omega-tui-runtime-experience.md` | Specification | Active TUI-only experience plan for the richer `omega-tui` runtime path |
 | `docs/specs/omega-tui-response-thinking-experience.md` | Specification | Structured Response timeline and provider-exposed thinking visibility plan |
+| `docs/specs/omega-tui-step-subflow-visibility.md` | Specification | Planned nested subflow visibility for itemized execute and other step-owned child flows in `omega-tui` |
 | `docs/specs/omega-tui-todo-sidebar-layout.md` | Specification | Todo/Logs split-panel layout for the TUI sidebar |
 | `docs/specs/omega-tui-non-ui-extraction.md` | Specification | Historical Task 15D extraction baseline; keep for boundary rationale, not as the latest runtime-path source of truth |
 | `docs/specs/omega-app-package.md` | Specification | Implemented `omega-app` assembly package and main-entry boundary |

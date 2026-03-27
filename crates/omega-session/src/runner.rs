@@ -5,10 +5,10 @@ use std::sync::{Arc, Mutex};
 use omega_core::{Agent, CoreSharedTodoManager, TodoItem, TodoStatus};
 use omega_hooks::{HookAdvanceOutcome, HookHost};
 use omega_workflow::{
-    OutputRecoveryMode, SceneCatalog, StepInputContract, StepOutputContract, WorkflowCatalog,
-    WorkflowPromptCatalog, WorkflowPrompts, WorkflowStep, EXECUTE_STEP_ID, FEATURE_SCENE_ID,
-    FEATURE_WORKFLOW_ID, PLAN_STEP_ID, RESEARCH_WORKFLOW_ID, SCENE_RECOGNITION_STEP_ID,
-    SELECT_WORKFLOW_STEP_ID,
+    OutputRecoveryMode, SceneCatalog, StepInputContract, StepLoopContract,
+    StepOutputContract, WorkflowCatalog, WorkflowPromptCatalog, WorkflowPrompts, WorkflowStep,
+    EXECUTE_STEP_ID, FEATURE_SCENE_ID, FEATURE_WORKFLOW_ID, PLAN_STEP_ID,
+    RESEARCH_WORKFLOW_ID, SCENE_RECOGNITION_STEP_ID, SELECT_WORKFLOW_STEP_ID,
 };
 use serde_json::Value;
 use tokio::runtime::Handle;
@@ -17,9 +17,9 @@ use tracing::{debug, error, info};
 
 use crate::output::{
     build_output_validation_feedback, parse_feature_execute_output, parse_feature_plan_output,
-    parse_structured_output_candidates, validate_feature_step_output, validate_schema_file,
+    parse_structured_output_candidates, validate_schema_file, validate_workflow_step_output,
 };
-use crate::hook_adapter::StepHookRuntime;
+use crate::hook_adapter::{ExecuteLoopItemContext, StepHookRuntime};
 use crate::prompt_builder::{
     build_output_repair_system_prompt, build_step_system_prompt, render_output_contract,
     render_routing_context, render_structured_input, render_visible_tools,
@@ -31,16 +31,18 @@ use crate::routing::{
 use crate::session_state::{SessionContext, StepSummary};
 use crate::ui_emit::{
     send_routing_log, send_session_status, send_step_text, send_system_log_text,
-    send_todo_snapshot, send_warning_text, send_workflow_step, StepResponseStreamer,
-    ToolRunTracker,
+    send_step_subflow_status, send_todo_snapshot, send_warning_text, send_workflow_step,
+    StepResponseStreamer, ToolRunTracker,
 };
 use crate::{
-    ResolvedSkillSet, ResolvedToolSet, RuntimeMessageBridge, SessionSkillCatalog,
-    SessionToolCatalog, SharedRuntimeMessageBridge, StepContextWrite, StepContextWriteKind, StepDiagnostics,
-    StepInputDiagnostics, StepInputStatus, StepOutputAttemptKind, StepOutputContractMode,
-    StepOutputDiagnostics, StepOutputRecoveryDecision, StepOutputStatus, StepSummarySource,
-    WorkflowRunRole, CONTEXT_SAFETY_MARGIN_TOKENS, REPAIR_PASS_MAX_ITERATIONS,
-    SUMMARY_CHAR_LIMIT, TOKEN_ESTIMATE_DIVISOR,
+    ExecuteProgressDiagnostics, ResolvedSkillSet, ResolvedToolSet, RuntimeMessageBridge,
+    SessionSkillCatalog, SessionToolCatalog, SharedRuntimeMessageBridge, StepContextWrite,
+    StepContextWriteKind, StepDiagnostics, StepInputDiagnostics, StepInputStatus,
+    StepOutputAttemptKind, StepOutputContractMode, StepOutputDiagnostics,
+    StepOutputRecoveryDecision, StepOutputStatus, StepSubflowState, StepSubflowStatus,
+    StepSummarySource, WorkflowRunRole,
+    CONTEXT_SAFETY_MARGIN_TOKENS, REPAIR_PASS_MAX_ITERATIONS, SUMMARY_CHAR_LIMIT,
+    TOKEN_ESTIMATE_DIVISOR,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,6 +54,7 @@ pub(crate) struct StepExecutionInput {
     pub(crate) session_context: SessionContext,
     pub(crate) structured_input: Option<Value>,
     pub(crate) todo_snapshot: Option<String>,
+    pub(crate) current_execute_item: Option<ExecuteLoopItemContext>,
     pub(crate) step: WorkflowStep,
     pub(crate) step_prompt: String,
 }
@@ -72,6 +75,13 @@ struct StepDiagnosticContext<'a> {
     step: &'a WorkflowStep,
     index: usize,
     total: usize,
+}
+
+#[derive(Debug, Clone)]
+struct ExecuteLoopProgressState {
+    current_item: Option<ExecuteLoopItemContext>,
+    repeat_count: u32,
+    completion_source: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -140,6 +150,7 @@ impl OutputValidationFailure {
 enum StepTransition {
     Continue,
     Repeat,
+    RepeatItem,
     StartWorkflow { workflow_id: String },
     FinishTurn,
     Error { message: String },
@@ -260,6 +271,7 @@ impl<'a> WorkflowTurnRunner<'a> {
         let (definition, prompts) = self.resolve_workflow_bundle(workflow_id)?;
         let mut last_text = String::new();
         let mut step_repeat_counts: BTreeMap<String, u32> = BTreeMap::new();
+        let mut item_repeat_counts: BTreeMap<String, u32> = BTreeMap::new();
         let mut run = definition.start_run();
 
         loop {
@@ -278,6 +290,25 @@ impl<'a> WorkflowTurnRunner<'a> {
                 index: step_state.index,
                 total: step_state.total,
             };
+            let current_execute_item = self.resolve_execute_loop_item(&step)?;
+            let repeat_count = *step_repeat_counts.get(&step.id).unwrap_or(&0);
+            let current_item_repeat_count = current_execute_item
+                .as_ref()
+                .and_then(|item| item_repeat_counts.get(&self.execute_item_repeat_key(&step, item)))
+                .copied()
+                .unwrap_or(0);
+
+            if let Some(current_item) = current_execute_item.as_ref() {
+                self.emit_step_subflow_status(
+                    workflow_id,
+                    role,
+                    &step,
+                    current_item,
+                    StepSubflowState::Running,
+                    current_item_repeat_count,
+                    None,
+                );
+            }
 
             send_workflow_step(
                 &*self.tx_result,
@@ -289,9 +320,22 @@ impl<'a> WorkflowTurnRunner<'a> {
 
             let step_prompt = prompts.prompt_for(&step.id).unwrap_or_default();
             let step_input =
-                match self.build_step_execution_input(session_context, &step, step_prompt) {
+                match self.build_step_execution_input(
+                    session_context,
+                    &step,
+                    step_prompt,
+                    current_execute_item.clone(),
+                ) {
                     Ok(step_input) => {
-                        self.send_step_input_diagnostics(&diagnostic_context, &step_input);
+                        self.send_step_input_diagnostics(
+                            &diagnostic_context,
+                            &step_input,
+                            ExecuteLoopProgressState {
+                                current_item: current_execute_item.clone(),
+                                repeat_count: current_item_repeat_count,
+                                completion_source: None,
+                            },
+                        );
                         step_input
                     }
                     Err(error) => {
@@ -317,6 +361,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                 &step_input.resolved_tools,
                 step_input.structured_input.as_ref(),
                 session_context,
+                current_execute_item.clone(),
             );
             hook_runtime.before_step()?;
             let base_system_prompt = build_step_system_prompt(&step_input);
@@ -335,6 +380,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                 &step,
                 is_final_step,
                 session_context.routing.recognized_scene_id.as_deref(),
+                current_execute_item.as_ref(),
             );
             response_streamer.begin();
             let step_attempt_checkpoint = agent.messages().to_vec();
@@ -355,13 +401,29 @@ impl<'a> WorkflowTurnRunner<'a> {
                 ) {
                     Ok(stage_text) => stage_text,
                     Err(error) => {
+                        if let Some(current_item) = current_execute_item.as_ref() {
+                            self.emit_step_subflow_status(
+                                workflow_id,
+                                role,
+                                &step,
+                                current_item,
+                                StepSubflowState::Failed,
+                                current_item_repeat_count,
+                                None,
+                            );
+                        }
                         let _ = hook_runtime.step_failed(&error.to_string());
                         response_streamer.fail();
                         return Err(error);
                     }
                 };
 
-                match self.validate_step_output(&step, &stage_text) {
+                match self.validate_step_output(
+                    workflow_id,
+                    &step,
+                    current_execute_item.as_ref(),
+                    &stage_text,
+                ) {
                     Ok(structured_output) => {
                         response_streamer.complete();
                         break (
@@ -403,6 +465,11 @@ impl<'a> WorkflowTurnRunner<'a> {
                                 ),
                                 session_writes: Vec::new(),
                             },
+                            ExecuteLoopProgressState {
+                                current_item: current_execute_item.clone(),
+                                repeat_count: current_item_repeat_count,
+                                completion_source: None,
+                            },
                         );
                         last_validation_error = Some(validation_error_text.clone());
                         last_validation_failure = Some(validation_failure.clone());
@@ -438,6 +505,17 @@ impl<'a> WorkflowTurnRunner<'a> {
                             }
 
                             response_streamer.fail();
+                            if let Some(current_item) = current_execute_item.as_ref() {
+                                self.emit_step_subflow_status(
+                                    workflow_id,
+                                    role,
+                                    &step,
+                                    current_item,
+                                    StepSubflowState::Failed,
+                                    current_item_repeat_count,
+                                    None,
+                                );
+                            }
                             let _ = hook_runtime.step_failed(&format!(
                                 "step '{}' failed output validation after {} attempt(s): {}",
                                 step.id,
@@ -486,6 +564,20 @@ impl<'a> WorkflowTurnRunner<'a> {
                                     &step,
                                     &validation_failure.message,
                                 );
+                                let validation_feedback = if let Some(current_item) =
+                                    step_input.current_execute_item.as_ref()
+                                {
+                                    format!(
+                                        "{}\n\nCurrent execute item: '{}' ({}/{}). Only '{}' may be newly added to completed_tasks in this attempt. Keep future items open until their own execute slice runs.",
+                                        validation_feedback,
+                                        current_item.item_id,
+                                        current_item.item_index,
+                                        current_item.item_total,
+                                        current_item.item_id,
+                                    )
+                                } else {
+                                    validation_feedback
+                                };
                                 agent.add_user_message(&validation_feedback);
                             }
                             StepOutputAttemptKind::Primary => {}
@@ -511,6 +603,52 @@ impl<'a> WorkflowTurnRunner<'a> {
                 step_result.structured_output.as_ref(),
             );
 
+            step_result.transition = match self.apply_before_advance_gate(
+                &step,
+                step_result.transition.clone(),
+                &step_result.final_text,
+                step_result.structured_output.as_ref(),
+                &hook_runtime,
+                repeat_count,
+                current_execute_item.as_ref(),
+                current_item_repeat_count,
+            ) {
+                Ok(transition) => transition,
+                Err(error) => {
+                    if let Some(current_item) = current_execute_item.as_ref() {
+                        self.emit_step_subflow_status(
+                            workflow_id,
+                            role,
+                            &step,
+                            current_item,
+                            StepSubflowState::Failed,
+                            current_item_repeat_count,
+                            None,
+                        );
+                    }
+                    let _ = hook_runtime.step_failed(&error.to_string());
+                    return Err(error);
+                }
+            };
+
+            let progress_completion_source = self.execute_completion_source(
+                &step,
+                current_execute_item.as_ref(),
+                step_result.structured_output.as_ref(),
+            )?;
+
+            step_result.transition = self.apply_execute_loop_progression(
+                &step,
+                step_result.transition,
+                current_execute_item.as_ref(),
+                progress_completion_source.clone(),
+            )?;
+
+            let emitted_repeat_count = match step_result.transition {
+                StepTransition::Repeat => current_item_repeat_count + 1,
+                _ => current_item_repeat_count,
+            };
+
             self.send_step_output_diagnostics(
                 &diagnostic_context,
                 &step_input,
@@ -534,30 +672,57 @@ impl<'a> WorkflowTurnRunner<'a> {
                     recovery_decision: None,
                     session_writes: step_result.session_writes.clone(),
                 },
+                ExecuteLoopProgressState {
+                    current_item: current_execute_item.clone(),
+                    repeat_count: emitted_repeat_count,
+                    completion_source: progress_completion_source.clone(),
+                },
             );
 
-            let repeat_count = *step_repeat_counts.get(&step.id).unwrap_or(&0);
-            step_result.transition = match self.apply_before_advance_gate(
-                &step,
-                step_result.transition.clone(),
-                &step_result.final_text,
-                step_result.structured_output.as_ref(),
-                &hook_runtime,
-                repeat_count,
-            ) {
-                Ok(transition) => transition,
-                Err(error) => {
-                    let _ = hook_runtime.step_failed(&error.to_string());
-                    return Err(error);
-                }
-            };
+            if let Some(current_item) = current_execute_item.as_ref() {
+                let subflow_state = match step_result.transition {
+                    StepTransition::Repeat => StepSubflowState::Running,
+                    StepTransition::RepeatItem | StepTransition::Continue | StepTransition::FinishTurn => {
+                        if progress_completion_source.is_some() {
+                            StepSubflowState::Complete
+                        } else {
+                            StepSubflowState::Running
+                        }
+                    }
+                    StepTransition::Error { .. } => StepSubflowState::Failed,
+                    StepTransition::StartWorkflow { .. } => StepSubflowState::Complete,
+                };
+                self.emit_step_subflow_status(
+                    workflow_id,
+                    role,
+                    &step,
+                    current_item,
+                    subflow_state,
+                    emitted_repeat_count,
+                    progress_completion_source.clone(),
+                );
+            }
 
             match step_result.transition {
                 StepTransition::Repeat => {
                     step_repeat_counts.insert(step.id.clone(), repeat_count + 1);
+                    if let Some(current_item) = current_execute_item.as_ref() {
+                        item_repeat_counts.insert(
+                            self.execute_item_repeat_key(&step, current_item),
+                            current_item_repeat_count + 1,
+                        );
+                    }
+                }
+                StepTransition::RepeatItem => {
+                    if let Some(current_item) = current_execute_item.as_ref() {
+                        item_repeat_counts.remove(&self.execute_item_repeat_key(&step, current_item));
+                    }
                 }
                 _ => {
                     step_repeat_counts.remove(&step.id);
+                    if let Some(current_item) = current_execute_item.as_ref() {
+                        item_repeat_counts.remove(&self.execute_item_repeat_key(&step, current_item));
+                    }
                 }
             }
 
@@ -583,7 +748,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                 &step_result.session_writes,
             );
 
-            if !matches!(step_result.transition, StepTransition::Repeat) {
+            if !matches!(step_result.transition, StepTransition::Repeat | StepTransition::RepeatItem) {
                 hook_runtime.after_step(
                     &step_result.final_text,
                     step_result.structured_output.as_ref(),
@@ -613,7 +778,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                         break;
                     }
                 }
-                StepTransition::Repeat => {}
+                StepTransition::Repeat | StepTransition::RepeatItem => {}
                 StepTransition::StartWorkflow { .. } | StepTransition::FinishTurn => break,
                 StepTransition::Error { message } => return Err(anyhow::anyhow!(message)),
             }
@@ -739,6 +904,7 @@ impl<'a> WorkflowTurnRunner<'a> {
         session_context: &SessionContext,
         step: &WorkflowStep,
         step_prompt: &str,
+        current_execute_item: Option<ExecuteLoopItemContext>,
     ) -> anyhow::Result<StepExecutionInput> {
         let resolved_tools = self.tool_catalog.resolve_for_step(&step.tool_request);
         let resolved_skills = self
@@ -767,6 +933,7 @@ impl<'a> WorkflowTurnRunner<'a> {
             },
             structured_input,
             todo_snapshot,
+            current_execute_item,
             step: step.clone(),
             step_prompt: step_prompt.to_string(),
         })
@@ -869,6 +1036,7 @@ impl<'a> WorkflowTurnRunner<'a> {
         &self,
         context: &StepDiagnosticContext<'_>,
         step_input: &StepExecutionInput,
+        progress_state: ExecuteLoopProgressState,
     ) {
         let output = build_step_output_diagnostics(
             &context.step.output_contract,
@@ -887,6 +1055,7 @@ impl<'a> WorkflowTurnRunner<'a> {
         );
         self.send_step_diagnostics_effect(build_step_diagnostics(
             context,
+            self.build_execute_progress_diagnostics(context.step, &progress_state),
             build_step_input_diagnostics(step_input),
             output,
             Vec::new(),
@@ -916,6 +1085,14 @@ impl<'a> WorkflowTurnRunner<'a> {
         );
         self.send_step_diagnostics_effect(build_step_diagnostics(
             context,
+            self.build_execute_progress_diagnostics(
+                context.step,
+                &ExecuteLoopProgressState {
+                    current_item: None,
+                    repeat_count: 0,
+                    completion_source: None,
+                },
+            ),
             build_failed_step_input_diagnostics(session_context, context.step, error),
             output,
             Vec::new(),
@@ -934,14 +1111,227 @@ impl<'a> WorkflowTurnRunner<'a> {
         context: &StepDiagnosticContext<'_>,
         step_input: &StepExecutionInput,
         output_state: OutputDiagnosticState<'_>,
+        progress_state: ExecuteLoopProgressState,
     ) {
         let diagnostics = build_step_diagnostics(
             context,
+            self.build_execute_progress_diagnostics(context.step, &progress_state),
             build_step_input_diagnostics(step_input),
             build_step_output_diagnostics(&context.step.output_contract, &output_state),
             output_state.session_writes,
         );
         self.send_step_diagnostics_effect(diagnostics);
+    }
+
+    fn build_execute_progress_diagnostics(
+        &self,
+        step: &WorkflowStep,
+        progress_state: &ExecuteLoopProgressState,
+    ) -> Option<ExecuteProgressDiagnostics> {
+        if step.id != EXECUTE_STEP_ID {
+            return None;
+        }
+
+        let manager = self.todo_manager.lock().ok()?;
+        let todo_total = manager.items().len();
+        let todo_completed = manager
+            .items()
+            .iter()
+            .filter(|item| item.status == TodoStatus::Completed)
+            .count();
+        let todo_open = manager
+            .items()
+            .iter()
+            .filter(|item| item.status != TodoStatus::Completed)
+            .count();
+        let max_item_repeats = match &step.loop_contract {
+            Some(StepLoopContract::TodoItems {
+                max_item_repeats, ..
+            }) => Some(*max_item_repeats),
+            None => None,
+        };
+
+        Some(ExecuteProgressDiagnostics {
+            todo_total,
+            todo_completed,
+            todo_open,
+            current_item_id: progress_state
+                .current_item
+                .as_ref()
+                .map(|item| item.item_id.clone()),
+            current_item_index: progress_state
+                .current_item
+                .as_ref()
+                .map(|item| item.item_index),
+            current_item_total: progress_state
+                .current_item
+                .as_ref()
+                .map(|item| item.item_total),
+            repeat_count: progress_state.repeat_count,
+            no_progress_streak: manager.rounds_without_update() as u32,
+            max_step_repeats: step.max_step_repeats,
+            max_item_repeats,
+            completion_source: progress_state.completion_source.clone(),
+        })
+    }
+
+    fn resolve_execute_loop_item(
+        &self,
+        step: &WorkflowStep,
+    ) -> anyhow::Result<Option<ExecuteLoopItemContext>> {
+        let Some(StepLoopContract::TodoItems {
+            child_step_prefix,
+            ..
+        }) = &step.loop_contract
+        else {
+            return Ok(None);
+        };
+
+        if step.id != EXECUTE_STEP_ID {
+            return Ok(None);
+        }
+
+        let manager = self
+            .todo_manager
+            .lock()
+            .map_err(|_| anyhow::anyhow!("todo manager lock poisoned"))?;
+        let items = manager.items();
+        let total = items.len();
+        let Some((index, item)) = items
+            .iter()
+            .enumerate()
+            .find(|(_, item)| item.status == TodoStatus::InProgress)
+            .or_else(|| {
+                items.iter()
+                    .enumerate()
+                    .find(|(_, item)| item.status != TodoStatus::Completed)
+            })
+        else {
+            return Ok(None);
+        };
+
+        let item_id = item.id.clone().ok_or_else(|| {
+            anyhow::anyhow!("todo item missing id while resolving execute loop item")
+        })?;
+
+        Ok(Some(ExecuteLoopItemContext {
+            child_step_id: format!("{}-{}", child_step_prefix, index + 1),
+            item_id,
+            item_label: Some(item.text.clone()),
+            item_index: index + 1,
+            item_total: total,
+        }))
+    }
+
+    fn emit_step_subflow_status(
+        &self,
+        workflow_id: &str,
+        role: WorkflowRunRole,
+        step: &WorkflowStep,
+        current_item: &ExecuteLoopItemContext,
+        status: StepSubflowState,
+        repeat_count_for_item: u32,
+        completion_source: Option<String>,
+    ) {
+        let no_progress_streak_for_item = self
+            .todo_manager
+            .lock()
+            .map(|manager| manager.rounds_without_update() as u32)
+            .unwrap_or(0);
+
+        send_step_subflow_status(
+            &*self.tx_result,
+            self.turn_id,
+            StepSubflowStatus {
+                workflow_id: workflow_id.to_string(),
+                workflow_role: role,
+                step_id: step.id.clone(),
+                step_label: step.label.clone(),
+                subflow_id: current_item.child_step_id.clone(),
+                item_id: Some(current_item.item_id.clone()),
+                item_label: current_item.item_label.clone(),
+                item_index: current_item.item_index,
+                item_total: current_item.item_total,
+                status,
+                repeat_count_for_item,
+                no_progress_streak_for_item,
+                completion_source,
+            },
+        );
+    }
+
+    fn execute_item_repeat_key(
+        &self,
+        step: &WorkflowStep,
+        item: &ExecuteLoopItemContext,
+    ) -> String {
+        format!("{}:{}", step.id, item.item_id)
+    }
+
+    fn execute_completion_source(
+        &self,
+        step: &WorkflowStep,
+        current_item: Option<&ExecuteLoopItemContext>,
+        structured_output: Option<&Value>,
+    ) -> anyhow::Result<Option<String>> {
+        if step.id != EXECUTE_STEP_ID {
+            return Ok(None);
+        }
+
+        if let Some(current_item) = current_item {
+            if execute_output_marks_item_complete(structured_output, &current_item.item_id)? {
+                return Ok(Some("structured_output".to_string()));
+            }
+        }
+
+        let manager = self
+            .todo_manager
+            .lock()
+            .map_err(|_| anyhow::anyhow!("todo manager lock poisoned"))?;
+        if !manager.has_open_items() {
+            return Ok(Some("todo_state".to_string()));
+        }
+
+        Ok(None)
+    }
+
+    fn apply_execute_loop_progression(
+        &self,
+        step: &WorkflowStep,
+        transition: StepTransition,
+        current_item: Option<&ExecuteLoopItemContext>,
+        completion_source: Option<String>,
+    ) -> anyhow::Result<StepTransition> {
+        if !matches!(
+            transition,
+            StepTransition::Continue | StepTransition::StartWorkflow { .. } | StepTransition::FinishTurn
+        ) {
+            return Ok(transition);
+        }
+
+        let Some(current_item) = current_item else {
+            return Ok(transition);
+        };
+        if step.id != EXECUTE_STEP_ID || completion_source.as_deref() != Some("structured_output") {
+            return Ok(transition);
+        }
+
+        let next_item = self.resolve_execute_loop_item(step)?;
+        if let Some(next_item) = next_item {
+            if next_item.item_id != current_item.item_id {
+                send_system_log_text(
+                    &*self.tx_result,
+                    self.turn_id,
+                    &format!(
+                        "Step '{}' completed item '{}' and continuing with '{}'.",
+                        step.id, current_item.item_id, next_item.child_step_id
+                    ),
+                );
+                return Ok(StepTransition::RepeatItem);
+            }
+        }
+
+        Ok(transition)
     }
 
     fn finalize_step(
@@ -1041,6 +1431,8 @@ impl<'a> WorkflowTurnRunner<'a> {
         structured_output: Option<&Value>,
         hook_runtime: &StepHookRuntime,
         repeat_count: u32,
+        current_item: Option<&ExecuteLoopItemContext>,
+        current_item_repeat_count: u32,
     ) -> anyhow::Result<StepTransition> {
         if !matches!(
             base_transition,
@@ -1065,6 +1457,24 @@ impl<'a> WorkflowTurnRunner<'a> {
                         step.max_step_repeats,
                         reason_text
                     ));
+                }
+
+                if let (
+                    Some(ExecuteLoopItemContext { item_id, .. }),
+                    Some(StepLoopContract::TodoItems {
+                        max_item_repeats, ..
+                    }),
+                ) = (current_item, &step.loop_contract)
+                {
+                    if current_item_repeat_count >= *max_item_repeats {
+                        return Err(anyhow::anyhow!(
+                            "step '{}' exhausted max_item_repeats={} for todo item '{}' after advance denial: {}",
+                            step.id,
+                            max_item_repeats,
+                            item_id,
+                            reason_text
+                        ));
+                    }
                 }
 
                 send_warning_text(
@@ -1223,7 +1633,9 @@ impl<'a> WorkflowTurnRunner<'a> {
 
     fn validate_step_output(
         &self,
+        workflow_id: &str,
         step: &WorkflowStep,
+        current_item: Option<&ExecuteLoopItemContext>,
         final_text: &str,
     ) -> Result<Option<Value>, OutputValidationFailure> {
         match &step.output_contract {
@@ -1263,7 +1675,42 @@ impl<'a> WorkflowTurnRunner<'a> {
                         }
                     }
 
-                    if let Err(error) = validate_feature_step_output(step, &value) {
+                    if let Err(error) = validate_workflow_step_output(workflow_id, step, &value) {
+                        if first_failure.is_none() {
+                            first_failure = Some(OutputValidationFailure::new(
+                                OutputValidationErrorKind::SemanticInvalid,
+                                error.to_string(),
+                                final_text,
+                                Some(value.clone()),
+                            ));
+                        }
+                        continue;
+                    }
+
+                    if let Err(error) = self.validate_itemized_execute_output(
+                        workflow_id,
+                        step,
+                        current_item,
+                        &value,
+                    ) {
+                        if let Some(repaired) = self.try_repair_itemized_execute_output(
+                            workflow_id,
+                            step,
+                            current_item,
+                            &value,
+                        ) {
+                            if self
+                                .validate_itemized_execute_output(
+                                    workflow_id,
+                                    step,
+                                    current_item,
+                                    &repaired,
+                                )
+                                .is_ok()
+                            {
+                                return Ok(Some(repaired));
+                            }
+                        }
                         if first_failure.is_none() {
                             first_failure = Some(OutputValidationFailure::new(
                                 OutputValidationErrorKind::SemanticInvalid,
@@ -1294,21 +1741,216 @@ impl<'a> WorkflowTurnRunner<'a> {
             StepOutputContract::Optional {
                 format,
                 schema_path,
+                ..
             } => {
+                let mut first_failure = None;
                 for value in parse_structured_output_candidates(*format, final_text) {
                     if let Some(schema_path) = schema_path {
-                        if validate_schema_file(self.cwd, schema_path, &value).is_err() {
+                        if let Err(error) = validate_schema_file(self.cwd, schema_path, &value) {
+                            if first_failure.is_none() {
+                                first_failure = Some(OutputValidationFailure::new(
+                                    OutputValidationErrorKind::SchemaInvalid,
+                                    error.to_string(),
+                                    final_text,
+                                    Some(value.clone()),
+                                ));
+                            }
                             continue;
                         }
                     }
-                    if validate_feature_step_output(step, &value).is_err() {
+
+                    if let Err(error) = validate_workflow_step_output(workflow_id, step, &value) {
+                        if first_failure.is_none() {
+                            first_failure = Some(OutputValidationFailure::new(
+                                OutputValidationErrorKind::SemanticInvalid,
+                                error.to_string(),
+                                final_text,
+                                Some(value.clone()),
+                            ));
+                        }
                         continue;
                     }
+
+                    if let Err(error) = self.validate_itemized_execute_output(
+                        workflow_id,
+                        step,
+                        current_item,
+                        &value,
+                    ) {
+                        if let Some(repaired) = self.try_repair_itemized_execute_output(
+                            workflow_id,
+                            step,
+                            current_item,
+                            &value,
+                        ) {
+                            if self
+                                .validate_itemized_execute_output(
+                                    workflow_id,
+                                    step,
+                                    current_item,
+                                    &repaired,
+                                )
+                                .is_ok()
+                            {
+                                return Ok(Some(repaired));
+                            }
+                        }
+                        if first_failure.is_none() {
+                            first_failure = Some(OutputValidationFailure::new(
+                                OutputValidationErrorKind::SemanticInvalid,
+                                error.to_string(),
+                                final_text,
+                                Some(value.clone()),
+                            ));
+                        }
+                        continue;
+                    }
+
                     return Ok(Some(value));
                 }
-                Ok(None)
+
+                if let Some(first_failure) = first_failure {
+                    Err(first_failure)
+                } else {
+                    Ok(None)
+                }
             }
         }
+    }
+
+    fn validate_itemized_execute_output(
+        &self,
+        workflow_id: &str,
+        step: &WorkflowStep,
+        current_item: Option<&ExecuteLoopItemContext>,
+        value: &Value,
+    ) -> anyhow::Result<()> {
+        if !matches!(workflow_id, FEATURE_WORKFLOW_ID | RESEARCH_WORKFLOW_ID)
+            || step.id != EXECUTE_STEP_ID
+            || !matches!(step.loop_contract, Some(StepLoopContract::TodoItems { .. }))
+        {
+            return Ok(());
+        }
+
+        let Some(current_item) = current_item else {
+            return Ok(());
+        };
+
+        let execute = parse_feature_execute_output(value.clone())?;
+        let manager = self
+            .todo_manager
+            .lock()
+            .map_err(|_| anyhow::anyhow!("todo manager lock poisoned"))?;
+        let known_ids = manager
+            .items()
+            .iter()
+            .filter_map(|item| item.id.as_deref())
+            .collect::<std::collections::BTreeSet<_>>();
+        let allowed_completed = manager
+            .items()
+            .iter()
+            .filter(|item| item.status == TodoStatus::Completed)
+            .filter_map(|item| item.id.as_deref())
+            .chain(std::iter::once(current_item.item_id.as_str()))
+            .collect::<std::collections::BTreeSet<_>>();
+
+        for task_id in execute.completed_tasks.iter().map(|task_id| task_id.trim()) {
+            if !known_ids.contains(task_id) {
+                anyhow::bail!(
+                    "execute output completed_tasks contains unknown todo item '{}'",
+                    task_id
+                );
+            }
+            if !allowed_completed.contains(task_id) {
+                anyhow::bail!(
+                    "itemized execute output cannot complete future todo item '{}' while current item is '{}'",
+                    task_id,
+                    current_item.item_id
+                );
+            }
+        }
+
+        for task_id in execute.open_tasks.iter().map(|task_id| task_id.trim()) {
+            if !known_ids.contains(task_id) {
+                anyhow::bail!(
+                    "execute output open_tasks contains unknown todo item '{}'",
+                    task_id
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Attempt to auto-repair an itemized execute output by stripping future
+    /// todo items from `completed_tasks` and moving them back to `open_tasks`.
+    /// Returns `Some(repaired_value)` when a repair was applied, `None` when
+    /// the step is not an itemized execute or no repair is possible.
+    fn try_repair_itemized_execute_output(
+        &self,
+        workflow_id: &str,
+        step: &WorkflowStep,
+        current_item: Option<&ExecuteLoopItemContext>,
+        value: &Value,
+    ) -> Option<Value> {
+        if !matches!(workflow_id, FEATURE_WORKFLOW_ID | RESEARCH_WORKFLOW_ID)
+            || step.id != EXECUTE_STEP_ID
+            || !matches!(step.loop_contract, Some(StepLoopContract::TodoItems { .. }))
+        {
+            return None;
+        }
+
+        let current_item = current_item?;
+        let execute = parse_feature_execute_output(value.clone()).ok()?;
+
+        let manager = self.todo_manager.lock().ok()?;
+        let allowed_completed: std::collections::BTreeSet<&str> = manager
+            .items()
+            .iter()
+            .filter(|item| item.status == TodoStatus::Completed)
+            .filter_map(|item| item.id.as_deref())
+            .chain(std::iter::once(current_item.item_id.as_str()))
+            .collect();
+
+        let mut repaired_completed = Vec::new();
+        let mut stripped = Vec::new();
+        for task_id in &execute.completed_tasks {
+            if allowed_completed.contains(task_id.trim()) {
+                repaired_completed.push(task_id.clone());
+            } else {
+                stripped.push(task_id.clone());
+            }
+        }
+
+        if stripped.is_empty() {
+            return None;
+        }
+
+        let mut repaired_open = execute.open_tasks.clone();
+        for id in &stripped {
+            if !repaired_open.iter().any(|oid| oid.trim() == id.trim()) {
+                repaired_open.push(id.clone());
+            }
+        }
+
+        let mut obj = value.as_object()?.clone();
+        obj.insert(
+            "completed_tasks".to_string(),
+            serde_json::json!(repaired_completed),
+        );
+        obj.insert(
+            "open_tasks".to_string(),
+            serde_json::json!(repaired_open),
+        );
+
+        info!(
+            step_id = %step.id,
+            current_item = %current_item.item_id,
+            stripped_count = stripped.len(),
+            "auto-repaired itemized execute output: stripped future items from completed_tasks"
+        );
+
+        Some(Value::Object(obj))
     }
 
     fn resolve_scene_from_output(
@@ -1622,7 +2264,8 @@ fn build_structured_input_payload(
 fn max_output_validation_retries(output_contract: &StepOutputContract) -> u32 {
     match output_contract {
         StepOutputContract::Required { max_retries, .. } => *max_retries,
-        StepOutputContract::None | StepOutputContract::Optional { .. } => 0,
+        StepOutputContract::Optional { max_retries, .. } => *max_retries,
+        StepOutputContract::None => 0,
     }
 }
 
@@ -1666,6 +2309,10 @@ fn next_retry_attempt_kind(
 ) -> StepOutputAttemptKind {
     match output_contract {
         StepOutputContract::Required {
+            recovery_mode: OutputRecoveryMode::RepairThenRegenerate,
+            ..
+        }
+        | StepOutputContract::Optional {
             recovery_mode: OutputRecoveryMode::RepairThenRegenerate,
             ..
         } if retry_count == 1 => StepOutputAttemptKind::Repair,
@@ -1757,27 +2404,61 @@ fn emit_output_recovery_activity(
 
 fn build_step_diagnostics(
     context: &StepDiagnosticContext<'_>,
+    execute_progress: Option<ExecuteProgressDiagnostics>,
     input: StepInputDiagnostics,
     output: StepOutputDiagnostics,
     session_writes: Vec<StepContextWrite>,
 ) -> StepDiagnostics {
-    StepDiagnostics {
-        id: format!(
+    let diagnostic_id = match (
+        &context.step.loop_contract,
+        execute_progress
+            .as_ref()
+            .and_then(|progress| progress.current_item_index),
+    ) {
+        (
+            Some(StepLoopContract::TodoItems {
+                child_step_prefix, ..
+            }),
+            Some(item_index),
+        ) => format!(
+            "{}:{}:{}-{}",
+            context.workflow_role.as_str(),
+            context.workflow_id,
+            child_step_prefix,
+            item_index
+        ),
+        _ => format!(
             "{}:{}:{}",
             context.workflow_role.as_str(),
             context.workflow_id,
             context.step.id
         ),
+    };
+
+    StepDiagnostics {
+        id: diagnostic_id,
         workflow_id: context.workflow_id.to_string(),
         workflow_role: context.workflow_role,
         step_id: context.step.id.clone(),
         step_label: context.step.label.clone(),
         index: context.index,
         total: context.total,
+        execute_progress,
         input,
         output,
         session_writes,
     }
+}
+
+fn execute_output_marks_item_complete(
+    structured_output: Option<&Value>,
+    item_id: &str,
+) -> anyhow::Result<bool> {
+    let Some(structured_output) = structured_output else {
+        return Ok(false);
+    };
+    let execute = parse_feature_execute_output(structured_output.clone())?;
+    Ok(execute.completed_tasks.iter().any(|task_id| task_id == item_id))
 }
 
 fn build_step_input_diagnostics(step_input: &StepExecutionInput) -> StepInputDiagnostics {
@@ -1880,6 +2561,7 @@ fn build_step_output_diagnostics(
         StepOutputContract::Optional {
             format,
             schema_path,
+            ..
         } => (
             StepOutputContractMode::Optional,
             Some(format.as_str().to_string()),

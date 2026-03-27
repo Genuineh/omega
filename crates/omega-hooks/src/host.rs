@@ -151,6 +151,12 @@ pub struct HookDispatchInput {
     pub step_label: String,
     pub step_index: usize,
     pub step_total: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_item_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_index: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_total: Option<usize>,
     #[serde(default)]
     pub visible_tools: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

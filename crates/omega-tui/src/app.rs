@@ -7,7 +7,8 @@ use ratatui::{layout::Rect, widgets::ListState};
 use omega_observability::strip_ansi;
 use omega_session::{
     OverlayTarget, ResponseSectionState, RuntimeUiEnvelope, StatusSlot, StatusValue,
-    StepDiagnostics, StepOutputStatus, ToolRun, ToolRunStatus, WorkflowRunRole,
+    StepDiagnostics, StepOutputStatus, StepSubflowRef, StepSubflowStatus, ToolRun,
+    ToolRunStatus, WorkflowRunRole,
 };
 
 use crate::overlay::{
@@ -88,6 +89,7 @@ pub struct Msg {
     pub workflow_id: Option<String>,
     pub workflow_role: Option<WorkflowRunRole>,
     pub scene_id: Option<String>,
+    pub subflow_ref: Option<StepSubflowRef>,
     pub collapsed: bool,
 }
 
@@ -108,6 +110,7 @@ pub struct ResponseDisplayLine {
 pub enum ResponseLineAction {
     ToggleThinkingSection(String),
     OpenToolRunDetail(String),
+    OpenStepSubflowDetail(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,6 +118,7 @@ pub enum ResponseActivation {
     ThinkingCollapsed,
     ThinkingExpanded,
     ToolDetailOpened(String),
+    StepSubflowDetailOpened(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -171,6 +175,7 @@ pub enum SessionStatusSummary {
 pub struct App {
     pub output_msgs: Vec<Msg>,
     pub tool_runs: Vec<ToolRun>,
+    pub step_subflows: Vec<StepSubflowStatus>,
     step_diagnostics: Vec<StepDiagnostics>,
     diagnostics_lines: Vec<DiagnosticsLine>,
     pub todo_lines: Vec<String>,
@@ -228,6 +233,7 @@ impl App {
         Self {
             output_msgs: vec![],
             tool_runs: vec![],
+            step_subflows: vec![],
             step_diagnostics: vec![],
             diagnostics_lines: vec![],
             todo_lines: todo_unsynced_lines(),
@@ -287,6 +293,7 @@ impl App {
         self.workflow_summary = None;
         self.session_status = None;
         self.agent_status_label = Some("Running".to_string());
+        self.step_subflows.clear();
         self.clear_step_diagnostics();
         self.active_turn_id
     }
@@ -297,6 +304,7 @@ impl App {
         self.workflow_summary = None;
         self.session_status = None;
         self.agent_status_label = Some("Idle".to_string());
+        self.step_subflows.clear();
         self.clear_step_diagnostics();
     }
 
@@ -358,6 +366,132 @@ impl App {
 
     pub fn add_log(&mut self, line: String) {
         self.log_lines.push(strip_ansi(&line));
+    }
+
+    pub fn upsert_step_subflow(&mut self, subflow: StepSubflowStatus) {
+        if let Some(existing) = self
+            .step_subflows
+            .iter_mut()
+            .find(|existing| existing.workflow_id == subflow.workflow_id
+                && existing.step_id == subflow.step_id
+                && existing.subflow_id == subflow.subflow_id)
+        {
+            *existing = subflow;
+        } else {
+            self.step_subflows.push(subflow);
+        }
+        self.step_subflows
+            .sort_by_key(|entry| (entry.workflow_id.clone(), entry.step_id.clone(), entry.item_index));
+    }
+
+    pub fn step_subflow_status_for_ref(
+        &self,
+        subflow_ref: &StepSubflowRef,
+    ) -> Option<&StepSubflowStatus> {
+        self.step_subflows.iter().find(|status| {
+            status.workflow_id == subflow_ref.parent_workflow_id
+                && status.step_id == subflow_ref.parent_step_id
+                && status.subflow_id == subflow_ref.subflow_id
+        })
+    }
+
+    pub fn active_step_subflow(&self) -> Option<&StepSubflowStatus> {
+        self.step_subflows
+            .iter()
+            .find(|status| status.status == omega_session::StepSubflowState::Running)
+            .or_else(|| {
+                self.step_subflows
+                    .iter()
+                    .find(|status| status.status == omega_session::StepSubflowState::Failed)
+            })
+    }
+
+    pub fn highlighted_todo_line_index(&self) -> Option<usize> {
+        let active = self.active_step_subflow()?;
+        let item_id = active.item_id.as_deref();
+
+        self.todo_lines.iter().position(|line| {
+            item_id.is_some_and(|id| line.contains(&format!("#{id}:")))
+                || active
+                    .item_label
+                    .as_deref()
+                    .is_some_and(|label| line.contains(label))
+        })
+    }
+
+    pub fn open_step_subflow_detail(&mut self, id: &str) -> Option<String> {
+        let message = self
+            .output_msgs
+            .iter()
+            .find(|message| message.id.as_deref() == Some(id))?;
+        let subflow_ref = message.subflow_ref.as_ref()?;
+        let subflow = self.step_subflow_status_for_ref(subflow_ref).cloned();
+        let mut lines = Vec::new();
+
+        lines.push(format!(
+            "subflow: {} ({}/{})",
+            subflow_ref.subflow_id, subflow_ref.item_index, subflow_ref.item_total
+        ));
+        if let Some(item_id) = subflow_ref.item_id.as_deref() {
+            lines.push(format!("todo: #{item_id}"));
+        }
+        if let Some(item_label) = subflow_ref.item_label.as_deref() {
+            lines.push(format!("label: {item_label}"));
+        }
+        if let Some(status) = subflow.as_ref() {
+            lines.push(format!("status: {}", status_label(status.status)));
+            if status.repeat_count_for_item > 0 {
+                lines.push(format!("repeats: {}", status.repeat_count_for_item));
+            }
+            if status.no_progress_streak_for_item > 0 {
+                lines.push(format!("no-progress rounds: {}", status.no_progress_streak_for_item));
+            }
+            if let Some(source) = status.completion_source.as_deref() {
+                lines.push(format!("completion: {source}"));
+            }
+        }
+
+        let tool_runs = message
+            .id
+            .as_deref()
+            .map(|section_id| {
+                self.tool_runs
+                    .iter()
+                    .filter(|tool_run| tool_run.parent_section_id == section_id)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if !tool_runs.is_empty() {
+            lines.push(String::new());
+            lines.push(format!("tools: {}", tool_runs.len()));
+            for tool_run in tool_runs {
+                lines.push(format!(
+                    "- {} [{}] {}",
+                    tool_run.tool_name,
+                    match tool_run.status {
+                        ToolRunStatus::Running => "running",
+                        ToolRunStatus::Complete => "done",
+                        ToolRunStatus::Failed => "failed",
+                    },
+                    tool_run.invocation_preview,
+                ));
+            }
+        }
+
+        let body_preview = strip_ansi(&message.text);
+        if !body_preview.trim().is_empty() {
+            lines.push(String::new());
+            lines.push("body:".to_string());
+            lines.extend(body_preview.lines().take(8).map(ToOwned::to_owned));
+        }
+
+        let title = format!(" Subflow: {} ", subflow_ref.subflow_id);
+        let label = subflow_ref
+            .item_label
+            .clone()
+            .unwrap_or_else(|| subflow_ref.subflow_id.clone());
+        self.open_detail_overlay(title, lines);
+        Some(label)
     }
 
     pub fn scroll_panel_up(&mut self, panel: Panel, amount: usize) {
@@ -902,6 +1036,15 @@ impl App {
         self.input_buffer.clear();
         self.cursor_pos = 0;
         input
+    }
+}
+
+fn status_label(status: omega_session::StepSubflowState) -> &'static str {
+    match status {
+        omega_session::StepSubflowState::Queued => "queued",
+        omega_session::StepSubflowState::Running => "running",
+        omega_session::StepSubflowState::Complete => "done",
+        omega_session::StepSubflowState::Failed => "failed",
     }
 }
 

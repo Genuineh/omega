@@ -143,9 +143,16 @@ pub(super) fn render_sidebar_body(
             .into_iter()
             .map(|line| {
                 let line_len = line.text.chars().count();
+                let base_style = if app_ref.highlighted_todo_line_index() == Some(line.source_line_index) {
+                    Style::default()
+                        .fg(colors.focus_border)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(colors.text)
+                };
                 list_item_with_selection(
                     &line.text,
-                    Style::default().fg(colors.text),
+                    base_style,
                     app_ref.selection_range_for_segment(
                         Panel::Todo,
                         line.source_line_index,

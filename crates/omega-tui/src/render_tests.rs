@@ -1,4 +1,4 @@
-use omega_session::ResponseSectionState;
+use omega_session::{ResponseSectionState, StepSubflowState, StepSubflowStatus};
 use omega_theme::OmegaTheme;
 use ratatui::{
     backend::TestBackend,
@@ -245,4 +245,37 @@ fn bottom_status_renders_session_slot_when_present() {
     let text = bottom_status_text(&app, "test-model", &['⠋', '⠙']);
 
     assert!(text.contains("feature -> feature"));
+}
+
+#[test]
+fn bottom_status_prefers_active_step_subflow_badge() {
+    let mut app = App::new();
+    app.is_running = true;
+    app.step_subflows.push(StepSubflowStatus {
+        workflow_id: "feature".to_string(),
+        workflow_role: omega_session::WorkflowRunRole::Child,
+        step_id: "execute".to_string(),
+        step_label: "Execute".to_string(),
+        subflow_id: "execute-2".to_string(),
+        item_id: Some("risk-2".to_string()),
+        item_label: Some("Validate risk".to_string()),
+        item_index: 2,
+        item_total: 5,
+        status: StepSubflowState::Running,
+        repeat_count_for_item: 1,
+        no_progress_streak_for_item: 0,
+        completion_source: None,
+    });
+    app.session_status = Some(SessionStatusSummary::Routing(SessionRoutingSummary {
+        root_workflow_id: "root".to_string(),
+        active_workflow_id: "feature".to_string(),
+        active_workflow_role: omega_session::WorkflowRunRole::Child,
+        recognized_scene_id: Some("feature".to_string()),
+        selected_workflow_id: Some("feature".to_string()),
+    }));
+
+    let text = bottom_status_text(&app, "test-model", &['⠋', '⠙']);
+
+    assert!(text.contains("execute-2 2/5 r1"));
+    assert!(!text.contains("feature -> feature"));
 }

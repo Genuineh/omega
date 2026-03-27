@@ -72,6 +72,9 @@ pub enum RuntimeUiEffect {
         id: String,
         status: ToolRunStatus,
     },
+    UpsertStepSubflow {
+        subflow: StepSubflowStatus,
+    },
     UpsertStepDiagnostics {
         diagnostics: Box<StepDiagnostics>,
     },
@@ -159,6 +162,44 @@ pub struct ResponseSectionMetadata {
     pub workflow_role: WorkflowRunRole,
     pub step_id: Option<String>,
     pub step_label: Option<String>,
+    pub subflow_ref: Option<StepSubflowRef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepSubflowRef {
+    pub parent_workflow_id: String,
+    pub parent_step_id: String,
+    pub parent_step_label: String,
+    pub subflow_id: String,
+    pub item_id: Option<String>,
+    pub item_label: Option<String>,
+    pub item_index: usize,
+    pub item_total: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepSubflowState {
+    Queued,
+    Running,
+    Complete,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepSubflowStatus {
+    pub workflow_id: String,
+    pub workflow_role: WorkflowRunRole,
+    pub step_id: String,
+    pub step_label: String,
+    pub subflow_id: String,
+    pub item_id: Option<String>,
+    pub item_label: Option<String>,
+    pub item_index: usize,
+    pub item_total: usize,
+    pub status: StepSubflowState,
+    pub repeat_count_for_item: u32,
+    pub no_progress_streak_for_item: u32,
+    pub completion_source: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -206,9 +247,25 @@ pub struct StepDiagnostics {
     pub step_label: String,
     pub index: usize,
     pub total: usize,
+    pub execute_progress: Option<ExecuteProgressDiagnostics>,
     pub input: StepInputDiagnostics,
     pub output: StepOutputDiagnostics,
     pub session_writes: Vec<StepContextWrite>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecuteProgressDiagnostics {
+    pub todo_total: usize,
+    pub todo_completed: usize,
+    pub todo_open: usize,
+    pub current_item_id: Option<String>,
+    pub current_item_index: Option<usize>,
+    pub current_item_total: Option<usize>,
+    pub repeat_count: u32,
+    pub no_progress_streak: u32,
+    pub max_step_repeats: u32,
+    pub max_item_repeats: Option<u32>,
+    pub completion_source: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

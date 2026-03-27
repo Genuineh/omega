@@ -9,7 +9,8 @@ use crate::runtime_message::{
 };
 use crate::runtime_ui::{
     ResponseSection, ResponseSectionDelta, ResponseSectionKind, ResponseSectionMetadata,
-    ResponseSectionState, ToolRun, ToolRunDetail, ToolRunStatus, WorkflowRunRole,
+    ResponseSectionState, StepSubflowRef, StepSubflowStatus, ToolRun, ToolRunDetail,
+    ToolRunStatus, WorkflowRunRole,
 };
 use crate::session_state::SessionContext;
 use crate::{preview_json_value, preview_text};
@@ -211,6 +212,17 @@ pub(crate) fn send_workflow_step(
             text: step.label.clone(),
             priority: None,
         },
+    ));
+}
+
+pub(crate) fn send_step_subflow_status(
+    tx: &dyn RuntimeMessageBridge,
+    turn_id: u64,
+    subflow: StepSubflowStatus,
+) {
+    tx.send(RuntimeMessageEnvelope::state(
+        turn_id,
+        StateMessage::StepSubflow { subflow },
     ));
 }
 
@@ -434,12 +446,16 @@ impl<'a> StepResponseStreamer<'a> {
         step: &WorkflowStep,
         is_final_step: bool,
         scene_id: Option<&str>,
+        current_item: Option<&crate::hook_adapter::ExecuteLoopItemContext>,
     ) -> Self {
+        let primary_step_id = current_item
+            .map(|item| item.child_step_id.as_str())
+            .unwrap_or(step.id.as_str());
         let base_id = format!(
             "turn-{turn_id}:{}:{}:{}",
             role.as_str(),
             workflow_id,
-            step.id
+            primary_step_id
         );
         let primary_kind = if role == WorkflowRunRole::Root {
             ResponseSectionKind::Routing
@@ -459,6 +475,16 @@ impl<'a> StepResponseStreamer<'a> {
             workflow_role: role,
             step_id: Some(step.id.clone()),
             step_label: Some(step.label.clone()),
+            subflow_ref: current_item.map(|item| StepSubflowRef {
+                parent_workflow_id: workflow_id.to_string(),
+                parent_step_id: step.id.clone(),
+                parent_step_label: step.label.clone(),
+                subflow_id: item.child_step_id.clone(),
+                item_id: Some(item.item_id.clone()),
+                item_label: item.item_label.clone(),
+                item_index: item.item_index,
+                item_total: item.item_total,
+            }),
         };
 
         Self {

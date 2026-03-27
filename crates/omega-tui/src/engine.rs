@@ -1,6 +1,7 @@
 use omega_session::{
     ResponseSection, ResponseSectionDelta, ResponseSectionState, SessionRoutingStatus,
-    StatusSlot, StatusValue, StepDiagnostics, ToolRun, ToolRunStatus, WorkflowStepStatus,
+    StatusSlot, StatusValue, StepDiagnostics, StepSubflowStatus, ToolRun, ToolRunStatus,
+    WorkflowStepStatus,
 };
 
 use crate::app::{App, MsgKind};
@@ -20,6 +21,7 @@ pub trait TuiSurface {
     fn clear_session_routing(&mut self);
     fn set_todo_snapshot(&mut self, text: &str);
     fn upsert_diagnostics(&mut self, diagnostics: StepDiagnostics);
+    fn upsert_step_subflow(&mut self, subflow: StepSubflowStatus);
     fn add_activity_line(&mut self, line: String);
     fn push_agent_message(&mut self, text: &str);
     fn push_error_message(&mut self, text: &str);
@@ -113,6 +115,10 @@ impl TuiSurface for TuiEngine<'_> {
 
     fn upsert_diagnostics(&mut self, diagnostics: StepDiagnostics) {
         self.app.upsert_step_diagnostics(diagnostics);
+    }
+
+    fn upsert_step_subflow(&mut self, subflow: StepSubflowStatus) {
+        self.app.upsert_step_subflow(subflow);
     }
 
     fn add_activity_line(&mut self, line: String) {

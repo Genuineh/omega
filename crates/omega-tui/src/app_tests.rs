@@ -1,9 +1,10 @@
 use omega_session::{
-    ActivityTarget, OverlayRequest, ResponseSection, ResponseSectionDelta, ResponseSectionKind,
-    ResponseSectionMetadata, RuntimeUiEffect, RuntimeUiMessage, StepContextWrite,
-    StepContextWriteKind, StepDiagnostics, StepInputDiagnostics, StepInputStatus,
-    StepOutputAttemptKind, StepOutputContractMode, StepOutputDiagnostics,
-    StepOutputRecoveryDecision, StepOutputStatus, StepSummarySource, ToolRunDetail, UiContent,
+    ActivityTarget, ExecuteProgressDiagnostics, OverlayRequest, ResponseSection,
+    ResponseSectionDelta, ResponseSectionKind, ResponseSectionMetadata, RuntimeUiEffect,
+    RuntimeUiMessage, StepContextWrite, StepContextWriteKind, StepDiagnostics,
+    StepInputDiagnostics, StepInputStatus, StepOutputAttemptKind, StepOutputContractMode,
+    StepOutputDiagnostics, StepOutputRecoveryDecision, StepOutputStatus, StepSubflowRef,
+    StepSubflowState, StepSubflowStatus, StepSummarySource, ToolRunDetail, UiContent,
     UiMessageKind, UiSource, UiTarget, WorkflowRunRole,
 };
 use ratatui::layout::Rect;
@@ -19,6 +20,19 @@ fn sample_step_diagnostics() -> StepDiagnostics {
         step_label: "Plan".to_string(),
         index: 2,
         total: 4,
+        execute_progress: Some(ExecuteProgressDiagnostics {
+            todo_total: 2,
+            todo_completed: 1,
+            todo_open: 1,
+            current_item_id: Some("task-2".to_string()),
+            current_item_index: Some(2),
+            current_item_total: Some(2),
+            repeat_count: 1,
+            no_progress_streak: 0,
+            max_step_repeats: 8,
+            max_item_repeats: Some(3),
+            completion_source: Some("structured_output".to_string()),
+        }),
         input: StepInputDiagnostics {
             status: StepInputStatus::Ready,
             summary_sources: vec![StepSummarySource {
@@ -92,6 +106,10 @@ fn upserting_step_diagnostics_builds_sidebar_lines() {
         .diagnostics_lines
         .iter()
         .any(|line| line.text.contains("attempt=repair · next=regenerate")));
+    assert!(app
+        .diagnostics_lines
+        .iter()
+        .any(|line| line.text.contains("current=task-2")));
     assert_eq!(app.rail_badge(SidebarSection::Diagnostics), "D 1");
 }
 
@@ -109,6 +127,18 @@ fn activating_diagnostics_item_opens_detail_overlay() {
     match app.overlay.as_ref() {
         Some(OverlayState::Detail(detail)) => {
             assert!(detail.title.contains("Plan"));
+            assert!(detail
+                .lines
+                .iter()
+                .any(|line| line.contains("execute_progress: todos=1/2 open=1")));
+            assert!(detail
+                .lines
+                .iter()
+                .any(|line| line.contains("current_item: task-2 (2/2)")));
+            assert!(detail
+                .lines
+                .iter()
+                .any(|line| line.contains("completion_source: structured_output")));
             assert!(detail
                 .lines
                 .iter()
@@ -303,6 +333,7 @@ fn step_text_routes_to_response_with_step_label() {
                     workflow_role: WorkflowRunRole::Child,
                     step_id: Some("plan".to_string()),
                     step_label: Some("Plan".to_string()),
+                    subflow_ref: None,
                 },
             },
         },
@@ -354,6 +385,7 @@ fn routing_and_final_answer_sections_form_response_timeline() {
                     workflow_role: WorkflowRunRole::Root,
                     step_id: Some("scene-recognition".to_string()),
                     step_label: Some("Scene Recognition".to_string()),
+                    subflow_ref: None,
                 },
             },
         },
@@ -387,6 +419,7 @@ fn routing_and_final_answer_sections_form_response_timeline() {
                     workflow_role: WorkflowRunRole::Child,
                     step_id: Some("chat".to_string()),
                     step_label: Some("Chat".to_string()),
+                    subflow_ref: None,
                 },
             },
         },
@@ -438,6 +471,7 @@ fn thinking_sections_stream_then_collapse_on_complete() {
                     workflow_role: WorkflowRunRole::Child,
                     step_id: Some("chat".to_string()),
                     step_label: Some("Chat".to_string()),
+                    subflow_ref: None,
                 },
             },
         },
@@ -457,6 +491,7 @@ fn thinking_sections_stream_then_collapse_on_complete() {
                     workflow_role: WorkflowRunRole::Child,
                     step_id: Some("chat".to_string()),
                     step_label: Some("Chat".to_string()),
+                    subflow_ref: None,
                 },
             },
         },
@@ -541,6 +576,7 @@ fn failed_thinking_sections_surface_failure_summary() {
                     workflow_role: WorkflowRunRole::Child,
                     step_id: Some("chat".to_string()),
                     step_label: Some("Chat".to_string()),
+                    subflow_ref: None,
                 },
             },
         },
@@ -590,6 +626,7 @@ fn thinking_sections_can_be_hidden_by_config() {
                     workflow_role: WorkflowRunRole::Child,
                     step_id: Some("chat".to_string()),
                     step_label: Some("Chat".to_string()),
+                    subflow_ref: None,
                 },
             },
         },
@@ -625,6 +662,7 @@ fn tool_run_effects_render_inside_step_block() {
                     workflow_role: WorkflowRunRole::Child,
                     step_id: Some("execute".to_string()),
                     step_label: Some("Execute".to_string()),
+                    subflow_ref: None,
                 },
             },
         },
@@ -707,6 +745,7 @@ fn activating_tool_summary_opens_detail_overlay() {
                     workflow_role: WorkflowRunRole::Child,
                     step_id: Some("execute".to_string()),
                     step_label: Some("Execute".to_string()),
+                    subflow_ref: None,
                 },
             },
         },
@@ -763,6 +802,286 @@ fn activating_tool_summary_opens_detail_overlay() {
         }
         other => panic!("expected detail overlay, got {other:?}"),
     }
+}
+
+#[test]
+fn step_subflow_sections_render_as_nested_timeline() {
+    let mut app = App::new();
+    let turn_id = app.begin_turn();
+
+    app.set_todo_snapshot(
+        turn_id,
+        "[x] #risk-1: Inspect state\n[>] #risk-2: Validate risk\n[ ] #risk-3: Ship\n\n(1/3 completed)",
+    );
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::UpsertStepSubflow {
+            subflow: StepSubflowStatus {
+                workflow_id: "feature".to_string(),
+                workflow_role: WorkflowRunRole::Child,
+                step_id: "execute".to_string(),
+                step_label: "Execute".to_string(),
+                subflow_id: "execute-1".to_string(),
+                item_id: Some("risk-1".to_string()),
+                item_label: Some("Inspect state".to_string()),
+                item_index: 1,
+                item_total: 3,
+                status: StepSubflowState::Complete,
+                repeat_count_for_item: 0,
+                no_progress_streak_for_item: 0,
+                completion_source: Some("structured_output".to_string()),
+            },
+        },
+    ));
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::UpsertStepSubflow {
+            subflow: StepSubflowStatus {
+                workflow_id: "feature".to_string(),
+                workflow_role: WorkflowRunRole::Child,
+                step_id: "execute".to_string(),
+                step_label: "Execute".to_string(),
+                subflow_id: "execute-2".to_string(),
+                item_id: Some("risk-2".to_string()),
+                item_label: Some("Validate risk".to_string()),
+                item_index: 2,
+                item_total: 3,
+                status: StepSubflowState::Running,
+                repeat_count_for_item: 1,
+                no_progress_streak_for_item: 0,
+                completion_source: None,
+            },
+        },
+    ));
+
+    for (section_id, item_id, item_label, item_index, text) in [
+        (
+            "turn-21:child:feature:execute-1",
+            "risk-1",
+            "Inspect state",
+            1usize,
+            "inspected runtime state",
+        ),
+        (
+            "turn-21:child:feature:execute-2",
+            "risk-2",
+            "Validate risk",
+            2usize,
+            "validating current risk",
+        ),
+    ] {
+        app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+            turn_id,
+            RuntimeUiEffect::BeginResponseSection {
+                section: ResponseSection {
+                    id: section_id.to_string(),
+                    parent_id: None,
+                    kind: ResponseSectionKind::Step,
+                    title: "Execute".to_string(),
+                    state: ResponseSectionState::Streaming,
+                    metadata: ResponseSectionMetadata {
+                        scene_id: Some("feature".to_string()),
+                        workflow_id: "feature".to_string(),
+                        workflow_role: WorkflowRunRole::Child,
+                        step_id: Some("execute".to_string()),
+                        step_label: Some("Execute".to_string()),
+                        subflow_ref: Some(StepSubflowRef {
+                            parent_workflow_id: "feature".to_string(),
+                            parent_step_id: "execute".to_string(),
+                            parent_step_label: "Execute".to_string(),
+                            subflow_id: format!("execute-{item_index}"),
+                            item_id: Some(item_id.to_string()),
+                            item_label: Some(item_label.to_string()),
+                            item_index,
+                            item_total: 3,
+                        }),
+                    },
+                },
+            },
+        ));
+        app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+            turn_id,
+            RuntimeUiEffect::AppendResponseSection {
+                id: section_id.to_string(),
+                delta: ResponseSectionDelta::Text(text.to_string()),
+            },
+        ));
+    }
+
+    assert_eq!(
+        app.response_lines(),
+        vec![
+            "step  child:feature  Execute  [streaming]".to_string(),
+            "  scene feature".to_string(),
+            "  items 2/3 · current execute-2 · todo #risk-2 · repeat 1".to_string(),
+            "  subflow  execute-1  #risk-1  Inspect state  [done]".to_string(),
+            "  subflow  execute-2  #risk-2  Validate risk  [running]  repeat 1".to_string(),
+            "    validating current risk".to_string(),
+            "  subflow  execute-3  #risk-3  Ship  [queued]".to_string(),
+        ]
+    );
+    assert_eq!(app.highlighted_todo_line_index(), Some(1));
+}
+
+#[test]
+fn activating_subflow_header_opens_detail_overlay() {
+    let mut app = App::new();
+    let turn_id = app.begin_turn();
+
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::UpsertStepSubflow {
+            subflow: StepSubflowStatus {
+                workflow_id: "feature".to_string(),
+                workflow_role: WorkflowRunRole::Child,
+                step_id: "execute".to_string(),
+                step_label: "Execute".to_string(),
+                subflow_id: "execute-2".to_string(),
+                item_id: Some("risk-2".to_string()),
+                item_label: Some("Validate risk".to_string()),
+                item_index: 2,
+                item_total: 3,
+                status: StepSubflowState::Running,
+                repeat_count_for_item: 1,
+                no_progress_streak_for_item: 0,
+                completion_source: None,
+            },
+        },
+    ));
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::BeginResponseSection {
+            section: ResponseSection {
+                id: "turn-22:child:feature:execute-2".to_string(),
+                parent_id: None,
+                kind: ResponseSectionKind::Step,
+                title: "Execute".to_string(),
+                state: ResponseSectionState::Streaming,
+                metadata: ResponseSectionMetadata {
+                    scene_id: Some("feature".to_string()),
+                    workflow_id: "feature".to_string(),
+                    workflow_role: WorkflowRunRole::Child,
+                    step_id: Some("execute".to_string()),
+                    step_label: Some("Execute".to_string()),
+                    subflow_ref: Some(StepSubflowRef {
+                        parent_workflow_id: "feature".to_string(),
+                        parent_step_id: "execute".to_string(),
+                        parent_step_label: "Execute".to_string(),
+                        subflow_id: "execute-2".to_string(),
+                        item_id: Some("risk-2".to_string()),
+                        item_label: Some("Validate risk".to_string()),
+                        item_index: 2,
+                        item_total: 3,
+                    }),
+                },
+            },
+        },
+    ));
+
+    let selected_index = app
+        .response_display_lines()
+        .iter()
+        .position(|line| line.text == "  subflow  execute-2  #risk-2  Validate risk  [running]  repeat 1")
+        .unwrap();
+    app.response_state.select(Some(selected_index));
+
+    assert_eq!(
+        app.activate_selected_response_item(),
+        Some(ResponseActivation::StepSubflowDetailOpened(
+            "Validate risk".to_string(),
+        ))
+    );
+
+    match app.overlay.as_ref() {
+        Some(OverlayState::Detail(detail)) => {
+            assert_eq!(detail.title, " Subflow: execute-2 ");
+            assert!(detail.lines.iter().any(|line| line == "todo: #risk-2"));
+            assert!(detail.lines.iter().any(|line| line == "status: running"));
+        }
+        other => panic!("expected detail overlay, got {other:?}"),
+    }
+}
+
+#[test]
+fn todo_snapshot_backfills_prior_subflow_statuses_without_replayed_sections() {
+    let mut app = App::new();
+    let turn_id = app.begin_turn();
+
+    app.set_todo_snapshot(
+        turn_id,
+        "[x] #risk-1: FFI audit\n[x] #risk-2: Bash boundary\n[x] #risk-3: API fallback\n[>] #risk-4: Coverage analysis\n[ ] #risk-5: Dependency audit\n\n(3/5 completed)",
+    );
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::UpsertStepSubflow {
+            subflow: StepSubflowStatus {
+                workflow_id: "research".to_string(),
+                workflow_role: WorkflowRunRole::Child,
+                step_id: "execute".to_string(),
+                step_label: "Execute".to_string(),
+                subflow_id: "execute-4".to_string(),
+                item_id: Some("risk-4".to_string()),
+                item_label: Some("Coverage analysis".to_string()),
+                item_index: 4,
+                item_total: 5,
+                status: StepSubflowState::Running,
+                repeat_count_for_item: 3,
+                no_progress_streak_for_item: 1,
+                completion_source: None,
+            },
+        },
+    ));
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::BeginResponseSection {
+            section: ResponseSection {
+                id: "turn-30:child:research:execute-4".to_string(),
+                parent_id: None,
+                kind: ResponseSectionKind::Step,
+                title: "Execute".to_string(),
+                state: ResponseSectionState::Streaming,
+                metadata: ResponseSectionMetadata {
+                    scene_id: Some("research".to_string()),
+                    workflow_id: "research".to_string(),
+                    workflow_role: WorkflowRunRole::Child,
+                    step_id: Some("execute".to_string()),
+                    step_label: Some("Execute".to_string()),
+                    subflow_ref: Some(StepSubflowRef {
+                        parent_workflow_id: "research".to_string(),
+                        parent_step_id: "execute".to_string(),
+                        parent_step_label: "Execute".to_string(),
+                        subflow_id: "execute-4".to_string(),
+                        item_id: Some("risk-4".to_string()),
+                        item_label: Some("Coverage analysis".to_string()),
+                        item_index: 4,
+                        item_total: 5,
+                    }),
+                },
+            },
+        },
+    ));
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::AppendResponseSection {
+            id: "turn-30:child:research:execute-4".to_string(),
+            delta: ResponseSectionDelta::Text("collecting coverage gaps".to_string()),
+        },
+    ));
+
+    assert_eq!(
+        app.response_lines(),
+        vec![
+            "step  child:research  Execute  [streaming]".to_string(),
+            "  scene research".to_string(),
+            "  items 4/5 · current execute-4 · todo #risk-4 · repeat 3".to_string(),
+            "  subflow  execute-1  #risk-1  FFI audit  [done]".to_string(),
+            "  subflow  execute-2  #risk-2  Bash boundary  [done]".to_string(),
+            "  subflow  execute-3  #risk-3  API fallback  [done]".to_string(),
+            "  subflow  execute-4  #risk-4  Coverage analysis  [running]  repeat 3".to_string(),
+            "    collecting coverage gaps".to_string(),
+            "  subflow  execute-5  #risk-5  Dependency audit  [queued]".to_string(),
+        ]
+    );
 }
 
 #[test]

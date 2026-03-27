@@ -34,6 +34,9 @@ pub(crate) fn build_step_system_prompt(input: &StepExecutionInput) -> String {
             input.step.id, todo_snapshot
         ));
     }
+    if let Some(execute_item) = input.current_execute_item.as_ref() {
+        sections.push(render_execute_item_context(execute_item));
+    }
     let output_contract = render_output_contract(&input.cwd, &input.step.output_contract);
     if !output_contract.is_empty() {
         sections.push(format!(
@@ -87,6 +90,9 @@ pub(crate) fn build_output_repair_system_prompt(
             input.step.id, todo_snapshot
         ));
     }
+    if let Some(execute_item) = input.current_execute_item.as_ref() {
+        sections.push(render_execute_item_context(execute_item));
+    }
     let output_contract = render_output_contract(&input.cwd, &input.step.output_contract);
     if !output_contract.is_empty() {
         sections.push(format!(
@@ -127,12 +133,41 @@ fn render_output_repair_envelope(
         "repair_rules: preserve the meaning of the previous answer when possible".to_string(),
     );
     lines.push("repair_rules: do not add prose before or after the JSON".to_string());
+    lines.push("repair_rules: respond with a single JSON object, not an array of objects".to_string());
     lines.push("repair_rules: if information is missing, infer only from the previous answer and existing structured_input".to_string());
+    if let Some(execute_item) = input.current_execute_item.as_ref() {
+        lines.push(format!(
+            "repair_rules: for itemized execute, only '{}' may be newly added to completed_tasks in this repair pass",
+            execute_item.item_id
+        ));
+        lines.push(format!(
+            "repair_rules: keep future todo items open until their own execute slice runs; current item is '{}' ({}/{})",
+            execute_item.item_id,
+            execute_item.item_index,
+            execute_item.item_total
+        ));
+    }
     format!(
         "<output_repair step_id=\"{}\">\n{}\n</output_repair>",
         input.step.id,
         lines.join("\n")
     )
+}
+
+fn render_execute_item_context(execute_item: &crate::hook_adapter::ExecuteLoopItemContext) -> String {
+    let mut lines = vec![
+        format!("item_id: {}", execute_item.item_id),
+        format!("item_index: {}", execute_item.item_index),
+        format!("item_total: {}", execute_item.item_total),
+    ];
+    if let Some(item_label) = execute_item.item_label.as_deref() {
+        lines.push(format!("item_label: {item_label}"));
+    }
+    lines.push(
+        "rule: this execute slice is scoped to the current item only; do not mark future todo items complete yet"
+            .to_string(),
+    );
+    format!("<execute_item>\n{}\n</execute_item>", lines.join("\n"))
 }
 
 pub(crate) fn render_routing_context(routing: &RoutingContext) -> String {
@@ -229,10 +264,14 @@ pub(crate) fn render_output_contract(root: &Path, output_contract: &StepOutputCo
         StepOutputContract::Optional {
             format,
             schema_path,
+            max_retries,
+            recovery_mode,
         } => {
             let mut lines = vec![
                 "mode: optional".to_string(),
                 format!("format: {}", format.as_str()),
+                format!("max_retries: {}", max_retries),
+                format!("recovery_mode: {}", recovery_mode.as_str()),
             ];
             lines.extend(render_output_format_rules(*format));
             if let Some(schema_path) = schema_path {

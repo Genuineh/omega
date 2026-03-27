@@ -34,7 +34,7 @@ pub(super) fn input_context_text(app: &App, sidebar_hidden: bool) -> &str {
                 } else if app.focused_panel == Panel::Diagnostics {
                     " Diagnostics: Enter/x=Open detail  Space Tab=Focus  Space b=Sidebar  Space /=Search  Space ↑/↓=Scroll"
                 } else if app.focused_panel == Panel::Response && app.show_thinking {
-                    " Response: Enter/x=Toggle thinking or open tool detail  Space Tab=Focus  Space b=Sidebar  Space /=Search  Space ↑/↓=Scroll"
+                    " Response: Enter/x=Toggle thinking or open subflow/tool detail  Space Tab=Focus  Space b=Sidebar  Space /=Search  Space ↑/↓=Scroll"
                 } else {
                     " Space=Leader  Space jk=Toggle mode  Space Tab=Focus  Space b=Sidebar  Space /=Search  Space ↑/↓=Scroll"
                 }
@@ -250,16 +250,34 @@ fn bottom_status_segments(
         None
     };
 
-    let aux = match app.session_status.as_ref() {
-        Some(SessionStatusSummary::Label(label)) => Some(BottomStatusBadge {
-            label: "session",
-            value: label.clone(),
-        }),
-        Some(SessionStatusSummary::Routing(routing)) => Some(BottomStatusBadge {
-            label: "route",
-            value: format_routing_badge(routing),
-        }),
-        None => None,
+    let aux = if let Some(subflow) = app.active_step_subflow() {
+        let repeat_suffix = if subflow.repeat_count_for_item > 0 {
+            format!(" r{}", subflow.repeat_count_for_item)
+        } else {
+            String::new()
+        };
+        Some(BottomStatusBadge {
+            label: "item",
+            value: format!(
+                "{} {}/{}{}",
+                subflow.subflow_id,
+                subflow.item_index,
+                subflow.item_total,
+                repeat_suffix,
+            ),
+        })
+    } else {
+        match app.session_status.as_ref() {
+            Some(SessionStatusSummary::Label(label)) => Some(BottomStatusBadge {
+                label: "session",
+                value: label.clone(),
+            }),
+            Some(SessionStatusSummary::Routing(routing)) => Some(BottomStatusBadge {
+                label: "route",
+                value: format_routing_badge(routing),
+            }),
+            None => None,
+        }
     };
 
     BottomStatusSegments {

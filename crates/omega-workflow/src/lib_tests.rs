@@ -3,8 +3,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{
     LoadedWorkflow, LoadedWorkflowCatalog, OutputRecoveryMode, SceneCatalog, StepInputContract,
-    StepLoopMode, StepOutputContract, StepSkillRequest, StepToolRequest, WorkflowDefinition,
-    WorkflowPrompts, WorkflowSource, CHAT_WORKFLOW_ID, DEFAULT_EXECUTE_SCHEMA_PATH,
+    StepLoopContract, StepLoopMode, StepOutputContract, StepSkillRequest, StepToolRequest,
+    WorkflowDefinition, WorkflowPrompts, WorkflowSource, CHAT_WORKFLOW_ID,
+    DEFAULT_EXECUTE_SCHEMA_PATH,
     DEFAULT_EXPLORE_SCHEMA_PATH, DEFAULT_HOOK_MANIFEST_FILE, DEFAULT_HOOKS_DIR,
     DEFAULT_PLAN_SCHEMA_PATH, DEFAULT_SCENES_PATH,
     DEFAULT_WORKFLOW_PATH, EXECUTE_STEP_ID, EXPLORE_STEP_ID, FEATURE_SCENE_ID, FEATURE_WORKFLOW_ID,
@@ -84,6 +85,8 @@ fn default_research_workflow_has_four_enabled_steps_with_read_only_execute() {
         &research_steps[2].output_contract,
         StepOutputContract::Optional {
             schema_path: Some(schema_path),
+            max_retries: 2,
+            recovery_mode: OutputRecoveryMode::RepairThenRegenerate,
             ..
         } if schema_path == &PathBuf::from(DEFAULT_EXECUTE_SCHEMA_PATH)
     ));
@@ -92,6 +95,14 @@ fn default_research_workflow_has_four_enabled_steps_with_read_only_execute() {
         research_steps[2].hooks,
         vec!["todo_managed_execute".to_string()]
     );
+    assert!(matches!(
+        &research_steps[2].loop_contract,
+        Some(StepLoopContract::TodoItems {
+            source,
+            child_step_prefix,
+            max_item_repeats,
+        }) if source == "plan.tasks" && child_step_prefix == EXECUTE_STEP_ID && *max_item_repeats == 3
+    ));
     assert!(matches!(
         &research_steps[3].input_contract,
         StepInputContract::Optional { sources }
@@ -281,6 +292,14 @@ fn builtin_workflows_default_to_agent_loop_with_step_budgets() {
         vec!["todo_managed_execute".to_string()]
     );
     assert!(matches!(
+        &feature_steps[2].loop_contract,
+        Some(StepLoopContract::TodoItems {
+            source,
+            child_step_prefix,
+            max_item_repeats,
+        }) if source == "plan.tasks" && child_step_prefix == EXECUTE_STEP_ID && *max_item_repeats == 3
+    ));
+    assert!(matches!(
         &feature_steps[0].output_contract,
         StepOutputContract::Required {
             schema_path: Some(schema_path),
@@ -300,6 +319,8 @@ fn builtin_workflows_default_to_agent_loop_with_step_budgets() {
         &feature_steps[2].output_contract,
         StepOutputContract::Optional {
             schema_path: Some(schema_path),
+            max_retries: 2,
+            recovery_mode: OutputRecoveryMode::RepairThenRegenerate,
             ..
         } if schema_path == &PathBuf::from(DEFAULT_EXECUTE_SCHEMA_PATH)
     ));
@@ -330,7 +351,7 @@ fn workflow_file_supports_labels_disabled_steps_and_requests() {
     std::fs::create_dir_all(workflow_path.parent().unwrap()).unwrap();
     std::fs::write(
         &workflow_path,
-        "name = \"trimmed\"\n\n[[steps]]\nid = \"explore\"\nlabel = \"Scope\"\nprompt = \".omega/prompt/step/explore.md\"\nloop_mode = \"agent_loop\"\nmax_iterations = 5\nskill_request = { mode = \"append\", items = [\"review\"] }\noutput_contract = { mode = \"required\", format = \"json\", max_retries = 3, recovery_mode = \"regenerate_only\" }\nenabled = true\n\n[[steps]]\nid = \"plan\"\nenabled = false\n\n[[steps]]\nid = \"execute\"\nlabel = \"Build\"\nprompt = \".omega/prompt/step/execute.md\"\nloop_mode = \"agent_loop\"\nmax_iterations = 12\nmax_step_repeats = 4\nhooks = [\"todo_managed_execute\", \"artifact_gate\"]\ntool_request = { mode = \"extend\", items = [\"todo\"] }\nenabled = true\n",
+        "name = \"trimmed\"\n\n[[steps]]\nid = \"explore\"\nlabel = \"Scope\"\nprompt = \".omega/prompt/step/explore.md\"\nloop_mode = \"agent_loop\"\nmax_iterations = 5\nskill_request = { mode = \"append\", items = [\"review\"] }\noutput_contract = { mode = \"required\", format = \"json\", max_retries = 3, recovery_mode = \"regenerate_only\" }\nenabled = true\n\n[[steps]]\nid = \"plan\"\nenabled = false\n\n[[steps]]\nid = \"execute\"\nlabel = \"Build\"\nprompt = \".omega/prompt/step/execute.md\"\nloop_mode = \"agent_loop\"\nloop_contract = { kind = \"todo_items\", source = \"plan.tasks\", child_step_prefix = \"execute\", max_item_repeats = 2 }\nmax_iterations = 12\nmax_step_repeats = 4\nhooks = [\"todo_managed_execute\", \"artifact_gate\"]\ntool_request = { mode = \"extend\", items = [\"todo\"] }\noutput_contract = { mode = \"optional\", format = \"json\", schema_path = \".omega/schema/step/execute.json\", max_retries = 4, recovery_mode = \"regenerate_only\" }\nenabled = true\n",
     )
     .unwrap();
 
@@ -358,6 +379,23 @@ fn workflow_file_supports_labels_disabled_steps_and_requests() {
     assert_eq!(steps[1].loop_mode, StepLoopMode::AgentLoop);
     assert_eq!(steps[1].max_iterations, 12);
     assert_eq!(steps[1].max_step_repeats, 4);
+    assert!(matches!(
+        steps[1].output_contract,
+        StepOutputContract::Optional {
+            schema_path: Some(_),
+            max_retries: 4,
+            recovery_mode: OutputRecoveryMode::RegenerateOnly,
+            ..
+        }
+    ));
+    assert!(matches!(
+        &steps[1].loop_contract,
+        Some(StepLoopContract::TodoItems {
+            source,
+            child_step_prefix,
+            max_item_repeats,
+        }) if source == "plan.tasks" && child_step_prefix == EXECUTE_STEP_ID && *max_item_repeats == 2
+    ));
     assert_eq!(
         steps[1].hooks,
         vec![
@@ -408,6 +446,7 @@ fn default_feature_workflow_file_documents_hook_manifest_contract() {
     let _ = LoadedWorkflowCatalog::load(&root);
 
     let workflow_text = std::fs::read_to_string(root.join(".omega/workflows/feature.toml")).unwrap();
+    assert!(workflow_text.contains("loop_contract = { kind = \"todo_items\""));
     assert!(workflow_text.contains("max_step_repeats = 8"));
     assert!(workflow_text.contains("hooks = [\"todo_managed_execute\"]"));
     assert!(workflow_text.contains(DEFAULT_HOOKS_DIR));

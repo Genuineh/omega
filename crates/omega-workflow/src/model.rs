@@ -14,6 +14,15 @@ pub enum StepLoopMode {
     AgentLoop,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StepLoopContract {
+    TodoItems {
+        source: String,
+        child_step_prefix: String,
+        max_item_repeats: u32,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum StepToolRequest {
     #[default]
@@ -69,6 +78,8 @@ pub enum StepOutputContract {
     Optional {
         format: DataFormat,
         schema_path: Option<PathBuf>,
+        max_retries: u32,
+        recovery_mode: OutputRecoveryMode,
     },
 }
 
@@ -177,6 +188,7 @@ pub struct WorkflowStep {
     pub label: String,
     pub prompt_path: PathBuf,
     pub loop_mode: StepLoopMode,
+    pub loop_contract: Option<StepLoopContract>,
     pub max_iterations: u32,
     pub max_step_repeats: u32,
     pub hooks: Vec<String>,

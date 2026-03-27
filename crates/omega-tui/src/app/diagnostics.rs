@@ -104,6 +104,13 @@ impl App {
 }
 
 fn sanitize_step_diagnostics(mut diagnostics: StepDiagnostics) -> StepDiagnostics {
+    if let Some(progress) = diagnostics.execute_progress.as_mut() {
+        progress.current_item_id = progress.current_item_id.as_ref().map(|text| strip_ansi(text));
+        progress.completion_source = progress
+            .completion_source
+            .as_ref()
+            .map(|text| strip_ansi(text));
+    }
     diagnostics.input.structured_input_preview = diagnostics
         .input
         .structured_input_preview
@@ -188,6 +195,25 @@ fn build_diagnostics_lines(diagnostics: &StepDiagnostics) -> Vec<DiagnosticsLine
             diagnostic_id: Some(diagnostics.id.clone()),
         },
     ];
+    if let Some(progress) = diagnostics.execute_progress.as_ref() {
+        let mut execute = format!(
+            "  execute todos={}/{} open={} repeats={}",
+            progress.todo_completed,
+            progress.todo_total,
+            progress.todo_open,
+            progress.repeat_count
+        );
+        if let Some(item_id) = progress.current_item_id.as_deref() {
+            execute.push_str(&format!(" · current={item_id}"));
+        }
+        if let Some(source) = progress.completion_source.as_deref() {
+            execute.push_str(&format!(" · source={source}"));
+        }
+        lines.push(DiagnosticsLine {
+            text: execute,
+            diagnostic_id: Some(diagnostics.id.clone()),
+        });
+    }
     if let Some(error) = diagnostics
         .input
         .error
@@ -270,6 +296,32 @@ fn build_step_diagnostics_detail_lines(diagnostics: &StepDiagnostics) -> Vec<Str
     }
     if let Some(error) = diagnostics.input.error.as_deref() {
         lines.push(format!("input_error: {error}"));
+    }
+
+    if let Some(progress) = diagnostics.execute_progress.as_ref() {
+        lines.push(format!(
+            "execute_progress: todos={}/{} open={} repeat_count={} no_progress_streak={} max_step_repeats={}",
+            progress.todo_completed,
+            progress.todo_total,
+            progress.todo_open,
+            progress.repeat_count,
+            progress.no_progress_streak,
+            progress.max_step_repeats
+        ));
+        if let Some(item_id) = progress.current_item_id.as_deref() {
+            lines.push(format!(
+                "current_item: {} ({}/{})",
+                item_id,
+                progress.current_item_index.unwrap_or_default(),
+                progress.current_item_total.unwrap_or_default()
+            ));
+        }
+        if let Some(max_item_repeats) = progress.max_item_repeats {
+            lines.push(format!("max_item_repeats: {max_item_repeats}"));
+        }
+        if let Some(source) = progress.completion_source.as_deref() {
+            lines.push(format!("completion_source: {source}"));
+        }
     }
 
     lines.push(format!(

@@ -108,6 +108,7 @@ impl TuiUpdateReducer {
             RuntimeUiEffect::UpsertStepDiagnostics { diagnostics } => {
                 app.upsert_step_diagnostics(*diagnostics)
             }
+            RuntimeUiEffect::UpsertStepSubflow { subflow } => app.upsert_step_subflow(subflow),
         }
     }
 

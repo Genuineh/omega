@@ -7,8 +7,9 @@ use serde::Deserialize;
 use crate::constants::{EXECUTE_STEP_ID, FEATURE_SCENE_ID, REPORT_STEP_ID, ROOT_WORKFLOW_ID};
 use crate::defaults::BuiltinWorkflowStepId;
 use crate::model::{
-    DataFormat, OutputRecoveryMode, SceneCatalog, SceneDefinition, StepInputContract, StepLoopMode,
-    StepOutputContract, StepSkillRequest, StepToolRequest, WorkflowDefinition, WorkflowStep,
+    DataFormat, OutputRecoveryMode, SceneCatalog, SceneDefinition, StepInputContract,
+    StepLoopContract, StepLoopMode, StepOutputContract, StepSkillRequest, StepToolRequest,
+    WorkflowDefinition, WorkflowStep,
 };
 use crate::policy::{
     dedupe_preserve_order, normalize_allowed_commands, normalize_tool_group, ToolPolicyConfig,
@@ -170,6 +171,7 @@ pub(crate) struct WorkflowStepConfig {
     label: Option<String>,
     prompt: Option<PathBuf>,
     loop_mode: Option<StepLoopModeConfig>,
+    loop_contract: Option<StepLoopContractConfig>,
     max_iterations: Option<u32>,
     max_step_repeats: Option<u32>,
     #[serde(default)]
@@ -226,6 +228,11 @@ impl WorkflowDefinition {
                     .loop_mode
                     .map(Into::into)
                     .unwrap_or_else(|| step.id.default_loop_mode()),
+                loop_contract: step
+                    .loop_contract
+                    .map(|contract| contract.into_contract(step.id))
+                    .transpose()?
+                    .or_else(|| step.id.default_loop_contract()),
                 max_iterations: step
                     .max_iterations
                     .unwrap_or_else(|| step.id.default_max_iterations())
@@ -314,6 +321,58 @@ impl From<StepLoopModeConfig> for StepLoopMode {
             StepLoopModeConfig::AgentLoop => Self::AgentLoop,
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct StepLoopContractConfig {
+    kind: StepLoopContractKindConfig,
+    source: String,
+    child_step_prefix: Option<String>,
+    max_item_repeats: Option<u32>,
+}
+
+impl StepLoopContractConfig {
+    fn into_contract(self, step_id: BuiltinWorkflowStepId) -> Result<StepLoopContract> {
+        let source = self.source.trim().to_string();
+        if source.is_empty() {
+            bail!("workflow step '{}' loop_contract.source must be non-empty", step_id.as_str());
+        }
+
+        let child_step_prefix = self
+            .child_step_prefix
+            .unwrap_or_else(|| step_id.as_str().to_string())
+            .trim()
+            .to_string();
+        if child_step_prefix.is_empty() {
+            bail!(
+                "workflow step '{}' loop_contract.child_step_prefix must be non-empty",
+                step_id.as_str()
+            );
+        }
+
+        let max_item_repeats = self.max_item_repeats.unwrap_or(3);
+        if max_item_repeats == 0 {
+            bail!(
+                "workflow step '{}' loop_contract.max_item_repeats must be >= 1",
+                step_id.as_str()
+            );
+        }
+
+        match self.kind {
+            StepLoopContractKindConfig::TodoItems => Ok(StepLoopContract::TodoItems {
+                source,
+                child_step_prefix,
+                max_item_repeats,
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum StepLoopContractKindConfig {
+    TodoItems,
 }
 
 #[derive(Debug, Deserialize)]
@@ -477,15 +536,15 @@ impl StepOutputContractConfig {
                     .unwrap_or(OutputRecoveryModeConfig::RepairThenRegenerate)
                     .into_mode(),
             }),
-            StepOutputContractMode::Optional => {
-                if self.max_retries.is_some() || self.recovery_mode.is_some() {
-                    bail!("output_contract mode 'optional' does not accept max_retries or recovery_mode");
-                }
-                Ok(StepOutputContract::Optional {
-                    format,
-                    schema_path: self.schema_path,
-                })
-            }
+            StepOutputContractMode::Optional => Ok(StepOutputContract::Optional {
+                format,
+                schema_path: self.schema_path,
+                max_retries: self.max_retries.unwrap_or(1).max(1),
+                recovery_mode: self
+                    .recovery_mode
+                    .unwrap_or(OutputRecoveryModeConfig::RepairThenRegenerate)
+                    .into_mode(),
+            }),
         }
     }
 }

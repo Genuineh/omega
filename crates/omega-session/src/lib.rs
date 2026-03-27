@@ -33,13 +33,15 @@ pub use omega_workflow::{
 };
 pub use runtime_ui::{
     ActivityTarget, OverlayRequest, OverlayTarget, ResponseSection, ResponseSectionDelta,
-    ResponseSectionKind, ResponseSectionMetadata, ResponseSectionState, RuntimeUiBridge,
-    RuntimeUiEffect, RuntimeUiEnvelope, RuntimeUiMessage, RuntimeUiSink, SessionRuntimeContext,
-    StatusSlot, StatusValue, StepContextWrite, StepContextWriteKind, StepDiagnostics,
-    StepInputDiagnostics, StepInputStatus, StepOutputAttemptKind, StepOutputContractMode,
-    StepOutputDiagnostics, StepOutputRecoveryDecision, StepOutputStatus, StepSummarySource,
-    ToolRun, ToolRunDetail, ToolRunStatus, UiContent, UiMessageKind, UiPriority, UiSource,
-    UiTarget, WorkflowRunRole,
+    ResponseSectionKind, ResponseSectionMetadata, ResponseSectionState, StepSubflowRef,
+    StepSubflowState, StepSubflowStatus,
+    ExecuteProgressDiagnostics, RuntimeUiBridge, RuntimeUiEffect, RuntimeUiEnvelope,
+    RuntimeUiMessage, RuntimeUiSink, SessionRuntimeContext, StatusSlot, StatusValue,
+    StepContextWrite, StepContextWriteKind, StepDiagnostics, StepInputDiagnostics,
+    StepInputStatus, StepOutputAttemptKind, StepOutputContractMode, StepOutputDiagnostics,
+    StepOutputRecoveryDecision, StepOutputStatus, StepSummarySource, ToolRun,
+    ToolRunDetail, ToolRunStatus, UiContent, UiMessageKind, UiPriority, UiSource, UiTarget,
+    WorkflowRunRole,
 };
 pub use runtime_message::{
     ConversationMessage, LegacyRuntimeUiBridge, RuntimeContentKind, RuntimeMessage,

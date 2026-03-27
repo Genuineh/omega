@@ -1,6 +1,7 @@
 use omega_observability::strip_ansi;
 use omega_session::{
-    ResponseSection, ResponseSectionKind, ResponseSectionState, ToolRun, ToolRunStatus,
+    ResponseSection, ResponseSectionKind, ResponseSectionState, StepSubflowRef,
+    StepSubflowState, ToolRun, ToolRunStatus,
 };
 
 use super::{
@@ -15,7 +16,16 @@ impl App {
     }
 
     pub fn begin_response_section(&mut self, section: ResponseSection) {
-        self.output_msgs.push(Msg::from_response_section(section));
+        let next = Msg::from_response_section(section);
+        if let Some(existing) = self
+            .output_msgs
+            .iter_mut()
+            .find(|message| message.id == next.id)
+        {
+            *existing = next;
+        } else {
+            self.output_msgs.push(next);
+        }
     }
 
     pub fn begin_tool_run(&mut self, tool_run: ToolRun) {
@@ -85,6 +95,9 @@ impl App {
             ResponseLineAction::OpenToolRunDetail(id) => self
                 .open_tool_run_detail(&id)
                 .map(ResponseActivation::ToolDetailOpened),
+            ResponseLineAction::OpenStepSubflowDetail(id) => self
+                .open_step_subflow_detail(&id)
+                .map(ResponseActivation::StepSubflowDetailOpened),
         }
     }
 
@@ -97,11 +110,33 @@ impl App {
 
     pub fn response_display_lines(&self) -> Vec<ResponseDisplayLine> {
         let mut lines = Vec::new();
-        for message in &self.output_msgs {
+        let mut index = 0usize;
+        while let Some(message) = self.output_msgs.get(index) {
             if message.kind == MsgKind::Thinking && !self.show_thinking {
+                index += 1;
                 continue;
             }
+
+            if let Some(subflow_ref) = message.subflow_ref.as_ref() {
+                let mut group = vec![message];
+                index += 1;
+                while let Some(candidate) = self.output_msgs.get(index) {
+                    let same_parent = candidate.subflow_ref.as_ref().is_some_and(|candidate_ref| {
+                        candidate_ref.parent_workflow_id == subflow_ref.parent_workflow_id
+                            && candidate_ref.parent_step_id == subflow_ref.parent_step_id
+                    });
+                    if !same_parent {
+                        break;
+                    }
+                    group.push(candidate);
+                    index += 1;
+                }
+                lines.extend(self.render_subflow_group(&group));
+                continue;
+            }
+
             lines.extend(self.render_message_lines(message));
+            index += 1;
         }
         lines
     }
@@ -307,6 +342,360 @@ impl App {
         }
     }
 
+    fn render_subflow_group(&self, messages: &[&Msg]) -> Vec<ResponseDisplayLine> {
+        let Some(first_ref) = messages.iter().find_map(|message| message.subflow_ref.as_ref()) else {
+            return Vec::new();
+        };
+        let workflow_role = messages
+            .iter()
+            .find_map(|message| message.workflow_role)
+            .unwrap_or(WorkflowRunRole::Child);
+        let scene_id = messages.iter().find_map(|message| message.scene_id.clone());
+        let parent_state = messages
+            .iter()
+            .filter_map(|message| message.state)
+            .fold(ResponseSectionState::Complete, |state, next| match (state, next) {
+                (_, ResponseSectionState::Failed) | (ResponseSectionState::Failed, _) => {
+                    ResponseSectionState::Failed
+                }
+                (ResponseSectionState::Streaming, _) | (_, ResponseSectionState::Streaming) => {
+                    ResponseSectionState::Streaming
+                }
+                _ => ResponseSectionState::Complete,
+            });
+        let parent_message = Msg {
+            kind: MsgKind::Step,
+            text: String::new(),
+            id: None,
+            parent_id: None,
+            title: Some(first_ref.parent_step_label.clone()),
+            state: Some(parent_state),
+            workflow_id: Some(first_ref.parent_workflow_id.clone()),
+            workflow_role: Some(workflow_role),
+            scene_id: scene_id.clone(),
+            subflow_ref: None,
+            collapsed: false,
+        };
+
+        let total = self.subflow_total(messages, first_ref);
+        let complete_count = self
+            .step_subflows
+            .iter()
+            .filter(|status| {
+                status.workflow_id == first_ref.parent_workflow_id
+                    && status.step_id == first_ref.parent_step_id
+                    && status.status == StepSubflowState::Complete
+            })
+            .count();
+        let current_status = self.current_subflow_status(first_ref);
+
+        let mut lines = vec![ResponseDisplayLine {
+            kind: MsgKind::Step,
+            text: format_response_header(&parent_message),
+            is_header: true,
+            message_id: None,
+            action: None,
+            is_tool_line: false,
+            tool_status: None,
+            response_state: parent_message.state,
+            thinking_line_kind: None,
+        }];
+
+        if let Some(scene_id) = scene_id {
+            lines.push(ResponseDisplayLine {
+                kind: MsgKind::Step,
+                text: format!("  scene {scene_id}"),
+                is_header: false,
+                message_id: None,
+                action: None,
+                is_tool_line: false,
+                tool_status: None,
+                response_state: None,
+                thinking_line_kind: None,
+            });
+        }
+
+        let visible_index = current_status
+            .map(|status| status.item_index)
+            .unwrap_or_else(|| complete_count.min(total));
+        let mut summary_parts = vec![format!("items {}/{}", visible_index, total)];
+        if let Some(status) = current_status {
+            summary_parts.push(format!("current {}", status.subflow_id));
+            if let Some(item_id) = status.item_id.as_deref() {
+                summary_parts.push(format!("todo #{item_id}"));
+            }
+            if status.repeat_count_for_item > 0 {
+                summary_parts.push(format!("repeat {}", status.repeat_count_for_item));
+            }
+        }
+        lines.push(ResponseDisplayLine {
+            kind: MsgKind::Step,
+            text: format!("  {}", summary_parts.join(" · ")),
+            is_header: false,
+            message_id: None,
+            action: None,
+            is_tool_line: false,
+            tool_status: None,
+            response_state: None,
+            thinking_line_kind: None,
+        });
+
+        for item_index in 1..=total.max(1) {
+            lines.extend(self.render_subflow_item(messages, first_ref, item_index));
+        }
+
+        lines
+    }
+
+    fn render_subflow_item(
+        &self,
+        messages: &[&Msg],
+        group_ref: &StepSubflowRef,
+        item_index: usize,
+    ) -> Vec<ResponseDisplayLine> {
+        let item_messages: Vec<&Msg> = messages
+            .iter()
+            .copied()
+            .filter(|message| {
+                message
+                    .subflow_ref
+                    .as_ref()
+                    .is_some_and(|subflow_ref| subflow_ref.item_index == item_index)
+            })
+            .collect();
+        let primary = item_messages
+            .iter()
+            .copied()
+            .find(|message| message.kind == MsgKind::Step || message.kind == MsgKind::FinalAnswer);
+        let thinking = item_messages
+            .iter()
+            .copied()
+            .find(|message| message.kind == MsgKind::Thinking);
+        let subflow_ref = primary
+            .and_then(|message| message.subflow_ref.as_ref())
+            .or_else(|| thinking.and_then(|message| message.subflow_ref.as_ref()));
+        let known_status = subflow_ref
+            .and_then(|subflow_ref| self.step_subflow_status_for_ref(subflow_ref))
+            .or_else(|| {
+                self.step_subflows.iter().find(|status| {
+                    status.workflow_id == group_ref.parent_workflow_id
+                        && status.step_id == group_ref.parent_step_id
+                        && status.item_index == item_index
+                })
+            });
+        let todo_fallback = self.todo_subflow_fallback(item_index);
+
+        if primary.is_none() && thinking.is_none() && known_status.is_none() && todo_fallback.is_none() {
+            return vec![ResponseDisplayLine {
+                kind: MsgKind::Step,
+                text: format!(
+                    "  subflow  {}-{}  [queued]",
+                    group_ref.parent_step_id, item_index
+                ),
+                is_header: false,
+                message_id: None,
+                action: None,
+                is_tool_line: false,
+                tool_status: None,
+                response_state: None,
+                thinking_line_kind: None,
+            }];
+        }
+
+        let header_ref = subflow_ref.cloned().unwrap_or_else(|| StepSubflowRef {
+            parent_workflow_id: group_ref.parent_workflow_id.clone(),
+            parent_step_id: group_ref.parent_step_id.clone(),
+            parent_step_label: group_ref.parent_step_label.clone(),
+            subflow_id: format!("{}-{}", group_ref.parent_step_id, item_index),
+            item_id: known_status
+                .and_then(|status| status.item_id.clone())
+                .or_else(|| todo_fallback.as_ref().and_then(|fallback| fallback.item_id.clone())),
+            item_label: known_status
+                .and_then(|status| status.item_label.clone())
+                .or_else(|| todo_fallback.as_ref().and_then(|fallback| fallback.item_label.clone())),
+            item_index,
+            item_total: group_ref.item_total,
+        });
+
+        let status = known_status
+            .map(|status| status.status)
+            .or_else(|| todo_fallback.as_ref().map(|fallback| fallback.status))
+            .unwrap_or(StepSubflowState::Queued);
+        let mut header = format!(
+            "  subflow  {}",
+            header_ref.subflow_id,
+        );
+        if let Some(item_id) = header_ref.item_id.as_deref() {
+            header.push_str(&format!("  #{item_id}"));
+        }
+        if let Some(item_label) = header_ref.item_label.as_deref() {
+            header.push_str(&format!("  {}", truncate_preview(item_label, 36)));
+        }
+        header.push_str(&format!("  [{}]", subflow_status_label(status)));
+        if let Some(status) = known_status {
+            if status.repeat_count_for_item > 0 {
+                header.push_str(&format!("  repeat {}", status.repeat_count_for_item));
+            }
+        }
+
+        let primary_id = primary.and_then(|message| message.id.clone());
+        let mut lines = vec![ResponseDisplayLine {
+            kind: MsgKind::Step,
+            text: header,
+            is_header: false,
+            message_id: primary_id.clone(),
+            action: primary_id
+                .clone()
+                .map(ResponseLineAction::OpenStepSubflowDetail),
+            is_tool_line: false,
+            tool_status: None,
+            response_state: primary.and_then(|message| message.state),
+            thinking_line_kind: None,
+        }];
+
+        let expanded = matches!(status, StepSubflowState::Running | StepSubflowState::Failed);
+        if !expanded {
+            return lines;
+        }
+
+        if let Some(primary) = primary {
+            let body_lines = split_or_empty(&primary.text);
+            if body_lines.len() == 1 && body_lines[0].is_empty() {
+                lines.push(ResponseDisplayLine {
+                    kind: MsgKind::Step,
+                    text: "    …".to_string(),
+                    is_header: false,
+                    message_id: primary.id.clone(),
+                    action: None,
+                    is_tool_line: false,
+                    tool_status: None,
+                    response_state: None,
+                    thinking_line_kind: None,
+                });
+            } else {
+                lines.extend(body_lines.into_iter().map(|line| ResponseDisplayLine {
+                    kind: MsgKind::Step,
+                    text: format!("    {line}"),
+                    is_header: false,
+                    message_id: primary.id.clone(),
+                    action: None,
+                    is_tool_line: false,
+                    tool_status: None,
+                    response_state: None,
+                    thinking_line_kind: None,
+                }));
+            }
+
+            if self.show_thinking {
+                if let Some(thinking) = thinking {
+                    let thinking_state = thinking.state.unwrap_or(ResponseSectionState::Complete);
+                    lines.push(ResponseDisplayLine {
+                        kind: MsgKind::Thinking,
+                        text: format!(
+                            "    reasoning  {}",
+                            summarize_thinking_text(&thinking.text, thinking_state)
+                        ),
+                        is_header: false,
+                        message_id: thinking.id.clone(),
+                        action: thinking
+                            .id
+                            .clone()
+                            .map(ResponseLineAction::ToggleThinkingSection),
+                        is_tool_line: false,
+                        tool_status: None,
+                        response_state: Some(thinking_state),
+                        thinking_line_kind: Some(ThinkingLineKind::Summary),
+                    });
+                }
+            }
+
+            let tool_runs = primary
+                .id
+                .as_deref()
+                .map(|section_id| self.tool_runs_for_section(section_id))
+                .unwrap_or_default();
+            if !tool_runs.is_empty() {
+                lines.push(ResponseDisplayLine {
+                    kind: MsgKind::Step,
+                    text: format!("    {}", format_tool_lane_header(&tool_runs).trim()),
+                    is_header: false,
+                    message_id: primary.id.clone(),
+                    action: None,
+                    is_tool_line: true,
+                    tool_status: None,
+                    response_state: None,
+                    thinking_line_kind: None,
+                });
+                lines.extend(tool_runs.into_iter().map(|tool_run| ResponseDisplayLine {
+                    kind: MsgKind::Step,
+                    text: format!("      {}", format_tool_summary(tool_run).trim()),
+                    is_header: false,
+                    message_id: primary.id.clone(),
+                    action: Some(ResponseLineAction::OpenToolRunDetail(tool_run.id.clone())),
+                    is_tool_line: true,
+                    tool_status: Some(tool_run.status),
+                    response_state: None,
+                    thinking_line_kind: None,
+                }));
+            }
+        }
+
+        lines
+    }
+
+    fn subflow_total(&self, messages: &[&Msg], first_ref: &StepSubflowRef) -> usize {
+        let from_messages = messages
+            .iter()
+            .filter_map(|message| message.subflow_ref.as_ref().map(|subflow_ref| subflow_ref.item_total))
+            .max()
+            .unwrap_or(first_ref.item_total);
+        let from_status = self
+            .step_subflows
+            .iter()
+            .filter(|status| {
+                status.workflow_id == first_ref.parent_workflow_id
+                    && status.step_id == first_ref.parent_step_id
+            })
+            .map(|status| status.item_total)
+            .max()
+            .unwrap_or(first_ref.item_total);
+        from_messages.max(from_status)
+    }
+
+    fn current_subflow_status(&self, subflow_ref: &StepSubflowRef) -> Option<&omega_session::StepSubflowStatus> {
+        self.step_subflows
+            .iter()
+            .find(|status| {
+                status.workflow_id == subflow_ref.parent_workflow_id
+                    && status.step_id == subflow_ref.parent_step_id
+                    && matches!(status.status, StepSubflowState::Running | StepSubflowState::Failed)
+            })
+            .or_else(|| {
+                // When all subflows for this parent step are complete, return None so the summary
+                // shows "items N/N" without a stale "current" clause pointing at the first item.
+                let matching: Vec<_> = self
+                    .step_subflows
+                    .iter()
+                    .filter(|s| {
+                        s.workflow_id == subflow_ref.parent_workflow_id
+                            && s.step_id == subflow_ref.parent_step_id
+                    })
+                    .collect();
+                let all_complete = !matching.is_empty()
+                    && matching.iter().all(|s| s.status == StepSubflowState::Complete);
+                if all_complete {
+                    return None;
+                }
+                // Otherwise return the last matching subflow (e.g. the most recently queued one).
+                matching.into_iter().last()
+            })
+    }
+
+    fn todo_subflow_fallback(&self, item_index: usize) -> Option<TodoSubflowFallback> {
+        let line = self.todo_lines.get(item_index.checked_sub(1)?)?;
+        parse_todo_subflow_fallback(line)
+    }
+
     fn upsert_tool_run(&mut self, tool_run: ToolRun, append_if_missing: bool) {
         let sanitized = sanitize_tool_run(tool_run);
         if let Some(existing) = self
@@ -340,6 +729,7 @@ impl Msg {
             workflow_id: None,
             workflow_role: None,
             scene_id: None,
+            subflow_ref: None,
             collapsed: false,
         }
     }
@@ -360,9 +750,62 @@ impl Msg {
             workflow_id: Some(section.metadata.workflow_id),
             workflow_role: Some(section.metadata.workflow_role),
             scene_id: section.metadata.scene_id,
+            subflow_ref: section.metadata.subflow_ref,
             collapsed: false,
         }
     }
+}
+
+fn subflow_status_label(status: StepSubflowState) -> &'static str {
+    match status {
+        StepSubflowState::Queued => "queued",
+        StepSubflowState::Running => "running",
+        StepSubflowState::Complete => "done",
+        StepSubflowState::Failed => "failed",
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TodoSubflowFallback {
+    status: StepSubflowState,
+    item_id: Option<String>,
+    item_label: Option<String>,
+}
+
+fn parse_todo_subflow_fallback(line: &str) -> Option<TodoSubflowFallback> {
+    let trimmed = line.trim_start();
+    let (status, remainder) = if let Some(rest) = trimmed.strip_prefix("[x] ") {
+        (StepSubflowState::Complete, rest)
+    } else if let Some(rest) = trimmed.strip_prefix("[>] ") {
+        (StepSubflowState::Running, rest)
+    } else if let Some(rest) = trimmed.strip_prefix("[ ] ") {
+        (StepSubflowState::Queued, rest)
+    } else {
+        return None;
+    };
+
+    let (item_id, item_label) = if let Some(rest) = remainder.strip_prefix('#') {
+        if let Some((item_id, label)) = rest.split_once(':') {
+            (
+                Some(item_id.trim().to_string()),
+                Some(label.trim().to_string()),
+            )
+        } else {
+            (Some(rest.trim().to_string()), None)
+        }
+    } else {
+        let label = remainder.trim();
+        (
+            None,
+            (!label.is_empty()).then(|| label.to_string()),
+        )
+    };
+
+    Some(TodoSubflowFallback {
+        status,
+        item_id,
+        item_label,
+    })
 }
 
 fn split_or_empty(text: &str) -> Vec<String> {

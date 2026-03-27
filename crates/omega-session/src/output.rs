@@ -3,7 +3,10 @@ use std::path::Path;
 
 #[cfg(test)]
 use omega_workflow::StepOutputContract;
-use omega_workflow::{DataFormat, WorkflowStep, EXECUTE_STEP_ID, EXPLORE_STEP_ID, PLAN_STEP_ID};
+use omega_workflow::{
+    DataFormat, WorkflowStep, EXECUTE_STEP_ID, EXPLORE_STEP_ID, PLAN_STEP_ID,
+    RESEARCH_WORKFLOW_ID,
+};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -195,7 +198,8 @@ fn validate_schema_value(
     }
 }
 
-pub(crate) fn validate_feature_step_output(
+pub(crate) fn validate_workflow_step_output(
+    workflow_id: &str,
     step: &WorkflowStep,
     value: &Value,
 ) -> anyhow::Result<()> {
@@ -205,15 +209,234 @@ pub(crate) fn validate_feature_step_output(
             Ok(())
         }
         PLAN_STEP_ID => {
-            parse_feature_plan_output(value.clone())?;
+            let output = parse_feature_plan_output(value.clone())?;
+            if workflow_id == RESEARCH_WORKFLOW_ID {
+                validate_research_plan_output(&output)?;
+            }
             Ok(())
         }
         EXECUTE_STEP_ID => {
-            parse_feature_execute_output(value.clone())?;
+            let output = parse_feature_execute_output(value.clone())?;
+            if workflow_id == RESEARCH_WORKFLOW_ID && !output.changed_paths.is_empty() {
+                anyhow::bail!(
+                    "research execute output must keep changed_paths empty because the workflow is read-only"
+                );
+            }
             Ok(())
         }
         _ => Ok(()),
     }
+}
+
+fn validate_research_plan_output(output: &FeaturePlanOutput) -> anyhow::Result<()> {
+    for task in &output.tasks {
+        let combined = format!("{}\n{}", task.title, task.description);
+        if research_plan_text_requires_write_access(&combined) {
+            anyhow::bail!(
+                "research plan task '{}' must stay read-only and must not require file edits, code changes, or other write-capable actions",
+                task.id
+            );
+        }
+    }
+
+    for target in &output.validation_targets {
+        if research_plan_text_requires_write_access(target) {
+            anyhow::bail!(
+                "research validation target '{}' must stay read-only and executable with read-only tooling",
+                target
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn research_plan_text_requires_write_access(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    if trimmed.contains("apply_patch")
+        || trimmed.contains("write_file")
+        || trimmed.contains("edit_file")
+        || trimmed.contains("create_file")
+    {
+        return true;
+    }
+
+    if starts_with_read_only_analysis_prefix(trimmed) {
+        return contains_explicit_write_operation(trimmed);
+    }
+
+    contains_explicit_write_operation(trimmed)
+}
+
+fn starts_with_read_only_analysis_prefix(text: &str) -> bool {
+    const ASCII_PREFIXES: &[&str] = &[
+        "analyze",
+        "assess",
+        "audit",
+        "check",
+        "confirm",
+        "evaluate",
+        "gather",
+        "identify",
+        "inspect",
+        "investigate",
+        "report",
+        "review",
+        "study",
+        "summarize",
+        "survey",
+        "validate",
+        "verify",
+    ];
+    const CJK_PREFIXES: &[&str] = &[
+        "分析",
+        "评估",
+        "审查",
+        "检查",
+        "确认",
+        "验证",
+        "汇总",
+        "调查",
+        "研究",
+        "梳理",
+        "审计",
+        "收集",
+        "识别",
+        "输出",
+    ];
+
+    let normalized = text.trim_start().to_ascii_lowercase();
+    ASCII_PREFIXES.iter().any(|prefix| normalized.starts_with(prefix))
+        || CJK_PREFIXES.iter().any(|prefix| text.starts_with(prefix))
+}
+
+fn contains_explicit_write_operation(text: &str) -> bool {
+    let normalized = text.to_ascii_lowercase();
+
+    const ASCII_WRITE_PHRASES: &[&str] = &[
+        "add test",
+        "add tests",
+        "apply patch",
+        "change code",
+        "create patch",
+        "create file",
+        "delete file",
+        "edit code",
+        "edit config",
+        "edit doc",
+        "edit docs",
+        "edit file",
+        "implement fix",
+        "implement the code",
+        "modify code",
+        "modify config",
+        "refactor module",
+        "remove file",
+        "rename file",
+        "update code",
+        "update config",
+        "update doc",
+        "update docs",
+        "write code",
+        "write test",
+        "write tests",
+    ];
+    const CJK_WRITE_PHRASES: &[&str] = &[
+        "修改代码",
+        "修改配置",
+        "修改文件",
+        "修改文档",
+        "更新代码",
+        "更新配置",
+        "更新文档",
+        "添加测试",
+        "补充测试",
+        "编写测试",
+        "实现修复",
+        "实现功能",
+        "重构模块",
+        "重命名文件",
+        "删除文件",
+        "移除文件",
+        "创建补丁",
+        "编写代码",
+        "写入文件",
+    ];
+
+    ASCII_WRITE_PHRASES
+        .iter()
+        .any(|phrase| normalized.contains(phrase))
+        || contains_ascii_write_pair(&normalized)
+        || CJK_WRITE_PHRASES.iter().any(|phrase| text.contains(phrase))
+        || contains_cjk_write_pair(text, "补充", "测试")
+        || contains_cjk_write_pair(text, "添加", "测试")
+        || contains_cjk_write_pair(text, "编写", "测试")
+        || contains_cjk_write_pair(text, "修改", "文件")
+        || contains_cjk_write_pair(text, "修改", "代码")
+        || contains_cjk_write_pair(text, "修改", "文档")
+        || contains_cjk_write_pair(text, "更新", "配置")
+}
+
+fn contains_ascii_write_pair(normalized: &str) -> bool {
+    const ACTIONS: &[&str] = &[
+        "add",
+        "apply",
+        "change",
+        "create",
+        "delete",
+        "edit",
+        "implement",
+        "migrate",
+        "modify",
+        "patch",
+        "refactor",
+        "remove",
+        "rename",
+        "update",
+        "write",
+    ];
+    const TARGETS: &[&str] = &[
+        "code",
+        "config",
+        "doc",
+        "docs",
+        "documentation",
+        "file",
+        "files",
+        "module",
+        "modules",
+        "prompt",
+        "prompts",
+        "schema",
+        "schemas",
+        "test",
+        "tests",
+        "workflow",
+        "workflows",
+    ];
+
+    let tokens = normalized
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    let has_action = tokens
+        .iter()
+        .any(|token| ACTIONS.iter().any(|action| token == action));
+    let has_target = tokens
+        .iter()
+        .any(|token| TARGETS.iter().any(|target| token == target));
+
+    (has_action && has_target)
+        || normalized.contains("apply changes")
+        || normalized.contains("make changes")
+}
+
+fn contains_cjk_write_pair(text: &str, action: &str, target: &str) -> bool {
+    text.contains(action) && text.contains(target)
 }
 
 fn parse_feature_explore_output(value: Value) -> anyhow::Result<FeatureExploreOutput> {
@@ -350,6 +573,23 @@ pub(crate) fn parse_json_values(text: &str) -> Vec<Value> {
 
     for candidate in extract_top_level_json_candidates(trimmed) {
         push_json_candidate(candidate, &mut values, &mut seen);
+    }
+
+    // Unwrap array candidates: if a candidate is a JSON array of objects,
+    // also push each object element so schema-level "type: object" checks
+    // can match individual items inside an array wrapper.
+    let unwrapped: Vec<Value> = values
+        .iter()
+        .filter_map(|v| v.as_array())
+        .flatten()
+        .filter(|v| v.is_object())
+        .cloned()
+        .collect();
+    for element in unwrapped {
+        let fingerprint = serde_json::to_string(&element).unwrap_or_default();
+        if seen.insert(fingerprint) {
+            values.push(element);
+        }
     }
 
     values
