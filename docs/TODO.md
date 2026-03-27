@@ -2,18 +2,30 @@
 
 ## Current Priorities
 
-_按当前仓库真实主路径重排。判断依据：`cargo test` 全工作区通过；s02 文件工具与 s03 todo 管理已完成；`Task 15C`、`Task 15C-2`、`Task 15C-3`、`Task 15D`、`Task 15F-3`、`Task 15F-4`、`Task 15F-5`、`Task 15B-18`、`Task 15B-19`、`Task 15F-6`、`Task 15B-20`、`Task 15B-21`、`Task 15F-7`、`Task 15F-8`、`Task 15F-9`、`Task 15F-10`、`Task 15F-11`、`Task 15F-12`、`Task 15F-13`、`Task 15F-14`、`Task 15B-22`、`Task 15B-23`、`Task 8C`、`Task 8D`、`Task 8E`、`Task 8F`、`Task 8G`、`Task 8H`、`Task 15F-19 ~ 15F-22`、`Task 15F-23 ~ 15F-25 / 15B-27` 与 `Task 15F-26 ~ 15F-28` 已完成。交互层当前主边界仍是 `omega-app -> omega-tui + omega-session + omega-observability`，`feature/research.execute` 已收敛到 itemized execute loop：workflow step 显式声明 `loop_contract`，runtime diagnostics 可见 `execute_progress`，hook gate 具备 item context，repeat 预算拆分为 step 总预算与 per-item 上限。下一优先级回到 `Task 10` 与 `Task 11`。_
+_按当前仓库真实主路径重排。判断依据：`cargo test` 全工作区通过；`Task 15F-26 ~ 15F-28` 及 `Task 15F-29 / 15B-28 / 15B-29` 已完成。execute 已收敛到 itemized loop 并具备 subflow visibility。当前主要瓶颈已从"runtime loop 缺失"转变为"上下文管理不足"——必须先修复 prompt/context 组装路径，再扩展长期知识、治理与检索能力。下一优先级先交付 `Task 11A ~ 11C`，随后推进 `Task 11D ~ 11F`，再回到 `Task 10`。_
 
 _任务编号以 `docs/specs/omega-agent-impl-plan.md` 为准；为支持可运行里程碑拆分，`TODO` 中允许使用 `8A/8B`、`15A/15B/15C/15D` 这类子任务后缀。_
 
-### High
+### High — Context Management (新增主线)
 
-- **Task 10**: `omega-subagent` 仍重要，但应建立在新的 all-step loop + step context 主路径之上推进，避免继续绑定 v1 workflow 假设；当前 execute 的 runtime repeat 已经补齐，剩余 gap 更集中在跨 step / 跨 workflow 的自治编排。
-- **Task 11**: 上下文压缩仍重要，但应建立在新的 session context 边界之上，而不是只对 raw transcript 做早期补丁。
+- **Task 11A**: Cache Control + Token Estimation — 最轻量收益点。不新建 crate，仅修改 `omega-session` 与 `omega-client`。
+- **Task 11B**: Prompt Path Stabilization — 直接修复当前失败路径：slot budget MVP、priority-weighted summary selection、compaction trigger，先在 `omega-session` 内落地，替代 `select_step_summaries()` 贪心裁剪。
+- **Task 11C**: `omega-memory` + `omega-context` facade — 在行为稳定后抽离为 `omega-memory` 与 `omega-context`。omega-context 仅暴露聚焦接口与 facade 组合，不引入 god trait。
+- **Task 11D**: `omega-document` — `FileStore` manifest + persistent TODO + tantivy keyword 检索 + document governance engine（check/plan/apply staged 模式）。
+- **Task 11E**: LanceDB 向量数据库 + 多维复合查询 — 作为 `FileStore` 的派生向量索引，引入 revision-aware hybrid retrieval。
+
+### Medium — Context Observability
+
+- **Task 11F**: Observability + TUI Integration — context budget indicator、cache hit dashboard、document health popup、search results overlay、compaction/index event feed。建立在 `Task 11A ~ 11E` 之上。
+
+### High — 原有主线
+
+- **Task 10**: `omega-subagent` 仍重要，但应建立在上下文管理体系之上推进，避免 subagent 调度因上下文膨胀而失效。
+- **Task 11 (original)**: 原 Task 11 的上下文压缩需求已被 Task 11A ~ 11F 替代和拆解。
 
 ### Medium
 
-- **Task 4**: `omega-tasks` 作为持久化任务层，价值明确，但不应先于 skills/subagent。
+- **Task 4**: `omega-tasks` 作为持久化任务层，价值明确，但不应先于 context management。
 - **Task 12**: `omega-background` 排在任务系统附近，但它的 runtime-visible 状态在当前前端上如何投射，应建立在新的 app-owned runtime message policy 之上。
 - **Task 3**: `omega-message` 仍重要，但它真正释放价值要等到 subagent、team 与 runtime message boundary 都接通，因此不再放在最前。
 - **Task 13**: `omega-team` 保持中优先级，但应建立在 `omega-subagent`、`omega-message` 与新的 runtime message boundary 之上推进。
@@ -21,7 +33,7 @@ _任务编号以 `docs/specs/omega-agent-impl-plan.md` 为准；为支持可运�
 ### Low
 
 - **Task 6**: `omega-worktree` 对后期自治执行很重要，但当前尚未到隔离执行成为主瓶颈的阶段。
-- **Task 15B-8 ~ 15B-12**: 高级 TUI 能力已解除结构阻塞，但主线仍应优先 skills/subagent；高阶交互体验继续保持后移。
+- **Task 15B-8 ~ 15B-12**: 高级 TUI 能力已解除结构阻塞，但主线仍应优先 context/subagent；高阶交互体验继续保持后移。
 - **Task 16**: 最终整合测试保留为收尾任务，不应提前占用主线优先级。
 
 ---
@@ -546,16 +558,64 @@ _2026-03-26 TUI follow-up planning：M2F 已把 execute 收敛为 itemized loop�
 - **Related**: docs/specs/omega-agent-impl-plan.md, docs/specs/omega-tui-runtime-experience.md
 - **Summary**: `omega-skills` 新增递归扫描 `.claude/skills` 与 `skills/` 的 `SkillLoader`，支持 frontmatter 读取、技能描述汇总、按任务文本做关键词匹配，并提供 `load_skill` 工具按需返回完整 `<skill ...>` 内容；`omega-core::create_default_tools` 已默认注册该工具，当前主路径上的 `omega-session` 会在每轮按当前输入把匹配到的 skill 正文预装进 system prompt，同时始终附带低成本的 skills 描述列表；相关单测已补齐，并以定向 cargo test 验证通过
 
-### ── M6: 上下文压缩 (s06) ──
+### ── M6: 上下文管理 (s06) ──
 
-> 验证方式：长对话后观察 token 使用量下降，对话质量不降
+> 验证方式：长对话后观察 token 使用量下降，cache hit 率上升，对话质量不降；文档治理规则检查通过；多维搜索返回精确结果
 > 对标：learn-claude-code s06_context_compact.py
+> 设计文档：docs/specs/omega-context-management.md (v0.3)
 
-### Task 11: omega-compression — 上下文压缩
+### Task 11 (original): omega-compression — 上下文压缩 (已拆解)
+- **Status**: Superseded → 由 Task 11A ~ 11F 替代
+- **Priority**: —
+- **Description**: 原任务已拆解为六个子任务，优先修复 prompt/context 主路径，再逐步建立 facade、文档治理、向量检索与可观测性。
+
+### Task 11A: Cache Control + Token Estimation
 - **Status**: Pending
 - **Priority**: High
-- **Description**: 实现 estimate_tokens 和 microcompact，超阈值时压缩历史消息；压缩策略应建立在 session context + raw transcript 的组合边界上，而不是只面向原始消息列表
-- **Related**: docs/specs/omega-agent-impl-plan.md, docs/specs/omega-tui-runtime-experience.md
+- **Complexity**: Medium
+- **Description**: 在 prompt builder / message assembly 层注入 Anthropic `cache_control: { type: "ephemeral" }` 标记（4 个锚点：tools → system → summaries → last assistant turn）；升级 token estimation 从 `chars/4` 改为优先调用 provider `count_tokens` API / fallback。不新建 crate，仅修改 `omega-session`（prompt_builder、runner）与 `omega-client`（expose count_tokens）。新增 `CacheDiagnostics` 到 `StepDiagnostics`。
+- **Blocks**: Task 11B, Task 11F
+- **Related**: docs/specs/omega-context-management.md §1, §Observability
+
+### Task 11B: Prompt Path Stabilization
+- **Status**: Pending
+- **Priority**: High
+- **Complexity**: High
+- **Description**: 直接在现有 `omega-session` 执行路径中落地根因修复：slot budget MVP、priority-weighted summary selection、compaction trigger、Critical/High slot 不可裁剪规则。此阶段不引入 document governance、LanceDB 或 TUI 仪表盘，目标是先让 execute 多轮 structured output 稳定。
+- **Blocks**: Task 11C, Task 10
+- **Related**: docs/specs/omega-context-management.md §Goals, §4, §Migration Path
+
+### Task 11C: omega-memory + omega-context facade
+- **Status**: Pending
+- **Priority**: High
+- **Complexity**: High
+- **Description**: 在 `Task 11B` 行为验证后，抽离 `omega-memory` 与 `omega-context`。公开边界采用 `OmegaContextFacade` + 聚焦接口（ContextAssembler/MemoryService/KnowledgeQueryService/DocumentGovernanceService/ContextDiagnosticsProvider），避免单一 god trait；tool 注册保留在 omega-context integration adapter，而不是 facade 核心接口。
+- **Blocks**: Task 11D, Task 11E, Task 11F
+- **Related**: docs/specs/omega-context-management.md §Architecture, §Migration Path
+
+### Task 11D: omega-document — FileStore + Governance + Keyword Search
+- **Status**: Pending
+- **Priority**: High
+- **Complexity**: High
+- **Description**: 新建 `omega-document` 内部 crate，先实现 `FileStore` manifest（`.omega/store/files.jsonl` 真源）、ChunkManager、PersistentTodoStore、tantivy full-text index 和 Document Governance Engine。`manage_document` 采用 check/plan/apply staged 模式，避免隐式多文件写入。通过 omega-context 注册 `search_codebase`（keyword）和 `manage_document`。
+- **Blocks**: Task 11E, Task 11F
+- **Related**: docs/specs/omega-context-management.md §3.1, §3.5, §3.7
+
+### Task 11E: LanceDB 向量数据库 + 多维复合查询
+- **Status**: Pending
+- **Priority**: High
+- **Complexity**: High
+- **Description**: 接入 LanceDB 作为 `FileStore` 的派生向量索引，而不是主存储。实现 revision-aware files/chunks/turns 向量表、fastembed 本地 embedding、structured filters + keyword + vector 的 hybrid retrieval；当向量索引落后于 manifest revision 时自动降级到 keyword 模式。
+- **Blocks**: Task 11F
+- **Related**: docs/specs/omega-context-management.md §3.2, §3.2.1, §3.3
+
+### Task 11F: Observability + TUI Integration
+- **Status**: Pending
+- **Priority**: Medium
+- **Complexity**: Medium
+- **Description**: 实现 `ContextDiagnostics` 聚合指标（budget + cache + memory + document + store），通过 `ContextRuntimeMessage` 向 TUI 推送状态。默认采用后台索引和 readiness 状态，不阻塞启动。TUI 新增：(1) 最小化 budget/caching 调试视图；(2) document health dashboard；(3) search results overlay；(4) compaction/index event feed。关键操作记入 tracing spans。
+- **Blocks**: —
+- **Related**: docs/specs/omega-context-management.md §Observability, §TUI Integration
 
 ### ── M7: 任务系统 (s07) ──
 
