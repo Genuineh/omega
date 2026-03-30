@@ -92,6 +92,8 @@ fn text_response(text: &str) -> ChatResponse {
         usage: Some(Usage {
             input_tokens: 10,
             output_tokens: 5,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
         }),
     }
 }
@@ -105,6 +107,8 @@ fn tool_use_response(tool_id: &str, name: &str, input: serde_json::Value) -> Cha
         usage: Some(Usage {
             input_tokens: 10,
             output_tokens: 5,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
         }),
     }
 }
@@ -257,6 +261,8 @@ async fn response_event_callback_receives_text_and_completion() {
         usage: Some(Usage {
             input_tokens: 10,
             output_tokens: 5,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
         }),
     }]));
     let tmp = std::env::temp_dir().join("omega-core-event-cb-test");
@@ -292,6 +298,8 @@ async fn response_event_callback_receives_text_and_completion() {
                 usage: Some(Usage {
                     input_tokens: 10,
                     output_tokens: 5,
+                    cache_creation_input_tokens: None,
+                    cache_read_input_tokens: None,
                 }),
             },
         ]
@@ -352,6 +360,8 @@ fn create_default_tools_includes_bash() {
     assert!(dispatcher.has_tool("glob_search"));
     assert!(dispatcher.has_tool("grep_search"));
     assert!(dispatcher.has_tool("load_skill"));
+    assert!(dispatcher.has_tool("manage_document"));
+    assert!(dispatcher.has_tool("search_codebase"));
     assert!(dispatcher.has_tool("todo"));
 }
 
@@ -363,7 +373,7 @@ fn tool_definitions_deserialize() {
         .into_iter()
         .map(|v| serde_json::from_value(v).unwrap())
         .collect();
-    assert_eq!(defs.len(), 12);
+    assert_eq!(defs.len(), 14);
     let names: Vec<&str> = defs.iter().map(|def| def.name.as_str()).collect();
     assert_eq!(
         names,
@@ -377,7 +387,9 @@ fn tool_definitions_deserialize() {
             "grep_search",
             "list_dir",
             "load_skill",
+            "manage_document",
             "read_file",
+            "search_codebase",
             "todo",
             "write_file"
         ]
@@ -617,7 +629,7 @@ fn set_visible_tools_none_restores_all_tools() {
     assert!(agent.visible_tool_names().is_empty());
 
     let restored = agent.set_visible_tools(None);
-    assert_eq!(restored.len(), 12);
+    assert_eq!(restored.len(), 14);
     assert_eq!(
         agent.visible_tool_names(),
         vec![
@@ -630,7 +642,9 @@ fn set_visible_tools_none_restores_all_tools() {
             "grep_search",
             "list_dir",
             "load_skill",
+            "manage_document",
             "read_file",
+            "search_codebase",
             "todo",
             "write_file"
         ]

@@ -10,7 +10,7 @@ use omega_workflow::{
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::prompt_builder::render_output_contract;
+use omega_context::render_output_contract;
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 struct FeatureExploreOutput {

@@ -37,7 +37,8 @@ pub use minimax::{
 };
 pub use types::{
     ChatEvent, ChatEventStream, ChatRequest, ChatResponse, ClientError, ContentBlock, DynLlmClient,
-    LlmClient, Message, MessageContent, ProviderCapabilityError, Role, ToolDefinition, Usage,
+    LlmClient, Message, MessageContent, PromptCacheControl, ProviderCapabilityError, Role,
+    SystemBlock, ToolDefinition, Usage,
 };
 
 pub const STOP_REASON_END_TURN: &str = "end_turn";

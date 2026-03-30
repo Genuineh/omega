@@ -1,11 +1,12 @@
 use omega_session::{
-    ActivityTarget, ExecuteProgressDiagnostics, OverlayRequest, ResponseSection,
-    ResponseSectionDelta, ResponseSectionKind, ResponseSectionMetadata, RuntimeUiEffect,
-    RuntimeUiMessage, StepContextWrite, StepContextWriteKind, StepDiagnostics,
-    StepInputDiagnostics, StepInputStatus, StepOutputAttemptKind, StepOutputContractMode,
-    StepOutputDiagnostics, StepOutputRecoveryDecision, StepOutputStatus, StepSubflowRef,
-    StepSubflowState, StepSubflowStatus, StepSummarySource, ToolRunDetail, UiContent,
-    UiMessageKind, UiSource, UiTarget, WorkflowRunRole,
+    ActivityTarget, CacheDiagnostics, ExecuteProgressDiagnostics, OverlayRequest,
+    ResponseSection, ResponseSectionDelta, ResponseSectionKind, ResponseSectionMetadata,
+    RuntimeUiEffect, RuntimeUiMessage, StepContextWrite, StepContextWriteKind,
+    StepDiagnostics, StepInputDiagnostics, StepInputStatus, StepOutputAttemptKind,
+    StepOutputContractMode, StepOutputDiagnostics, StepOutputRecoveryDecision,
+    StepOutputStatus, StepSubflowRef, StepSubflowState, StepSubflowStatus,
+    StepSummarySource, TokenCountSource, ToolRunDetail, UiContent, UiMessageKind, UiSource,
+    UiTarget, WorkflowRunRole,
 };
 use ratatui::layout::Rect;
 
@@ -20,6 +21,16 @@ fn sample_step_diagnostics() -> StepDiagnostics {
         step_label: "Plan".to_string(),
         index: 2,
         total: 4,
+        cache: Some(CacheDiagnostics {
+            token_count_source: TokenCountSource::ProviderCountTokens,
+            request_input_tokens: 321,
+            budget_input_tokens: 1024,
+            cache_breakpoints: vec!["tools".to_string(), "system:stable".to_string()],
+            cache_creation_input_tokens: Some(40),
+            cache_read_input_tokens: Some(60),
+            uncached_input_tokens: Some(120),
+            cache_hit_ratio_percent: Some(33),
+        }),
         execute_progress: Some(ExecuteProgressDiagnostics {
             todo_total: 2,
             todo_completed: 1,

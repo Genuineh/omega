@@ -1,6 +1,6 @@
 use omega_observability::strip_ansi;
 use omega_session::{
-    StepContextWrite, StepContextWriteKind, StepDiagnostics, StepInputStatus,
+    CacheDiagnostics, StepContextWrite, StepContextWriteKind, StepDiagnostics, StepInputStatus,
     StepOutputAttemptKind, StepOutputRecoveryDecision, StepOutputStatus,
 };
 
@@ -142,6 +142,16 @@ fn sanitize_step_diagnostics(mut diagnostics: StepDiagnostics) -> StepDiagnostic
             after_preview: write.after_preview.map(|text| strip_ansi(&text)),
         })
         .collect();
+    diagnostics.cache = diagnostics.cache.map(sanitize_cache_diagnostics);
+    diagnostics
+}
+
+fn sanitize_cache_diagnostics(mut diagnostics: CacheDiagnostics) -> CacheDiagnostics {
+    diagnostics.cache_breakpoints = diagnostics
+        .cache_breakpoints
+        .into_iter()
+        .map(|value| strip_ansi(&value))
+        .collect();
     diagnostics
 }
 
@@ -195,6 +205,22 @@ fn build_diagnostics_lines(diagnostics: &StepDiagnostics) -> Vec<DiagnosticsLine
             diagnostic_id: Some(diagnostics.id.clone()),
         },
     ];
+    if let Some(cache) = diagnostics.cache.as_ref() {
+        let mut cache_line = format!(
+            "  cache {} · input={}/{} · anchors={}",
+            cache.token_count_source.as_str(),
+            cache.request_input_tokens,
+            cache.budget_input_tokens,
+            cache.cache_breakpoints.len()
+        );
+        if let Some(hit_ratio) = cache.cache_hit_ratio_percent {
+            cache_line.push_str(&format!(" · hit={}%", hit_ratio));
+        }
+        lines.push(DiagnosticsLine {
+            text: cache_line,
+            diagnostic_id: Some(diagnostics.id.clone()),
+        });
+    }
     if let Some(progress) = diagnostics.execute_progress.as_ref() {
         let mut execute = format!(
             "  execute todos={}/{} open={} repeats={}",
@@ -296,6 +322,35 @@ fn build_step_diagnostics_detail_lines(diagnostics: &StepDiagnostics) -> Vec<Str
     }
     if let Some(error) = diagnostics.input.error.as_deref() {
         lines.push(format!("input_error: {error}"));
+    }
+
+    if let Some(cache) = diagnostics.cache.as_ref() {
+        lines.push(format!(
+            "cache: {} request_input_tokens={}/{}",
+            cache.token_count_source.as_str(),
+            cache.request_input_tokens,
+            cache.budget_input_tokens
+        ));
+        lines.push(format!(
+            "cache_breakpoints: {}",
+            if cache.cache_breakpoints.is_empty() {
+                "none".to_string()
+            } else {
+                cache.cache_breakpoints.join(", ")
+            }
+        ));
+        if let Some(cache_creation) = cache.cache_creation_input_tokens {
+            lines.push(format!("cache_creation_input_tokens: {cache_creation}"));
+        }
+        if let Some(cache_read) = cache.cache_read_input_tokens {
+            lines.push(format!("cache_read_input_tokens: {cache_read}"));
+        }
+        if let Some(uncached_input) = cache.uncached_input_tokens {
+            lines.push(format!("uncached_input_tokens: {uncached_input}"));
+        }
+        if let Some(hit_ratio) = cache.cache_hit_ratio_percent {
+            lines.push(format!("cache_hit_ratio_percent: {hit_ratio}"));
+        }
     }
 
     if let Some(progress) = diagnostics.execute_progress.as_ref() {

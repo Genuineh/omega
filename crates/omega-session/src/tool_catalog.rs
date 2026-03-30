@@ -1,15 +1,24 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
+use omega_core::ToolDefinition;
 use omega_workflow::StepToolRequest;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedToolSet {
     tool_names: Vec<String>,
+    tool_definitions: Vec<ToolDefinition>,
 }
 
 impl ResolvedToolSet {
-    pub fn new(tool_names: Vec<String>) -> Self {
-        Self { tool_names }
+    pub fn new(tool_definitions: Vec<ToolDefinition>) -> Self {
+        let tool_names = tool_definitions
+            .iter()
+            .map(|definition| definition.name.clone())
+            .collect();
+        Self {
+            tool_names,
+            tool_definitions,
+        }
     }
 
     pub fn tool_names(&self) -> &[String] {
@@ -17,39 +26,61 @@ impl ResolvedToolSet {
     }
 
     pub fn tool_name_refs(&self) -> Vec<&str> {
-        self.tool_names.iter().map(String::as_str).collect()
+        self.tool_definitions
+            .iter()
+            .map(|definition| definition.name.as_str())
+            .collect()
+    }
+
+    pub fn tool_definitions(&self) -> &[ToolDefinition] {
+        &self.tool_definitions
     }
 
     pub fn is_empty(&self) -> bool {
-        self.tool_names.is_empty()
+        self.tool_definitions.is_empty()
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SessionToolCatalog {
     default_tool_names: BTreeSet<String>,
-    available_tool_names: BTreeSet<String>,
+    available_tools: BTreeMap<String, ToolDefinition>,
 }
 
 impl SessionToolCatalog {
-    pub fn new(default_tool_names: Vec<String>) -> Self {
-        let default_tool_names = default_tool_names.into_iter().collect::<BTreeSet<_>>();
+    pub fn new(default_tools: Vec<ToolDefinition>) -> Self {
+        let default_tool_names = default_tools
+            .iter()
+            .map(|definition| definition.name.clone())
+            .collect::<BTreeSet<_>>();
+        let available_tools = default_tools
+            .into_iter()
+            .map(|definition| (definition.name.clone(), definition))
+            .collect::<BTreeMap<_, _>>();
         Self {
-            available_tool_names: default_tool_names.clone(),
             default_tool_names,
+            available_tools,
         }
     }
 
     pub fn with_available_tools(
-        default_tool_names: Vec<String>,
-        available_tool_names: Vec<String>,
+        default_tools: Vec<ToolDefinition>,
+        available_tools: Vec<ToolDefinition>,
     ) -> Self {
-        let default_tool_names = default_tool_names.into_iter().collect::<BTreeSet<_>>();
-        let mut all_available = available_tool_names.into_iter().collect::<BTreeSet<_>>();
-        all_available.extend(default_tool_names.iter().cloned());
+        let default_tool_names = default_tools
+            .iter()
+            .map(|definition| definition.name.clone())
+            .collect::<BTreeSet<_>>();
+        let mut all_available = available_tools
+            .into_iter()
+            .map(|definition| (definition.name.clone(), definition))
+            .collect::<BTreeMap<_, _>>();
+        for definition in default_tools {
+            all_available.insert(definition.name.clone(), definition);
+        }
         Self {
             default_tool_names,
-            available_tool_names: all_available,
+            available_tools: all_available,
         }
     }
 
@@ -65,7 +96,7 @@ impl SessionToolCatalog {
                 resolved.extend(
                     names
                         .iter()
-                        .filter(|name| self.available_tool_names.contains(name.as_str()))
+                        .filter(|name| self.available_tools.contains_key(name.as_str()))
                         .cloned(),
                 );
                 resolved
@@ -80,22 +111,36 @@ impl SessionToolCatalog {
             }
         };
 
-        ResolvedToolSet::new(tool_names.into_iter().collect())
+        ResolvedToolSet::new(
+            tool_names
+                .into_iter()
+                .filter_map(|name| self.available_tools.get(&name).cloned())
+                .collect(),
+        )
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::SessionToolCatalog;
+    use omega_core::ToolDefinition;
     use omega_workflow::StepToolRequest;
+
+    fn tool(name: &str) -> ToolDefinition {
+        ToolDefinition {
+            name: name.to_string(),
+            description: format!("{name} description"),
+            input_schema: serde_json::json!({"type": "object"}),
+        }
+    }
 
     fn catalog() -> SessionToolCatalog {
         SessionToolCatalog::with_available_tools(
-            vec!["bash".to_string(), "read_file".to_string()],
+            vec![tool("bash"), tool("read_file")],
             vec![
-                "bash".to_string(),
-                "read_file".to_string(),
-                "todo".to_string(),
+                tool("bash"),
+                tool("read_file"),
+                tool("todo"),
             ],
         )
     }

@@ -1,6 +1,7 @@
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 
+use omega_context::OmegaContextFacade;
 use omega_core::{Agent, CoreSharedTodoManager, DynLlmClient, Message, TodoManager};
 use omega_hooks::HookHost;
 use omega_skills::SkillLoader;
@@ -15,7 +16,6 @@ const TOKEN_ESTIMATE_DIVISOR: usize = 4;
 const REPAIR_PASS_MAX_ITERATIONS: u32 = 1;
 
 mod output;
-mod prompt_builder;
 mod routing;
 mod runtime_message;
 mod runner;
@@ -32,14 +32,14 @@ pub use omega_workflow::{
     SCENE_RECOGNITION_STEP_ID, SELECT_WORKFLOW_STEP_ID,
 };
 pub use runtime_ui::{
-    ActivityTarget, OverlayRequest, OverlayTarget, ResponseSection, ResponseSectionDelta,
-    ResponseSectionKind, ResponseSectionMetadata, ResponseSectionState, StepSubflowRef,
-    StepSubflowState, StepSubflowStatus,
+    ActivityTarget, CacheDiagnostics, OverlayRequest, OverlayTarget, ResponseSection,
+    ResponseSectionDelta, ResponseSectionKind, ResponseSectionMetadata, ResponseSectionState,
+    StepSubflowRef, StepSubflowState, StepSubflowStatus,
     ExecuteProgressDiagnostics, RuntimeUiBridge, RuntimeUiEffect, RuntimeUiEnvelope,
     RuntimeUiMessage, RuntimeUiSink, SessionRuntimeContext, StatusSlot, StatusValue,
     StepContextWrite, StepContextWriteKind, StepDiagnostics, StepInputDiagnostics,
     StepInputStatus, StepOutputAttemptKind, StepOutputContractMode, StepOutputDiagnostics,
-    StepOutputRecoveryDecision, StepOutputStatus, StepSummarySource, ToolRun,
+    StepOutputRecoveryDecision, StepOutputStatus, StepSummarySource, TokenCountSource, ToolRun,
     ToolRunDetail, ToolRunStatus, UiContent, UiMessageKind, UiPriority, UiSource, UiTarget,
     WorkflowRunRole,
 };
@@ -54,7 +54,7 @@ pub use tool_catalog::{ResolvedToolSet, SessionToolCatalog};
 #[cfg(test)]
 pub(crate) use output::{parse_json_values, validate_schema_file};
 #[cfg(test)]
-pub(crate) use prompt_builder::render_output_contract;
+pub(crate) use omega_context::render_output_contract;
 #[cfg(test)]
 pub(crate) use routing::{
     latest_user_turn_prefers_research_scene, latest_user_turn_requires_feature_scene,
@@ -92,6 +92,7 @@ pub struct AgentSession {
     turn_checkpoint: Arc<Mutex<Vec<Message>>>,
     active_turn_tx: watch::Sender<u64>,
     session_context: Arc<Mutex<SessionContext>>,
+    context_facade: Arc<OmegaContextFacade>,
     client: DynLlmClient,
     base_system: String,
     cwd: std::path::PathBuf,
@@ -122,13 +123,14 @@ impl AgentSession {
         );
         let tool_catalog = Arc::new(SessionToolCatalog::new(
             dispatcher
-                .tool_names()
+                .to_schemas()
                 .into_iter()
-                .map(ToOwned::to_owned)
-                .collect(),
+                .map(|value| serde_json::from_value(value))
+                .collect::<Result<Vec<_>, _>>()?,
         ));
         let initial_system =
             skill_catalog.build_system_prompt(&config.system, "", &StepSkillRequest::MatchTask);
+        let context_facade = Arc::new(OmegaContextFacade::local(config.cwd.clone()));
         let mut agent = Agent::new(config.client.clone(), initial_system, dispatcher)?;
         agent.set_max_tokens(config.max_output_tokens);
         let checkpoint = agent.messages().to_vec();
@@ -165,6 +167,7 @@ impl AgentSession {
             session_context: Arc::new(Mutex::new(SessionContext::new(
                 config.scene_catalog.root_workflow_id.clone(),
             ))),
+            context_facade,
             client: config.client,
             base_system: config.system,
             cwd: config.cwd,
@@ -263,6 +266,8 @@ impl AgentSession {
         let cwd = self.cwd.clone();
         let todo_manager = self.todo_manager.clone();
         let hook_host = self.hook_host.clone();
+        let client = self.client.clone();
+        let context_facade = self.context_facade.clone();
         let skill_catalog = self.skill_catalog.clone();
         let tool_catalog = self.tool_catalog.clone();
         let scene_catalog = self.scene_catalog.clone();
@@ -288,6 +293,8 @@ impl AgentSession {
             );
             let runner = runner::WorkflowTurnRunner::new(
                 &handle,
+                &client,
+                &context_facade,
                 &skill_catalog,
                 &tool_catalog,
                 &base_system,

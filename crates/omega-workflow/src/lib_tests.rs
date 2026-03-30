@@ -250,6 +250,8 @@ fn builtin_workflows_default_to_agent_loop_with_step_budgets() {
             "todo".to_string(),
             "write_file".to_string(),
             "load_skill".to_string(),
+            "manage_document".to_string(),
+            "search_codebase".to_string(),
         ])
     );
     assert_eq!(root_steps[1].max_iterations, 2);
@@ -268,6 +270,8 @@ fn builtin_workflows_default_to_agent_loop_with_step_budgets() {
             "todo".to_string(),
             "write_file".to_string(),
             "load_skill".to_string(),
+            "manage_document".to_string(),
+            "search_codebase".to_string(),
         ])
     );
 
@@ -281,6 +285,7 @@ fn builtin_workflows_default_to_agent_loop_with_step_budgets() {
             "edit_file".to_string(),
             "todo".to_string(),
             "write_file".to_string(),
+            "manage_document".to_string(),
         ])
     );
     assert_eq!(feature_steps[2].id, EXECUTE_STEP_ID);

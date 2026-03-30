@@ -1,6 +1,3 @@
-#[cfg(test)]
-use omega_client::{ChatRequest, ContentBlock, ToolDefinition};
-
 mod agent;
 mod helpers;
 mod tool_factory;
@@ -9,8 +6,9 @@ mod tool_factory;
 pub use agent::Agent;
 pub use omega_client::{ChatEvent, ChatResponseBuilder};
 pub use omega_client::{
-    ChatEventStream, ClientError, DynLlmClient, LlmClient, Message, MinimaxClient, MinimaxConfig,
-    STOP_REASON_END_TURN, STOP_REASON_TOOL_USE,
+    ChatEventStream, ChatRequest, ClientError, ContentBlock, DynLlmClient, LlmClient, Message,
+    MessageContent, MinimaxClient, MinimaxConfig, PromptCacheControl, Role, SystemBlock,
+    ToolDefinition, Usage, STOP_REASON_END_TURN, STOP_REASON_TOOL_USE,
 };
 pub use omega_todo::{
     SharedTodoManager as CoreSharedTodoManager, TodoItem, TodoManager, TodoStatus,

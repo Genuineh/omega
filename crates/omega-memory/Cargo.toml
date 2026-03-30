@@ -1,0 +1,6 @@
+[package]
+name = "omega-memory"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

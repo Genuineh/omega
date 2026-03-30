@@ -2,6 +2,7 @@
 members = [
     "crates/omega-app",
     "crates/omega-client",
+    "crates/omega-document",
     "crates/omega-hooks",
     "crates/omega-message",
     "crates/omega-tasks",
@@ -15,6 +16,8 @@ members = [
     "crates/omega-todo",
     "crates/omega-subagent",
     "crates/omega-compression",
+    "crates/omega-context",
+    "crates/omega-memory",
     "crates/omega-background",
     "crates/omega-team",
     "crates/omega-core",
@@ -48,3 +51,11 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 dirs = "6"
 toml = "0.8"
 libloading = "0.8"
+blake3 = "1"
+globset = "0.4"
+tantivy = "0.22"
+walkdir = "2"
+arrow-array = "57"
+arrow-schema = "57"
+fastembed = "5.13"
+lancedb = "0.27"

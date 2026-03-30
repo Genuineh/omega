@@ -50,7 +50,27 @@ impl ScriptedLlmClient {
     pub fn recorded_systems(&self) -> Vec<Option<String>> {
         self.recorded_requests()
             .into_iter()
-            .map(|request| request.system)
+            .map(|request| {
+                let mut sections = Vec::new();
+                if let Some(system) = request.system {
+                    if !system.is_empty() {
+                        sections.push(system);
+                    }
+                }
+                sections.extend(
+                    request
+                        .system_blocks
+                        .into_iter()
+                        .map(|block| block.text)
+                        .filter(|text| !text.is_empty()),
+                );
+
+                if sections.is_empty() {
+                    None
+                } else {
+                    Some(sections.join("\n\n"))
+                }
+            })
             .collect()
     }
 

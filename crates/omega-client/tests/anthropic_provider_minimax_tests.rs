@@ -144,6 +144,28 @@ async fn anthropic_client_supports_count_tokens_models_and_batches() {
 }
 
 #[tokio::test]
+async fn minimax_llm_client_count_tokens_uses_provider_endpoint() {
+    let server = MockServer::start();
+    let _count_tokens = server.mock(|when, then| {
+        when.method(POST).path("/anthropic/v1/messages/count_tokens");
+        then.status(200).json_body(json!({"input_tokens": 57}));
+    });
+    let client = MinimaxClient::new(MinimaxConfig::with_base_url(
+        "test-key",
+        "MiniMax-M2.5",
+        format!("{}/anthropic", server.base_url()),
+    ))
+    .expect("client should build");
+
+    let tokens = client
+        .count_tokens(ChatRequest::new(vec![Message::user("count me")]).with_system("sys"))
+        .await
+        .expect("count_tokens should succeed");
+
+    assert_eq!(tokens, 57);
+}
+
+#[tokio::test]
 async fn minimax_chat_stream_falls_back_to_non_stream_when_stream_start_is_missing() {
     let server = MockServer::start();
     let _stream = server.mock(|when, then| {
@@ -211,6 +233,8 @@ async fn minimax_chat_stream_falls_back_to_non_stream_when_stream_start_is_missi
                 usage: Some(Usage {
                     input_tokens: 12,
                     output_tokens: 4,
+                    cache_creation_input_tokens: None,
+                    cache_read_input_tokens: None,
                 }),
             },
         ]

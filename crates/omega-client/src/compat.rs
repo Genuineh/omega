@@ -4,6 +4,7 @@ use tracing::warn;
 use crate::anthropic::{
     AnthropicClient, AnthropicContentBlock, AnthropicEventStream, AnthropicMessage,
     AnthropicMessageContent, AnthropicMessageCreateRequest, AnthropicMessageParam,
+    AnthropicCountTokensRequest,
     AnthropicStreamEvent, AnthropicSystemBlock, AnthropicToolDefinition,
 };
 use crate::{
@@ -59,6 +60,13 @@ impl AnthropicMessagesCompatClient {
         Ok(anthropic_message_to_chat_response(response))
     }
 
+    pub async fn count_tokens(&self, request: ChatRequest) -> Result<u32, ClientError> {
+        let anthropic_request =
+            chat_request_to_count_tokens_request(request, &self.client.config().default_model);
+        let response = self.client.messages().count_tokens(anthropic_request).await?;
+        Ok(response.input_tokens)
+    }
+
     pub async fn chat_stream(&self, request: ChatRequest) -> Result<ChatEventStream, ClientError> {
         let fallback_request = request.clone();
         let anthropic_request =
@@ -97,44 +105,155 @@ pub(crate) fn chat_request_to_anthropic_request(
     request: ChatRequest,
     default_model: &str,
 ) -> AnthropicMessageCreateRequest {
+    let last_assistant_index = request
+        .messages
+        .iter()
+        .rposition(|message| message.role == crate::Role::Assistant);
+    let messages = request
+        .messages
+        .into_iter()
+        .enumerate()
+        .map(|(index, message)| {
+            message_to_anthropic(
+                message,
+                request.cache_last_assistant_turn && Some(index) == last_assistant_index,
+            )
+        })
+        .collect();
     let mut anthropic_request = AnthropicMessageCreateRequest::new(
         default_model.to_string(),
-        request
-            .messages
-            .into_iter()
-            .map(message_to_anthropic)
-            .collect(),
+        messages,
         request.max_tokens,
     );
 
     if let Some(system) = request.system {
         anthropic_request.system = vec![AnthropicSystemBlock::text(system)];
     }
-    if !request.tools.is_empty() {
-        anthropic_request.tools = request.tools.into_iter().map(tool_to_anthropic).collect();
-    }
+    anthropic_request.system.extend(
+        request
+            .system_blocks
+            .into_iter()
+            .map(system_block_to_anthropic),
+    );
+    let tool_len = request.tools.len();
+    anthropic_request.tools = request
+        .tools
+        .into_iter()
+        .enumerate()
+        .map(|(index, tool)| tool_to_anthropic(tool, index + 1 == tool_len))
+        .collect();
 
     anthropic_request
 }
 
-fn message_to_anthropic(message: Message) -> AnthropicMessageParam {
+fn chat_request_to_count_tokens_request(
+    request: ChatRequest,
+    default_model: &str,
+) -> AnthropicCountTokensRequest {
+    let last_assistant_index = request
+        .messages
+        .iter()
+        .rposition(|message| message.role == crate::Role::Assistant);
+    let messages = request
+        .messages
+        .into_iter()
+        .enumerate()
+        .map(|(index, message)| {
+            message_to_anthropic(
+                message,
+                request.cache_last_assistant_turn && Some(index) == last_assistant_index,
+            )
+        })
+        .collect();
+    let mut system = Vec::new();
+    if let Some(system_text) = request.system {
+        system.push(AnthropicSystemBlock::text(system_text));
+    }
+    system.extend(request.system_blocks.into_iter().map(system_block_to_anthropic));
+    let tool_len = request.tools.len();
+    let tools = request
+        .tools
+        .into_iter()
+        .enumerate()
+        .map(|(index, tool)| tool_to_anthropic(tool, index + 1 == tool_len))
+        .collect();
+
+    AnthropicCountTokensRequest {
+        model: default_model.to_string(),
+        messages,
+        system,
+        tools,
+    }
+}
+
+fn message_to_anthropic(message: Message, cache_last_text_block: bool) -> AnthropicMessageParam {
     match message.content {
-        MessageContent::Text(text) => AnthropicMessageParam {
-            role: message.role,
-            content: AnthropicMessageContent::Text(text),
-        },
+        MessageContent::Text(text) => {
+            if cache_last_text_block && message.role == crate::Role::Assistant {
+                AnthropicMessageParam {
+                    role: message.role,
+                    content: AnthropicMessageContent::Blocks(vec![AnthropicContentBlock::Text {
+                        text,
+                        cache_control: Some(crate::AnthropicCacheControl::ephemeral()),
+                        citations: Vec::new(),
+                    }]),
+                }
+            } else {
+                AnthropicMessageParam {
+                    role: message.role,
+                    content: AnthropicMessageContent::Text(text),
+                }
+            }
+        }
         MessageContent::Blocks(blocks) => AnthropicMessageParam {
             role: message.role,
-            content: AnthropicMessageContent::Blocks(
-                blocks.into_iter().map(content_block_to_anthropic).collect(),
-            ),
+            content: AnthropicMessageContent::Blocks(content_blocks_to_anthropic(
+                blocks,
+                cache_last_text_block,
+            )),
         },
     }
 }
 
-fn content_block_to_anthropic(block: ContentBlock) -> AnthropicContentBlock {
+fn system_block_to_anthropic(block: crate::SystemBlock) -> AnthropicSystemBlock {
+    AnthropicSystemBlock {
+        kind: "text".to_string(),
+        text: block.text,
+        cache_control: block.cache_control.map(|cache_control| crate::AnthropicCacheControl {
+            kind: cache_control.kind,
+        }),
+        citations: Vec::new(),
+    }
+}
+
+fn content_blocks_to_anthropic(
+    blocks: Vec<ContentBlock>,
+    cache_last_text_block: bool,
+) -> Vec<AnthropicContentBlock> {
+    let last_text_index = if cache_last_text_block {
+        blocks
+            .iter()
+            .rposition(|block| matches!(block, ContentBlock::Text { .. }))
+    } else {
+        None
+    };
+    blocks
+        .into_iter()
+        .enumerate()
+        .map(|(index, block)| content_block_to_anthropic(block, Some(index) == last_text_index))
+        .collect()
+}
+
+fn content_block_to_anthropic(
+    block: ContentBlock,
+    cache_control: bool,
+) -> AnthropicContentBlock {
     match block {
-        ContentBlock::Text { text } => AnthropicContentBlock::text(text),
+        ContentBlock::Text { text } => AnthropicContentBlock::Text {
+            text,
+            cache_control: cache_control.then(crate::AnthropicCacheControl::ephemeral),
+            citations: Vec::new(),
+        },
         ContentBlock::Thinking {
             thinking,
             signature,
@@ -157,12 +276,12 @@ fn content_block_to_anthropic(block: ContentBlock) -> AnthropicContentBlock {
     }
 }
 
-fn tool_to_anthropic(tool: ToolDefinition) -> AnthropicToolDefinition {
+fn tool_to_anthropic(tool: ToolDefinition, cache_control: bool) -> AnthropicToolDefinition {
     AnthropicToolDefinition {
         name: tool.name,
         description: tool.description,
         input_schema: tool.input_schema,
-        cache_control: None,
+        cache_control: cache_control.then(crate::AnthropicCacheControl::ephemeral),
         strict: None,
     }
 }
@@ -180,6 +299,8 @@ pub(crate) fn anthropic_message_to_chat_response(message: AnthropicMessage) -> C
         usage: message.usage.map(|usage| Usage {
             input_tokens: usage.input_tokens,
             output_tokens: usage.output_tokens,
+            cache_creation_input_tokens: usage.cache_creation_input_tokens,
+            cache_read_input_tokens: usage.cache_read_input_tokens,
         }),
     }
 }
@@ -231,6 +352,8 @@ fn anthropic_stream_event_to_chat_event(event: AnthropicStreamEvent) -> ChatEven
                 usage: usage.map(|usage| Usage {
                     input_tokens: usage.input_tokens,
                     output_tokens: usage.output_tokens,
+                    cache_creation_input_tokens: usage.cache_creation_input_tokens,
+                    cache_read_input_tokens: usage.cache_read_input_tokens,
                 }),
             }
         }

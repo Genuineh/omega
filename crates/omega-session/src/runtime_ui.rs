@@ -247,10 +247,38 @@ pub struct StepDiagnostics {
     pub step_label: String,
     pub index: usize,
     pub total: usize,
+    pub cache: Option<CacheDiagnostics>,
     pub execute_progress: Option<ExecuteProgressDiagnostics>,
     pub input: StepInputDiagnostics,
     pub output: StepOutputDiagnostics,
     pub session_writes: Vec<StepContextWrite>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CacheDiagnostics {
+    pub token_count_source: TokenCountSource,
+    pub request_input_tokens: u32,
+    pub budget_input_tokens: u32,
+    pub cache_breakpoints: Vec<String>,
+    pub cache_creation_input_tokens: Option<u32>,
+    pub cache_read_input_tokens: Option<u32>,
+    pub uncached_input_tokens: Option<u32>,
+    pub cache_hit_ratio_percent: Option<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenCountSource {
+    ProviderCountTokens,
+    Estimated,
+}
+
+impl TokenCountSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ProviderCountTokens => "provider_count_tokens",
+            Self::Estimated => "estimated",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

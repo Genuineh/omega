@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use futures_util::StreamExt;
-use omega_client::{ChatRequest, ChatResponse, ContentBlock, ToolDefinition};
+use omega_client::{ChatRequest, ChatResponse, ContentBlock, SystemBlock, ToolDefinition};
 use omega_tools::{ToolDispatcher, ToolErrorKind, ToolResult};
 use tokio::sync::watch;
 use tracing::{error, info, instrument};
@@ -19,6 +19,7 @@ pub struct Agent {
     dispatcher: ToolDispatcher,
     messages: Vec<Message>,
     system: String,
+    system_blocks: Vec<SystemBlock>,
     tool_definitions: Vec<ToolDefinition>,
     all_tool_definitions: Vec<ToolDefinition>,
     max_tokens: u32,
@@ -41,6 +42,7 @@ impl Agent {
             dispatcher,
             messages: Vec::new(),
             system,
+            system_blocks: Vec::new(),
             all_tool_definitions: tool_definitions.clone(),
             tool_definitions,
             max_tokens: 8_000,
@@ -60,8 +62,9 @@ impl Agent {
     where
         F: FnMut(&ChatEvent),
     {
-        let request = ChatRequest::new(self.messages.clone())
-            .with_system(&self.system)
+        let request = self
+            .base_request()
+            .with_cache_last_assistant_turn(true)
             .with_max_tokens(self.max_tokens);
 
         let response = self
@@ -154,8 +157,9 @@ impl Agent {
             );
             let _guard = _agent_loop_span.enter();
 
-            let request = ChatRequest::new(self.messages.clone())
-                .with_system(&self.system)
+            let request = self
+                .base_request()
+                .with_cache_last_assistant_turn(true)
                 .with_tools(self.tool_definitions.clone())
                 .with_max_tokens(self.max_tokens);
 
@@ -299,6 +303,15 @@ impl Agent {
         builder.finish().map_err(|error| anyhow!("{error}"))
     }
 
+    fn base_request(&self) -> ChatRequest {
+        let request = ChatRequest::new(self.messages.clone()).with_system_blocks(self.system_blocks.clone());
+        if self.system.is_empty() {
+            request
+        } else {
+            request.with_system(&self.system)
+        }
+    }
+
     pub fn messages(&self) -> &[Message] {
         &self.messages
     }
@@ -317,6 +330,12 @@ impl Agent {
 
     pub fn set_system(&mut self, system: String) {
         self.system = system;
+        self.system_blocks.clear();
+    }
+
+    pub fn set_system_blocks(&mut self, system_blocks: Vec<SystemBlock>) {
+        self.system.clear();
+        self.system_blocks = system_blocks;
     }
 
     pub fn set_visible_tools(&mut self, names: Option<&[&str]>) -> Vec<String> {

@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use omega_context::{ContextToolRegistry, OmegaContextFacade};
 use omega_skills::LoadSkillHandler;
 use omega_todo::{SharedTodoManager, TodoManager, TodoToolHandler};
 use omega_tools::ToolDispatcher;
@@ -58,6 +59,9 @@ pub fn create_default_tools_with_todo_manager_and_tool_limits(
     batch_max_requests: usize,
 ) -> ToolDispatcher {
     let mut dispatcher = ToolDispatcher::new();
+    let context_registry = ContextToolRegistry::new(std::sync::Arc::new(
+        OmegaContextFacade::local(root.clone()),
+    ));
     dispatcher.register(Box::new(BashHandler::with_allowed_commands(
         root.clone(),
         bash_allowed_commands,
@@ -76,6 +80,9 @@ pub fn create_default_tools_with_todo_manager_and_tool_limits(
     dispatcher.register(Box::new(ApplyPatchHandler::new(root.clone())));
     if let Ok(handler) = LoadSkillHandler::from_repo_root(&root) {
         dispatcher.register(Box::new(handler));
+    }
+    for handler in context_registry.register_tools() {
+        dispatcher.register(handler);
     }
     dispatcher.register(Box::new(TodoToolHandler::with_manager(todo_manager)));
     dispatcher

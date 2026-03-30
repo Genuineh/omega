@@ -1,66 +1,55 @@
 use std::path::Path;
 
+use omega_core::{PromptCacheControl, SystemBlock};
 use omega_workflow::{DataFormat, StepOutputContract};
 use serde_json::Value;
 
 use crate::runner::{OutputValidationFailure, StepExecutionInput};
 use crate::session_state::{RoutingContext, SessionContext, StepSummary};
 
-pub(crate) fn build_step_system_prompt(input: &StepExecutionInput) -> String {
-    let mut sections = vec![
+pub(crate) fn build_step_system_blocks(input: &StepExecutionInput) -> Vec<SystemBlock> {
+    let mut blocks = Vec::new();
+    let stable_context = render_stable_session_context(&input.session_context);
+    let stable_sections = [
         input
             .resolved_skills
             .build_system_prompt(&input.base_system),
         format!("Workflow phase: {}", input.step.label),
         render_visible_tools(input.resolved_tools.tool_names()),
-    ];
-    let session_context = render_session_context(&input.session_context);
-    if !session_context.trim().is_empty() {
-        sections.push(format!(
-            "<session_context>\n{}\n</session_context>",
-            session_context.trim_end()
-        ));
-    }
-    if let Some(structured_input) = input.structured_input.as_ref() {
-        sections.push(format!(
-            "<structured_input step_id=\"{}\">\n{}\n</structured_input>",
-            input.step.id,
-            render_structured_input(structured_input)
-        ));
-    }
-    if let Some(todo_snapshot) = input.todo_snapshot.as_deref() {
-        sections.push(format!(
-            "<todo_state step_id=\"{}\">\n{}\n</todo_state>",
-            input.step.id, todo_snapshot
-        ));
-    }
-    if let Some(execute_item) = input.current_execute_item.as_ref() {
-        sections.push(render_execute_item_context(execute_item));
-    }
-    let output_contract = render_output_contract(&input.cwd, &input.step.output_contract);
-    if !output_contract.is_empty() {
-        sections.push(format!(
-            "<output_contract step_id=\"{}\">\n{}\n</output_contract>",
-            input.step.id, output_contract
-        ));
-    }
-    if !input.step_prompt.trim().is_empty() {
-        sections.push(format!(
-            "<workflow_prompt step_id=\"{}\" prompt_path=\"{}\">\n{}\n</workflow_prompt>",
-            input.step.id,
-            input.step.prompt_path.display(),
-            input.step_prompt.trim_end()
-        ));
+        stable_context,
+    ]
+    .into_iter()
+    .filter(|section| !section.trim().is_empty())
+    .collect::<Vec<_>>()
+    .join("\n\n");
+    if !stable_sections.trim().is_empty() {
+        blocks.push(
+            SystemBlock::text(stable_sections).with_cache_control(PromptCacheControl::ephemeral()),
+        );
     }
 
-    sections.join("\n\n")
+    let summary_context = render_step_summaries_context(&input.session_context.step_summaries);
+    if !summary_context.trim().is_empty() {
+        blocks.push(
+            SystemBlock::text(summary_context).with_cache_control(PromptCacheControl::ephemeral()),
+        );
+    }
+
+    let dynamic_sections = render_dynamic_step_sections(input);
+    if !dynamic_sections.trim().is_empty() {
+        blocks.push(SystemBlock::text(dynamic_sections));
+    }
+
+    blocks
 }
 
-pub(crate) fn build_output_repair_system_prompt(
+pub(crate) fn build_output_repair_system_blocks(
     input: &StepExecutionInput,
     failure: &OutputValidationFailure,
-) -> String {
-    let mut sections = vec![
+) -> Vec<SystemBlock> {
+    let mut blocks = Vec::new();
+    let stable_context = render_stable_session_context(&input.session_context);
+    let stable_sections = [
         input
             .resolved_skills
             .build_system_prompt(&input.base_system),
@@ -69,14 +58,56 @@ pub(crate) fn build_output_repair_system_prompt(
             input.step.label
         ),
         "Visible tools: none".to_string(),
-    ];
-    let session_context = render_session_context(&input.session_context);
-    if !session_context.trim().is_empty() {
-        sections.push(format!(
-            "<session_context>\n{}\n</session_context>",
-            session_context.trim_end()
-        ));
+        stable_context,
+    ]
+    .into_iter()
+    .filter(|section| !section.trim().is_empty())
+    .collect::<Vec<_>>()
+    .join("\n\n");
+    if !stable_sections.trim().is_empty() {
+        blocks.push(
+            SystemBlock::text(stable_sections).with_cache_control(PromptCacheControl::ephemeral()),
+        );
     }
+
+    let summary_context = render_step_summaries_context(&input.session_context.step_summaries);
+    if !summary_context.trim().is_empty() {
+        blocks.push(
+            SystemBlock::text(summary_context).with_cache_control(PromptCacheControl::ephemeral()),
+        );
+    }
+
+    let mut dynamic_sections = render_dynamic_step_sections_without_prompt(input);
+    dynamic_sections.push(render_output_repair_envelope(input, failure));
+    let dynamic_sections = dynamic_sections
+        .into_iter()
+        .filter(|section| !section.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    if !dynamic_sections.trim().is_empty() {
+        blocks.push(SystemBlock::text(dynamic_sections));
+    }
+
+    blocks
+}
+
+fn render_dynamic_step_sections(input: &StepExecutionInput) -> String {
+    render_dynamic_step_sections_without_prompt(input)
+        .into_iter()
+        .chain((!input.step_prompt.trim().is_empty()).then(|| {
+            format!(
+                "<workflow_prompt step_id=\"{}\" prompt_path=\"{}\">\n{}\n</workflow_prompt>",
+                input.step.id,
+                input.step.prompt_path.display(),
+                input.step_prompt.trim_end()
+            )
+        }))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn render_dynamic_step_sections_without_prompt(input: &StepExecutionInput) -> Vec<String> {
+    let mut sections = Vec::new();
     if let Some(structured_input) = input.structured_input.as_ref() {
         sections.push(format!(
             "<structured_input step_id=\"{}\">\n{}\n</structured_input>",
@@ -100,9 +131,7 @@ pub(crate) fn build_output_repair_system_prompt(
             input.step.id, output_contract
         ));
     }
-    sections.push(render_output_repair_envelope(input, failure));
-
-    sections.join("\n\n")
+    sections
 }
 
 fn render_output_repair_envelope(
@@ -205,7 +234,7 @@ fn render_step_summaries(step_summaries: &[StepSummary]) -> String {
         .join("\n\n")
 }
 
-pub(crate) fn render_session_context(session_context: &SessionContext) -> String {
+fn render_stable_session_context(session_context: &SessionContext) -> String {
     let mut sections = Vec::new();
     if !session_context.latest_user_turn.trim().is_empty() {
         sections.push(format!(
@@ -213,7 +242,6 @@ pub(crate) fn render_session_context(session_context: &SessionContext) -> String
             session_context.latest_user_turn.trim_end()
         ));
     }
-
     let routing_context = render_routing_context(&session_context.routing);
     if !routing_context.trim().is_empty() {
         sections.push(format!(
@@ -221,15 +249,17 @@ pub(crate) fn render_session_context(session_context: &SessionContext) -> String
             routing_context.trim_end()
         ));
     }
-
-    if !session_context.step_summaries.is_empty() {
-        sections.push(format!(
-            "<step_summaries>\n{}\n</step_summaries>",
-            render_step_summaries(&session_context.step_summaries)
-        ));
-    }
-
     sections.join("\n\n")
+}
+
+fn render_step_summaries_context(step_summaries: &[StepSummary]) -> String {
+    if step_summaries.is_empty() {
+        return String::new();
+    }
+    format!(
+        "<step_summaries>\n{}\n</step_summaries>",
+        render_step_summaries(step_summaries)
+    )
 }
 
 pub(crate) fn render_structured_input(structured_input: &Value) -> String {

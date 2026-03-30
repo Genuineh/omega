@@ -2,13 +2,20 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use omega_core::{Agent, CoreSharedTodoManager, TodoItem, TodoStatus};
+use omega_context::{
+    ContextCacheDiagnostics, ContextExecuteItem, ContextRouting, ContextSession, ContextStep,
+    ContextStepSummary, ContextTokenCountSource, ContextTokenCounter, ContextWorkflowRole,
+    OmegaContextFacade, OutputRepairContextRequest, OutputRepairFailure,
+    StepContextRequest,
+};
+use omega_core::{Agent, ChatRequest, CoreSharedTodoManager, DynLlmClient, TodoItem, TodoStatus};
 use omega_hooks::{HookAdvanceOutcome, HookHost};
 use omega_workflow::{
     OutputRecoveryMode, SceneCatalog, StepInputContract, StepLoopContract,
     StepOutputContract, WorkflowCatalog, WorkflowPromptCatalog, WorkflowPrompts, WorkflowStep,
     EXECUTE_STEP_ID, FEATURE_SCENE_ID, FEATURE_WORKFLOW_ID, PLAN_STEP_ID,
-    RESEARCH_WORKFLOW_ID, SCENE_RECOGNITION_STEP_ID, SELECT_WORKFLOW_STEP_ID,
+    RESEARCH_WORKFLOW_ID, ROOT_WORKFLOW_ID, SCENE_RECOGNITION_STEP_ID,
+    SELECT_WORKFLOW_STEP_ID,
 };
 use serde_json::Value;
 use tokio::runtime::Handle;
@@ -20,10 +27,6 @@ use crate::output::{
     parse_structured_output_candidates, validate_schema_file, validate_workflow_step_output,
 };
 use crate::hook_adapter::{ExecuteLoopItemContext, StepHookRuntime};
-use crate::prompt_builder::{
-    build_output_repair_system_prompt, build_step_system_prompt, render_output_contract,
-    render_routing_context, render_structured_input, render_visible_tools,
-};
 use crate::routing::{
     find_catalog_match, latest_user_turn_prefers_research_scene,
     latest_user_turn_requires_feature_scene, parse_structured_id, parse_structured_id_from_value,
@@ -35,22 +38,25 @@ use crate::ui_emit::{
     StepResponseStreamer, ToolRunTracker,
 };
 use crate::{
-    ExecuteProgressDiagnostics, ResolvedSkillSet, ResolvedToolSet, RuntimeMessageBridge,
+    CacheDiagnostics, ExecuteProgressDiagnostics, ResolvedSkillSet, ResolvedToolSet,
+    RuntimeMessageBridge,
     SessionSkillCatalog, SessionToolCatalog, SharedRuntimeMessageBridge, StepContextWrite,
     StepContextWriteKind, StepDiagnostics, StepInputDiagnostics, StepInputStatus,
     StepOutputAttemptKind, StepOutputContractMode, StepOutputDiagnostics,
     StepOutputRecoveryDecision, StepOutputStatus, StepSubflowState, StepSubflowStatus,
-    StepSummarySource, WorkflowRunRole,
+    StepSummarySource, TokenCountSource, WorkflowRunRole,
     CONTEXT_SAFETY_MARGIN_TOKENS, REPAIR_PASS_MAX_ITERATIONS, SUMMARY_CHAR_LIMIT,
     TOKEN_ESTIMATE_DIVISOR,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct StepExecutionInput {
     pub(crate) base_system: String,
     pub(crate) cwd: PathBuf,
     pub(crate) resolved_tools: ResolvedToolSet,
     pub(crate) resolved_skills: ResolvedSkillSet,
+    pub(crate) system_blocks: Vec<omega_core::SystemBlock>,
+    pub(crate) cache_diagnostics: CacheDiagnostics,
     pub(crate) session_context: SessionContext,
     pub(crate) structured_input: Option<Value>,
     pub(crate) todo_snapshot: Option<String>,
@@ -66,6 +72,12 @@ struct StepExecutionResult {
     summary: StepSummary,
     session_writes: Vec<StepContextWrite>,
     transition: StepTransition,
+}
+
+#[derive(Debug, Clone)]
+struct StepRunOutput {
+    stage_text: String,
+    usage: Option<omega_core::Usage>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -89,6 +101,7 @@ struct OutputDiagnosticState<'a> {
     status: StepOutputStatus,
     attempt_kind: StepOutputAttemptKind,
     structured_output: Option<&'a Value>,
+    usage: Option<&'a omega_core::Usage>,
     attempts: u32,
     retry_count: u32,
     max_retries: u32,
@@ -96,6 +109,21 @@ struct OutputDiagnosticState<'a> {
     previous_response_preview: Option<&'a str>,
     recovery_decision: Option<StepOutputRecoveryDecision>,
     session_writes: Vec<StepContextWrite>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum SlotPriority {
+    Medium,
+    Low,
+}
+
+#[derive(Debug, Clone)]
+struct SummaryCandidate {
+    summary: StepSummary,
+    original_index: usize,
+    priority: SlotPriority,
+    score: u32,
+    compacted: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,6 +186,8 @@ enum StepTransition {
 
 pub(crate) struct WorkflowTurnRunner<'a> {
     handle: &'a Handle,
+    client: &'a DynLlmClient,
+    context_facade: &'a Arc<OmegaContextFacade>,
     skill_catalog: &'a Arc<SessionSkillCatalog>,
     tool_catalog: &'a Arc<SessionToolCatalog>,
     base_system: &'a str,
@@ -176,9 +206,16 @@ pub(crate) struct WorkflowTurnRunner<'a> {
     tx_result: SharedRuntimeMessageBridge,
 }
 
+const CONTEXT_COMPACTION_THRESHOLD_PERCENT: u32 = 70;
+const MAX_UNCOMPACTED_SUMMARIES: usize = 5;
+const COMPACTED_SUMMARY_CHAR_LIMIT: usize = 480;
+const AGGRESSIVE_COMPACTED_SUMMARY_CHAR_LIMIT: usize = 240;
+
 impl<'a> WorkflowTurnRunner<'a> {
     pub(crate) fn new(
         handle: &'a Handle,
+        client: &'a DynLlmClient,
+        context_facade: &'a Arc<OmegaContextFacade>,
         skill_catalog: &'a Arc<SessionSkillCatalog>,
         tool_catalog: &'a Arc<SessionToolCatalog>,
         base_system: &'a str,
@@ -198,6 +235,8 @@ impl<'a> WorkflowTurnRunner<'a> {
     ) -> Self {
         Self {
             handle,
+            client,
+            context_facade,
             skill_catalog,
             tool_catalog,
             base_system,
@@ -319,13 +358,13 @@ impl<'a> WorkflowTurnRunner<'a> {
             );
 
             let step_prompt = prompts.prompt_for(&step.id).unwrap_or_default();
-            let step_input =
-                match self.build_step_execution_input(
-                    session_context,
-                    &step,
-                    step_prompt,
-                    current_execute_item.clone(),
-                ) {
+            let step_input = match self.build_step_execution_input(
+                agent.messages(),
+                session_context,
+                &step,
+                step_prompt,
+                current_execute_item.clone(),
+            ) {
                     Ok(step_input) => {
                         self.send_step_input_diagnostics(
                             &diagnostic_context,
@@ -364,8 +403,8 @@ impl<'a> WorkflowTurnRunner<'a> {
                 current_execute_item.clone(),
             );
             hook_runtime.before_step()?;
-            let base_system_prompt = build_step_system_prompt(&step_input);
-            agent.set_system(base_system_prompt.clone());
+            let base_system_blocks = step_input.system_blocks.clone();
+            agent.set_system_blocks(base_system_blocks.clone());
 
             let checkpoint = if role == WorkflowRunRole::Root {
                 Some(agent.messages().to_vec())
@@ -391,8 +430,9 @@ impl<'a> WorkflowTurnRunner<'a> {
             let mut current_attempt_kind = StepOutputAttemptKind::Primary;
             let mut attempt_tools = step_input.resolved_tools.clone();
             let mut attempt_max_iterations = step.max_iterations;
+            let mut last_usage: Option<omega_core::Usage>;
             let (stage_text, structured_output, validation_attempts) = loop {
-                let stage_text = match self.execute_step(
+                let step_run = match self.execute_step(
                     agent,
                     &attempt_tools,
                     attempt_max_iterations,
@@ -417,6 +457,8 @@ impl<'a> WorkflowTurnRunner<'a> {
                         return Err(error);
                     }
                 };
+                last_usage = step_run.usage.clone();
+                let stage_text = step_run.stage_text;
 
                 match self.validate_step_output(
                     workflow_id,
@@ -448,6 +490,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                                 status: StepOutputStatus::Invalid,
                                 attempt_kind: current_attempt_kind,
                                 structured_output: validation_failure.extracted_json.as_ref(),
+                                usage: last_usage.as_ref(),
                                 attempts,
                                 retry_count,
                                 max_retries: max_validation_retries,
@@ -550,15 +593,21 @@ impl<'a> WorkflowTurnRunner<'a> {
                             StepOutputAttemptKind::Repair => {
                                 attempt_tools = ResolvedToolSet::new(Vec::new());
                                 attempt_max_iterations = REPAIR_PASS_MAX_ITERATIONS;
-                                agent.set_system(build_output_repair_system_prompt(
-                                    &step_input,
-                                    &validation_failure,
-                                ));
+                                let repair_blocks = self
+                                    .context_facade
+                                    .assembler
+                                    .assemble_output_repair_context(
+                                        self.build_output_repair_context_request(
+                                            &step_input,
+                                            &validation_failure,
+                                        ),
+                                    )?;
+                                agent.set_system_blocks(repair_blocks);
                             }
                             StepOutputAttemptKind::Regenerate => {
                                 attempt_tools = step_input.resolved_tools.clone();
                                 attempt_max_iterations = step.max_iterations;
-                                agent.set_system(base_system_prompt.clone());
+                                agent.set_system_blocks(base_system_blocks.clone());
                                 let validation_feedback = build_output_validation_feedback(
                                     self.cwd,
                                     &step,
@@ -656,6 +705,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                     status: output_status,
                     attempt_kind: current_attempt_kind,
                     structured_output: step_result.structured_output.as_ref(),
+                    usage: last_usage.as_ref(),
                     attempts: validation_attempts,
                     retry_count: validation_attempt,
                     max_retries: max_validation_retries,
@@ -794,7 +844,7 @@ impl<'a> WorkflowTurnRunner<'a> {
         max_iterations: u32,
         response_streamer: &mut StepResponseStreamer<'_>,
         hook_runtime: Option<StepHookRuntime>,
-    ) -> anyhow::Result<String> {
+    ) -> anyhow::Result<StepRunOutput> {
         let tool_name_refs = resolved_tools.tool_name_refs();
         agent.set_visible_tools(Some(&tool_name_refs));
         agent.set_max_iterations(max_iterations);
@@ -805,6 +855,7 @@ impl<'a> WorkflowTurnRunner<'a> {
             response_streamer.primary_section_id().to_string(),
         )));
         let hook_error = Arc::new(Mutex::new(None::<String>));
+        let usage = Arc::new(Mutex::new(None::<omega_core::Usage>));
         let mut cancel_turn_rx = self.cancel_turn_rx.clone();
 
         let stage_text = self.handle.block_on(agent.run_loop_with_events_until_turn_change(
@@ -860,8 +911,16 @@ impl<'a> WorkflowTurnRunner<'a> {
             },
             {
                 let tool_runs = tool_runs.clone();
+                let usage = usage.clone();
                 move |event| {
                     tool_runs.lock().unwrap().observe_chat_event(event);
+                    if let omega_core::ChatEvent::MessageComplete {
+                        usage: Some(usage_update),
+                        ..
+                    } = event
+                    {
+                        *usage.lock().unwrap() = Some(usage_update.clone());
+                    }
                     response_streamer.push_chat_event(event);
                 }
             },
@@ -873,7 +932,11 @@ impl<'a> WorkflowTurnRunner<'a> {
             return Err(anyhow::anyhow!(error));
         }
 
-        Ok(stage_text)
+        let usage = usage.lock().unwrap().clone();
+        Ok(StepRunOutput {
+            stage_text,
+            usage,
+        })
     }
 
     fn ensure_turn_active(&self) -> anyhow::Result<()> {
@@ -901,6 +964,7 @@ impl<'a> WorkflowTurnRunner<'a> {
 
     fn build_step_execution_input(
         &self,
+        agent_messages: &[omega_core::Message],
         session_context: &SessionContext,
         step: &WorkflowStep,
         step_prompt: &str,
@@ -910,25 +974,49 @@ impl<'a> WorkflowTurnRunner<'a> {
         let resolved_skills = self
             .skill_catalog
             .resolve_for_step(self.input, &step.skill_request);
-        let step_summaries = self.select_step_summaries(
+        let structured_input = resolve_structured_input(session_context, step)?;
+        let todo_snapshot = self.todo_snapshot_for_step(session_context, step);
+        let step_request = self.build_step_context_request(
+            agent_messages,
             session_context,
             step,
             step_prompt,
             &resolved_skills,
             &resolved_tools,
+            structured_input.as_ref(),
+            todo_snapshot.as_deref(),
+            current_execute_item.as_ref(),
         );
-        let structured_input = resolve_structured_input(session_context, step)?;
-        let todo_snapshot = self.todo_snapshot_for_step(session_context, step);
-
-        Ok(StepExecutionInput {
+        let token_counter = SessionTokenCounter {
+            handle: self.handle,
+            client: self.client,
+        };
+        let assembled = self
+            .context_facade
+            .assembler
+            .assemble_step_context(step_request, &token_counter)?;
+        self.log_context_assembly(
+            step,
+            session_context,
+            &assembled.cache_diagnostics,
+            &assembled.selected_step_summaries,
+        );
+        let step_input = StepExecutionInput {
             base_system: self.base_system.to_string(),
             cwd: self.cwd.to_path_buf(),
             resolved_tools,
             resolved_skills,
+            system_blocks: assembled.system_blocks,
+            cache_diagnostics: cache_diagnostics_from_context(&assembled.cache_diagnostics),
             session_context: SessionContext {
                 latest_user_turn: session_context.latest_user_turn.clone(),
                 routing: session_context.routing.clone(),
-                step_summaries,
+                step_summaries: assembled
+                    .selected_step_summaries
+                    .iter()
+                    .cloned()
+                    .map(step_summary_from_context)
+                    .collect(),
                 step_outputs: session_context.step_outputs.clone(),
             },
             structured_input,
@@ -936,75 +1024,140 @@ impl<'a> WorkflowTurnRunner<'a> {
             current_execute_item,
             step: step.clone(),
             step_prompt: step_prompt.to_string(),
-        })
+        };
+
+        Ok(step_input)
     }
 
-    fn select_step_summaries(
+    fn build_step_context_request(
         &self,
+        agent_messages: &[omega_core::Message],
         session_context: &SessionContext,
         step: &WorkflowStep,
         step_prompt: &str,
         resolved_skills: &ResolvedSkillSet,
         resolved_tools: &ResolvedToolSet,
-    ) -> Vec<StepSummary> {
-        let summary_budget = self
-            .context_window
-            .saturating_sub(self.max_output_tokens)
-            .saturating_sub(CONTEXT_SAFETY_MARGIN_TOKENS);
-        let fixed_tokens = estimate_tokens(&resolved_skills.build_system_prompt(self.base_system))
-            .saturating_add(estimate_tokens(&step.label))
-            .saturating_add(estimate_tokens(step_prompt))
-            .saturating_add(estimate_tokens(&session_context.latest_user_turn))
-            .saturating_add(estimate_tokens(&render_routing_context(
-                &session_context.routing,
-            )))
-            .saturating_add(estimate_tokens(&render_visible_tools(
-                resolved_tools.tool_names(),
-            )))
-            .saturating_add(estimate_tokens(&render_output_contract(
-                self.cwd,
-                &step.output_contract,
-            )));
-
-        let fixed_tokens = match resolve_structured_input(session_context, step) {
-            Ok(Some(structured_input)) => fixed_tokens
-                .saturating_add(estimate_tokens(&render_structured_input(&structured_input))),
-            Ok(None) | Err(_) => fixed_tokens,
-        };
-
-        let fixed_tokens = match self.todo_snapshot_for_step(session_context, step) {
-            Some(todo_snapshot) => fixed_tokens.saturating_add(estimate_tokens(&todo_snapshot)),
-            None => fixed_tokens,
-        };
-
-        let mut remaining = summary_budget.saturating_sub(fixed_tokens);
-        let mut selected = Vec::new();
-        for summary in session_context.step_summaries.iter().rev() {
-            if selected.is_empty() {
-                remaining = remaining.saturating_sub(summary.estimated_tokens);
-                selected.push(summary.clone());
-                continue;
-            }
-
-            if summary.estimated_tokens <= remaining {
-                remaining = remaining.saturating_sub(summary.estimated_tokens);
-                selected.push(summary.clone());
-            }
+        structured_input: Option<&Value>,
+        todo_snapshot: Option<&str>,
+        current_execute_item: Option<&ExecuteLoopItemContext>,
+    ) -> StepContextRequest {
+        StepContextRequest {
+            skill_system_prompt: resolved_skills.build_system_prompt(self.base_system),
+            cwd: self.cwd.to_path_buf(),
+            session: ContextSession {
+                latest_user_turn: session_context.latest_user_turn.clone(),
+                routing: context_routing_from_session(&session_context.routing),
+                step_summaries: session_context
+                    .step_summaries
+                    .iter()
+                    .cloned()
+                    .map(step_summary_to_context)
+                    .collect(),
+            },
+            step: ContextStep {
+                id: step.id.clone(),
+                label: step.label.clone(),
+                prompt_path: step.prompt_path.clone(),
+                input_sources: step_input_sources(step),
+                output_contract: step.output_contract.clone(),
+            },
+            step_prompt: step_prompt.to_string(),
+            structured_input: structured_input.cloned(),
+            todo_snapshot: todo_snapshot.map(ToOwned::to_owned),
+            current_execute_item: current_execute_item.cloned().map(context_execute_item_from_session),
+            visible_tool_names: resolved_tools.tool_names().to_vec(),
+            tool_definitions: resolved_tools.tool_definitions().to_vec(),
+            messages: agent_messages.to_vec(),
+            context_window: self.context_window,
+            max_output_tokens: self.max_output_tokens,
+            safety_margin_tokens: CONTEXT_SAFETY_MARGIN_TOKENS,
+            report_step_id: crate::REPORT_STEP_ID.to_string(),
+            execute_step_id: EXECUTE_STEP_ID.to_string(),
+            plan_step_id: PLAN_STEP_ID.to_string(),
+            scene_recognition_step_id: SCENE_RECOGNITION_STEP_ID.to_string(),
+            select_workflow_step_id: SELECT_WORKFLOW_STEP_ID.to_string(),
+            root_workflow_id: ROOT_WORKFLOW_ID.to_string(),
         }
+    }
 
-        selected.reverse();
+    fn build_output_repair_context_request(
+        &self,
+        step_input: &StepExecutionInput,
+        failure: &OutputValidationFailure,
+    ) -> OutputRepairContextRequest {
+        OutputRepairContextRequest {
+            step_request: StepContextRequest {
+                skill_system_prompt: step_input
+                    .resolved_skills
+                    .build_system_prompt(&step_input.base_system),
+                cwd: step_input.cwd.clone(),
+                session: ContextSession {
+                    latest_user_turn: step_input.session_context.latest_user_turn.clone(),
+                    routing: context_routing_from_session(&step_input.session_context.routing),
+                    step_summaries: step_input
+                        .session_context
+                        .step_summaries
+                        .iter()
+                        .cloned()
+                        .map(step_summary_to_context)
+                        .collect(),
+                },
+                step: ContextStep {
+                    id: step_input.step.id.clone(),
+                    label: step_input.step.label.clone(),
+                    prompt_path: step_input.step.prompt_path.clone(),
+                    input_sources: step_input_sources(&step_input.step),
+                    output_contract: step_input.step.output_contract.clone(),
+                },
+                step_prompt: step_input.step_prompt.clone(),
+                structured_input: step_input.structured_input.clone(),
+                todo_snapshot: step_input.todo_snapshot.clone(),
+                current_execute_item: step_input
+                    .current_execute_item
+                    .as_ref()
+                    .cloned()
+                    .map(context_execute_item_from_session),
+                visible_tool_names: step_input.resolved_tools.tool_names().to_vec(),
+                tool_definitions: step_input.resolved_tools.tool_definitions().to_vec(),
+                messages: Vec::new(),
+                context_window: self.context_window,
+                max_output_tokens: self.max_output_tokens,
+                safety_margin_tokens: CONTEXT_SAFETY_MARGIN_TOKENS,
+                report_step_id: crate::REPORT_STEP_ID.to_string(),
+                execute_step_id: EXECUTE_STEP_ID.to_string(),
+                plan_step_id: PLAN_STEP_ID.to_string(),
+                scene_recognition_step_id: SCENE_RECOGNITION_STEP_ID.to_string(),
+                select_workflow_step_id: SELECT_WORKFLOW_STEP_ID.to_string(),
+                root_workflow_id: ROOT_WORKFLOW_ID.to_string(),
+            },
+            failure: OutputRepairFailure {
+                error_kind: failure.error_kind.as_str().to_string(),
+                message: failure.message.clone(),
+                previous_response_preview: failure.previous_response_preview.clone(),
+                extracted_json_preview: failure.extracted_json_preview(),
+            },
+        }
+    }
+
+    fn log_context_assembly(
+        &self,
+        step: &WorkflowStep,
+        session_context: &SessionContext,
+        cache_diagnostics: &ContextCacheDiagnostics,
+        selected_summaries: &[ContextStepSummary],
+    ) {
         debug!(
             step_id = %step.id,
             workflow_id = %session_context.routing.active_workflow_id,
             workflow_role = %session_context.routing.active_workflow_role.as_str(),
-            summary_budget_tokens = summary_budget,
-            fixed_tokens,
-            selected_summary_count = selected.len(),
-            selected_summary_tokens = selected.iter().map(|summary| summary.estimated_tokens).sum::<u32>(),
+            available_input_budget_tokens = cache_diagnostics.budget_input_tokens,
+            request_input_tokens = cache_diagnostics.request_input_tokens,
+            token_count_source = %cache_diagnostics.token_count_source.as_str(),
+            selected_summary_count = selected_summaries.len(),
+            selected_summary_tokens = selected_summaries.iter().map(|summary| summary.estimated_tokens).sum::<u32>(),
             total_available_summaries = session_context.step_summaries.len(),
             "step context summary budget resolved"
         );
-        selected
     }
 
     fn todo_snapshot_for_step(
@@ -1044,6 +1197,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                 status: pending_output_status_for_contract(&context.step.output_contract),
                 attempt_kind: StepOutputAttemptKind::Primary,
                 structured_output: None,
+                usage: None,
                 attempts: 0,
                 retry_count: 0,
                 max_retries: max_output_validation_retries(&context.step.output_contract),
@@ -1055,6 +1209,7 @@ impl<'a> WorkflowTurnRunner<'a> {
         );
         self.send_step_diagnostics_effect(build_step_diagnostics(
             context,
+            Some(step_input.cache_diagnostics.clone()),
             self.build_execute_progress_diagnostics(context.step, &progress_state),
             build_step_input_diagnostics(step_input),
             output,
@@ -1074,6 +1229,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                 status: pending_output_status_for_contract(&context.step.output_contract),
                 attempt_kind: StepOutputAttemptKind::Primary,
                 structured_output: None,
+                usage: None,
                 attempts: 0,
                 retry_count: 0,
                 max_retries: max_output_validation_retries(&context.step.output_contract),
@@ -1085,6 +1241,7 @@ impl<'a> WorkflowTurnRunner<'a> {
         );
         self.send_step_diagnostics_effect(build_step_diagnostics(
             context,
+            None,
             self.build_execute_progress_diagnostics(
                 context.step,
                 &ExecuteLoopProgressState {
@@ -1115,6 +1272,10 @@ impl<'a> WorkflowTurnRunner<'a> {
     ) {
         let diagnostics = build_step_diagnostics(
             context,
+            Some(cache_diagnostics_for_output(
+                &step_input.cache_diagnostics,
+                output_state.usage,
+            )),
             self.build_execute_progress_diagnostics(context.step, &progress_state),
             build_step_input_diagnostics(step_input),
             build_step_output_diagnostics(&context.step.output_contract, &output_state),
@@ -2205,6 +2366,85 @@ impl<'a> WorkflowTurnRunner<'a> {
     }
 }
 
+struct SessionTokenCounter<'a> {
+    handle: &'a Handle,
+    client: &'a DynLlmClient,
+}
+
+impl ContextTokenCounter for SessionTokenCounter<'_> {
+    fn count_request_tokens(&self, request: ChatRequest) -> anyhow::Result<u32> {
+        self.handle
+            .block_on(self.client.count_tokens(request))
+            .map_err(|error| anyhow::anyhow!(error.to_string()))
+    }
+}
+
+fn context_routing_from_session(routing: &crate::session_state::RoutingContext) -> ContextRouting {
+    ContextRouting {
+        recognized_scene_id: routing.recognized_scene_id.clone(),
+        selected_workflow_id: routing.selected_workflow_id.clone(),
+        active_workflow_id: routing.active_workflow_id.clone(),
+        active_workflow_role: match routing.active_workflow_role {
+            WorkflowRunRole::Root => ContextWorkflowRole::Root,
+            WorkflowRunRole::Child => ContextWorkflowRole::Child,
+        },
+    }
+}
+
+fn step_summary_to_context(summary: StepSummary) -> ContextStepSummary {
+    ContextStepSummary {
+        workflow_id: summary.workflow_id,
+        step_id: summary.step_id,
+        title: summary.title,
+        summary: summary.summary,
+        estimated_tokens: summary.estimated_tokens,
+    }
+}
+
+fn step_summary_from_context(summary: ContextStepSummary) -> StepSummary {
+    StepSummary {
+        workflow_id: summary.workflow_id,
+        step_id: summary.step_id,
+        title: summary.title,
+        summary: summary.summary,
+        estimated_tokens: summary.estimated_tokens,
+    }
+}
+
+fn context_execute_item_from_session(item: ExecuteLoopItemContext) -> ContextExecuteItem {
+    ContextExecuteItem {
+        item_id: item.item_id,
+        item_index: item.item_index,
+        item_total: item.item_total,
+        item_label: item.item_label,
+    }
+}
+
+fn step_input_sources(step: &WorkflowStep) -> Vec<String> {
+    match &step.input_contract {
+        StepInputContract::Required { sources } | StepInputContract::Optional { sources } => {
+            sources.clone()
+        }
+        StepInputContract::None => Vec::new(),
+    }
+}
+
+fn cache_diagnostics_from_context(diagnostics: &ContextCacheDiagnostics) -> CacheDiagnostics {
+    CacheDiagnostics {
+        token_count_source: match diagnostics.token_count_source {
+            ContextTokenCountSource::ProviderCountTokens => TokenCountSource::ProviderCountTokens,
+            ContextTokenCountSource::Estimated => TokenCountSource::Estimated,
+        },
+        request_input_tokens: diagnostics.request_input_tokens,
+        budget_input_tokens: diagnostics.budget_input_tokens,
+        cache_breakpoints: diagnostics.cache_breakpoints.clone(),
+        cache_creation_input_tokens: diagnostics.cache_creation_input_tokens,
+        cache_read_input_tokens: diagnostics.cache_read_input_tokens,
+        uncached_input_tokens: diagnostics.uncached_input_tokens,
+        cache_hit_ratio_percent: diagnostics.cache_hit_ratio_percent,
+    }
+}
+
 fn allows_root_routing_text_fallback(role: WorkflowRunRole, step: &WorkflowStep) -> bool {
     role == WorkflowRunRole::Root
         && matches!(
@@ -2404,6 +2644,7 @@ fn emit_output_recovery_activity(
 
 fn build_step_diagnostics(
     context: &StepDiagnosticContext<'_>,
+    cache: Option<CacheDiagnostics>,
     execute_progress: Option<ExecuteProgressDiagnostics>,
     input: StepInputDiagnostics,
     output: StepOutputDiagnostics,
@@ -2443,11 +2684,37 @@ fn build_step_diagnostics(
         step_label: context.step.label.clone(),
         index: context.index,
         total: context.total,
+        cache,
         execute_progress,
         input,
         output,
         session_writes,
     }
+}
+
+fn cache_diagnostics_for_output(
+    base: &CacheDiagnostics,
+    usage: Option<&omega_core::Usage>,
+) -> CacheDiagnostics {
+    let mut diagnostics = base.clone();
+    if let Some(usage) = usage {
+        diagnostics.cache_creation_input_tokens = usage.cache_creation_input_tokens;
+        diagnostics.cache_read_input_tokens = usage.cache_read_input_tokens;
+        diagnostics.uncached_input_tokens = Some(usage.input_tokens);
+        diagnostics.cache_hit_ratio_percent = cache_hit_ratio_percent(
+            usage.input_tokens,
+            usage.cache_read_input_tokens.unwrap_or(0),
+        );
+    }
+    diagnostics
+}
+
+fn cache_hit_ratio_percent(uncached_input_tokens: u32, cache_read_input_tokens: u32) -> Option<u8> {
+    let total = uncached_input_tokens.saturating_add(cache_read_input_tokens);
+    if total == 0 {
+        return None;
+    }
+    Some(((cache_read_input_tokens.saturating_mul(100)) / total) as u8)
 }
 
 fn execute_output_marks_item_complete(
@@ -2682,10 +2949,370 @@ fn estimate_tokens(text: &str) -> u32 {
     chars.div_ceil(TOKEN_ESTIMATE_DIVISOR) as u32
 }
 
+fn should_trigger_context_compaction(
+    base_input_tokens: u32,
+    available_input_budget: u32,
+    summary_count: usize,
+) -> bool {
+    let threshold_tokens = available_input_budget
+        .saturating_mul(CONTEXT_COMPACTION_THRESHOLD_PERCENT)
+        / 100;
+    base_input_tokens >= threshold_tokens || summary_count > MAX_UNCOMPACTED_SUMMARIES
+}
+
+fn rank_summary_candidates(
+    step_summaries: &[StepSummary],
+    step: &WorkflowStep,
+    active_workflow_id: &str,
+    has_execute_item: bool,
+    compaction_triggered: bool,
+) -> Vec<SummaryCandidate> {
+    let total = step_summaries.len();
+    let mut candidates = step_summaries
+        .iter()
+        .enumerate()
+        .map(|(index, summary)| {
+            let priority = classify_summary_priority(summary, step, active_workflow_id);
+            let score = summary_relevance_score(
+                summary,
+                step,
+                active_workflow_id,
+                has_execute_item,
+                total.saturating_sub(index),
+            );
+            let compacted_summary = maybe_compact_summary(
+                summary,
+                priority,
+                compaction_triggered,
+                index,
+                total,
+            );
+            SummaryCandidate {
+                compacted: compacted_summary.summary != summary.summary,
+                summary: compacted_summary,
+                original_index: index,
+                priority,
+                score,
+            }
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        slot_priority_rank(right.priority)
+            .cmp(&slot_priority_rank(left.priority))
+            .then_with(|| right.score.cmp(&left.score))
+            .then_with(|| right.original_index.cmp(&left.original_index))
+            .then_with(|| left.compacted.cmp(&right.compacted))
+    });
+    candidates
+}
+
+fn slot_priority_rank(priority: SlotPriority) -> u8 {
+    match priority {
+        SlotPriority::Medium => 2,
+        SlotPriority::Low => 1,
+    }
+}
+
+fn classify_summary_priority(
+    summary: &StepSummary,
+    step: &WorkflowStep,
+    active_workflow_id: &str,
+) -> SlotPriority {
+    if is_input_source_summary(summary, step)
+        || (step.id == EXECUTE_STEP_ID
+            && matches!(summary.step_id.as_str(), PLAN_STEP_ID | EXECUTE_STEP_ID))
+        || (step.id == crate::REPORT_STEP_ID
+            && matches!(summary.step_id.as_str(), PLAN_STEP_ID | EXECUTE_STEP_ID))
+    {
+        SlotPriority::Medium
+    } else if summary.workflow_id == active_workflow_id {
+        SlotPriority::Medium
+    } else if is_root_routing_summary(summary) {
+        SlotPriority::Low
+    } else {
+        SlotPriority::Low
+    }
+}
+
+fn is_input_source_summary(summary: &StepSummary, step: &WorkflowStep) -> bool {
+    match &step.input_contract {
+        StepInputContract::Required { sources } | StepInputContract::Optional { sources } => {
+            sources.iter().any(|source| source == &summary.step_id)
+        }
+        StepInputContract::None => false,
+    }
+}
+
+fn is_root_routing_summary(summary: &StepSummary) -> bool {
+    summary.workflow_id == ROOT_WORKFLOW_ID
+        && matches!(
+            summary.step_id.as_str(),
+            SCENE_RECOGNITION_STEP_ID | SELECT_WORKFLOW_STEP_ID
+        )
+}
+
+fn summary_relevance_score(
+    summary: &StepSummary,
+    step: &WorkflowStep,
+    active_workflow_id: &str,
+    has_execute_item: bool,
+    recency_score: usize,
+) -> u32 {
+    let mut score = recency_score as u32;
+    if summary.workflow_id == active_workflow_id {
+        score += 20;
+    }
+    if is_input_source_summary(summary, step) {
+        score += 80;
+    }
+    if step.id == EXECUTE_STEP_ID {
+        match summary.step_id.as_str() {
+            PLAN_STEP_ID => score += 70,
+            EXECUTE_STEP_ID => score += 55,
+            _ => {}
+        }
+    }
+    if step.id == crate::REPORT_STEP_ID {
+        match summary.step_id.as_str() {
+            EXECUTE_STEP_ID => score += 80,
+            PLAN_STEP_ID => score += 50,
+            _ => {}
+        }
+    }
+    if has_execute_item && matches!(summary.step_id.as_str(), PLAN_STEP_ID | EXECUTE_STEP_ID) {
+        score += 15;
+    }
+    if is_root_routing_summary(summary) {
+        score = score.saturating_sub(40);
+    }
+    score
+}
+
+fn maybe_compact_summary(
+    summary: &StepSummary,
+    priority: SlotPriority,
+    compaction_triggered: bool,
+    index: usize,
+    total: usize,
+) -> StepSummary {
+    let target_limit = match (priority, compaction_triggered) {
+        (SlotPriority::Medium, true) if index + 2 < total => Some(COMPACTED_SUMMARY_CHAR_LIMIT),
+        (SlotPriority::Low, true) => Some(AGGRESSIVE_COMPACTED_SUMMARY_CHAR_LIMIT),
+        _ => None,
+    };
+    let Some(target_limit) = target_limit else {
+        return summary.clone();
+    };
+    let compacted = compact_summary_text(&summary.summary, target_limit);
+    if compacted == summary.summary {
+        return summary.clone();
+    }
+    StepSummary {
+        workflow_id: summary.workflow_id.clone(),
+        step_id: summary.step_id.clone(),
+        title: summary.title.clone(),
+        estimated_tokens: estimate_tokens(&compacted),
+        summary: compacted,
+    }
+}
+
+fn compact_summary_text(text: &str, limit: usize) -> String {
+    let trimmed = text.trim();
+    if trimmed.chars().count() <= limit {
+        return trimmed.to_string();
+    }
+    if limit <= 16 {
+        return truncate_chars(trimmed, limit);
+    }
+
+    let head_len = limit.saturating_mul(2) / 3;
+    let tail_len = limit.saturating_sub(head_len).saturating_sub(3);
+    let head = truncate_chars(trimmed, head_len);
+    let tail = tail_chars(trimmed, tail_len);
+    format!("{}...{}", head.trim_end(), tail.trim_start())
+}
+
+fn tail_chars(text: &str, limit: usize) -> String {
+    if limit == 0 {
+        return String::new();
+    }
+    let chars = text.chars().collect::<Vec<_>>();
+    if chars.len() <= limit {
+        return text.to_string();
+    }
+    chars[chars.len() - limit..].iter().collect()
+}
+
 fn truncate_chars(text: &str, limit: usize) -> String {
     text.chars().take(limit).collect()
 }
 
 fn summarize_step_text(text: &str) -> String {
     truncate_chars(text.trim(), SUMMARY_CHAR_LIMIT)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use omega_workflow::{
+        DataFormat, OutputRecoveryMode, StepInputContract, StepLoopMode, StepOutputContract,
+        StepSkillRequest, StepToolRequest, WorkflowStep,
+    };
+
+    use super::{
+        classify_summary_priority, compact_summary_text, maybe_compact_summary,
+        rank_summary_candidates, should_trigger_context_compaction, SlotPriority,
+    };
+    use crate::{session_state::StepSummary, EXECUTE_STEP_ID, PLAN_STEP_ID};
+
+    fn workflow_step(step_id: &str, sources: Vec<&str>) -> WorkflowStep {
+        WorkflowStep {
+            id: step_id.to_string(),
+            label: step_id.to_string(),
+            prompt_path: PathBuf::from(format!(".omega/prompt/{step_id}.md")),
+            loop_mode: StepLoopMode::AgentLoop,
+            loop_contract: None,
+            max_iterations: 8,
+            max_step_repeats: 2,
+            hooks: Vec::new(),
+            tool_request: StepToolRequest::Inherit,
+            skill_request: StepSkillRequest::MatchTask,
+            input_contract: if sources.is_empty() {
+                StepInputContract::None
+            } else {
+                StepInputContract::Optional {
+                    sources: sources.into_iter().map(ToOwned::to_owned).collect(),
+                }
+            },
+            output_contract: StepOutputContract::Required {
+                format: DataFormat::Json,
+                schema_path: None,
+                max_retries: 1,
+                recovery_mode: OutputRecoveryMode::RepairThenRegenerate,
+            },
+            enabled: true,
+        }
+    }
+
+    fn summary(workflow_id: &str, step_id: &str, text: &str) -> StepSummary {
+        StepSummary {
+            workflow_id: workflow_id.to_string(),
+            step_id: step_id.to_string(),
+            title: step_id.to_string(),
+            estimated_tokens: super::estimate_tokens(text),
+            summary: text.to_string(),
+        }
+    }
+
+    #[test]
+    fn rank_summary_candidates_prefers_step_inputs_over_newer_routing_history() {
+        let step = workflow_step(EXECUTE_STEP_ID, vec!["explore", "plan", "execute"]);
+        let summaries = vec![
+            summary(
+                omega_workflow::FEATURE_WORKFLOW_ID,
+                "explore",
+                "Explore found the root cause in the session runner.",
+            ),
+            summary(
+                omega_workflow::FEATURE_WORKFLOW_ID,
+                PLAN_STEP_ID,
+                "Plan agreed to update slot budgeting and summary selection.",
+            ),
+            summary(
+                omega_workflow::ROOT_WORKFLOW_ID,
+                omega_workflow::SELECT_WORKFLOW_STEP_ID,
+                "Selected workflow: feature.",
+            ),
+        ];
+
+        let ranked = rank_summary_candidates(
+            &summaries,
+            &step,
+            omega_workflow::FEATURE_WORKFLOW_ID,
+            true,
+            false,
+        );
+
+        assert_eq!(ranked[0].summary.step_id, PLAN_STEP_ID);
+        assert!(ranked
+            .iter()
+            .position(|candidate| candidate.summary.step_id == PLAN_STEP_ID)
+            .unwrap()
+            < ranked
+                .iter()
+                .position(|candidate| {
+                    candidate.summary.step_id == omega_workflow::SELECT_WORKFLOW_STEP_ID
+                })
+                .unwrap());
+    }
+
+    #[test]
+    fn maybe_compact_summary_only_shrinks_low_priority_history_when_triggered() {
+        let low = summary(
+            omega_workflow::ROOT_WORKFLOW_ID,
+            omega_workflow::SCENE_RECOGNITION_STEP_ID,
+            &format!(
+                "Recognized scene with extra detail. {} tail-marker",
+                "x".repeat(500)
+            ),
+        );
+        let compacted = maybe_compact_summary(&low, SlotPriority::Low, true, 0, 8);
+        assert!(compacted.summary.len() < low.summary.len());
+        assert!(compacted.summary.contains("Recognized scene"));
+        assert!(compacted.summary.contains("tail-marker"));
+
+        let medium = summary(
+            omega_workflow::FEATURE_WORKFLOW_ID,
+            PLAN_STEP_ID,
+            &format!("Plan summary {}", "y".repeat(500)),
+        );
+        let preserved = maybe_compact_summary(&medium, SlotPriority::Medium, false, 0, 8);
+        assert_eq!(preserved.summary, medium.summary);
+    }
+
+    #[test]
+    fn compact_summary_text_preserves_head_and_tail_markers() {
+        let text = format!("head-marker {} tail-marker", "body ".repeat(60));
+        let compacted = compact_summary_text(&text, 80);
+        assert!(compacted.chars().count() <= 83);
+        assert!(compacted.contains("head-marker"));
+        assert!(compacted.contains("tail-marker"));
+        assert!(compacted.contains("..."));
+    }
+
+    #[test]
+    fn compaction_trigger_follows_budget_or_history_threshold() {
+        assert!(should_trigger_context_compaction(710, 1_000, 2));
+        assert!(should_trigger_context_compaction(120, 1_000, 6));
+        assert!(!should_trigger_context_compaction(500, 1_000, 3));
+    }
+
+    #[test]
+    fn classify_summary_priority_marks_execute_inputs_as_medium() {
+        let step = workflow_step(EXECUTE_STEP_ID, vec!["explore", "plan", "execute"]);
+        let plan_summary = summary(omega_workflow::FEATURE_WORKFLOW_ID, PLAN_STEP_ID, "plan");
+        let routing_summary = summary(
+            omega_workflow::ROOT_WORKFLOW_ID,
+            omega_workflow::SELECT_WORKFLOW_STEP_ID,
+            "selected workflow",
+        );
+
+        assert_eq!(
+            classify_summary_priority(
+                &plan_summary,
+                &step,
+                omega_workflow::FEATURE_WORKFLOW_ID,
+            ),
+            SlotPriority::Medium
+        );
+        assert_eq!(
+            classify_summary_priority(
+                &routing_summary,
+                &step,
+                omega_workflow::FEATURE_WORKFLOW_ID,
+            ),
+            SlotPriority::Low
+        );
+    }
 }

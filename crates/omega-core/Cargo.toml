@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 omega-client = { path = "../omega-client" }
+omega-context = { path = "../omega-context" }
 omega-tools = { path = "../omega-tools" }
 omega-tools-builtin = { path = "../omega-tools-builtin" }
 omega-todo = { path = "../omega-todo" }

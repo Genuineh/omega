@@ -20,6 +20,8 @@ const KNOWN_TOOL_POLICY_TOOL_NAMES: &[&str] = &[
     "todo",
     "write_file",
     "load_skill",
+    "manage_document",
+    "search_codebase",
 ];
 
 fn default_tool_policy_groups() -> BTreeMap<String, Vec<String>> {
@@ -39,6 +41,8 @@ fn default_tool_policy_groups() -> BTreeMap<String, Vec<String>> {
                 "todo",
                 "write_file",
                 "load_skill",
+                "manage_document",
+                "search_codebase",
             ]
             .into_iter()
             .map(str::to_string)
@@ -52,6 +56,7 @@ fn default_tool_policy_groups() -> BTreeMap<String, Vec<String>> {
                 "edit_file",
                 "todo",
                 "write_file",
+                "manage_document",
             ]
             .into_iter()
             .map(str::to_string)
@@ -66,6 +71,7 @@ fn default_tool_policy_groups() -> BTreeMap<String, Vec<String>> {
                 "edit_file",
                 "todo",
                 "write_file",
+                "manage_document",
             ]
             .into_iter()
             .map(str::to_string)

@@ -1,0 +1,14 @@
+[package]
+name = "omega-context"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+omega-client = { path = "../omega-client" }
+omega-document = { path = "../omega-document" }
+omega-memory = { path = "../omega-memory" }
+omega-tools = { path = "../omega-tools" }
+omega-workflow = { path = "../omega-workflow" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true

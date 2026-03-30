@@ -252,6 +252,7 @@ mod tests {
             step_label: "Plan".to_string(),
             index: 2,
             total: 4,
+            cache: None,
             execute_progress: None,
             input: StepInputDiagnostics {
                 status: StepInputStatus::Ready,

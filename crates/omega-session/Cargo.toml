@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+omega-context = { path = "../omega-context" }
 omega-core = { path = "../omega-core" }
 omega-hooks = { path = "../omega-hooks" }
 omega-skills = { path = "../omega-skills" }

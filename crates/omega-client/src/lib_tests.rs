@@ -212,6 +212,41 @@ fn chat_request_serializes_correctly() {
 }
 
 #[test]
+fn build_body_maps_cache_markers_for_system_tools_and_last_assistant_turn() {
+    let client = MinimaxClient::new(MinimaxConfig::international("key", "model-a"))
+        .expect("client should build");
+    let tool = ToolDefinition {
+        name: "bash".into(),
+        description: "run shell".into(),
+        input_schema: json!({"type": "object"}),
+    };
+    let req = ChatRequest::new(vec![
+        Message::assistant(vec![ContentBlock::text("previous answer")]),
+        Message::user("continue"),
+    ])
+    .with_system_blocks(vec![
+        SystemBlock::text("stable instructions")
+            .with_cache_control(PromptCacheControl::ephemeral()),
+        SystemBlock::text("summary context")
+            .with_cache_control(PromptCacheControl::ephemeral()),
+        SystemBlock::text("dynamic workflow prompt"),
+    ])
+    .with_tools(vec![tool])
+    .with_cache_last_assistant_turn(true);
+
+    let json = client.build_body(req).expect("body should build");
+
+    assert_eq!(json["system"][0]["cache_control"]["type"], "ephemeral");
+    assert_eq!(json["system"][1]["cache_control"]["type"], "ephemeral");
+    assert!(json["system"][2].get("cache_control").is_none());
+    assert_eq!(json["tools"][0]["cache_control"]["type"], "ephemeral");
+    assert_eq!(
+        json["messages"][0]["content"][0]["cache_control"]["type"],
+        "ephemeral"
+    );
+}
+
+#[test]
 fn chat_response_deserialize_end_turn() {
     let json = json!({
         "id": "msg_01",
@@ -300,6 +335,8 @@ fn chat_response_roundtrips_through_events() {
         usage: Some(Usage {
             input_tokens: 11,
             output_tokens: 7,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
         }),
     };
 

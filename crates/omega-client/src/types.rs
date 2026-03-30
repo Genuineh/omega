@@ -8,6 +8,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 pub type DynLlmClient = Arc<dyn LlmClient>;
 pub type ChatEventStream = Pin<Box<dyn Stream<Item = Result<ChatEvent, ClientError>> + Send>>;
 
@@ -118,13 +122,52 @@ pub struct ToolDefinition {
     pub input_schema: Value,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PromptCacheControl {
+    #[serde(rename = "type")]
+    pub kind: String,
+}
+
+impl PromptCacheControl {
+    pub fn ephemeral() -> Self {
+        Self {
+            kind: "ephemeral".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SystemBlock {
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<PromptCacheControl>,
+}
+
+impl SystemBlock {
+    pub fn text<S: Into<String>>(text: S) -> Self {
+        Self {
+            text: text.into(),
+            cache_control: None,
+        }
+    }
+
+    pub fn with_cache_control(mut self, cache_control: PromptCacheControl) -> Self {
+        self.cache_control = Some(cache_control);
+        self
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ChatRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub system_blocks: Vec<SystemBlock>,
     pub messages: Vec<Message>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ToolDefinition>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub cache_last_assistant_turn: bool,
     pub max_tokens: u32,
 }
 
@@ -132,8 +175,10 @@ impl ChatRequest {
     pub fn new(messages: Vec<Message>) -> Self {
         Self {
             system: None,
+            system_blocks: Vec::new(),
             messages,
             tools: Vec::new(),
+            cache_last_assistant_turn: false,
             max_tokens: 8_000,
         }
     }
@@ -143,8 +188,18 @@ impl ChatRequest {
         self
     }
 
+    pub fn with_system_blocks(mut self, system_blocks: Vec<SystemBlock>) -> Self {
+        self.system_blocks = system_blocks;
+        self
+    }
+
     pub fn with_tools(mut self, tools: Vec<ToolDefinition>) -> Self {
         self.tools = tools;
+        self
+    }
+
+    pub fn with_cache_last_assistant_turn(mut self, cache_last_assistant_turn: bool) -> Self {
+        self.cache_last_assistant_turn = cache_last_assistant_turn;
         self
     }
 
@@ -158,6 +213,10 @@ impl ChatRequest {
 pub struct Usage {
     pub input_tokens: u32,
     pub output_tokens: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_creation_input_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_input_tokens: Option<u32>,
 }
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -305,6 +364,15 @@ pub enum ClientError {
 #[async_trait]
 pub trait LlmClient: Send + Sync {
     async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, ClientError>;
+
+    async fn count_tokens(&self, _request: ChatRequest) -> Result<u32, ClientError> {
+        Err(ProviderCapabilityError {
+            provider: self.provider_name().to_string(),
+            operation: "messages.count_tokens".to_string(),
+            detail: "precise token counting is not supported by this client".to_string(),
+        }
+        .into())
+    }
 
     async fn chat_stream(&self, request: ChatRequest) -> Result<ChatEventStream, ClientError> {
         let response = self.chat(request).await?;

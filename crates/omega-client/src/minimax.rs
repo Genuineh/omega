@@ -134,6 +134,10 @@ impl LlmClient for MinimaxClient {
         self.compat_client().chat(request).await
     }
 
+    async fn count_tokens(&self, request: ChatRequest) -> Result<u32, ClientError> {
+        self.compat_client().count_tokens(request).await
+    }
+
     async fn chat_stream(&self, request: ChatRequest) -> Result<ChatEventStream, ClientError> {
         self.compat_client().chat_stream(request).await
     }
