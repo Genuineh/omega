@@ -2,17 +2,17 @@
 
 ## Current Priorities
 
-_按当前仓库真实主路径重排。判断依据：`cargo test` 全工作区通过；`Task 15F-26 ~ 15F-28` 及 `Task 15F-29 / 15B-28 / 15B-29` 已完成。execute 已收敛到 itemized loop 并具备 subflow visibility。当前主要瓶颈已从"runtime loop 缺失"转变为"上下文管理不足"——必须先修复 prompt/context 组装路径，再扩展长期知识、治理与检索能力。下一优先级先交付 `Task 11A ~ 11C`，随后推进 `Task 11D ~ 11F`，再回到 `Task 10`。_
+_按当前仓库真实主路径重排。判断依据：`cargo test` 全工作区通过；`Task 15F-26 ~ 15F-28` 及 `Task 15F-29 / 15B-28 / 15B-29` 已完成。execute 已收敛到 itemized loop 并具备 subflow visibility。当前主要瓶颈已从"runtime loop 缺失"转变为"上下文管理不足"——`Task 11A` 与 `Task 11B` 已在现行 `omega-context` / `omega-memory` 主路径上重新验证完成；prompt/context 组装路径已稳定并抽离出独立上下文层，长期知识、治理与检索能力也已具备 keyword + vector 双索引基线。下一优先级先推进 `Task 11F`，随后回到 `Task 10`。_
 
 _任务编号以 `docs/specs/omega-agent-impl-plan.md` 为准；为支持可运行里程碑拆分，`TODO` 中允许使用 `8A/8B`、`15A/15B/15C/15D` 这类子任务后缀。_
 
 ### High — Context Management (新增主线)
 
-- **Task 11A**: Cache Control + Token Estimation — 最轻量收益点。不新建 crate，仅修改 `omega-session` 与 `omega-client`。
-- **Task 11B**: Prompt Path Stabilization — 直接修复当前失败路径：slot budget MVP、priority-weighted summary selection、compaction trigger，先在 `omega-session` 内落地，替代 `select_step_summaries()` 贪心裁剪。
-- **Task 11C**: `omega-memory` + `omega-context` facade — 在行为稳定后抽离为 `omega-memory` 与 `omega-context`。omega-context 仅暴露聚焦接口与 facade 组合，不引入 god trait。
-- **Task 11D**: `omega-document` — `FileStore` manifest + persistent TODO + tantivy keyword 检索 + document governance engine（check/plan/apply staged 模式）。
-- **Task 11E**: LanceDB 向量数据库 + 多维复合查询 — 作为 `FileStore` 的派生向量索引，引入 revision-aware hybrid retrieval。
+- **Task 11A**: Cache Control + Token Estimation — 已完成：Anthropic cache anchors、provider `count_tokens` 优先估算、`CacheDiagnostics` 已接入 `omega-session` / `omega-client` / TUI。
+- **Task 11B**: Prompt Path Stabilization — 已完成：slot-budget MVP、priority-weighted summary selection 与 compaction trigger 已在现行 `omega-context` / `omega-memory` 组装路径上补齐高层回归验证。
+- **Task 11C**: `omega-memory` + `omega-context` facade — 已完成：summary ranking/compaction 已抽离到 `omega-memory`，step/repair context assembly 已通过 `OmegaContextFacade` 下沉到 `omega-context`，`omega-session` 只保留 orchestration。
+- **Task 11D**: `omega-document` — 已完成：`FileStore` manifest、persistent TODO、tantivy keyword 检索、document governance engine（check/plan/apply staged 模式）以及 `search_codebase` / `manage_document` 已通过 `omega-context` 接入默认工具注册。
+- **Task 11E**: LanceDB 向量数据库 + 多维复合查询 — 已完成：`omega-document` 已接入 LanceDB 派生向量索引、revision-aware commit log、semantic/hybrid 检索与 keyword 自动降级，`search_codebase` 默认改为 hybrid。
 
 ### Medium — Context Observability
 
@@ -570,44 +570,54 @@ _2026-03-26 TUI follow-up planning：M2F 已把 execute 收敛为 itemized loop�
 - **Description**: 原任务已拆解为六个子任务，优先修复 prompt/context 主路径，再逐步建立 facade、文档治理、向量检索与可观测性。
 
 ### Task 11A: Cache Control + Token Estimation
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-03-27
 - **Priority**: High
 - **Complexity**: Medium
 - **Description**: 在 prompt builder / message assembly 层注入 Anthropic `cache_control: { type: "ephemeral" }` 标记（4 个锚点：tools → system → summaries → last assistant turn）；升级 token estimation 从 `chars/4` 改为优先调用 provider `count_tokens` API / fallback。不新建 crate，仅修改 `omega-session`（prompt_builder、runner）与 `omega-client`（expose count_tokens）。新增 `CacheDiagnostics` 到 `StepDiagnostics`。
 - **Blocks**: Task 11B, Task 11F
 - **Related**: docs/specs/omega-context-management.md §1, §Observability
+- **Summary**: `omega-client` 已补齐 provider-neutral `count_tokens`、structured system blocks 与 cache hint 映射，并将 Anthropic cache usage 透传到通用 `Usage`；`omega-core` / `omega-session` 已把 step prompts 拆成可缓存 system blocks，在 summary budgeting 时优先走 provider `count_tokens`、失败时回退 request-size estimation，同时把 cache hit/breakpoint 信息写入 `CacheDiagnostics` 并展示到 runtime diagnostics / TUI。2026-03-30 进一步补齐 `omega-context` 与 `omega-session` 回归测试，显式锁定四个 cache anchors 与 provider `count_tokens` 失败时的 estimated fallback。验证已通过 `cargo test -p omega-client -p omega-core -p omega-session -p omega-tui -p omega-app`，并额外通过 `cargo test -p omega-context --color never` 与 `cargo test -p omega-session --lib --color never spawn_turn_falls_back_to_estimated_token_count_and_records_all_cache_breakpoints`。
 
 ### Task 11B: Prompt Path Stabilization
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-03-30
 - **Priority**: High
 - **Complexity**: High
 - **Description**: 直接在现有 `omega-session` 执行路径中落地根因修复：slot budget MVP、priority-weighted summary selection、compaction trigger、Critical/High slot 不可裁剪规则。此阶段不引入 document governance、LanceDB 或 TUI 仪表盘，目标是先让 execute 多轮 structured output 稳定。
 - **Blocks**: Task 11C, Task 10
 - **Related**: docs/specs/omega-context-management.md §Goals, §4, §Migration Path
+- **Summary**: 2026-03-27 首轮实现已把 summary ranking / compaction policy 从旧的倒序贪心裁剪切换为 slot-budget MVP，并在 `Task 11C` 后下沉到 `omega-memory` / `omega-context` 主路径；2026-03-30 进一步补齐 `omega-context::DefaultContextAssembler` 的高层回归，显式锁定预算紧张时优先保留 step input summary、以及 summary backlog 触发后的低优先级历史 compact 行为。验证已通过 `cargo test -p omega-context --color never`。
 
 ### Task 11C: omega-memory + omega-context facade
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-03-27
 - **Priority**: High
 - **Complexity**: High
 - **Description**: 在 `Task 11B` 行为验证后，抽离 `omega-memory` 与 `omega-context`。公开边界采用 `OmegaContextFacade` + 聚焦接口（ContextAssembler/MemoryService/KnowledgeQueryService/DocumentGovernanceService/ContextDiagnosticsProvider），避免单一 god trait；tool 注册保留在 omega-context integration adapter，而不是 facade 核心接口。
 - **Blocks**: Task 11D, Task 11E, Task 11F
 - **Related**: docs/specs/omega-context-management.md §Architecture, §Migration Path
+- **Summary**: 已新增 `omega-memory` 与 `omega-context` 两个 crate：`omega-memory` 负责 summary ranking / compaction policy，`omega-context` 负责 `OmegaContextFacade`、`ContextAssembler` 与 output repair context 组装；`omega-session::runner` 现通过 facade 构建 step/repair system blocks，不再直接持有 prompt-path budgeting 细节，`render_output_contract` 也已切到共享 context 层实现。验证已通过 `cargo test -p omega-memory --color never`、`cargo test -p omega-context --color never`、`cargo test -p omega-session --lib --color never`。
 
 ### Task 11D: omega-document — FileStore + Governance + Keyword Search
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-03-27
 - **Priority**: High
 - **Complexity**: High
 - **Description**: 新建 `omega-document` 内部 crate，先实现 `FileStore` manifest（`.omega/store/files.jsonl` 真源）、ChunkManager、PersistentTodoStore、tantivy full-text index 和 Document Governance Engine。`manage_document` 采用 check/plan/apply staged 模式，避免隐式多文件写入。通过 omega-context 注册 `search_codebase`（keyword）和 `manage_document`。
 - **Blocks**: Task 11E, Task 11F
 - **Related**: docs/specs/omega-context-management.md §3.1, §3.5, §3.7
+- **Summary**: 已新增 `omega-document` crate，落地 `.omega/store/files.jsonl` manifest 真源、ChunkManager、`PersistentTodoStore`、tantivy keyword index 与 staged `manage_document` 治理流；`omega-context` 现直接依赖 `omega-client` / `omega-tools` / `omega-document` 并提供 `ContextToolRegistry`，把 `search_codebase` 与 `manage_document` 注册到 `omega-core` 默认工具集中，同时避免 `omega-context -> omega-core` 反向依赖循环。验证已通过 `cargo test -p omega-document --color never`、`cargo test -p omega-context --color never`、`cargo test -p omega-workflow --color never`、`cargo test -p omega-core --color never` 与 `cargo test -p omega-session --lib --color never`。
 
 ### Task 11E: LanceDB 向量数据库 + 多维复合查询
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-03-27
 - **Priority**: High
 - **Complexity**: High
 - **Description**: 接入 LanceDB 作为 `FileStore` 的派生向量索引，而不是主存储。实现 revision-aware files/chunks/turns 向量表、fastembed 本地 embedding、structured filters + keyword + vector 的 hybrid retrieval；当向量索引落后于 manifest revision 时自动降级到 keyword 模式。
 - **Blocks**: Task 11F
 - **Related**: docs/specs/omega-context-management.md §3.2, §3.2.1, §3.3
+- **Summary**: `omega-document` 现已新增 `.omega/store/lance/` 派生向量索引与 `.omega/store/index-commit-log.json` revision commit log，使用 LanceDB 维护 `files/chunks/turns` 表，其中 `chunks` 与 `files` 已接入 embedding 列和本地语义检索；`search()` 现支持 `keyword / semantic / hybrid` 三种模式，并在 Lance revision 落后于 manifest 或向量查询失败时自动降级到 keyword。运行时默认使用 fastembed `AllMiniLML6V2` 生成 embedding，测试路径使用 deterministic mock embedding 避免模型下载；`omega-context` 的 `search_codebase` 工具说明与默认 mode 也已同步改为 hybrid。验证已通过 `cargo test -p omega-document --color never`、`cargo test -p omega-context --color never`、`cargo test -p omega-core --color never` 与 `cargo test -p omega-session --lib --color never`。
 
 ### Task 11F: Observability + TUI Integration
 - **Status**: Pending

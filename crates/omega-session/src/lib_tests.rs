@@ -1,12 +1,14 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use async_trait::async_trait;
 use omega_client::{
-    test_support::{IdleLlmClient, ScriptedLlmClient}, ChatResponse, ContentBlock,
-    STOP_REASON_END_TURN, STOP_REASON_TOOL_USE,
+    test_support::{IdleLlmClient, ScriptedLlmClient}, ChatRequest, ChatResponse, ClientError,
+    ContentBlock, LlmClient, ProviderCapabilityError, STOP_REASON_END_TURN,
+    STOP_REASON_TOOL_USE,
 };
 use omega_core::DynLlmClient;
 use omega_workflow::{
@@ -29,6 +31,101 @@ use super::{
 };
 
 type SequencedClient = ScriptedLlmClient;
+
+#[derive(Debug)]
+struct CountingSequencedClient {
+    inner: SequencedClient,
+    count_requests: Mutex<Vec<ChatRequest>>,
+    token_count: u32,
+}
+
+impl CountingSequencedClient {
+    fn new(responses: Vec<ChatResponse>, token_count: u32) -> Arc<Self> {
+        Arc::new(Self {
+            inner: SequencedClient::from_responses(responses),
+            count_requests: Mutex::new(Vec::new()),
+            token_count,
+        })
+    }
+
+    fn recorded_requests(&self) -> Vec<ChatRequest> {
+        self.inner.recorded_requests()
+    }
+
+    fn recorded_count_requests(&self) -> Vec<ChatRequest> {
+        self.count_requests.lock().unwrap().clone()
+    }
+}
+
+#[derive(Debug)]
+struct FailingCountSequencedClient {
+    inner: SequencedClient,
+    count_requests: Mutex<Vec<ChatRequest>>,
+}
+
+impl FailingCountSequencedClient {
+    fn new(responses: Vec<ChatResponse>) -> Arc<Self> {
+        Arc::new(Self {
+            inner: SequencedClient::from_responses(responses),
+            count_requests: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn recorded_count_requests(&self) -> Vec<ChatRequest> {
+        self.count_requests.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl LlmClient for FailingCountSequencedClient {
+    async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, ClientError> {
+        self.inner.chat(request).await
+    }
+
+    async fn chat_stream(
+        &self,
+        request: ChatRequest,
+    ) -> Result<omega_client::ChatEventStream, ClientError> {
+        self.inner.chat_stream(request).await
+    }
+
+    async fn count_tokens(&self, request: ChatRequest) -> Result<u32, ClientError> {
+        self.count_requests.lock().unwrap().push(request);
+        Err(ProviderCapabilityError {
+            provider: "failing-scripted".to_string(),
+            operation: "messages.count_tokens".to_string(),
+            detail: "precise token counting is not supported by this client".to_string(),
+        })
+        .map_err(Into::into)
+    }
+
+    fn provider_name(&self) -> &'static str {
+        "failing-scripted"
+    }
+}
+
+#[async_trait]
+impl LlmClient for CountingSequencedClient {
+    async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, ClientError> {
+        self.inner.chat(request).await
+    }
+
+    async fn chat_stream(
+        &self,
+        request: ChatRequest,
+    ) -> Result<omega_client::ChatEventStream, ClientError> {
+        self.inner.chat_stream(request).await
+    }
+
+    async fn count_tokens(&self, request: ChatRequest) -> Result<u32, ClientError> {
+        self.count_requests.lock().unwrap().push(request);
+        Ok(self.token_count)
+    }
+
+    fn provider_name(&self) -> &'static str {
+        "counting-scripted"
+    }
+}
 
 #[allow(non_upper_case_globals)]
 const IdleClient: IdleLlmClient =
@@ -3981,6 +4078,255 @@ fn spawn_turn_accepts_root_json_when_model_adds_short_preface() {
 }
 
 #[test]
+fn spawn_turn_uses_precise_token_count_and_emits_cache_diagnostics() {
+    let client = CountingSequencedClient::new(
+        vec![
+            ChatResponse {
+                id: "scene-1".to_string(),
+                model: Some("test-model".to_string()),
+                content: vec![ContentBlock::text("{\"recognized_scene_id\":\"feature\"}")],
+                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                usage: None,
+            },
+            ChatResponse {
+                id: "select-1".to_string(),
+                model: Some("test-model".to_string()),
+                content: vec![ContentBlock::text("{\"selected_workflow_id\":\"feature\"}")],
+                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                usage: None,
+            },
+            ChatResponse {
+                id: "explore-1".to_string(),
+                model: Some("test-model".to_string()),
+                content: vec![ContentBlock::text(feature_explore_json())],
+                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                usage: None,
+            },
+            ChatResponse {
+                id: "plan-1".to_string(),
+                model: Some("test-model".to_string()),
+                content: vec![ContentBlock::text(feature_plan_json())],
+                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                usage: None,
+            },
+            ChatResponse {
+                id: "execute-1".to_string(),
+                model: Some("test-model".to_string()),
+                content: vec![ContentBlock::text(feature_execute_complete_json())],
+                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                usage: Some(omega_client::Usage {
+                    input_tokens: 120,
+                    output_tokens: 24,
+                    cache_creation_input_tokens: Some(40),
+                    cache_read_input_tokens: Some(60),
+                }),
+            },
+            ChatResponse {
+                id: "report-1".to_string(),
+                model: Some("test-model".to_string()),
+                content: vec![ContentBlock::text("done")],
+                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                usage: None,
+            },
+        ],
+        321,
+    );
+    let client_dyn: DynLlmClient = client.clone();
+    let root = unique_session_test_root("cache-diagnostics");
+    write_review_skill(&root);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: client_dyn,
+        system: "system".to_string(),
+        cwd: root,
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+    let (tx, rx) = mpsc::channel();
+
+    session
+        .spawn_turn_ui_compat("fix this bug".to_string(), 77, tx)
+        .unwrap();
+
+    let mut diagnostics = Vec::new();
+    loop {
+        match rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+            RuntimeUiEnvelope::Effect {
+                turn_id,
+                effect:
+                    RuntimeUiEffect::UpsertStepDiagnostics {
+                        diagnostics: update,
+                    },
+            } => {
+                assert_eq!(turn_id, 77);
+                diagnostics.push(*update);
+            }
+            RuntimeUiEnvelope::Effect {
+                turn_id,
+                effect:
+                    RuntimeUiEffect::SetStatusSlot {
+                        slot: StatusSlot::Agent,
+                        value: StatusValue::Label(label),
+                    },
+            } => {
+                assert_eq!(turn_id, 77);
+                assert_eq!(label, "Idle");
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    assert!(!client.recorded_count_requests().is_empty());
+    assert!(client.recorded_requests().iter().any(|request| {
+        request.cache_last_assistant_turn
+            && !request.system_blocks.is_empty()
+            && request
+                .system_blocks
+                .iter()
+                .any(|block| block.cache_control.is_some())
+    }));
+    assert!(diagnostics.iter().any(|update| {
+        update.step_id == EXECUTE_STEP_ID
+            && update.cache.as_ref().is_some_and(|cache| {
+                cache.request_input_tokens == 321
+                    && cache.cache_read_input_tokens == Some(60)
+                    && cache.cache_creation_input_tokens == Some(40)
+                    && cache.cache_breakpoints.iter().any(|anchor| anchor == "tools")
+            })
+    }));
+}
+
+#[test]
+fn spawn_turn_falls_back_to_estimated_token_count_and_records_all_cache_breakpoints() {
+    let client = FailingCountSequencedClient::new(vec![
+        ChatResponse {
+            id: "scene-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"recognized_scene_id\":\"feature\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"selected_workflow_id\":\"feature\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "explore-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_explore_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "plan-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_plan_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_execute_complete_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: Some(omega_client::Usage {
+                input_tokens: 120,
+                output_tokens: 24,
+                cache_creation_input_tokens: Some(40),
+                cache_read_input_tokens: Some(60),
+            }),
+        },
+        ChatResponse {
+            id: "report-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("done")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+    ]);
+    let client_dyn: DynLlmClient = client.clone();
+    let root = unique_session_test_root("cache-diagnostics-fallback");
+    write_review_skill(&root);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: client_dyn,
+        system: "system".to_string(),
+        cwd: root,
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+    let (tx, rx) = mpsc::channel();
+
+    session
+        .spawn_turn_ui_compat("fix this bug".to_string(), 88, tx)
+        .unwrap();
+
+    let mut diagnostics = Vec::new();
+    loop {
+        match rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+            RuntimeUiEnvelope::Effect {
+                turn_id,
+                effect:
+                    RuntimeUiEffect::UpsertStepDiagnostics {
+                        diagnostics: update,
+                    },
+            } => {
+                assert_eq!(turn_id, 88);
+                diagnostics.push(*update);
+            }
+            RuntimeUiEnvelope::Effect {
+                turn_id,
+                effect:
+                    RuntimeUiEffect::SetStatusSlot {
+                        slot: StatusSlot::Agent,
+                        value: StatusValue::Label(label),
+                    },
+            } => {
+                assert_eq!(turn_id, 88);
+                assert_eq!(label, "Idle");
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    assert!(!client.recorded_count_requests().is_empty());
+    assert!(diagnostics.iter().any(|update| {
+        update.step_id == EXECUTE_STEP_ID
+            && update.cache.as_ref().is_some_and(|cache| {
+                cache.token_count_source == super::runtime_ui::TokenCountSource::Estimated
+                    && cache.request_input_tokens > 0
+                    && cache.cache_breakpoints == vec![
+                        "tools".to_string(),
+                        "system:stable".to_string(),
+                        "system:summaries".to_string(),
+                        "messages:last_assistant_turn".to_string(),
+                    ]
+            })
+    }));
+}
+
+#[test]
 fn spawn_turn_emits_tool_runs_and_sanitizes_provider_markup() {
     let client: Arc<SequencedClient> = sequenced_client(vec![
                 ChatResponse {
@@ -4654,9 +5000,9 @@ fn session_tool_catalog_matches_current_default_tool_set() {
     let dispatcher = omega_core::create_default_tools(std::env::temp_dir());
     let catalog = SessionToolCatalog::new(
         dispatcher
-            .tool_names()
+            .to_schemas()
             .into_iter()
-            .map(ToOwned::to_owned)
+            .map(|value| serde_json::from_value(value).unwrap())
             .collect(),
     );
 
@@ -4678,7 +5024,9 @@ fn session_tool_catalog_matches_current_default_tool_set() {
             "grep_search",
             "list_dir",
             "load_skill",
+            "manage_document",
             "read_file",
+            "search_codebase",
             "todo",
             "write_file"
         ]
@@ -4694,6 +5042,8 @@ fn session_tool_catalog_matches_current_default_tool_set() {
             "grep_search",
             "list_dir",
             "load_skill",
+            "manage_document",
+            "search_codebase",
             "todo",
             "write_file"
         ]
