@@ -1,24 +1,32 @@
+mod document_model;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
+#[cfg(feature = "document-backend")]
+use anyhow::Context;
 use omega_client::{
     ChatRequest, ContentBlock, Message, MessageContent, PromptCacheControl, Role, SystemBlock,
     ToolDefinition,
 };
-pub use omega_document::{
+#[cfg(feature = "document-backend")]
+use omega_document::OmegaDocument;
+pub use document_model::{
     ArchiveTrigger, DocType, DocumentHealthReport, DocumentMutationMode, DocumentOp,
     DocumentOpResult, FileRecord, FileStatus, FileType, HealthScore, MetadataUpdate,
-    OmegaDocument, ScanResult, SearchFilter, SearchMode, SearchQuery, SearchResult, SortField,
-    TodoOp, TodoOpResult,
+    ScanResult, SearchFilter, SearchMode, SearchQuery, SearchResult, SortField, TodoOp,
+    TodoOpResult,
 };
 pub use omega_memory::StepSummary as ContextStepSummary;
 use omega_memory::{rank_summary_candidates, should_trigger_context_compaction, StepContextHint};
 use omega_tools::{ToolErrorKind, ToolHandler, ToolResult};
 use omega_workflow::{DataFormat, StepOutputContract};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "document-backend")]
+use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -225,7 +233,10 @@ pub trait ContextAssembler: Send + Sync {
         token_counter: &dyn ContextTokenCounter,
     ) -> Result<AssembledContext>;
 
-    fn assemble_output_repair_context(&self, request: OutputRepairContextRequest) -> Result<Vec<SystemBlock>>;
+    fn assemble_output_repair_context(
+        &self,
+        request: OutputRepairContextRequest,
+    ) -> Result<Vec<SystemBlock>>;
 
     fn estimate_tokens(&self, text: &str) -> u32;
 }
@@ -266,23 +277,50 @@ pub struct OmegaContextFacade {
     pub query: Arc<dyn KnowledgeQueryService>,
     pub governance: Arc<dyn DocumentGovernanceService>,
     pub diagnostics: Arc<dyn ContextDiagnosticsProvider>,
+    pub document_backend_enabled: bool,
 }
 
 impl OmegaContextFacade {
     pub fn local(root: PathBuf) -> Self {
         let diagnostics_root = root.clone();
-        let documents = Arc::new(OmegaDocument::new(root));
         let diagnostics = Arc::new(LocalDiagnostics::new(diagnostics_root));
+        #[cfg(feature = "document-backend")]
+        let documents = Arc::new(OmegaDocument::new(root.clone()));
         Self {
             assembler: Arc::new(DefaultContextAssembler),
             memory: Arc::new(LocalMemoryService::default()),
-            query: Arc::new(LocalKnowledgeQueryService {
-                documents: Arc::clone(&documents),
-            }),
-            governance: Arc::new(LocalDocumentGovernanceService { documents }),
+            query: Arc::new(LocalKnowledgeQueryService::new(
+                root.clone(),
+                #[cfg(feature = "document-backend")]
+                Some(Arc::clone(&documents)),
+            )),
+            governance: Arc::new(LocalDocumentGovernanceService::new(
+                root,
+                #[cfg(feature = "document-backend")]
+                Some(documents),
+            )),
             diagnostics,
+            document_backend_enabled: cfg!(feature = "document-backend"),
         }
     }
+}
+
+#[cfg(feature = "document-backend")]
+fn convert_to_backend<T, U>(value: T) -> Result<U>
+where
+    T: Serialize,
+    U: DeserializeOwned,
+{
+    serde_json::from_value(serde_json::to_value(value)?).context("convert to omega-document type")
+}
+
+#[cfg(feature = "document-backend")]
+fn convert_from_backend<T, U>(value: T) -> Result<U>
+where
+    T: Serialize,
+    U: DeserializeOwned,
+{
+    serde_json::from_value(serde_json::to_value(value)?).context("convert from omega-document type")
 }
 
 pub struct DefaultContextAssembler;
@@ -316,11 +354,8 @@ impl ContextAssembler for DefaultContextAssembler {
             root_workflow_id: request.root_workflow_id.clone(),
             has_execute_item: request.current_execute_item.is_some(),
         };
-        let ranked_candidates = rank_summary_candidates(
-            &request.session.step_summaries,
-            &hint,
-            compaction_triggered,
-        );
+        let ranked_candidates =
+            rank_summary_candidates(&request.session.step_summaries, &hint, compaction_triggered);
 
         let mut selected = Vec::new();
         for candidate in ranked_candidates {
@@ -332,7 +367,8 @@ impl ContextAssembler for DefaultContextAssembler {
                 .map(|candidate| candidate.summary.clone())
                 .collect::<Vec<_>>();
             let preview_request = build_preview_request(&request, &candidate_summaries);
-            let (candidate_tokens, _) = count_preview_request_tokens(token_counter, preview_request);
+            let (candidate_tokens, _) =
+                count_preview_request_tokens(token_counter, preview_request);
             if candidate_tokens <= available_input_budget {
                 selected = next_selected;
             }
@@ -343,7 +379,8 @@ impl ContextAssembler for DefaultContextAssembler {
             .map(|candidate| candidate.summary)
             .collect::<Vec<_>>();
         let final_request = build_preview_request(&request, &selected);
-        let (final_tokens, final_source) = count_preview_request_tokens(token_counter, final_request);
+        let (final_tokens, final_source) =
+            count_preview_request_tokens(token_counter, final_request);
 
         Ok(AssembledContext {
             system_blocks: build_step_system_blocks(&request, &selected),
@@ -361,8 +398,14 @@ impl ContextAssembler for DefaultContextAssembler {
         })
     }
 
-    fn assemble_output_repair_context(&self, request: OutputRepairContextRequest) -> Result<Vec<SystemBlock>> {
-        Ok(build_output_repair_system_blocks(&request.step_request, &request.failure))
+    fn assemble_output_repair_context(
+        &self,
+        request: OutputRepairContextRequest,
+    ) -> Result<Vec<SystemBlock>> {
+        Ok(build_output_repair_system_blocks(
+            &request.step_request,
+            &request.failure,
+        ))
     }
 
     fn estimate_tokens(&self, text: &str) -> u32 {
@@ -407,34 +450,140 @@ impl MemoryService for LocalMemoryService {
 }
 
 struct LocalKnowledgeQueryService {
+    root: PathBuf,
+    #[cfg(feature = "document-backend")]
     documents: Arc<OmegaDocument>,
+}
+
+impl LocalKnowledgeQueryService {
+    fn new(
+        root: PathBuf,
+        #[cfg(feature = "document-backend")] documents: Option<Arc<OmegaDocument>>,
+    ) -> Self {
+        Self {
+            root,
+            #[cfg(feature = "document-backend")]
+            documents: documents.expect("document backend enabled requires OmegaDocument"),
+        }
+    }
 }
 
 impl KnowledgeQueryService for LocalKnowledgeQueryService {
     fn scan_workspace(&self) -> Result<ScanResult> {
-        self.documents.scan_workspace()
+        #[cfg(feature = "document-backend")]
+        {
+            return convert_from_backend(self.documents.scan_workspace()?);
+        }
+
+        #[cfg(not(feature = "document-backend"))]
+        {
+            Ok(ScanResult {
+                files_indexed: 0,
+                chunks_indexed: 0,
+                deleted_marked: 0,
+                manifest_path: self
+                    .root
+                    .join(".omega/store/files.jsonl")
+                    .display()
+                    .to_string(),
+                keyword_index_path: self
+                    .root
+                    .join(".omega/store/tantivy")
+                    .display()
+                    .to_string(),
+            })
+        }
     }
 
     fn search(&self, query: SearchQuery) -> Result<Vec<SearchResult>> {
-        self.documents.search(query)
+        #[cfg(feature = "document-backend")]
+        {
+            let query = convert_to_backend(query)?;
+            let results: Vec<omega_document::SearchResult> = self.documents.search(query)?;
+            return convert_from_backend(results);
+        }
+
+        #[cfg(not(feature = "document-backend"))]
+        {
+            let _ = query;
+            anyhow::bail!(
+                "document backend disabled; enable omega-context feature 'document-backend' to use search_codebase"
+            )
+        }
     }
 }
 
 struct LocalDocumentGovernanceService {
+    root: PathBuf,
+    #[cfg(feature = "document-backend")]
     documents: Arc<OmegaDocument>,
+}
+
+impl LocalDocumentGovernanceService {
+    fn new(
+        root: PathBuf,
+        #[cfg(feature = "document-backend")] documents: Option<Arc<OmegaDocument>>,
+    ) -> Self {
+        Self {
+            root,
+            #[cfg(feature = "document-backend")]
+            documents: documents.expect("document backend enabled requires OmegaDocument"),
+        }
+    }
 }
 
 impl DocumentGovernanceService for LocalDocumentGovernanceService {
     fn manage_document(&self, op: DocumentOp) -> Result<DocumentOpResult> {
-        self.documents.manage_document(op)
+        #[cfg(feature = "document-backend")]
+        {
+            let op = convert_to_backend(op)?;
+            return convert_from_backend(self.documents.manage_document(op)?);
+        }
+
+        #[cfg(not(feature = "document-backend"))]
+        {
+            let _ = op;
+            anyhow::bail!(
+                "document backend disabled; enable omega-context feature 'document-backend' to use manage_document"
+            )
+        }
     }
 
     fn manage_todo(&self, op: TodoOp) -> Result<TodoOpResult> {
-        self.documents.manage_todo(op)
+        #[cfg(feature = "document-backend")]
+        {
+            let op = convert_to_backend(op)?;
+            return convert_from_backend(self.documents.manage_todo(op)?);
+        }
+
+        #[cfg(not(feature = "document-backend"))]
+        {
+            let _ = op;
+            anyhow::bail!(
+                "document backend disabled; enable omega-context feature 'document-backend' to use persistent todo storage"
+            )
+        }
     }
 
     fn check_document_health(&self) -> Result<DocumentHealthReport> {
-        self.documents.check_document_health()
+        #[cfg(feature = "document-backend")]
+        {
+            return convert_from_backend(self.documents.check_document_health()?);
+        }
+
+        #[cfg(not(feature = "document-backend"))]
+        {
+            Ok(DocumentHealthReport {
+                total_docs: 0,
+                structure_violations: Vec::new(),
+                naming_violations: Vec::new(),
+                orphaned_docs: Vec::new(),
+                broken_crossrefs: Vec::new(),
+                stale_docs: Vec::new(),
+                missing_frontmatter: Vec::new(),
+                overall_health: HealthScore::NeedsAttention,
+            })
+        }
     }
 }
 
@@ -515,8 +664,8 @@ impl ContextDiagnosticsProvider for LocalDiagnostics {
         let usage_percent = if cache.budget_input_tokens == 0 {
             0
         } else {
-            ((cache.request_input_tokens.saturating_mul(100)) / cache.budget_input_tokens)
-                .min(100) as u8
+            ((cache.request_input_tokens.saturating_mul(100)) / cache.budget_input_tokens).min(100)
+                as u8
         };
 
         state.budget = ContextBudgetDiagnostics {
@@ -540,13 +689,14 @@ impl ContextDiagnosticsProvider for LocalDiagnostics {
                 .compression_ratio_total_percent
                 .saturating_add(compression_ratio_percent as u64);
             state.compression_ratio_samples = state.compression_ratio_samples.saturating_add(1);
-            state.memory.compression_ratio_avg_percent = (state
-                .compression_ratio_total_percent
-                / state.compression_ratio_samples.max(1)) as u8;
+            state.memory.compression_ratio_avg_percent = (state.compression_ratio_total_percent
+                / state.compression_ratio_samples.max(1))
+                as u8;
         }
 
         if total_available_summaries > selected_step_summaries.len() {
-            state.memory.compactions_triggered = state.memory.compactions_triggered.saturating_add(1);
+            state.memory.compactions_triggered =
+                state.memory.compactions_triggered.saturating_add(1);
             state.memory.last_compaction_at = Some(current_unix_timestamp());
         }
     }
@@ -677,9 +827,16 @@ impl ToolHandler for SearchCodebaseHandler {
     }
 
     fn execute_v2(&self, input: Value) -> Result<ToolResult> {
-        let input: SearchCodebaseInput = serde_json::from_value(input).map_err(|error| {
-            anyhow::anyhow!("invalid search_codebase input: {error}")
-        })?;
+        if !self.facade.document_backend_enabled {
+            return Ok(ToolResult::error(
+                "Error: Tool 'search_codebase' requires the optional document backend. Rebuild with feature 'document-backend' enabled.",
+                ToolErrorKind::Execution,
+            )
+            .with_preview("document backend disabled"));
+        }
+
+        let input: SearchCodebaseInput = serde_json::from_value(input)
+            .map_err(|error| anyhow::anyhow!("invalid search_codebase input: {error}"))?;
         let scan = self.facade.query.scan_workspace()?;
         self.facade.diagnostics.record_document_scan(&scan);
         let query = SearchQuery {
@@ -760,9 +917,16 @@ impl ToolHandler for ManageDocumentHandler {
     }
 
     fn execute_v2(&self, input: Value) -> Result<ToolResult> {
-        let input: ManageDocumentInput = serde_json::from_value(input).map_err(|error| {
-            anyhow::anyhow!("invalid manage_document input: {error}")
-        })?;
+        if !self.facade.document_backend_enabled {
+            return Ok(ToolResult::error(
+                "Error: Tool 'manage_document' requires the optional document backend. Rebuild with feature 'document-backend' enabled.",
+                ToolErrorKind::Execution,
+            )
+            .with_preview("document backend disabled"));
+        }
+
+        let input: ManageDocumentInput = serde_json::from_value(input)
+            .map_err(|error| anyhow::anyhow!("invalid manage_document input: {error}"))?;
         let action = input.action.clone();
         let scan = matches!(action.as_str(), "health_check" | "list")
             .then(|| self.facade.query.scan_workspace())
@@ -966,9 +1130,9 @@ impl MetadataUpdateInput {
         match self.kind.as_str() {
             "add_tag" => Ok(MetadataUpdate::AddTag(parse_string_value(self.value)?)),
             "remove_tag" => Ok(MetadataUpdate::RemoveTag(parse_string_value(self.value)?)),
-            "set_status" => Ok(MetadataUpdate::SetStatus(parse_file_status(&parse_string_value(
-                self.value,
-            )?)?)),
+            "set_status" => Ok(MetadataUpdate::SetStatus(parse_file_status(
+                &parse_string_value(self.value)?,
+            )?)),
             other => anyhow::bail!("unsupported metadata update kind '{other}'"),
         }
     }
@@ -1037,12 +1201,16 @@ fn build_step_system_blocks(
     .collect::<Vec<_>>()
     .join("\n\n");
     if !stable_sections.trim().is_empty() {
-        blocks.push(SystemBlock::text(stable_sections).with_cache_control(PromptCacheControl::ephemeral()));
+        blocks.push(
+            SystemBlock::text(stable_sections).with_cache_control(PromptCacheControl::ephemeral()),
+        );
     }
 
     let summary_context = render_step_summaries_context(step_summaries);
     if !summary_context.trim().is_empty() {
-        blocks.push(SystemBlock::text(summary_context).with_cache_control(PromptCacheControl::ephemeral()));
+        blocks.push(
+            SystemBlock::text(summary_context).with_cache_control(PromptCacheControl::ephemeral()),
+        );
     }
 
     let dynamic_sections = render_dynamic_step_sections(request);
@@ -1061,7 +1229,10 @@ fn build_output_repair_system_blocks(
     let stable_context = render_stable_session_context(&request.session);
     let stable_sections = [
         request.skill_system_prompt.clone(),
-        format!("Workflow phase: {} (structured output repair)", request.step.label),
+        format!(
+            "Workflow phase: {} (structured output repair)",
+            request.step.label
+        ),
         "Visible tools: none".to_string(),
         stable_context,
     ]
@@ -1070,12 +1241,16 @@ fn build_output_repair_system_blocks(
     .collect::<Vec<_>>()
     .join("\n\n");
     if !stable_sections.trim().is_empty() {
-        blocks.push(SystemBlock::text(stable_sections).with_cache_control(PromptCacheControl::ephemeral()));
+        blocks.push(
+            SystemBlock::text(stable_sections).with_cache_control(PromptCacheControl::ephemeral()),
+        );
     }
 
     let summary_context = render_step_summaries_context(&request.session.step_summaries);
     if !summary_context.trim().is_empty() {
-        blocks.push(SystemBlock::text(summary_context).with_cache_control(PromptCacheControl::ephemeral()));
+        blocks.push(
+            SystemBlock::text(summary_context).with_cache_control(PromptCacheControl::ephemeral()),
+        );
     }
 
     let mut dynamic_sections = render_dynamic_step_sections_without_prompt(request);
@@ -1135,24 +1310,37 @@ fn render_dynamic_step_sections_without_prompt(request: &StepContextRequest) -> 
     sections
 }
 
-fn render_output_repair_envelope(request: &StepContextRequest, failure: &OutputRepairFailure) -> String {
+fn render_output_repair_envelope(
+    request: &StepContextRequest,
+    failure: &OutputRepairFailure,
+) -> String {
     let mut lines = vec![
         "mode: repair_structured_output".to_string(),
         format!("error_kind: {}", failure.error_kind),
         format!("validation_error: {}", failure.message),
-        format!("previous_response_preview: {}", failure.previous_response_preview),
+        format!(
+            "previous_response_preview: {}",
+            failure.previous_response_preview
+        ),
     ];
     if let Some(extracted_json_preview) = failure.extracted_json_preview.as_ref() {
-        lines.push(format!("extracted_json_preview: {}", extracted_json_preview));
+        lines.push(format!(
+            "extracted_json_preview: {}",
+            extracted_json_preview
+        ));
     }
     let required_contract = render_output_contract(&request.cwd, &request.step.output_contract);
     if !required_contract.is_empty() {
         lines.push("required_contract:".to_string());
         lines.extend(required_contract.lines().map(ToOwned::to_owned));
     }
-    lines.push("repair_rules: preserve the meaning of the previous answer when possible".to_string());
+    lines.push(
+        "repair_rules: preserve the meaning of the previous answer when possible".to_string(),
+    );
     lines.push("repair_rules: do not add prose before or after the JSON".to_string());
-    lines.push("repair_rules: respond with a single JSON object, not an array of objects".to_string());
+    lines.push(
+        "repair_rules: respond with a single JSON object, not an array of objects".to_string(),
+    );
     lines.push("repair_rules: if information is missing, infer only from the previous answer and existing structured_input".to_string());
     if let Some(execute_item) = request.current_execute_item.as_ref() {
         lines.push(format!(
@@ -1339,7 +1527,10 @@ fn count_preview_request_tokens(
 ) -> (u32, ContextTokenCountSource) {
     match token_counter.count_request_tokens(request.clone()) {
         Ok(tokens) => (tokens, ContextTokenCountSource::ProviderCountTokens),
-        Err(_) => (estimate_request_tokens(&request), ContextTokenCountSource::Estimated),
+        Err(_) => (
+            estimate_request_tokens(&request),
+            ContextTokenCountSource::Estimated,
+        ),
     }
 }
 
@@ -1351,7 +1542,10 @@ fn cache_breakpoints_for_step(
     if !step_summaries.is_empty() {
         breakpoints.push("system:summaries".to_string());
     }
-    if messages.iter().any(|message| message.role == Role::Assistant) {
+    if messages
+        .iter()
+        .any(|message| message.role == Role::Assistant)
+    {
         breakpoints.push("messages:last_assistant_turn".to_string());
     }
     breakpoints
@@ -1366,7 +1560,13 @@ fn estimate_request_tokens(request: &ChatRequest) -> u32 {
         .map(|body| estimate_tokens(&body))
         .unwrap_or_else(|_| {
             estimate_tokens(request.system.as_deref().unwrap_or_default())
-                .saturating_add(request.system_blocks.iter().map(|block| estimate_tokens(&block.text)).sum::<u32>())
+                .saturating_add(
+                    request
+                        .system_blocks
+                        .iter()
+                        .map(|block| estimate_tokens(&block.text))
+                        .sum::<u32>(),
+                )
                 .saturating_add(
                     request
                         .messages
@@ -1377,9 +1577,12 @@ fn estimate_request_tokens(request: &ChatRequest) -> u32 {
                                 .iter()
                                 .map(|block| match block {
                                     ContentBlock::Text { text } => estimate_tokens(text),
-                                    ContentBlock::Thinking { thinking, .. } => estimate_tokens(thinking),
+                                    ContentBlock::Thinking { thinking, .. } => {
+                                        estimate_tokens(thinking)
+                                    }
                                     ContentBlock::ToolUse { name, input, .. } => {
-                                        estimate_tokens(name).saturating_add(estimate_tokens(&input.to_string()))
+                                        estimate_tokens(name)
+                                            .saturating_add(estimate_tokens(&input.to_string()))
                                     }
                                     ContentBlock::ToolResult { content, .. } => {
                                         estimate_tokens(&content.to_string())
@@ -1411,11 +1614,10 @@ mod tests {
     use omega_workflow::{DataFormat, OutputRecoveryMode};
 
     use super::{
-        render_output_contract, ContextAssembler, ContextExecuteItem, ContextRouting, ContextSession,
-        ContextStep, ContextTokenCounter, ContextWorkflowRole, DefaultContextAssembler,
-        DocumentHealthReport, HealthScore, OmegaContextFacade, OutputRepairContextRequest,
-        OutputRepairFailure,
-        ScanResult, StepContextRequest,
+        render_output_contract, ContextAssembler, ContextExecuteItem, ContextRouting,
+        ContextSession, ContextStep, ContextTokenCounter, ContextWorkflowRole,
+        DefaultContextAssembler, DocumentHealthReport, HealthScore, OmegaContextFacade,
+        OutputRepairContextRequest, OutputRepairFailure, ScanResult, StepContextRequest,
     };
 
     struct FixedTokenCounter;
@@ -1536,7 +1738,10 @@ mod tests {
             .iter()
             .take(2)
             .all(|block| block.cache_control.is_some()));
-        assert!(assembled.system_blocks.iter().any(|block| block.text.contains("<todo_state step_id=\"execute\">")));
+        assert!(assembled
+            .system_blocks
+            .iter()
+            .any(|block| block.text.contains("<todo_state step_id=\"execute\">")));
     }
 
     #[test]
@@ -1655,8 +1860,12 @@ mod tests {
             })
             .unwrap();
 
-        assert!(blocks.iter().any(|block| block.text.contains("Visible tools: none")));
-        assert!(blocks.iter().any(|block| block.text.contains("<output_repair step_id=\"execute\">")));
+        assert!(blocks
+            .iter()
+            .any(|block| block.text.contains("Visible tools: none")));
+        assert!(blocks
+            .iter()
+            .any(|block| block.text.contains("<output_repair step_id=\"execute\">")));
     }
 
     #[test]
@@ -1695,16 +1904,18 @@ mod tests {
             manifest_path: ".omega/store/files.jsonl".to_string(),
             keyword_index_path: ".omega/store/tantivy".to_string(),
         });
-        facade.diagnostics.record_document_health(&DocumentHealthReport {
-            total_docs: 12,
-            structure_violations: Vec::new(),
-            naming_violations: Vec::new(),
-            orphaned_docs: Vec::new(),
-            broken_crossrefs: Vec::new(),
-            stale_docs: Vec::new(),
-            missing_frontmatter: Vec::new(),
-            overall_health: HealthScore::NeedsAttention,
-        });
+        facade
+            .diagnostics
+            .record_document_health(&DocumentHealthReport {
+                total_docs: 12,
+                structure_violations: Vec::new(),
+                naming_violations: Vec::new(),
+                orphaned_docs: Vec::new(),
+                broken_crossrefs: Vec::new(),
+                stale_docs: Vec::new(),
+                missing_frontmatter: Vec::new(),
+                overall_health: HealthScore::NeedsAttention,
+            });
 
         let diagnostics = facade.diagnostics.context_diagnostics();
         assert_eq!(diagnostics.budget.request_input_tokens, 320);
@@ -1714,7 +1925,10 @@ mod tests {
         assert_eq!(diagnostics.memory.compactions_triggered, 1);
         assert_eq!(diagnostics.document.total_files_indexed, 12);
         assert_eq!(diagnostics.document.total_chunks, 48);
-        assert_eq!(diagnostics.document.governance_health, Some(HealthScore::NeedsAttention));
+        assert_eq!(
+            diagnostics.document.governance_health,
+            Some(HealthScore::NeedsAttention)
+        );
         assert_eq!(diagnostics.cache, Some(assembled.cache_diagnostics));
     }
 }

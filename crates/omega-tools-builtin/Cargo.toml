@@ -15,3 +15,6 @@ shlex = "1"
 similar = "2"
 tempfile = "3"
 wait-timeout = "0.2"
+
+[dev-dependencies]
+omega-test-support = { path = "../omega-test-support" }

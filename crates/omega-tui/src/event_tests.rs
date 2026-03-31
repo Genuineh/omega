@@ -2,6 +2,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use omega_client::test_support::IdleLlmClient;
 use omega_core::DynLlmClient;
 use omega_keymap::{InteractionMode, KeymapManager};
+use omega_test_support::persistent_test_root;
 use omega_workflow::LoadedWorkflowCatalog;
 
 use crate::app::Panel;
@@ -29,6 +30,14 @@ impl ClipboardBackend for FakeClipboard {
 #[allow(non_upper_case_globals)]
 const IdleClient: IdleLlmClient = IdleLlmClient::new("chat should not run in wait-message test");
 
+struct EventReplayHarness {
+    app: Arc<Mutex<App>>,
+    session: AgentSession,
+    tx: mpsc::Sender<omega_session::RuntimeMessageEnvelope>,
+    _rx: mpsc::Receiver<omega_session::RuntimeMessageEnvelope>,
+    keymap: KeymapManager,
+}
+
 fn press_key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
     KeyEvent {
         code,
@@ -36,6 +45,46 @@ fn press_key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
         kind: KeyEventKind::Press,
         state: crossterm::event::KeyEventState::NONE,
     }
+}
+
+impl EventReplayHarness {
+    fn new() -> Self {
+        let client: DynLlmClient = Arc::new(IdleClient);
+        let root = persistent_test_root("tui-event");
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let session = test_session(client, root, &runtime);
+        let app = Arc::new(Mutex::new(App::new()));
+        let (tx, rx) = mpsc::channel();
+        Self {
+            app,
+            session,
+            tx,
+            _rx: rx,
+            keymap: KeymapManager::default(),
+        }
+    }
+
+    fn replay_keys(&self, keys: &[(KeyCode, KeyModifiers)]) {
+        for (code, modifiers) in keys {
+            handle_key_event(
+                press_key(*code, *modifiers),
+                &self.app,
+                &self.session,
+                &self.tx,
+                &self.keymap,
+            )
+            .unwrap();
+        }
+    }
+
+    fn inspect<T>(&self, inspect: impl FnOnce(&App) -> T) -> T {
+        let guard = self.app.lock().unwrap();
+        inspect(&guard)
+    }
+}
+
+fn event_test_root(name: &str) -> std::path::PathBuf {
+    persistent_test_root(&format!("tui-{name}"))
 }
 
 fn test_session(
@@ -63,8 +112,7 @@ fn test_session(
 #[test]
 fn submit_while_running_shows_wait_message() {
     let client: DynLlmClient = Arc::new(IdleClient);
-    let root = std::env::temp_dir().join("omega-event-test");
-    let _ = std::fs::create_dir_all(&root);
+    let root = event_test_root("event-test");
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let session = test_session(client, root, &runtime);
     let app = Arc::new(Mutex::new(App::new()));
@@ -193,8 +241,7 @@ fn copy_selected_text_uses_current_selection() {
 #[test]
 fn ctrl_c_without_selection_does_not_trigger_copy_notice() {
     let client: DynLlmClient = Arc::new(IdleClient);
-    let root = std::env::temp_dir().join("omega-event-copy-quit-test");
-    let _ = std::fs::create_dir_all(&root);
+    let root = event_test_root("copy-quit-test");
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let session = test_session(client, root, &runtime);
     let app = Arc::new(Mutex::new(App::new()));
@@ -217,8 +264,7 @@ fn ctrl_c_without_selection_does_not_trigger_copy_notice() {
 #[test]
 fn tab_keeps_focus_on_response_when_sidebar_is_hidden() {
     let client: DynLlmClient = Arc::new(IdleClient);
-    let root = std::env::temp_dir().join("omega-event-tab-hidden-test");
-    let _ = std::fs::create_dir_all(&root);
+    let root = event_test_root("tab-hidden-test");
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let session = test_session(client, root, &runtime);
     let app = Arc::new(Mutex::new(App::new()));
@@ -250,8 +296,7 @@ fn tab_keeps_focus_on_response_when_sidebar_is_hidden() {
 #[test]
 fn raw_tab_does_not_change_focus_in_normal_mode() {
     let client: DynLlmClient = Arc::new(IdleClient);
-    let root = std::env::temp_dir().join("omega-event-raw-tab-test");
-    let _ = std::fs::create_dir_all(&root);
+    let root = event_test_root("raw-tab-test");
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let session = test_session(client, root, &runtime);
     let app = Arc::new(Mutex::new(App::new()));
@@ -279,8 +324,7 @@ fn raw_tab_does_not_change_focus_in_normal_mode() {
 #[test]
 fn leader_jk_toggles_into_insert_mode_and_allows_typing() {
     let client: DynLlmClient = Arc::new(IdleClient);
-    let root = std::env::temp_dir().join("omega-event-insert-mode-test");
-    let _ = std::fs::create_dir_all(&root);
+    let root = event_test_root("insert-mode-test");
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let session = test_session(client, root, &runtime);
     let app = Arc::new(Mutex::new(App::new()));
@@ -328,8 +372,7 @@ fn leader_jk_toggles_into_insert_mode_and_allows_typing() {
 #[test]
 fn plain_text_is_ignored_in_normal_mode() {
     let client: DynLlmClient = Arc::new(IdleClient);
-    let root = std::env::temp_dir().join("omega-event-normal-mode-test");
-    let _ = std::fs::create_dir_all(&root);
+    let root = event_test_root("normal-mode-test");
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let session = test_session(client, root, &runtime);
     let app = Arc::new(Mutex::new(App::new()));
@@ -351,8 +394,7 @@ fn plain_text_is_ignored_in_normal_mode() {
 #[test]
 fn leader_jk_rejects_insert_mode_when_input_is_disabled() {
     let client: DynLlmClient = Arc::new(IdleClient);
-    let root = std::env::temp_dir().join("omega-event-insert-disabled-test");
-    let _ = std::fs::create_dir_all(&root);
+    let root = event_test_root("insert-disabled-test");
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let session = test_session(client, root, &runtime);
     let app = Arc::new(Mutex::new(App::new()));
@@ -396,8 +438,7 @@ fn leader_jk_rejects_insert_mode_when_input_is_disabled() {
 #[test]
 fn leader_jk_toggles_back_to_normal_mode() {
     let client: DynLlmClient = Arc::new(IdleClient);
-    let root = std::env::temp_dir().join("omega-event-toggle-normal-test");
-    let _ = std::fs::create_dir_all(&root);
+    let root = event_test_root("toggle-normal-test");
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let session = test_session(client, root, &runtime);
     let app = Arc::new(Mutex::new(App::new()));
@@ -441,8 +482,7 @@ fn leader_jk_toggles_back_to_normal_mode() {
 #[test]
 fn panel_search_overlay_captures_text_without_touching_main_input() {
     let client: DynLlmClient = Arc::new(IdleClient);
-    let root = std::env::temp_dir().join("omega-event-overlay-search-test");
-    let _ = std::fs::create_dir_all(&root);
+    let root = event_test_root("overlay-search-test");
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let session = test_session(client, root, &runtime);
     let app = Arc::new(Mutex::new(App::new()));
@@ -486,8 +526,7 @@ fn panel_search_overlay_captures_text_without_touching_main_input() {
 #[test]
 fn overlay_esc_restores_previous_focus() {
     let client: DynLlmClient = Arc::new(IdleClient);
-    let root = std::env::temp_dir().join("omega-event-overlay-escape-test");
-    let _ = std::fs::create_dir_all(&root);
+    let root = event_test_root("overlay-escape-test");
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let session = test_session(client, root, &runtime);
     let app = Arc::new(Mutex::new(App::new()));
@@ -532,8 +571,7 @@ fn overlay_esc_restores_previous_focus() {
 #[test]
 fn overlay_blocks_background_tab_focus_changes() {
     let client: DynLlmClient = Arc::new(IdleClient);
-    let root = std::env::temp_dir().join("omega-event-overlay-block-focus-test");
-    let _ = std::fs::create_dir_all(&root);
+    let root = event_test_root("overlay-block-focus-test");
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let session = test_session(client, root, &runtime);
     let app = Arc::new(Mutex::new(App::new()));
@@ -578,8 +616,7 @@ fn overlay_blocks_background_tab_focus_changes() {
 #[test]
 fn leader_b_toggles_sidebar_shell() {
     let client: DynLlmClient = Arc::new(IdleClient);
-    let root = std::env::temp_dir().join("omega-event-toggle-sidebar-test");
-    let _ = std::fs::create_dir_all(&root);
+    let root = event_test_root("toggle-sidebar-test");
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let session = test_session(client, root, &runtime);
     let app = Arc::new(Mutex::new(App::new()));
@@ -611,8 +648,7 @@ fn leader_b_toggles_sidebar_shell() {
 #[test]
 fn sidebar_rail_cycles_and_toggles_selected_section() {
     let client: DynLlmClient = Arc::new(IdleClient);
-    let root = std::env::temp_dir().join("omega-event-sidebar-rail-test");
-    let _ = std::fs::create_dir_all(&root);
+    let root = event_test_root("sidebar-rail-test");
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let session = test_session(client, root, &runtime);
     let app = Arc::new(Mutex::new(App::new()));
@@ -651,4 +687,28 @@ fn sidebar_rail_cycles_and_toggles_selected_section() {
     );
     assert!(!app_guard.sidebar.todos_expanded);
     assert_eq!(app_guard.focused_panel, Panel::SidebarRail);
+}
+
+#[test]
+fn replay_harness_drives_overlay_search_sequence() {
+    let harness = EventReplayHarness::new();
+
+    harness.replay_keys(&[
+        (KeyCode::Char(' '), KeyModifiers::NONE),
+        (KeyCode::Char('/'), KeyModifiers::NONE),
+        (KeyCode::Char('a'), KeyModifiers::NONE),
+        (KeyCode::Esc, KeyModifiers::NONE),
+    ]);
+
+    let (overlay_active, focused_panel, input_buffer) = harness.inspect(|app| {
+        (
+            app.overlay_active(),
+            app.focused_panel,
+            app.input_buffer.clone(),
+        )
+    });
+
+    assert!(!overlay_active);
+    assert_eq!(focused_panel, Panel::Response);
+    assert!(input_buffer.is_empty());
 }

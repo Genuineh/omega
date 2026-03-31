@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -62,6 +63,24 @@ struct BashInputError {
     error_kind: ToolErrorKind,
 }
 
+#[derive(Debug, Clone)]
+struct BashExecutionFailure {
+    message: String,
+    error_kind: ToolErrorKind,
+}
+
+trait BashCommandRunner: Send + Sync + std::fmt::Debug {
+    fn run(
+        &self,
+        command: &str,
+        workdir: &Path,
+        timeout_seconds: u64,
+    ) -> Result<CapturedOutput, BashExecutionFailure>;
+}
+
+#[derive(Debug, Default)]
+struct SystemBashCommandRunner;
+
 impl BashInputError {
     fn validation(code: &'static str, message: impl Into<String>) -> Self {
         Self {
@@ -85,6 +104,7 @@ pub struct BashHandler {
     root: PathBuf,
     default_timeout_seconds: u64,
     allowed_commands: BTreeSet<String>,
+    command_runner: Arc<dyn BashCommandRunner>,
 }
 
 impl BashHandler {
@@ -97,6 +117,7 @@ impl BashHandler {
             root: resolve_file_root(root),
             default_timeout_seconds: DEFAULT_TIMEOUT_SECONDS,
             allowed_commands: Self::normalize_allowed_commands(allowed_commands),
+            command_runner: Arc::new(SystemBashCommandRunner),
         }
     }
 
@@ -117,6 +138,22 @@ impl BashHandler {
             root: resolve_file_root(root),
             default_timeout_seconds,
             allowed_commands: Self::normalize_allowed_commands(allowed_commands),
+            command_runner: Arc::new(SystemBashCommandRunner),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_timeout_and_allowed_commands_and_runner(
+        root: PathBuf,
+        default_timeout_seconds: u64,
+        allowed_commands: Vec<String>,
+        command_runner: Arc<dyn BashCommandRunner>,
+    ) -> Self {
+        Self {
+            root: resolve_file_root(root),
+            default_timeout_seconds,
+            allowed_commands: Self::normalize_allowed_commands(allowed_commands),
+            command_runner,
         }
     }
 
@@ -438,7 +475,6 @@ impl BashHandler {
     }
 
     fn build_command(
-        &self,
         command: &str,
         workdir: &Path,
         stdout_handle: std::fs::File,
@@ -466,103 +502,14 @@ impl BashHandler {
             Some(request.timeout_seconds),
             None,
         );
-        let stdout_file = match NamedTempFile::new() {
-            Ok(file) => file,
-            Err(error) => {
-                return build_tool_error(
-                    format!("Error: Failed to create stdout capture file: {error}"),
-                    metadata,
-                    ToolErrorKind::Execution,
-                );
-            }
-        };
-        let stderr_file = match NamedTempFile::new() {
-            Ok(file) => file,
-            Err(error) => {
-                return build_tool_error(
-                    format!("Error: Failed to create stderr capture file: {error}"),
-                    metadata,
-                    ToolErrorKind::Execution,
-                );
-            }
-        };
 
-        let stdout_path = stdout_file.path().to_path_buf();
-        let stderr_path = stderr_file.path().to_path_buf();
-
-        let stdout_handle = match stdout_file.reopen() {
-            Ok(file) => file,
-            Err(error) => {
-                return build_tool_error(
-                    format!("Error: Failed to reopen stdout capture file: {error}"),
-                    metadata,
-                    ToolErrorKind::Execution,
-                );
-            }
-        };
-        let stderr_handle = match stderr_file.reopen() {
-            Ok(file) => file,
-            Err(error) => {
-                return build_tool_error(
-                    format!("Error: Failed to reopen stderr capture file: {error}"),
-                    metadata,
-                    ToolErrorKind::Execution,
-                );
-            }
-        };
-
-        let mut child = match self
-            .build_command(
-                &request.command,
-                &request.workdir.path,
-                stdout_handle,
-                stderr_handle,
-            )
-            .spawn()
-        {
-            Ok(child) => child,
-            Err(error) => {
-                return build_tool_error(
-                    format!("Error: Failed to start command: {error}"),
-                    metadata,
-                    ToolErrorKind::Execution,
-                );
-            }
-        };
-
-        let timeout = Duration::from_secs(request.timeout_seconds);
-        match child.wait_timeout(timeout) {
-            Ok(Some(_status)) => match child.wait() {
-                Ok(_) => {
-                    let stdout = Self::read_output_file(stdout_path.as_path());
-                    let stderr = Self::read_output_file(stderr_path.as_path());
-                    let captured = Self::format_output(&stdout, &stderr);
-                    build_tool_result(captured.output, metadata, captured.truncated, None)
-                }
-                Err(error) => build_tool_error(
-                    format!("Error: Failed to collect command output: {error}"),
-                    metadata,
-                    ToolErrorKind::Execution,
-                ),
-            },
-            Ok(None) => {
-                self.terminate_child(&mut child);
-                let _ = child.wait();
-                build_tool_error(
-                    format!("Error: Timeout ({}s)", request.timeout_seconds),
-                    metadata,
-                    ToolErrorKind::Timeout,
-                )
-            }
-            Err(error) => {
-                self.terminate_child(&mut child);
-                let _ = child.wait();
-                build_tool_error(
-                    format!("Error: Failed to wait for command: {error}"),
-                    metadata,
-                    ToolErrorKind::Execution,
-                )
-            }
+        match self.command_runner.run(
+            &request.command,
+            &request.workdir.path,
+            request.timeout_seconds,
+        ) {
+            Ok(captured) => build_tool_result(captured.output, metadata, captured.truncated, None),
+            Err(error) => build_tool_error(error.message, metadata, error.error_kind),
         }
     }
 
@@ -623,9 +570,76 @@ impl BashHandler {
 
         result
     }
+}
+
+impl SystemBashCommandRunner {
+    fn run_command(
+        command: &str,
+        workdir: &Path,
+        timeout_seconds: u64,
+    ) -> Result<CapturedOutput, BashExecutionFailure> {
+        let stdout_file = NamedTempFile::new().map_err(|error| BashExecutionFailure {
+            message: format!("Error: Failed to create stdout capture file: {error}"),
+            error_kind: ToolErrorKind::Execution,
+        })?;
+        let stderr_file = NamedTempFile::new().map_err(|error| BashExecutionFailure {
+            message: format!("Error: Failed to create stderr capture file: {error}"),
+            error_kind: ToolErrorKind::Execution,
+        })?;
+
+        let stdout_path = stdout_file.path().to_path_buf();
+        let stderr_path = stderr_file.path().to_path_buf();
+
+        let stdout_handle = stdout_file.reopen().map_err(|error| BashExecutionFailure {
+            message: format!("Error: Failed to reopen stdout capture file: {error}"),
+            error_kind: ToolErrorKind::Execution,
+        })?;
+        let stderr_handle = stderr_file.reopen().map_err(|error| BashExecutionFailure {
+            message: format!("Error: Failed to reopen stderr capture file: {error}"),
+            error_kind: ToolErrorKind::Execution,
+        })?;
+
+        let mut child = BashHandler::build_command(command, workdir, stdout_handle, stderr_handle)
+            .spawn()
+            .map_err(|error| BashExecutionFailure {
+                message: format!("Error: Failed to start command: {error}"),
+                error_kind: ToolErrorKind::Execution,
+            })?;
+
+        let timeout = Duration::from_secs(timeout_seconds);
+        match child.wait_timeout(timeout) {
+            Ok(Some(_status)) => match child.wait() {
+                Ok(_) => {
+                    let stdout = BashHandler::read_output_file(stdout_path.as_path());
+                    let stderr = BashHandler::read_output_file(stderr_path.as_path());
+                    Ok(BashHandler::format_output(&stdout, &stderr))
+                }
+                Err(error) => Err(BashExecutionFailure {
+                    message: format!("Error: Failed to collect command output: {error}"),
+                    error_kind: ToolErrorKind::Execution,
+                }),
+            },
+            Ok(None) => {
+                Self::terminate_child(&mut child);
+                let _ = child.wait();
+                Err(BashExecutionFailure {
+                    message: format!("Error: Timeout ({timeout_seconds}s)"),
+                    error_kind: ToolErrorKind::Timeout,
+                })
+            }
+            Err(error) => {
+                Self::terminate_child(&mut child);
+                let _ = child.wait();
+                Err(BashExecutionFailure {
+                    message: format!("Error: Failed to wait for command: {error}"),
+                    error_kind: ToolErrorKind::Execution,
+                })
+            }
+        }
+    }
 
     #[cfg(unix)]
-    fn terminate_child(&self, child: &mut Child) {
+    fn terminate_child(child: &mut Child) {
         let process_group_id = -(child.id() as i32);
         unsafe {
             let _ = kill(process_group_id, SIGKILL);
@@ -634,8 +648,112 @@ impl BashHandler {
     }
 
     #[cfg(not(unix))]
-    fn terminate_child(&self, child: &mut Child) {
+    fn terminate_child(child: &mut Child) {
         let _ = child.kill();
+    }
+}
+
+impl BashCommandRunner for SystemBashCommandRunner {
+    fn run(
+        &self,
+        command: &str,
+        workdir: &Path,
+        timeout_seconds: u64,
+    ) -> Result<CapturedOutput, BashExecutionFailure> {
+        Self::run_command(command, workdir, timeout_seconds)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use serde_json::json;
+
+    use super::*;
+
+    #[derive(Debug)]
+    struct MockBashCommandRunner {
+        calls: Mutex<Vec<(String, PathBuf, u64)>>,
+        result: Mutex<Result<CapturedOutput, BashExecutionFailure>>,
+    }
+
+    impl MockBashCommandRunner {
+        fn success(output: &str) -> Arc<Self> {
+            Arc::new(Self {
+                calls: Mutex::new(Vec::new()),
+                result: Mutex::new(Ok(CapturedOutput {
+                    output: output.to_string(),
+                    truncated: false,
+                })),
+            })
+        }
+
+        fn timeout() -> Arc<Self> {
+            Arc::new(Self {
+                calls: Mutex::new(Vec::new()),
+                result: Mutex::new(Err(BashExecutionFailure {
+                    message: "Error: Timeout (9s)".to_string(),
+                    error_kind: ToolErrorKind::Timeout,
+                })),
+            })
+        }
+    }
+
+    impl BashCommandRunner for MockBashCommandRunner {
+        fn run(
+            &self,
+            command: &str,
+            workdir: &Path,
+            timeout_seconds: u64,
+        ) -> Result<CapturedOutput, BashExecutionFailure> {
+            self.calls.lock().unwrap().push((
+                command.to_string(),
+                workdir.to_path_buf(),
+                timeout_seconds,
+            ));
+            self.result.lock().unwrap().clone()
+        }
+    }
+
+    #[test]
+    fn bash_handler_supports_mock_command_runner() {
+        let root = std::env::current_dir().unwrap();
+        let runner = MockBashCommandRunner::success("mocked output");
+        let handler = BashHandler::with_timeout_and_allowed_commands_and_runner(
+            root.clone(),
+            9,
+            default_bash_allowed_commands(),
+            runner.clone(),
+        );
+
+        let result = handler
+            .execute_v2(json!({"command": "echo hi", "description": "mocked bash"}))
+            .unwrap();
+
+        assert_eq!(result.output, "mocked output");
+        assert_eq!(result.metadata["description"], "mocked bash");
+        assert_eq!(
+            runner.calls.lock().unwrap().as_slice(),
+            &[("echo hi".to_string(), root, 9,)]
+        );
+    }
+
+    #[test]
+    fn bash_handler_surfaces_mock_timeout() {
+        let root = std::env::current_dir().unwrap();
+        let handler = BashHandler::with_timeout_and_allowed_commands_and_runner(
+            root,
+            9,
+            default_bash_allowed_commands(),
+            MockBashCommandRunner::timeout(),
+        );
+
+        let result = handler.execute_v2(json!({"command": "echo hi"})).unwrap();
+
+        assert!(result.is_error());
+        assert_eq!(result.error_kind, Some(ToolErrorKind::Timeout));
+        assert_eq!(result.output, "Error: Timeout (9s)");
     }
 }
 

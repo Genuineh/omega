@@ -1,7 +1,7 @@
 use omega_observability::strip_ansi;
 use omega_session::{
-    ResponseSection, ResponseSectionKind, ResponseSectionState, StepSubflowRef,
-    StepSubflowState, ToolRun, ToolRunStatus,
+    ResponseSection, ResponseSectionKind, ResponseSectionState, StepSubflowRef, StepSubflowState,
+    ToolRun, ToolRunStatus,
 };
 
 use super::{
@@ -343,7 +343,10 @@ impl App {
     }
 
     fn render_subflow_group(&self, messages: &[&Msg]) -> Vec<ResponseDisplayLine> {
-        let Some(first_ref) = messages.iter().find_map(|message| message.subflow_ref.as_ref()) else {
+        let Some(first_ref) = messages
+            .iter()
+            .find_map(|message| message.subflow_ref.as_ref())
+        else {
             return Vec::new();
         };
         let workflow_role = messages
@@ -351,10 +354,9 @@ impl App {
             .find_map(|message| message.workflow_role)
             .unwrap_or(WorkflowRunRole::Child);
         let scene_id = messages.iter().find_map(|message| message.scene_id.clone());
-        let parent_state = messages
-            .iter()
-            .filter_map(|message| message.state)
-            .fold(ResponseSectionState::Complete, |state, next| match (state, next) {
+        let parent_state = messages.iter().filter_map(|message| message.state).fold(
+            ResponseSectionState::Complete,
+            |state, next| match (state, next) {
                 (_, ResponseSectionState::Failed) | (ResponseSectionState::Failed, _) => {
                     ResponseSectionState::Failed
                 }
@@ -362,7 +364,8 @@ impl App {
                     ResponseSectionState::Streaming
                 }
                 _ => ResponseSectionState::Complete,
-            });
+            },
+        );
         let parent_message = Msg {
             kind: MsgKind::Step,
             text: String::new(),
@@ -485,7 +488,11 @@ impl App {
             });
         let todo_fallback = self.todo_subflow_fallback(item_index);
 
-        if primary.is_none() && thinking.is_none() && known_status.is_none() && todo_fallback.is_none() {
+        if primary.is_none()
+            && thinking.is_none()
+            && known_status.is_none()
+            && todo_fallback.is_none()
+        {
             return vec![ResponseDisplayLine {
                 kind: MsgKind::Step,
                 text: format!(
@@ -509,10 +516,18 @@ impl App {
             subflow_id: format!("{}-{}", group_ref.parent_step_id, item_index),
             item_id: known_status
                 .and_then(|status| status.item_id.clone())
-                .or_else(|| todo_fallback.as_ref().and_then(|fallback| fallback.item_id.clone())),
+                .or_else(|| {
+                    todo_fallback
+                        .as_ref()
+                        .and_then(|fallback| fallback.item_id.clone())
+                }),
             item_label: known_status
                 .and_then(|status| status.item_label.clone())
-                .or_else(|| todo_fallback.as_ref().and_then(|fallback| fallback.item_label.clone())),
+                .or_else(|| {
+                    todo_fallback
+                        .as_ref()
+                        .and_then(|fallback| fallback.item_label.clone())
+                }),
             item_index,
             item_total: group_ref.item_total,
         });
@@ -521,10 +536,7 @@ impl App {
             .map(|status| status.status)
             .or_else(|| todo_fallback.as_ref().map(|fallback| fallback.status))
             .unwrap_or(StepSubflowState::Queued);
-        let mut header = format!(
-            "  subflow  {}",
-            header_ref.subflow_id,
-        );
+        let mut header = format!("  subflow  {}", header_ref.subflow_id,);
         if let Some(item_id) = header_ref.item_id.as_deref() {
             header.push_str(&format!("  #{item_id}"));
         }
@@ -646,7 +658,12 @@ impl App {
     fn subflow_total(&self, messages: &[&Msg], first_ref: &StepSubflowRef) -> usize {
         let from_messages = messages
             .iter()
-            .filter_map(|message| message.subflow_ref.as_ref().map(|subflow_ref| subflow_ref.item_total))
+            .filter_map(|message| {
+                message
+                    .subflow_ref
+                    .as_ref()
+                    .map(|subflow_ref| subflow_ref.item_total)
+            })
             .max()
             .unwrap_or(first_ref.item_total);
         let from_status = self
@@ -662,13 +679,19 @@ impl App {
         from_messages.max(from_status)
     }
 
-    fn current_subflow_status(&self, subflow_ref: &StepSubflowRef) -> Option<&omega_session::StepSubflowStatus> {
+    fn current_subflow_status(
+        &self,
+        subflow_ref: &StepSubflowRef,
+    ) -> Option<&omega_session::StepSubflowStatus> {
         self.step_subflows
             .iter()
             .find(|status| {
                 status.workflow_id == subflow_ref.parent_workflow_id
                     && status.step_id == subflow_ref.parent_step_id
-                    && matches!(status.status, StepSubflowState::Running | StepSubflowState::Failed)
+                    && matches!(
+                        status.status,
+                        StepSubflowState::Running | StepSubflowState::Failed
+                    )
             })
             .or_else(|| {
                 // When all subflows for this parent step are complete, return None so the summary
@@ -682,7 +705,9 @@ impl App {
                     })
                     .collect();
                 let all_complete = !matching.is_empty()
-                    && matching.iter().all(|s| s.status == StepSubflowState::Complete);
+                    && matching
+                        .iter()
+                        .all(|s| s.status == StepSubflowState::Complete);
                 if all_complete {
                     return None;
                 }
@@ -795,10 +820,7 @@ fn parse_todo_subflow_fallback(line: &str) -> Option<TodoSubflowFallback> {
         }
     } else {
         let label = remainder.trim();
-        (
-            None,
-            (!label.is_empty()).then(|| label.to_string()),
-        )
+        (None, (!label.is_empty()).then(|| label.to_string()))
     };
 
     Some(TodoSubflowFallback {

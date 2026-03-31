@@ -46,9 +46,8 @@ pub fn should_trigger_context_compaction(
     available_input_budget: u32,
     summary_count: usize,
 ) -> bool {
-    let threshold_tokens = available_input_budget
-        .saturating_mul(CONTEXT_COMPACTION_THRESHOLD_PERCENT)
-        / 100;
+    let threshold_tokens =
+        available_input_budget.saturating_mul(CONTEXT_COMPACTION_THRESHOLD_PERCENT) / 100;
     base_input_tokens >= threshold_tokens || summary_count > MAX_UNCOMPACTED_SUMMARIES
 }
 
@@ -64,13 +63,8 @@ pub fn rank_summary_candidates(
         .map(|(index, summary)| {
             let priority = classify_summary_priority(summary, hint);
             let score = summary_relevance_score(summary, hint, total.saturating_sub(index));
-            let compacted_summary = maybe_compact_summary(
-                summary,
-                priority,
-                compaction_triggered,
-                index,
-                total,
-            );
+            let compacted_summary =
+                maybe_compact_summary(summary, priority, compaction_triggered, index, total);
             SummaryCandidate {
                 compacted: compacted_summary.summary != summary.summary,
                 summary: compacted_summary,
@@ -130,7 +124,9 @@ fn classify_summary_priority(summary: &StepSummary, hint: &StepContextHint) -> S
 }
 
 fn is_input_source_summary(summary: &StepSummary, hint: &StepContextHint) -> bool {
-    hint.input_sources.iter().any(|source| source == &summary.step_id)
+    hint.input_sources
+        .iter()
+        .any(|source| source == &summary.step_id)
 }
 
 fn is_root_routing_summary(summary: &StepSummary, hint: &StepContextHint) -> bool {
@@ -139,7 +135,11 @@ fn is_root_routing_summary(summary: &StepSummary, hint: &StepContextHint) -> boo
             || summary.step_id == hint.select_workflow_step_id)
 }
 
-fn summary_relevance_score(summary: &StepSummary, hint: &StepContextHint, recency_score: usize) -> u32 {
+fn summary_relevance_score(
+    summary: &StepSummary,
+    hint: &StepContextHint,
+    recency_score: usize,
+) -> u32 {
     let mut score = recency_score as u32;
     if summary.workflow_id == hint.active_workflow_id {
         score += 20;
@@ -260,12 +260,24 @@ mod tests {
             summary("feature", "plan", "Plan slot budget update."),
             summary("root", "select-workflow", "Selected workflow: feature."),
         ];
-        let ranked = rank_summary_candidates(&summaries, &hint("execute", vec!["explore", "plan", "execute"], true), false);
+        let ranked = rank_summary_candidates(
+            &summaries,
+            &hint("execute", vec!["explore", "plan", "execute"], true),
+            false,
+        );
 
         assert_eq!(ranked[0].summary.step_id, "plan");
         assert_eq!(ranked[0].priority, SummaryPriority::Medium);
-        assert!(ranked.iter().position(|item| item.summary.step_id == "plan").unwrap()
-            < ranked.iter().position(|item| item.summary.step_id == "select-workflow").unwrap());
+        assert!(
+            ranked
+                .iter()
+                .position(|item| item.summary.step_id == "plan")
+                .unwrap()
+                < ranked
+                    .iter()
+                    .position(|item| item.summary.step_id == "select-workflow")
+                    .unwrap()
+        );
     }
 
     #[test]

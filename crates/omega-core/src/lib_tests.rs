@@ -1,26 +1,28 @@
 use super::*;
 use async_trait::async_trait;
 use futures_util::Stream;
-use omega_client::ChatEvent;
 use omega_client::{
-    ChatEventStream, ChatResponse, ClientError, MessageContent, Usage, STOP_REASON_END_TURN,
-    STOP_REASON_TOOL_USE,
+    test_support::{IdleLlmClient, ScriptedLlmClient},
+    ChatEvent, ChatEventStream, ChatResponse, ClientError, MessageContent, Usage,
+    STOP_REASON_END_TURN, STOP_REASON_TOOL_USE,
 };
+use omega_test_support::{test_root, TestRoot};
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use tokio::sync::watch;
 
 type RecordedToolCall = (String, String, String, Option<String>, String);
 
-struct MockLlmClient {
-    responses: Mutex<Vec<ChatResponse>>,
-}
-
 struct HangingStreamClient {
     started_tx: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
     dropped: Arc<AtomicBool>,
+}
+
+struct AgentHarness {
+    _root: TestRoot,
+    agent: Agent,
 }
 
 struct HangingEventStream {
@@ -62,27 +64,6 @@ impl LlmClient for HangingStreamClient {
     }
 }
 
-impl MockLlmClient {
-    fn new(responses: Vec<ChatResponse>) -> Self {
-        Self {
-            responses: Mutex::new(responses),
-        }
-    }
-}
-
-#[async_trait]
-impl LlmClient for MockLlmClient {
-    async fn chat(&self, _request: ChatRequest) -> Result<ChatResponse, ClientError> {
-        let mut responses = self.responses.lock().unwrap();
-        assert!(!responses.is_empty(), "MockLlmClient: no more responses");
-        Ok(responses.remove(0))
-    }
-
-    fn provider_name(&self) -> &'static str {
-        "mock"
-    }
-}
-
 fn text_response(text: &str) -> ChatResponse {
     ChatResponse {
         id: "msg_test".to_string(),
@@ -113,12 +94,26 @@ fn tool_use_response(tool_id: &str, name: &str, input: serde_json::Value) -> Cha
     }
 }
 
-fn make_agent(responses: Vec<ChatResponse>) -> Agent {
-    let client: DynLlmClient = Arc::new(MockLlmClient::new(responses));
-    let tmp = std::env::temp_dir().join("omega-core-test");
-    let _ = std::fs::create_dir_all(&tmp);
-    let dispatcher = create_default_tools(tmp);
-    Agent::new(client, "Test system prompt.".to_string(), dispatcher).unwrap()
+impl std::ops::Deref for AgentHarness {
+    type Target = Agent;
+
+    fn deref(&self) -> &Self::Target {
+        &self.agent
+    }
+}
+
+impl std::ops::DerefMut for AgentHarness {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.agent
+    }
+}
+
+fn make_agent(responses: Vec<ChatResponse>) -> AgentHarness {
+    let root = test_root("core");
+    let client: DynLlmClient = Arc::new(ScriptedLlmClient::from_responses(responses));
+    let dispatcher = create_default_tools(root.path_buf());
+    let agent = Agent::new(client, "Test system prompt.".to_string(), dispatcher).unwrap();
+    AgentHarness { _root: root, agent }
 }
 
 #[tokio::test]
@@ -131,27 +126,11 @@ async fn simple_text_response_terminates() {
 
 #[tokio::test]
 async fn single_response_uses_system_without_tools() {
-    struct RecordingClient {
-        systems: Mutex<Vec<Option<String>>>,
-    }
-
-    #[async_trait]
-    impl LlmClient for RecordingClient {
-        async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, ClientError> {
-            self.systems.lock().unwrap().push(request.system.clone());
-            assert!(request.tools.is_empty());
-            Ok(text_response("planned"))
-        }
-
-        fn provider_name(&self) -> &'static str {
-            "recording"
-        }
-    }
-
-    let client = Arc::new(RecordingClient {
-        systems: Mutex::new(Vec::new()),
-    });
-    let dispatcher = create_default_tools(std::env::temp_dir());
+    let client = Arc::new(ScriptedLlmClient::from_responses(vec![text_response(
+        "planned",
+    )]));
+    let root = test_root("core-single-response");
+    let dispatcher = create_default_tools(root.path_buf());
     let mut agent = Agent::new(client.clone(), "phase prompt".to_string(), dispatcher).unwrap();
     agent.add_user_message("go");
 
@@ -159,9 +138,10 @@ async fn single_response_uses_system_without_tools() {
 
     assert_eq!(result, "planned");
     assert_eq!(
-        client.systems.lock().unwrap().as_slice(),
-        &[Some("phase prompt".to_string())]
+        client.recorded_systems(),
+        vec![Some("phase prompt".to_string())]
     );
+    assert!(client.recorded_requests()[0].tools.is_empty());
 }
 
 #[tokio::test]
@@ -200,7 +180,7 @@ async fn callback_receives_tool_output() {
     let calls: Arc<Mutex<Vec<RecordedToolCall>>> = Arc::new(Mutex::new(Vec::new()));
     let calls_clone = calls.clone();
 
-    let client: DynLlmClient = Arc::new(MockLlmClient::new(vec![
+    let client: DynLlmClient = Arc::new(ScriptedLlmClient::from_responses(vec![
         tool_use_response(
             "t1",
             "bash",
@@ -208,9 +188,8 @@ async fn callback_receives_tool_output() {
         ),
         text_response("ok"),
     ]));
-    let tmp = std::env::temp_dir().join("omega-core-cb-test");
-    let _ = std::fs::create_dir_all(&tmp);
-    let dispatcher = create_default_tools(tmp);
+    let root = test_root("core-callback");
+    let dispatcher = create_default_tools(root.path_buf());
     let mut agent = Agent::new(client, "Test".to_string(), dispatcher).unwrap();
     agent.add_user_message("go");
 
@@ -247,7 +226,7 @@ async fn response_event_callback_receives_text_and_completion() {
     let events: Arc<Mutex<Vec<ChatEvent>>> = Arc::new(Mutex::new(Vec::new()));
     let events_clone = events.clone();
 
-    let client: DynLlmClient = Arc::new(MockLlmClient::new(vec![ChatResponse {
+    let client: DynLlmClient = Arc::new(ScriptedLlmClient::from_responses(vec![ChatResponse {
         id: "msg_test".to_string(),
         model: Some("mock".to_string()),
         content: vec![
@@ -265,9 +244,8 @@ async fn response_event_callback_receives_text_and_completion() {
             cache_read_input_tokens: None,
         }),
     }]));
-    let tmp = std::env::temp_dir().join("omega-core-event-cb-test");
-    let _ = std::fs::create_dir_all(&tmp);
-    let dispatcher = create_default_tools(tmp);
+    let root = test_root("core-event-callback");
+    let dispatcher = create_default_tools(root.path_buf());
     let mut agent = Agent::new(client, "Test".to_string(), dispatcher).unwrap();
     agent.add_user_message("go");
 
@@ -314,16 +292,20 @@ async fn interrupt_cancels_in_flight_streaming_turn() {
         started_tx: Mutex::new(Some(started_tx)),
         dropped: dropped.clone(),
     });
-    let tmp = std::env::temp_dir().join("omega-core-cancel-test");
-    let _ = std::fs::create_dir_all(&tmp);
-    let dispatcher = create_default_tools(tmp);
+    let root = test_root("core-cancel");
+    let dispatcher = create_default_tools(root.path_buf());
     let mut agent = Agent::new(client, "Test".to_string(), dispatcher).unwrap();
     agent.add_user_message("go");
 
     let (turn_tx, mut turn_rx) = watch::channel(91u64);
     let join = tokio::spawn(async move {
         agent
-            .run_loop_with_events_until_turn_change(|_, _, _, _| {}, |_| {}, Some(&mut turn_rx), Some(91))
+            .run_loop_with_events_until_turn_change(
+                |_, _, _, _| {},
+                |_| {},
+                Some(&mut turn_rx),
+                Some(91),
+            )
             .await
     });
 
@@ -363,6 +345,23 @@ fn create_default_tools_includes_bash() {
     assert!(dispatcher.has_tool("manage_document"));
     assert!(dispatcher.has_tool("search_codebase"));
     assert!(dispatcher.has_tool("todo"));
+}
+
+#[test]
+fn search_and_document_tools_surface_backend_disabled_error_by_default() {
+    let dispatcher = create_default_tools(std::env::temp_dir());
+
+    let search = dispatcher
+        .dispatch("search_codebase", serde_json::json!({"query": "omega"}))
+        .unwrap();
+    assert_eq!(search.error_kind, Some(omega_tools::ToolErrorKind::Execution));
+    assert!(search.output.contains("document backend"));
+
+    let manage = dispatcher
+        .dispatch("manage_document", serde_json::json!({"action": "health_check"}))
+        .unwrap();
+    assert_eq!(manage.error_kind, Some(omega_tools::ToolErrorKind::Execution));
+    assert!(manage.output.contains("document backend"));
 }
 
 #[test]
@@ -601,7 +600,7 @@ async fn multi_turn_tool_loop() {
 
 #[test]
 fn set_max_tokens() {
-    let client: DynLlmClient = Arc::new(MockLlmClient::new(vec![]));
+    let client: DynLlmClient = Arc::new(IdleLlmClient::new("chat should not be called"));
     let dispatcher = create_default_tools(std::env::temp_dir());
     let mut agent = Agent::new(client, "test".to_string(), dispatcher).unwrap();
     agent.set_max_tokens(4096);
@@ -609,7 +608,7 @@ fn set_max_tokens() {
 
 #[test]
 fn set_visible_tools_filters_model_visible_tool_subset() {
-    let client: DynLlmClient = Arc::new(MockLlmClient::new(vec![]));
+    let client: DynLlmClient = Arc::new(IdleLlmClient::new("chat should not be called"));
     let dispatcher = create_default_tools(std::env::temp_dir());
     let mut agent = Agent::new(client, "test".to_string(), dispatcher).unwrap();
 
@@ -621,7 +620,7 @@ fn set_visible_tools_filters_model_visible_tool_subset() {
 
 #[test]
 fn set_visible_tools_none_restores_all_tools() {
-    let client: DynLlmClient = Arc::new(MockLlmClient::new(vec![]));
+    let client: DynLlmClient = Arc::new(IdleLlmClient::new("chat should not be called"));
     let dispatcher = create_default_tools(std::env::temp_dir());
     let mut agent = Agent::new(client, "test".to_string(), dispatcher).unwrap();
 
@@ -725,9 +724,8 @@ async fn max_iterations_guard() {
     }
 
     let client: DynLlmClient = Arc::new(InfiniteToolClient);
-    let tmp = std::env::temp_dir().join("omega-core-max-iter");
-    let _ = std::fs::create_dir_all(&tmp);
-    let dispatcher = create_default_tools(tmp);
+    let root = test_root("core-max-iter");
+    let dispatcher = create_default_tools(root.path_buf());
     let mut agent = Agent::new(client, "test".to_string(), dispatcher).unwrap();
     agent.set_max_iterations(3);
     agent.add_user_message("infinite");

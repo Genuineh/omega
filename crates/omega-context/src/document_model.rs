@@ -1,0 +1,276 @@
+use omega_todo::TodoItem;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileType {
+    Source,
+    Doc,
+    Config,
+    Asset,
+    Test,
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DocType {
+    Spec,
+    Prd,
+    Guide,
+    Adr,
+    Todo,
+    Archive,
+    Readme,
+    Changelog,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileStatus {
+    Active,
+    Deleted,
+    Archived,
+    Moved { to: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileRecord {
+    pub path: String,
+    pub size_bytes: u64,
+    pub modified_at: u64,
+    pub created_at: u64,
+    pub language: Option<String>,
+    pub file_type: FileType,
+    pub doc_type: Option<DocType>,
+    pub status: FileStatus,
+    pub content_hash: String,
+    pub chunk_count: u32,
+    pub total_tokens: u32,
+    pub tags: Vec<String>,
+    pub last_indexed_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScanResult {
+    pub files_indexed: usize,
+    pub chunks_indexed: usize,
+    pub deleted_marked: usize,
+    pub manifest_path: String,
+    pub keyword_index_path: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchMode {
+    Keyword,
+    Semantic,
+    Hybrid,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SortField {
+    Relevance,
+    ModifiedDesc,
+    TokensAsc,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum SearchFilter {
+    Language(Vec<String>),
+    FileType(Vec<FileType>),
+    DocType(Vec<DocType>),
+    PathGlob(String),
+    ModifiedAfter(u64),
+    ModifiedBefore(u64),
+    Status(Vec<FileStatus>),
+    Tag(Vec<String>),
+    MinTokens(u32),
+    MaxTokens(u32),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchQuery {
+    pub text: Option<String>,
+    pub mode: SearchMode,
+    pub filters: Vec<SearchFilter>,
+    pub sort: Option<SortField>,
+    pub max_results: usize,
+}
+
+impl Default for SearchQuery {
+    fn default() -> Self {
+        Self {
+            text: None,
+            mode: SearchMode::Keyword,
+            filters: Vec::new(),
+            sort: None,
+            max_results: 10,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SearchResult {
+    pub path: String,
+    pub score: f32,
+    pub preview: String,
+    pub language: Option<String>,
+    pub file_type: FileType,
+    pub doc_type: Option<DocType>,
+    pub status: FileStatus,
+    pub modified_at: u64,
+    pub total_tokens: u32,
+    pub mode_used: SearchMode,
+    pub degraded_from: Option<SearchMode>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DocumentMutationMode {
+    Check,
+    Plan,
+    Apply,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArchiveTrigger {
+    Superseded,
+    CompletedAndInactive,
+    StructurallyOutdated,
+    HistoryOnly,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum MetadataUpdate {
+    AddTag(String),
+    RemoveTag(String),
+    SetStatus(FileStatus),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DocumentMutation {
+    WriteFile { path: String },
+    MoveFile { from: String, to: String },
+    PrependArchiveNote { path: String },
+    UpdateManifest { path: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DocumentChangePlan {
+    pub primary_path: String,
+    pub affected_paths: Vec<String>,
+    pub validation_issues: Vec<String>,
+    pub proposed_mutations: Vec<DocumentMutation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StructureViolation {
+    pub path: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NamingViolation {
+    pub path: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CrossRefIssue {
+    pub path: String,
+    pub target: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StaleDoc {
+    pub path: String,
+    pub days_since_modified: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HealthScore {
+    Good,
+    NeedsAttention,
+    Critical,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DocumentHealthReport {
+    pub total_docs: usize,
+    pub structure_violations: Vec<StructureViolation>,
+    pub naming_violations: Vec<NamingViolation>,
+    pub orphaned_docs: Vec<String>,
+    pub broken_crossrefs: Vec<CrossRefIssue>,
+    pub stale_docs: Vec<StaleDoc>,
+    pub missing_frontmatter: Vec<String>,
+    pub overall_health: HealthScore,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DocumentOpResult {
+    pub mode: Option<DocumentMutationMode>,
+    pub ok: bool,
+    pub message: String,
+    pub plan: Option<DocumentChangePlan>,
+    pub health: Option<DocumentHealthReport>,
+    pub files: Vec<FileRecord>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DocumentOp {
+    Create {
+        mode: DocumentMutationMode,
+        path: String,
+        doc_type: DocType,
+        title: String,
+        content: String,
+    },
+    Archive {
+        mode: DocumentMutationMode,
+        path: String,
+        reason: ArchiveTrigger,
+        replaced_by: Option<String>,
+    },
+    UpdateMetadata {
+        mode: DocumentMutationMode,
+        path: String,
+        updates: Vec<MetadataUpdate>,
+    },
+    HealthCheck,
+    List {
+        doc_type: Option<DocType>,
+        status: Option<FileStatus>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TodoSnapshot {
+    pub saved_at: u64,
+    pub items: Vec<TodoItem>,
+    pub rendered: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TodoOp {
+    Current,
+    Replace { items: Vec<TodoItem> },
+    History { limit: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TodoOpResult {
+    pub message: String,
+    pub current: Option<TodoSnapshot>,
+    pub history: Vec<TodoSnapshot>,
+}

@@ -82,7 +82,9 @@ pub struct HookAdvanceDenial {
 pub enum HookAdvanceOutcome {
     #[default]
     Allow,
-    Deny { reasons: Vec<HookAdvanceDenial> },
+    Deny {
+        reasons: Vec<HookAdvanceDenial>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -213,7 +215,9 @@ impl HookSession {
     }
 
     pub fn hook_storage(&self, step_key: &HookStepKey, hook_id: &str) -> Option<&HookStorage> {
-        self.storage.get(step_key).and_then(|storage| storage.get(hook_id))
+        self.storage
+            .get(step_key)
+            .and_then(|storage| storage.get(hook_id))
     }
 
     fn set_hook_storage(&mut self, step_key: &HookStepKey, hook_id: &str, storage: HookStorage) {
@@ -300,7 +304,10 @@ impl HookHost {
             }
         }
 
-        if matches!(input.event, HookEventKind::AfterStep | HookEventKind::StepFailed) {
+        if matches!(
+            input.event,
+            HookEventKind::AfterStep | HookEventKind::StepFailed
+        ) {
             session.deactivate_step(step_key);
         }
 
@@ -325,8 +332,12 @@ fn invoke_hook(entry: &HookManifestEntry, input: &HookDispatchInput) -> Result<H
     }
 
     let request_json = serde_json::to_string(input)?;
-    let request = CString::new(request_json)
-        .map_err(|_| anyhow!("hook request for '{}' contained interior NUL", entry.manifest.id))?;
+    let request = CString::new(request_json).map_err(|_| {
+        anyhow!(
+            "hook request for '{}' contained interior NUL",
+            entry.manifest.id
+        )
+    })?;
 
     unsafe {
         let library = Library::new(&entry.artifact_path).with_context(|| {
@@ -354,16 +365,20 @@ fn invoke_hook(entry: &HookManifestEntry, input: &HookDispatchInput) -> Result<H
         }
 
         let invoke = library
-            .get::<unsafe extern "C" fn(*const c_char) -> *mut c_char>(
-                b"omega_hook_invoke_json\0",
-            )
+            .get::<unsafe extern "C" fn(*const c_char) -> *mut c_char>(b"omega_hook_invoke_json\0")
             .with_context(|| {
-                format!("hook '{}' is missing omega_hook_invoke_json", entry.manifest.id)
+                format!(
+                    "hook '{}' is missing omega_hook_invoke_json",
+                    entry.manifest.id
+                )
             })?;
         let free = library
             .get::<unsafe extern "C" fn(*mut c_char)>(b"omega_hook_free_string\0")
             .with_context(|| {
-                format!("hook '{}' is missing omega_hook_free_string", entry.manifest.id)
+                format!(
+                    "hook '{}' is missing omega_hook_free_string",
+                    entry.manifest.id
+                )
             })?;
 
         let response_ptr = invoke(request.as_ptr());
@@ -378,7 +393,10 @@ fn invoke_hook(entry: &HookManifestEntry, input: &HookDispatchInput) -> Result<H
         free(response_ptr);
 
         serde_json::from_str::<HookDispatchOutput>(&response_json).with_context(|| {
-            format!("hook '{}' returned invalid response JSON", entry.manifest.id)
+            format!(
+                "hook '{}' returned invalid response JSON",
+                entry.manifest.id
+            )
         })
     }
 }

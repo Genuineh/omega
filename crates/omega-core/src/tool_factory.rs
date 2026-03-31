@@ -59,9 +59,8 @@ pub fn create_default_tools_with_todo_manager_and_tool_limits(
     batch_max_requests: usize,
 ) -> ToolDispatcher {
     let mut dispatcher = ToolDispatcher::new();
-    let context_registry = ContextToolRegistry::new(std::sync::Arc::new(
-        OmegaContextFacade::local(root.clone()),
-    ));
+    let context_registry =
+        ContextToolRegistry::new(std::sync::Arc::new(OmegaContextFacade::local(root.clone())));
     dispatcher.register(Box::new(BashHandler::with_allowed_commands(
         root.clone(),
         bash_allowed_commands,

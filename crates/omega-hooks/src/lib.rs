@@ -10,6 +10,6 @@ pub use host::{
     HookToolResultSnapshot, HookWorkflowRole,
 };
 pub use manifest::{
-    HookCatalog, HookManifest, HookManifestEntry, DEFAULT_HOOK_API_VERSION,
-    DEFAULT_HOOK_MANIFEST_FILE, DEFAULT_HOOKS_DIR,
+    HookCatalog, HookManifest, HookManifestEntry, DEFAULT_HOOKS_DIR, DEFAULT_HOOK_API_VERSION,
+    DEFAULT_HOOK_MANIFEST_FILE,
 };

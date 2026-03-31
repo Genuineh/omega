@@ -3,18 +3,17 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 use omega_core::{CoreSharedTodoManager, CoreToolResult};
 use omega_hooks::{
-    HookAdvanceOutcome, HookDiagnosticLevel, HookDispatchInput, HookDispatchSummary,
-    HookEventKind, HookHost, HookSession, HookSessionContextSnapshot, HookStepKey,
-    HookStepSummarySnapshot, HookTodoSnapshot, HookToolCallSnapshot, HookToolResultSnapshot,
-    HookWorkflowRole,
+    HookAdvanceOutcome, HookDiagnosticLevel, HookDispatchInput, HookDispatchSummary, HookEventKind,
+    HookHost, HookSession, HookSessionContextSnapshot, HookStepKey, HookStepSummarySnapshot,
+    HookTodoSnapshot, HookToolCallSnapshot, HookToolResultSnapshot, HookWorkflowRole,
 };
 use omega_workflow::WorkflowStep;
 use serde_json::Value;
 
-use crate::{SharedRuntimeMessageBridge, WorkflowRunRole};
 use crate::session_state::SessionContext;
 use crate::ui_emit::{send_error_text, send_system_log_text, send_warning_text};
 use crate::ResolvedToolSet;
+use crate::{SharedRuntimeMessageBridge, WorkflowRunRole};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ExecuteLoopItemContext {
@@ -112,7 +111,13 @@ impl StepHookRuntime {
         tool_input: &Value,
         tool_result: &CoreToolResult,
     ) -> Result<()> {
-        if self.step.hooks.is_empty() || !self.session.lock().unwrap().is_step_active(&self.step_key()) {
+        if self.step.hooks.is_empty()
+            || !self
+                .session
+                .lock()
+                .unwrap()
+                .is_step_active(&self.step_key())
+        {
             return Ok(());
         }
 
@@ -142,8 +147,18 @@ impl StepHookRuntime {
         Ok(())
     }
 
-    pub(crate) fn after_step(&self, final_text: &str, structured_output: Option<&Value>) -> Result<()> {
-        if self.step.hooks.is_empty() || !self.session.lock().unwrap().is_step_active(&self.step_key()) {
+    pub(crate) fn after_step(
+        &self,
+        final_text: &str,
+        structured_output: Option<&Value>,
+    ) -> Result<()> {
+        if self.step.hooks.is_empty()
+            || !self
+                .session
+                .lock()
+                .unwrap()
+                .is_step_active(&self.step_key())
+        {
             return Ok(());
         }
 
@@ -164,7 +179,13 @@ impl StepHookRuntime {
         final_text: &str,
         structured_output: Option<&Value>,
     ) -> Result<HookAdvanceOutcome> {
-        if self.step.hooks.is_empty() || !self.session.lock().unwrap().is_step_active(&self.step_key()) {
+        if self.step.hooks.is_empty()
+            || !self
+                .session
+                .lock()
+                .unwrap()
+                .is_step_active(&self.step_key())
+        {
             return Ok(HookAdvanceOutcome::Allow);
         }
 
@@ -181,7 +202,13 @@ impl StepHookRuntime {
     }
 
     pub(crate) fn step_failed(&self, error: &str) -> Result<()> {
-        if self.step.hooks.is_empty() || !self.session.lock().unwrap().is_step_active(&self.step_key()) {
+        if self.step.hooks.is_empty()
+            || !self
+                .session
+                .lock()
+                .unwrap()
+                .is_step_active(&self.step_key())
+        {
             return Ok(());
         }
 
@@ -196,7 +223,7 @@ impl StepHookRuntime {
         )
         .map_err(|dispatch_error| anyhow::anyhow!("{dispatch_error}"))?;
 
-            send_error_text(
+        send_error_text(
             &*self.tx_result,
             self.turn_id,
             &format!("Hook-managed step failed: {error}"),

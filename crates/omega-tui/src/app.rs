@@ -7,8 +7,8 @@ use ratatui::{layout::Rect, widgets::ListState};
 use omega_observability::strip_ansi;
 use omega_session::{
     OverlayTarget, ResponseSectionState, RuntimeUiEnvelope, StatusSlot, StatusValue,
-    StepDiagnostics, StepOutputStatus, StepSubflowRef, StepSubflowStatus, ToolRun,
-    ToolRunStatus, WorkflowRunRole,
+    StepDiagnostics, StepOutputStatus, StepSubflowRef, StepSubflowStatus, ToolRun, ToolRunStatus,
+    WorkflowRunRole,
 };
 
 use crate::overlay::{
@@ -370,19 +370,22 @@ impl App {
     }
 
     pub fn upsert_step_subflow(&mut self, subflow: StepSubflowStatus) {
-        if let Some(existing) = self
-            .step_subflows
-            .iter_mut()
-            .find(|existing| existing.workflow_id == subflow.workflow_id
+        if let Some(existing) = self.step_subflows.iter_mut().find(|existing| {
+            existing.workflow_id == subflow.workflow_id
                 && existing.step_id == subflow.step_id
-                && existing.subflow_id == subflow.subflow_id)
-        {
+                && existing.subflow_id == subflow.subflow_id
+        }) {
             *existing = subflow;
         } else {
             self.step_subflows.push(subflow);
         }
-        self.step_subflows
-            .sort_by_key(|entry| (entry.workflow_id.clone(), entry.step_id.clone(), entry.item_index));
+        self.step_subflows.sort_by_key(|entry| {
+            (
+                entry.workflow_id.clone(),
+                entry.step_id.clone(),
+                entry.item_index,
+            )
+        });
     }
 
     pub fn step_subflow_status_for_ref(
@@ -445,7 +448,10 @@ impl App {
                 lines.push(format!("repeats: {}", status.repeat_count_for_item));
             }
             if status.no_progress_streak_for_item > 0 {
-                lines.push(format!("no-progress rounds: {}", status.no_progress_streak_for_item));
+                lines.push(format!(
+                    "no-progress rounds: {}",
+                    status.no_progress_streak_for_item
+                ));
             }
             if let Some(source) = status.completion_source.as_deref() {
                 lines.push(format!("completion: {source}"));
@@ -887,11 +893,7 @@ impl App {
         self.status_notice = Some("Search popup opened for the focused panel.".to_string());
     }
 
-    pub fn open_search_results_overlay(
-        &mut self,
-        title: impl Into<String>,
-        lines: Vec<String>,
-    ) {
+    pub fn open_search_results_overlay(&mut self, title: impl Into<String>, lines: Vec<String>) {
         self.overlay = Some(OverlayState::SearchResults(SearchResultsOverlay {
             origin_panel: self.focused_panel,
             title: title.into(),

@@ -104,40 +104,13 @@ impl SubAgent {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use async_trait::async_trait;
     use omega_client::{
-        ChatResponse, ClientError, LlmClient, Usage, STOP_REASON_END_TURN, STOP_REASON_TOOL_USE,
+        test_support::ScriptedLlmClient, ChatResponse, Usage, STOP_REASON_END_TURN,
+        STOP_REASON_TOOL_USE,
     };
     use serde_json::json;
 
     use super::*;
-
-    struct MockLlmClient {
-        responses: Mutex<Vec<ChatResponse>>,
-        requests: Arc<Mutex<Vec<ChatRequest>>>,
-    }
-
-    impl MockLlmClient {
-        fn new(responses: Vec<ChatResponse>, requests: Arc<Mutex<Vec<ChatRequest>>>) -> Self {
-            Self {
-                responses: Mutex::new(responses),
-                requests,
-            }
-        }
-    }
-
-    #[async_trait]
-    impl LlmClient for MockLlmClient {
-        async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, ClientError> {
-            self.requests.lock().unwrap().push(request);
-            let mut responses = self.responses.lock().unwrap();
-            Ok(responses.remove(0))
-        }
-
-        fn provider_name(&self) -> &'static str {
-            "mock"
-        }
-    }
 
     fn text_response(text: &str) -> ChatResponse {
         ChatResponse {
@@ -148,6 +121,8 @@ mod tests {
             usage: Some(Usage {
                 input_tokens: 10,
                 output_tokens: 5,
+                cache_creation_input_tokens: None,
+                cache_read_input_tokens: None,
             }),
         }
     }
@@ -161,6 +136,8 @@ mod tests {
             usage: Some(Usage {
                 input_tokens: 10,
                 output_tokens: 5,
+                cache_creation_input_tokens: None,
+                cache_read_input_tokens: None,
             }),
         }
     }
@@ -181,36 +158,40 @@ mod tests {
 
     #[tokio::test]
     async fn run_returns_final_text_without_tool_calls() {
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let client: DynLlmClient = Arc::new(MockLlmClient::new(
-            vec![text_response("subagent summary")],
-            requests.clone(),
-        ));
-        let subagent = SubAgent::new(client, "subagent system", vec![sample_tool_definition()]);
+        let client = Arc::new(ScriptedLlmClient::from_responses(vec![text_response(
+            "subagent summary",
+        )]));
+        let client_dyn: DynLlmClient = client.clone();
+        let subagent = SubAgent::new(
+            client_dyn,
+            "subagent system",
+            vec![sample_tool_definition()],
+        );
 
         let result = subagent
             .run("inspect src", |_name, _input| Ok(String::new()))
             .await;
 
         assert_eq!(result.unwrap(), "subagent summary");
-        let recorded = requests.lock().unwrap();
+        let recorded = client.recorded_requests();
         assert_eq!(recorded.len(), 1);
         assert_eq!(recorded[0].messages, vec![Message::user("inspect src")]);
     }
 
     #[tokio::test]
     async fn run_executes_tool_calls_and_keeps_fresh_context() {
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let client: DynLlmClient = Arc::new(MockLlmClient::new(
-            vec![
-                tool_use_response("tool-1", "read_file", json!({"path": "src/lib.rs"})),
-                text_response("done"),
-            ],
-            requests.clone(),
-        ));
+        let client = Arc::new(ScriptedLlmClient::from_responses(vec![
+            tool_use_response("tool-1", "read_file", json!({"path": "src/lib.rs"})),
+            text_response("done"),
+        ]));
+        let client_dyn: DynLlmClient = client.clone();
         let calls: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
         let calls_clone = calls.clone();
-        let subagent = SubAgent::new(client, "subagent system", vec![sample_tool_definition()]);
+        let subagent = SubAgent::new(
+            client_dyn,
+            "subagent system",
+            vec![sample_tool_definition()],
+        );
 
         let result = subagent
             .run_with(
@@ -234,7 +215,7 @@ mod tests {
             )]
         );
 
-        let recorded = requests.lock().unwrap();
+        let recorded = client.recorded_requests();
         assert_eq!(recorded.len(), 2);
         assert_eq!(recorded[0].messages, vec![Message::user("inspect src")]);
         assert_eq!(recorded[1].messages.len(), 3);
@@ -252,15 +233,16 @@ mod tests {
 
     #[tokio::test]
     async fn tool_errors_roundtrip_as_tool_result_errors() {
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let client: DynLlmClient = Arc::new(MockLlmClient::new(
-            vec![
-                tool_use_response("tool-1", "read_file", json!({"path": "missing.rs"})),
-                text_response("handled"),
-            ],
-            requests.clone(),
-        ));
-        let subagent = SubAgent::new(client, "subagent system", vec![sample_tool_definition()]);
+        let client = Arc::new(ScriptedLlmClient::from_responses(vec![
+            tool_use_response("tool-1", "read_file", json!({"path": "missing.rs"})),
+            text_response("handled"),
+        ]));
+        let client_dyn: DynLlmClient = client.clone();
+        let subagent = SubAgent::new(
+            client_dyn,
+            "subagent system",
+            vec![sample_tool_definition()],
+        );
 
         let result = subagent
             .run("inspect src", |_name, _input| Err(anyhow!("missing file")))
@@ -268,7 +250,7 @@ mod tests {
 
         assert_eq!(result.unwrap(), "handled");
 
-        let recorded = requests.lock().unwrap();
+        let recorded = client.recorded_requests();
         assert!(matches!(
             &recorded[1].messages[2].content,
             omega_client::MessageContent::Blocks(blocks)

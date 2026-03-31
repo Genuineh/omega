@@ -4,8 +4,7 @@ use std::path::Path;
 #[cfg(test)]
 use omega_workflow::StepOutputContract;
 use omega_workflow::{
-    DataFormat, WorkflowStep, EXECUTE_STEP_ID, EXPLORE_STEP_ID, PLAN_STEP_ID,
-    RESEARCH_WORKFLOW_ID,
+    DataFormat, WorkflowStep, EXECUTE_STEP_ID, EXPLORE_STEP_ID, PLAN_STEP_ID, RESEARCH_WORKFLOW_ID,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -266,7 +265,11 @@ fn research_plan_text_requires_write_access(text: &str) -> bool {
     }
 
     if starts_with_read_only_analysis_prefix(trimmed) {
-        return contains_explicit_write_operation(trimmed);
+        // With a read-only prefix, only check exact write phrases.
+        // Skip the bag-of-words action+target check that causes false
+        // positives when analytical text mentions concepts like "update",
+        // "config", or "module" without intending a write operation.
+        return contains_exact_write_phrases(trimmed);
     }
 
     contains_explicit_write_operation(trimmed)
@@ -293,28 +296,26 @@ fn starts_with_read_only_analysis_prefix(text: &str) -> bool {
         "verify",
     ];
     const CJK_PREFIXES: &[&str] = &[
-        "分析",
-        "评估",
-        "审查",
-        "检查",
-        "确认",
-        "验证",
-        "汇总",
-        "调查",
-        "研究",
-        "梳理",
-        "审计",
-        "收集",
-        "识别",
-        "输出",
+        "分析", "评估", "审查", "检查", "确认", "验证", "汇总", "调查", "研究", "梳理", "审计",
+        "收集", "识别", "输出",
     ];
 
     let normalized = text.trim_start().to_ascii_lowercase();
-    ASCII_PREFIXES.iter().any(|prefix| normalized.starts_with(prefix))
+    ASCII_PREFIXES
+        .iter()
+        .any(|prefix| normalized.starts_with(prefix))
         || CJK_PREFIXES.iter().any(|prefix| text.starts_with(prefix))
 }
 
 fn contains_explicit_write_operation(text: &str) -> bool {
+    contains_exact_write_phrases(text) || contains_ascii_write_pair(&text.to_ascii_lowercase())
+}
+
+/// Matches explicit multi-word write phrases and CJK write pairs.
+/// Does NOT include the bag-of-words action+target check, so it is safe
+/// for analytical text that mentions optimization concepts like "update",
+/// "config", or "module" without intending a write operation.
+fn contains_exact_write_phrases(text: &str) -> bool {
     let normalized = text.to_ascii_lowercase();
 
     const ASCII_WRITE_PHRASES: &[&str] = &[
@@ -370,7 +371,6 @@ fn contains_explicit_write_operation(text: &str) -> bool {
     ASCII_WRITE_PHRASES
         .iter()
         .any(|phrase| normalized.contains(phrase))
-        || contains_ascii_write_pair(&normalized)
         || CJK_WRITE_PHRASES.iter().any(|phrase| text.contains(phrase))
         || contains_cjk_write_pair(text, "补充", "测试")
         || contains_cjk_write_pair(text, "添加", "测试")
@@ -537,7 +537,7 @@ pub(crate) fn build_output_validation_feedback(
     let contract = render_output_contract(root, &step.output_contract);
     if contract.is_empty() {
         format!(
-            "Your previous response for step '{}' failed validation: {}. Re-run the step and satisfy the expected structured output.",
+            "Your previous response for step '{}' failed validation: {}. Re-run the step and satisfy the required response constraints.",
             step.id, validation_error
         )
     } else {

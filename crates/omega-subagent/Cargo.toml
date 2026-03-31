@@ -11,3 +11,4 @@ serde_json.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true
+omega-client = { path = "../omega-client", features = ["test-support"] }

@@ -227,8 +227,7 @@ fn build_body_maps_cache_markers_for_system_tools_and_last_assistant_turn() {
     .with_system_blocks(vec![
         SystemBlock::text("stable instructions")
             .with_cache_control(PromptCacheControl::ephemeral()),
-        SystemBlock::text("summary context")
-            .with_cache_control(PromptCacheControl::ephemeral()),
+        SystemBlock::text("summary context").with_cache_control(PromptCacheControl::ephemeral()),
         SystemBlock::text("dynamic workflow prompt"),
     ])
     .with_tools(vec![tool])

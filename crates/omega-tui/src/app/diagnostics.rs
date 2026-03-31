@@ -1,8 +1,8 @@
 use omega_observability::strip_ansi;
 use omega_session::{
-    CacheDiagnostics, ContextDiagnostics, HealthScore, StepContextWrite,
-    StepContextWriteKind, StepDiagnostics, StepInputStatus, StepOutputAttemptKind,
-    StepOutputRecoveryDecision, StepOutputStatus,
+    CacheDiagnostics, ContextDiagnostics, HealthScore, StepContextWrite, StepContextWriteKind,
+    StepDiagnostics, StepInputStatus, StepOutputAttemptKind, StepOutputRecoveryDecision,
+    StepOutputStatus,
 };
 
 use super::{App, DiagnosticsLine, Panel};
@@ -106,7 +106,10 @@ impl App {
 
 fn sanitize_step_diagnostics(mut diagnostics: StepDiagnostics) -> StepDiagnostics {
     if let Some(progress) = diagnostics.execute_progress.as_mut() {
-        progress.current_item_id = progress.current_item_id.as_ref().map(|text| strip_ansi(text));
+        progress.current_item_id = progress
+            .current_item_id
+            .as_ref()
+            .map(|text| strip_ansi(text));
         progress.completion_source = progress
             .completion_source
             .as_ref()
@@ -162,8 +165,8 @@ fn context_budget_percent(cache: &CacheDiagnostics) -> Option<u8> {
     }
 
     Some(
-        ((cache.request_input_tokens.saturating_mul(100)) / cache.budget_input_tokens)
-            .min(100) as u8,
+        ((cache.request_input_tokens.saturating_mul(100)) / cache.budget_input_tokens).min(100)
+            as u8,
     )
 }
 
@@ -278,10 +281,7 @@ fn build_diagnostics_lines(diagnostics: &StepDiagnostics) -> Vec<DiagnosticsLine
     if let Some(progress) = diagnostics.execute_progress.as_ref() {
         let mut execute = format!(
             "  execute todos={}/{} open={} repeats={}",
-            progress.todo_completed,
-            progress.todo_total,
-            progress.todo_open,
-            progress.repeat_count
+            progress.todo_completed, progress.todo_total, progress.todo_open, progress.repeat_count
         );
         if let Some(item_id) = progress.current_item_id.as_deref() {
             execute.push_str(&format!(" · current={item_id}"));

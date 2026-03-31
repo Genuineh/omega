@@ -2,10 +2,9 @@ use futures_util::{stream, StreamExt};
 use tracing::warn;
 
 use crate::anthropic::{
-    AnthropicClient, AnthropicContentBlock, AnthropicEventStream, AnthropicMessage,
-    AnthropicMessageContent, AnthropicMessageCreateRequest, AnthropicMessageParam,
-    AnthropicCountTokensRequest,
-    AnthropicStreamEvent, AnthropicSystemBlock, AnthropicToolDefinition,
+    AnthropicClient, AnthropicContentBlock, AnthropicCountTokensRequest, AnthropicEventStream,
+    AnthropicMessage, AnthropicMessageContent, AnthropicMessageCreateRequest,
+    AnthropicMessageParam, AnthropicStreamEvent, AnthropicSystemBlock, AnthropicToolDefinition,
 };
 use crate::{
     ChatEvent, ChatEventStream, ChatRequest, ChatResponse, ClientError, ContentBlock, Message,
@@ -63,7 +62,11 @@ impl AnthropicMessagesCompatClient {
     pub async fn count_tokens(&self, request: ChatRequest) -> Result<u32, ClientError> {
         let anthropic_request =
             chat_request_to_count_tokens_request(request, &self.client.config().default_model);
-        let response = self.client.messages().count_tokens(anthropic_request).await?;
+        let response = self
+            .client
+            .messages()
+            .count_tokens(anthropic_request)
+            .await?;
         Ok(response.input_tokens)
     }
 
@@ -120,11 +123,8 @@ pub(crate) fn chat_request_to_anthropic_request(
             )
         })
         .collect();
-    let mut anthropic_request = AnthropicMessageCreateRequest::new(
-        default_model.to_string(),
-        messages,
-        request.max_tokens,
-    );
+    let mut anthropic_request =
+        AnthropicMessageCreateRequest::new(default_model.to_string(), messages, request.max_tokens);
 
     if let Some(system) = request.system {
         anthropic_request.system = vec![AnthropicSystemBlock::text(system)];
@@ -169,7 +169,12 @@ fn chat_request_to_count_tokens_request(
     if let Some(system_text) = request.system {
         system.push(AnthropicSystemBlock::text(system_text));
     }
-    system.extend(request.system_blocks.into_iter().map(system_block_to_anthropic));
+    system.extend(
+        request
+            .system_blocks
+            .into_iter()
+            .map(system_block_to_anthropic),
+    );
     let tool_len = request.tools.len();
     let tools = request
         .tools
@@ -219,9 +224,11 @@ fn system_block_to_anthropic(block: crate::SystemBlock) -> AnthropicSystemBlock 
     AnthropicSystemBlock {
         kind: "text".to_string(),
         text: block.text,
-        cache_control: block.cache_control.map(|cache_control| crate::AnthropicCacheControl {
-            kind: cache_control.kind,
-        }),
+        cache_control: block
+            .cache_control
+            .map(|cache_control| crate::AnthropicCacheControl {
+                kind: cache_control.kind,
+            }),
         citations: Vec::new(),
     }
 }
@@ -244,10 +251,7 @@ fn content_blocks_to_anthropic(
         .collect()
 }
 
-fn content_block_to_anthropic(
-    block: ContentBlock,
-    cache_control: bool,
-) -> AnthropicContentBlock {
+fn content_block_to_anthropic(block: ContentBlock, cache_control: bool) -> AnthropicContentBlock {
     match block {
         ContentBlock::Text { text } => AnthropicContentBlock::Text {
             text,

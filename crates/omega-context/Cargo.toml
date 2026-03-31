@@ -3,10 +3,15 @@ name = "omega-context"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = []
+document-backend = ["dep:omega-document"]
+
 [dependencies]
 omega-client = { path = "../omega-client" }
-omega-document = { path = "../omega-document" }
+omega-document = { path = "../omega-document", optional = true }
 omega-memory = { path = "../omega-memory" }
+omega-todo = { path = "../omega-todo" }
 omega-tools = { path = "../omega-tools" }
 omega-workflow = { path = "../omega-workflow" }
 anyhow.workspace = true

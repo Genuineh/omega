@@ -147,7 +147,8 @@ async fn anthropic_client_supports_count_tokens_models_and_batches() {
 async fn minimax_llm_client_count_tokens_uses_provider_endpoint() {
     let server = MockServer::start();
     let _count_tokens = server.mock(|when, then| {
-        when.method(POST).path("/anthropic/v1/messages/count_tokens");
+        when.method(POST)
+            .path("/anthropic/v1/messages/count_tokens");
         then.status(200).json_body(json!({"input_tokens": 57}));
     });
     let client = MinimaxClient::new(MinimaxConfig::with_base_url(

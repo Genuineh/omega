@@ -260,10 +260,7 @@ fn bottom_status_segments(
             label: "item",
             value: format!(
                 "{} {}/{}{}",
-                subflow.subflow_id,
-                subflow.item_index,
-                subflow.item_total,
-                repeat_suffix,
+                subflow.subflow_id, subflow.item_index, subflow.item_total, repeat_suffix,
             ),
         })
     } else {

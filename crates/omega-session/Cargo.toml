@@ -15,7 +15,12 @@ serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
+[features]
+default = []
+document-backend = ["omega-context/document-backend", "omega-core/document-backend"]
+test-support = []
 [dev-dependencies]
 async-trait.workspace = true
 futures-util.workspace = true
 omega-client = { path = "../omega-client", features = ["test-support"] }
+omega-test-support = { path = "../omega-test-support" }

@@ -3,6 +3,10 @@ name = "omega-core"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = []
+document-backend = ["omega-context/document-backend"]
+
 [dependencies]
 omega-client = { path = "../omega-client" }
 omega-context = { path = "../omega-context" }
@@ -26,3 +30,5 @@ uuid.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true
+omega-client = { path = "../omega-client", features = ["test-support"] }
+omega-test-support = { path = "../omega-test-support" }

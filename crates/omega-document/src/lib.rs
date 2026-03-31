@@ -6,7 +6,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use arrow_array::types::Float32Type;
-use arrow_array::{ArrayRef, FixedSizeListArray, RecordBatch, StringArray, UInt32Array, UInt64Array};
+use arrow_array::{
+    ArrayRef, FixedSizeListArray, RecordBatch, StringArray, UInt32Array, UInt64Array,
+};
 use arrow_schema::{DataType, Field as ArrowField, Schema as ArrowSchema};
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use futures_util::{future::BoxFuture, FutureExt, TryStreamExt};
@@ -120,7 +122,8 @@ struct IndexCommitLog {
 
 impl IndexCommitLog {
     fn lance_ready(&self) -> bool {
-        self.current_manifest_revision > 0 && self.lance_revision == Some(self.current_manifest_revision)
+        self.current_manifest_revision > 0
+            && self.lance_revision == Some(self.current_manifest_revision)
     }
 }
 
@@ -295,8 +298,7 @@ pub struct DocumentOpResult {
     pub warnings: Vec<String>,
 }
 
-impl DocumentOpResult {
-}
+impl DocumentOpResult {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -421,16 +423,8 @@ impl OmegaDocument {
                 FileRecord {
                     path: relative_path.clone(),
                     size_bytes: metadata.len(),
-                    modified_at: metadata
-                        .modified()
-                        .ok()
-                        .map(unix_timestamp)
-                        .unwrap_or(now),
-                    created_at: metadata
-                        .created()
-                        .ok()
-                        .map(unix_timestamp)
-                        .unwrap_or(now),
+                    modified_at: metadata.modified().ok().map(unix_timestamp).unwrap_or(now),
+                    created_at: metadata.created().ok().map(unix_timestamp).unwrap_or(now),
                     language,
                     file_type,
                     doc_type,
@@ -516,7 +510,11 @@ impl OmegaDocument {
         }
         let records = self.file_store.load_records()?;
         let commit_log = self.file_store.load_commit_log()?;
-        if query.text.as_deref().is_none_or(|text| text.trim().is_empty()) {
+        if query
+            .text
+            .as_deref()
+            .is_none_or(|text| text.trim().is_empty())
+        {
             return self.filter_only_results(&records, &query);
         }
         match query.mode {
@@ -561,9 +559,11 @@ impl OmegaDocument {
                 reason,
                 replaced_by,
             } => self.archive_document(mode, &path, reason, replaced_by.as_deref()),
-            DocumentOp::UpdateMetadata { mode, path, updates } => {
-                self.update_metadata(mode, &path, &updates)
-            }
+            DocumentOp::UpdateMetadata {
+                mode,
+                path,
+                updates,
+            } => self.update_metadata(mode, &path, &updates),
             DocumentOp::HealthCheck => Ok(DocumentOpResult {
                 mode: None,
                 ok: true,
@@ -579,8 +579,14 @@ impl OmegaDocument {
                     .file_store
                     .load_records()?
                     .into_iter()
-                    .filter(|record| doc_type.is_none_or(|doc_type| record.doc_type == Some(doc_type)))
-                    .filter(|record| status.as_ref().is_none_or(|status| &record.status == status))
+                    .filter(|record| {
+                        doc_type.is_none_or(|doc_type| record.doc_type == Some(doc_type))
+                    })
+                    .filter(|record| {
+                        status
+                            .as_ref()
+                            .is_none_or(|status| &record.status == status)
+                    })
                     .collect::<Vec<_>>();
                 Ok(DocumentOpResult {
                     mode: None,
@@ -672,7 +678,11 @@ impl OmegaDocument {
         }
 
         for record in &active_docs {
-            if rules.lifecycle.required_frontmatter.iter().any(|field| field == "status")
+            if rules
+                .lifecycle
+                .required_frontmatter
+                .iter()
+                .any(|field| field == "status")
                 && !file_has_frontmatter_status(&self.root.join(&record.path))?
             {
                 missing_frontmatter.push(record.path.clone());
@@ -683,7 +693,9 @@ impl OmegaDocument {
         let readme_contents = fs::read_to_string(&readme).unwrap_or_default();
         let orphaned_docs = active_docs
             .iter()
-            .filter(|record| matches_readme_patterns(&rules.cross_ref.readme_must_index, &record.path))
+            .filter(|record| {
+                matches_readme_patterns(&rules.cross_ref.readme_must_index, &record.path)
+            })
             .filter(|record| !readme_contents.contains(&record.path))
             .map(|record| record.path.clone())
             .collect::<Vec<_>>();
@@ -726,7 +738,11 @@ impl OmegaDocument {
         })
     }
 
-    fn filter_only_results(&self, records: &[FileRecord], query: &SearchQuery) -> Result<Vec<SearchResult>> {
+    fn filter_only_results(
+        &self,
+        records: &[FileRecord],
+        query: &SearchQuery,
+    ) -> Result<Vec<SearchResult>> {
         let mut filtered = records
             .iter()
             .filter(|record| matches_filters(record, &query.filters))
@@ -742,7 +758,8 @@ impl OmegaDocument {
                     modified_at: record.modified_at,
                     total_tokens: record.total_tokens,
                     mode_used: SearchMode::Keyword,
-                    degraded_from: (!matches!(query.mode, SearchMode::Keyword)).then_some(query.mode),
+                    degraded_from: (!matches!(query.mode, SearchMode::Keyword))
+                        .then_some(query.mode),
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -765,7 +782,9 @@ impl OmegaDocument {
             validation_issues.push("target path already exists".to_string());
         }
         if !path_matches_doc_type(path, doc_type) {
-            validation_issues.push(format!("path '{path}' does not match expected location for {doc_type:?}"));
+            validation_issues.push(format!(
+                "path '{path}' does not match expected location for {doc_type:?}"
+            ));
         }
         if rules.naming.lowercase_dirs
             && path
@@ -773,12 +792,18 @@ impl OmegaDocument {
                 .filter(|segment| !segment.contains('.'))
                 .any(|segment| segment.chars().any(|ch| ch.is_ascii_uppercase()))
         {
-            validation_issues.push("documentation directories must use lowercase names".to_string());
+            validation_issues
+                .push("documentation directories must use lowercase names".to_string());
         }
-        if rules.lifecycle.required_frontmatter.iter().any(|field| field == "status")
+        if rules
+            .lifecycle
+            .required_frontmatter
+            .iter()
+            .any(|field| field == "status")
             && !content_starts_with_frontmatter_status(content)
         {
-            validation_issues.push("content is missing required frontmatter field 'status'".to_string());
+            validation_issues
+                .push("content is missing required frontmatter field 'status'".to_string());
         }
         let plan = DocumentChangePlan {
             primary_path: path.to_string(),
@@ -813,7 +838,10 @@ impl OmegaDocument {
                 let target = self.root.join(path);
                 if let Some(parent) = target.parent() {
                     fs::create_dir_all(parent).with_context(|| {
-                        format!("failed to create document parent directory {}", parent.display())
+                        format!(
+                            "failed to create document parent directory {}",
+                            parent.display()
+                        )
                     })?;
                 }
                 fs::write(&target, content)
@@ -918,13 +946,16 @@ impl OmegaDocument {
                         format!("failed to create archive directory {}", parent.display())
                     })?;
                 }
-                let content = fs::read_to_string(&source)
-                    .with_context(|| format!("failed to read source document {}", source.display()))?;
+                let content = fs::read_to_string(&source).with_context(|| {
+                    format!("failed to read source document {}", source.display())
+                })?;
                 let note = archive_note(reason, replaced_by);
-                fs::write(&target, format!("{note}\n\n{content}"))
-                    .with_context(|| format!("failed to write archived document {}", target.display()))?;
-                fs::remove_file(&source)
-                    .with_context(|| format!("failed to remove archived source {}", source.display()))?;
+                fs::write(&target, format!("{note}\n\n{content}")).with_context(|| {
+                    format!("failed to write archived document {}", target.display())
+                })?;
+                fs::remove_file(&source).with_context(|| {
+                    format!("failed to remove archived source {}", source.display())
+                })?;
                 self.scan_workspace()?;
                 Ok(DocumentOpResult {
                     mode: Some(mode),
@@ -1049,9 +1080,8 @@ impl FileStore {
         if !self.manifest_path.exists() {
             return Ok(Vec::new());
         }
-        let contents = fs::read_to_string(&self.manifest_path).with_context(|| {
-            format!("failed to read manifest {}", self.manifest_path.display())
-        })?;
+        let contents = fs::read_to_string(&self.manifest_path)
+            .with_context(|| format!("failed to read manifest {}", self.manifest_path.display()))?;
         contents
             .lines()
             .filter(|line| !line.trim().is_empty())
@@ -1074,9 +1104,8 @@ impl FileStore {
             .map(serde_json::to_string)
             .collect::<std::result::Result<Vec<_>, _>>()?
             .join("\n");
-        fs::write(&self.manifest_path, format!("{payload}\n")).with_context(|| {
-            format!("failed to write manifest {}", self.manifest_path.display())
-        })
+        fs::write(&self.manifest_path, format!("{payload}\n"))
+            .with_context(|| format!("failed to write manifest {}", self.manifest_path.display()))
     }
 
     fn load_commit_log(&self) -> Result<IndexCommitLog> {
@@ -1084,7 +1113,10 @@ impl FileStore {
             return Ok(IndexCommitLog::default());
         }
         let contents = fs::read_to_string(&self.commit_log_path).with_context(|| {
-            format!("failed to read index commit log {}", self.commit_log_path.display())
+            format!(
+                "failed to read index commit log {}",
+                self.commit_log_path.display()
+            )
         })?;
         serde_json::from_str(&contents).context("invalid index commit log")
     }
@@ -1093,7 +1125,10 @@ impl FileStore {
         self.ensure_store_dirs()?;
         let payload = serde_json::to_string_pretty(log)?;
         fs::write(&self.commit_log_path, payload).with_context(|| {
-            format!("failed to write index commit log {}", self.commit_log_path.display())
+            format!(
+                "failed to write index commit log {}",
+                self.commit_log_path.display()
+            )
         })
     }
 }
@@ -1149,7 +1184,9 @@ impl PersistentTodoStore {
         let mut snapshots = contents
             .lines()
             .filter(|line| !line.trim().is_empty())
-            .map(|line| serde_json::from_str::<TodoSnapshot>(line).context("invalid todo snapshot line"))
+            .map(|line| {
+                serde_json::from_str::<TodoSnapshot>(line).context("invalid todo snapshot line")
+            })
             .collect::<Result<Vec<_>>>()?;
         snapshots.reverse();
         snapshots.truncate(limit);
@@ -1171,8 +1208,9 @@ impl KeywordIndex {
 
     fn rebuild(&self, records: &[FileRecord], chunks: &[Chunk]) -> Result<()> {
         if self.index_dir.exists() {
-            fs::remove_dir_all(&self.index_dir)
-                .with_context(|| format!("failed to clear index dir {}", self.index_dir.display()))?;
+            fs::remove_dir_all(&self.index_dir).with_context(|| {
+                format!("failed to clear index dir {}", self.index_dir.display())
+            })?;
         }
         fs::create_dir_all(&self.index_dir)
             .with_context(|| format!("failed to create index dir {}", self.index_dir.display()))?;
@@ -1222,7 +1260,9 @@ impl KeywordIndex {
         let text = query.text.clone().unwrap_or_default();
         let parser = QueryParser::for_index(&index, vec![fields.content, fields.path]);
         let tantivy_query = parser.parse_query(text.trim())?;
-        let fetch_limit = normalize_max_results(query.max_results).saturating_mul(5).max(10);
+        let fetch_limit = normalize_max_results(query.max_results)
+            .saturating_mul(5)
+            .max(10);
         let top_docs = searcher.search(&tantivy_query, &TopDocs::with_limit(fetch_limit))?;
         let records_by_path = records
             .iter()
@@ -1233,7 +1273,10 @@ impl KeywordIndex {
 
         for (score, address) in top_docs {
             let retrieved: tantivy::TantivyDocument = searcher.doc(address)?;
-            let Some(path) = retrieved.get_first(fields.path).and_then(|value| value.as_str()) else {
+            let Some(path) = retrieved
+                .get_first(fields.path)
+                .and_then(|value| value.as_str())
+            else {
                 continue;
             };
             if !seen_paths.insert(path.to_string()) {
@@ -1327,8 +1370,12 @@ impl VectorIndex {
     }
 
     fn rebuild(&self, records: &[FileRecord], chunks: &[Chunk], _revision: u64) -> Result<()> {
-        fs::create_dir_all(&self.db_dir)
-            .with_context(|| format!("failed to create vector index dir {}", self.db_dir.display()))?;
+        fs::create_dir_all(&self.db_dir).with_context(|| {
+            format!(
+                "failed to create vector index dir {}",
+                self.db_dir.display()
+            )
+        })?;
         let chunk_rows = build_lance_chunk_rows(chunks)?;
         let file_rows = build_lance_file_rows(records, &chunk_rows);
         let file_batch = build_lance_file_batch(&file_rows)?;
@@ -1361,7 +1408,10 @@ impl VectorIndex {
                         .execute()
                         .await
                         .context("failed to create LanceDB files table")?;
-                    let _ = table.create_index(&["embedding"], LanceIndex::Auto).execute().await;
+                    let _ = table
+                        .create_index(&["embedding"], LanceIndex::Auto)
+                        .execute()
+                        .await;
                 }
 
                 if chunk_rows.is_empty() {
@@ -1375,7 +1425,10 @@ impl VectorIndex {
                         .execute()
                         .await
                         .context("failed to create LanceDB chunks table")?;
-                    let _ = table.create_index(&["embedding"], LanceIndex::Auto).execute().await;
+                    let _ = table
+                        .create_index(&["embedding"], LanceIndex::Auto)
+                        .execute()
+                        .await;
                 }
 
                 db.create_empty_table(LANCE_TURNS_TABLE, turns_schema)
@@ -1392,7 +1445,9 @@ impl VectorIndex {
     fn search(&self, records: &[FileRecord], query: &SearchQuery) -> Result<Vec<SearchResult>> {
         let text = query.text.clone().unwrap_or_default();
         let query_embedding = embed_query(&text)?;
-        let fetch_limit = normalize_max_results(query.max_results).saturating_mul(8).max(16);
+        let fetch_limit = normalize_max_results(query.max_results)
+            .saturating_mul(8)
+            .max(16);
         let db_dir = self.db_dir.clone();
         let semantic_hits = run_async_operation(move || {
             async move {
@@ -1517,7 +1572,10 @@ fn build_lance_chunk_rows(chunks: &[Chunk]) -> Result<Vec<LanceChunkRow>> {
         .collect())
 }
 
-fn build_lance_file_rows(records: &[FileRecord], chunk_rows: &[LanceChunkRow]) -> Vec<LanceFileRow> {
+fn build_lance_file_rows(
+    records: &[FileRecord],
+    chunk_rows: &[LanceChunkRow],
+) -> Vec<LanceFileRow> {
     let mut sums = BTreeMap::<String, (Vec<f32>, usize)>::new();
     for chunk in chunk_rows {
         let entry = sums
@@ -1558,17 +1616,53 @@ fn build_lance_file_batch(rows: &[LanceFileRow]) -> Result<RecordBatch> {
     RecordBatch::try_new(
         lance_file_schema(),
         vec![
-            Arc::new(StringArray::from(rows.iter().map(|row| row.path.clone()).collect::<Vec<_>>())) as ArrayRef,
-            Arc::new(UInt64Array::from(rows.iter().map(|row| row.size_bytes).collect::<Vec<_>>())) as ArrayRef,
-            Arc::new(UInt64Array::from(rows.iter().map(|row| row.modified_at).collect::<Vec<_>>())) as ArrayRef,
-            Arc::new(StringArray::from(rows.iter().map(|row| row.language.clone()).collect::<Vec<_>>())) as ArrayRef,
-            Arc::new(StringArray::from(rows.iter().map(|row| row.file_type.clone()).collect::<Vec<_>>())) as ArrayRef,
-            Arc::new(StringArray::from(rows.iter().map(|row| row.doc_type.clone()).collect::<Vec<_>>())) as ArrayRef,
-            Arc::new(StringArray::from(rows.iter().map(|row| row.status.clone()).collect::<Vec<_>>())) as ArrayRef,
-            Arc::new(StringArray::from(rows.iter().map(|row| row.content_hash.clone()).collect::<Vec<_>>())) as ArrayRef,
-            Arc::new(UInt32Array::from(rows.iter().map(|row| row.total_tokens).collect::<Vec<_>>())) as ArrayRef,
-            Arc::new(StringArray::from(rows.iter().map(|row| row.tags_json.clone()).collect::<Vec<_>>())) as ArrayRef,
-            vector_array(rows.iter().map(|row| row.embedding.clone()).collect::<Vec<_>>()),
+            Arc::new(StringArray::from(
+                rows.iter().map(|row| row.path.clone()).collect::<Vec<_>>(),
+            )) as ArrayRef,
+            Arc::new(UInt64Array::from(
+                rows.iter().map(|row| row.size_bytes).collect::<Vec<_>>(),
+            )) as ArrayRef,
+            Arc::new(UInt64Array::from(
+                rows.iter().map(|row| row.modified_at).collect::<Vec<_>>(),
+            )) as ArrayRef,
+            Arc::new(StringArray::from(
+                rows.iter()
+                    .map(|row| row.language.clone())
+                    .collect::<Vec<_>>(),
+            )) as ArrayRef,
+            Arc::new(StringArray::from(
+                rows.iter()
+                    .map(|row| row.file_type.clone())
+                    .collect::<Vec<_>>(),
+            )) as ArrayRef,
+            Arc::new(StringArray::from(
+                rows.iter()
+                    .map(|row| row.doc_type.clone())
+                    .collect::<Vec<_>>(),
+            )) as ArrayRef,
+            Arc::new(StringArray::from(
+                rows.iter()
+                    .map(|row| row.status.clone())
+                    .collect::<Vec<_>>(),
+            )) as ArrayRef,
+            Arc::new(StringArray::from(
+                rows.iter()
+                    .map(|row| row.content_hash.clone())
+                    .collect::<Vec<_>>(),
+            )) as ArrayRef,
+            Arc::new(UInt32Array::from(
+                rows.iter().map(|row| row.total_tokens).collect::<Vec<_>>(),
+            )) as ArrayRef,
+            Arc::new(StringArray::from(
+                rows.iter()
+                    .map(|row| row.tags_json.clone())
+                    .collect::<Vec<_>>(),
+            )) as ArrayRef,
+            vector_array(
+                rows.iter()
+                    .map(|row| row.embedding.clone())
+                    .collect::<Vec<_>>(),
+            ),
         ],
     )
     .context("failed to build LanceDB file batch")
@@ -1578,14 +1672,46 @@ fn build_lance_chunk_batch(rows: &[LanceChunkRow]) -> Result<RecordBatch> {
     RecordBatch::try_new(
         lance_chunk_schema(),
         vec![
-            Arc::new(StringArray::from(rows.iter().map(|row| row.chunk_id.clone()).collect::<Vec<_>>())) as ArrayRef,
-            Arc::new(StringArray::from(rows.iter().map(|row| row.file_path.clone()).collect::<Vec<_>>())) as ArrayRef,
-            Arc::new(UInt64Array::from(rows.iter().map(|row| row.byte_range_start).collect::<Vec<_>>())) as ArrayRef,
-            Arc::new(UInt64Array::from(rows.iter().map(|row| row.byte_range_end).collect::<Vec<_>>())) as ArrayRef,
-            Arc::new(StringArray::from(rows.iter().map(|row| row.content_hash.clone()).collect::<Vec<_>>())) as ArrayRef,
-            Arc::new(UInt32Array::from(rows.iter().map(|row| row.estimated_tokens).collect::<Vec<_>>())) as ArrayRef,
-            vector_array(rows.iter().map(|row| row.embedding.clone()).collect::<Vec<_>>()),
-            Arc::new(StringArray::from(rows.iter().map(|row| row.content_preview.clone()).collect::<Vec<_>>())) as ArrayRef,
+            Arc::new(StringArray::from(
+                rows.iter()
+                    .map(|row| row.chunk_id.clone())
+                    .collect::<Vec<_>>(),
+            )) as ArrayRef,
+            Arc::new(StringArray::from(
+                rows.iter()
+                    .map(|row| row.file_path.clone())
+                    .collect::<Vec<_>>(),
+            )) as ArrayRef,
+            Arc::new(UInt64Array::from(
+                rows.iter()
+                    .map(|row| row.byte_range_start)
+                    .collect::<Vec<_>>(),
+            )) as ArrayRef,
+            Arc::new(UInt64Array::from(
+                rows.iter()
+                    .map(|row| row.byte_range_end)
+                    .collect::<Vec<_>>(),
+            )) as ArrayRef,
+            Arc::new(StringArray::from(
+                rows.iter()
+                    .map(|row| row.content_hash.clone())
+                    .collect::<Vec<_>>(),
+            )) as ArrayRef,
+            Arc::new(UInt32Array::from(
+                rows.iter()
+                    .map(|row| row.estimated_tokens)
+                    .collect::<Vec<_>>(),
+            )) as ArrayRef,
+            vector_array(
+                rows.iter()
+                    .map(|row| row.embedding.clone())
+                    .collect::<Vec<_>>(),
+            ),
+            Arc::new(StringArray::from(
+                rows.iter()
+                    .map(|row| row.content_preview.clone())
+                    .collect::<Vec<_>>(),
+            )) as ArrayRef,
         ],
     )
     .context("failed to build LanceDB chunk batch")
@@ -1656,7 +1782,10 @@ fn lance_turn_schema() -> Arc<ArrowSchema> {
 fn semantic_hits_from_batches(batches: &[RecordBatch]) -> Result<Vec<SemanticHit>> {
     let mut hits = Vec::new();
     for batch in batches {
-        let file_path_index = batch.schema().index_of("file_path").context("missing file_path column")?;
+        let file_path_index = batch
+            .schema()
+            .index_of("file_path")
+            .context("missing file_path column")?;
         let preview_index = batch
             .schema()
             .index_of("content_preview")
@@ -1683,12 +1812,14 @@ fn semantic_hits_from_batches(batches: &[RecordBatch]) -> Result<Vec<SemanticHit
 }
 
 fn vector_array(embeddings: Vec<Vec<f32>>) -> ArrayRef {
-    Arc::new(FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
-        embeddings
-            .into_iter()
-            .map(|embedding| Some(embedding.into_iter().map(Some).collect::<Vec<_>>())),
-        EMBEDDING_DIMENSIONS,
-    )) as ArrayRef
+    Arc::new(
+        FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+            embeddings
+                .into_iter()
+                .map(|embedding| Some(embedding.into_iter().map(Some).collect::<Vec<_>>())),
+            EMBEDDING_DIMENSIONS,
+        ),
+    ) as ArrayRef
 }
 
 fn embed_passages(texts: &[String]) -> Result<Vec<Vec<f32>>> {
@@ -1698,7 +1829,10 @@ fn embed_passages(texts: &[String]) -> Result<Vec<Vec<f32>>> {
                 .context("failed to initialize fastembed model")?;
             let embeddings = model
                 .embed(
-                    texts.iter().map(|text| format!("passage: {text}")).collect::<Vec<_>>(),
+                    texts
+                        .iter()
+                        .map(|text| format!("passage: {text}"))
+                        .collect::<Vec<_>>(),
                     None,
                 )
                 .context("failed to generate passage embeddings")?;
@@ -1744,7 +1878,11 @@ fn embedding_backend_kind() -> EmbeddingBackendKind {
 
 fn normalize_embedding(mut embedding: Vec<f32>) -> Vec<f32> {
     embedding.resize(EMBEDDING_DIMENSIONS as usize, 0.0);
-    let norm = embedding.iter().map(|value| value * value).sum::<f32>().sqrt();
+    let norm = embedding
+        .iter()
+        .map(|value| value * value)
+        .sum::<f32>()
+        .sqrt();
     if norm > 0.0 {
         for value in &mut embedding {
             *value /= norm;
@@ -1875,11 +2013,17 @@ impl Default for DocGovernanceRules {
                     "LICENSE".to_string(),
                 ],
                 expected_dirs: vec![
-                    ExpectedDir::new("docs/specs", "Formal specs, contracts, and repository rules"),
+                    ExpectedDir::new(
+                        "docs/specs",
+                        "Formal specs, contracts, and repository rules",
+                    ),
                     ExpectedDir::new("docs/prds", "Plans, architecture, and design details"),
                     ExpectedDir::new("docs/guide", "Usage guides and contributor workflows"),
                     ExpectedDir::new("docs/decisions", "Durable architecture decisions"),
-                    ExpectedDir::new("docs/archive", "Retired, superseded, or historical documents"),
+                    ExpectedDir::new(
+                        "docs/archive",
+                        "Retired, superseded, or historical documents",
+                    ),
                 ],
             },
             naming: NamingRules {
@@ -2016,11 +2160,20 @@ fn classify_file_type(path: &str) -> FileType {
         Some("rs" | "ts" | "tsx" | "js" | "jsx" | "py" | "go" | "java" | "kt")
     ) {
         FileType::Source
-    } else if matches!(Path::new(path).extension().and_then(|ext| ext.to_str()), Some("md" | "txt" | "adoc")) {
+    } else if matches!(
+        Path::new(path).extension().and_then(|ext| ext.to_str()),
+        Some("md" | "txt" | "adoc")
+    ) {
         FileType::Doc
-    } else if matches!(Path::new(path).extension().and_then(|ext| ext.to_str()), Some("toml" | "json" | "yaml" | "yml")) {
+    } else if matches!(
+        Path::new(path).extension().and_then(|ext| ext.to_str()),
+        Some("toml" | "json" | "yaml" | "yml")
+    ) {
         FileType::Config
-    } else if matches!(Path::new(path).extension().and_then(|ext| ext.to_str()), Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "svg")) {
+    } else if matches!(
+        Path::new(path).extension().and_then(|ext| ext.to_str()),
+        Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "svg")
+    ) {
         FileType::Asset
     } else {
         FileType::Other
@@ -2137,12 +2290,17 @@ fn matches_filters(record: &FileRecord, filters: &[SearchFilter]) -> bool {
             .as_ref()
             .is_some_and(|language| languages.iter().any(|value| value == language)),
         SearchFilter::FileType(file_types) => file_types.contains(&record.file_type),
-        SearchFilter::DocType(doc_types) => record.doc_type.is_some_and(|doc_type| doc_types.contains(&doc_type)),
+        SearchFilter::DocType(doc_types) => record
+            .doc_type
+            .is_some_and(|doc_type| doc_types.contains(&doc_type)),
         SearchFilter::PathGlob(pattern) => glob_matches(pattern, &record.path),
         SearchFilter::ModifiedAfter(timestamp) => record.modified_at > *timestamp,
         SearchFilter::ModifiedBefore(timestamp) => record.modified_at < *timestamp,
         SearchFilter::Status(statuses) => statuses.iter().any(|status| status == &record.status),
-        SearchFilter::Tag(tags) => record.tags.iter().any(|tag| tags.iter().any(|value| value == tag)),
+        SearchFilter::Tag(tags) => record
+            .tags
+            .iter()
+            .any(|tag| tags.iter().any(|value| value == tag)),
         SearchFilter::MinTokens(min_tokens) => record.total_tokens >= *min_tokens,
         SearchFilter::MaxTokens(max_tokens) => record.total_tokens <= *max_tokens,
     })
@@ -2196,7 +2354,11 @@ fn find_broken_crossrefs(root: &Path, docs: &[FileRecord]) -> Result<Vec<CrossRe
     let existing_paths = docs
         .iter()
         .map(|record| record.path.clone())
-        .chain(["README.md".to_string(), "docs/TODO.md".to_string(), "CHANGELOG.md".to_string()])
+        .chain([
+            "README.md".to_string(),
+            "docs/TODO.md".to_string(),
+            "CHANGELOG.md".to_string(),
+        ])
         .collect::<BTreeSet<_>>();
     let mut issues = Vec::new();
     for record in docs {
@@ -2254,7 +2416,9 @@ fn normalize_link_target(source_path: &str, target: &str) -> String {
     if target_path.is_absolute() {
         return target.trim_start_matches('/').to_string();
     }
-    let base = Path::new(source_path).parent().unwrap_or_else(|| Path::new(""));
+    let base = Path::new(source_path)
+        .parent()
+        .unwrap_or_else(|| Path::new(""));
     normalize_path_string(&base.join(target_path))
 }
 
@@ -2283,8 +2447,12 @@ fn preview_text(text: &str, limit: usize) -> String {
 }
 
 fn file_preview(path: &Path) -> Result<String> {
-    let bytes = fs::read(path).with_context(|| format!("failed to read file {}", path.display()))?;
-    Ok(preview_text(&String::from_utf8_lossy(&bytes), SEARCH_PREVIEW_LIMIT))
+    let bytes =
+        fs::read(path).with_context(|| format!("failed to read file {}", path.display()))?;
+    Ok(preview_text(
+        &String::from_utf8_lossy(&bytes),
+        SEARCH_PREVIEW_LIMIT,
+    ))
 }
 
 fn file_preview_fallback(record: &FileRecord) -> String {
@@ -2306,8 +2474,12 @@ fn manifest_hash_for_records(records: &[FileRecord]) -> String {
 fn apply_sort(results: &mut [SearchResult], sort: SortField) {
     match sort {
         SortField::Relevance => results.sort_by(|left, right| right.score.total_cmp(&left.score)),
-        SortField::ModifiedDesc => results.sort_by(|left, right| right.modified_at.cmp(&left.modified_at)),
-        SortField::TokensAsc => results.sort_by(|left, right| left.total_tokens.cmp(&right.total_tokens)),
+        SortField::ModifiedDesc => {
+            results.sort_by(|left, right| right.modified_at.cmp(&left.modified_at))
+        }
+        SortField::TokensAsc => {
+            results.sort_by(|left, right| left.total_tokens.cmp(&right.total_tokens))
+        }
     }
 }
 
@@ -2344,7 +2516,10 @@ fn split_fixed_chunks(content: &str) -> Vec<(usize, usize, &str)> {
     chunks
 }
 
-fn split_by_predicate<'a>(content: &'a str, is_boundary: impl Fn(&str) -> bool) -> Vec<(usize, usize, &'a str)> {
+fn split_by_predicate<'a>(
+    content: &'a str,
+    is_boundary: impl Fn(&str) -> bool,
+) -> Vec<(usize, usize, &'a str)> {
     let mut boundaries = vec![0usize];
     let mut offset = 0usize;
     for line in content.lines() {
@@ -2476,7 +2651,9 @@ mod tests {
             .unwrap();
 
         assert!(!results.is_empty());
-        assert!(results.iter().any(|result| result.path == "docs/specs/example.md"));
+        assert!(results
+            .iter()
+            .any(|result| result.path == "docs/specs/example.md"));
     }
 
     #[test]
@@ -2497,8 +2674,12 @@ mod tests {
             .unwrap();
 
         assert!(!results.is_empty());
-        assert!(results.iter().all(|result| result.mode_used == SearchMode::Semantic));
-        assert!(results.iter().any(|result| result.path == "docs/specs/example.md"));
+        assert!(results
+            .iter()
+            .all(|result| result.mode_used == SearchMode::Semantic));
+        assert!(results
+            .iter()
+            .any(|result| result.path == "docs/specs/example.md"));
     }
 
     #[test]
@@ -2519,8 +2700,12 @@ mod tests {
             .unwrap();
 
         assert!(!results.is_empty());
-        assert!(results.iter().all(|result| result.mode_used == SearchMode::Hybrid));
-        assert!(results.iter().any(|result| result.path == "docs/specs/example.md"));
+        assert!(results
+            .iter()
+            .all(|result| result.mode_used == SearchMode::Hybrid));
+        assert!(results
+            .iter()
+            .any(|result| result.path == "docs/specs/example.md"));
     }
 
     #[test]
@@ -2554,7 +2739,9 @@ mod tests {
             .unwrap();
 
         assert!(!results.is_empty());
-        assert!(results.iter().all(|result| result.mode_used == SearchMode::Keyword));
+        assert!(results
+            .iter()
+            .all(|result| result.mode_used == SearchMode::Keyword));
         assert!(results
             .iter()
             .all(|result| result.degraded_from == Some(SearchMode::Semantic)));
@@ -2599,7 +2786,12 @@ mod tests {
             })
             .unwrap();
         assert!(replace.current.is_some());
-        assert!(replace.current.as_ref().unwrap().rendered.contains("Write docs"));
+        assert!(replace
+            .current
+            .as_ref()
+            .unwrap()
+            .rendered
+            .contains("Write docs"));
 
         let current = documents.manage_todo(TodoOp::Current).unwrap();
         assert_eq!(current.current.unwrap().items.len(), 1);
@@ -2637,6 +2829,9 @@ mod tests {
             })
             .unwrap();
 
-        assert!(listed.files.iter().any(|record| record.path == "docs/specs/example.md"));
+        assert!(listed
+            .files
+            .iter()
+            .any(|record| record.path == "docs/specs/example.md"));
     }
 }

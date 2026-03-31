@@ -4,49 +4,46 @@ use std::sync::{Arc, Mutex};
 
 use omega_context::{
     ContextCacheDiagnostics, ContextDiagnostics, ContextExecuteItem, ContextRouting,
-    ContextSession, ContextStep, ContextStepSummary, ContextTokenCountSource,
-    ContextTokenCounter, ContextWorkflowRole, OmegaContextFacade,
-    OutputRepairContextRequest, OutputRepairFailure, StepContextRequest,
+    ContextSession, ContextStep, ContextStepSummary, ContextTokenCountSource, ContextTokenCounter,
+    ContextWorkflowRole, OmegaContextFacade, OutputRepairContextRequest, OutputRepairFailure,
+    StepContextRequest,
 };
 use omega_core::{Agent, ChatRequest, CoreSharedTodoManager, DynLlmClient, TodoItem, TodoStatus};
 use omega_hooks::{HookAdvanceOutcome, HookHost};
 use omega_workflow::{
     DataFormat, OutputRecoveryMode, SceneCatalog, StepInputContract, StepLoopContract,
     StepOutputContract, WorkflowCatalog, WorkflowPromptCatalog, WorkflowPrompts, WorkflowStep,
-    EXECUTE_STEP_ID, FEATURE_SCENE_ID, FEATURE_WORKFLOW_ID, PLAN_STEP_ID,
-    RESEARCH_WORKFLOW_ID, ROOT_WORKFLOW_ID, SCENE_RECOGNITION_STEP_ID,
-    SELECT_WORKFLOW_STEP_ID,
+    EXECUTE_STEP_ID, FEATURE_SCENE_ID, FEATURE_WORKFLOW_ID, PLAN_STEP_ID, RESEARCH_WORKFLOW_ID,
+    ROOT_WORKFLOW_ID, SCENE_RECOGNITION_STEP_ID, SELECT_WORKFLOW_STEP_ID,
 };
 use serde_json::Value;
 use tokio::runtime::Handle;
 use tokio::sync::watch;
 use tracing::{debug, error, info};
 
+use crate::hook_adapter::{ExecuteLoopItemContext, StepHookRuntime};
 use crate::output::{
     build_output_validation_feedback, parse_feature_execute_output, parse_feature_plan_output,
     parse_structured_output_candidates, validate_schema_file, validate_workflow_step_output,
 };
-use crate::hook_adapter::{ExecuteLoopItemContext, StepHookRuntime};
 use crate::routing::{
     find_catalog_match, latest_user_turn_prefers_research_scene,
     latest_user_turn_requires_feature_scene, parse_structured_id, parse_structured_id_from_value,
 };
 use crate::session_state::{SessionContext, StepSummary};
 use crate::ui_emit::{
-    maybe_emit_context_observability, send_routing_log, send_session_status, send_step_text,
-    send_system_log_text, send_step_subflow_status, send_todo_snapshot, send_warning_text,
-    send_workflow_step, StepResponseStreamer, ToolRunTracker,
+    maybe_emit_context_observability, send_routing_log, send_session_status,
+    send_step_subflow_status, send_step_text, send_system_log_text, send_todo_snapshot,
+    send_warning_text, send_workflow_step, StepResponseStreamer, ToolRunTracker,
 };
 use crate::{
     CacheDiagnostics, ExecuteProgressDiagnostics, ResolvedSkillSet, ResolvedToolSet,
-    RuntimeMessageBridge,
-    SessionSkillCatalog, SessionToolCatalog, SharedRuntimeMessageBridge, StepContextWrite,
-    StepContextWriteKind, StepDiagnostics, StepInputDiagnostics, StepInputStatus,
+    RuntimeMessageBridge, SessionSkillCatalog, SessionToolCatalog, SharedRuntimeMessageBridge,
+    StepContextWrite, StepContextWriteKind, StepDiagnostics, StepInputDiagnostics, StepInputStatus,
     StepOutputAttemptKind, StepOutputContractMode, StepOutputDiagnostics,
     StepOutputRecoveryDecision, StepOutputStatus, StepSubflowState, StepSubflowStatus,
-    StepSummarySource, TokenCountSource, WorkflowRunRole,
-    CONTEXT_SAFETY_MARGIN_TOKENS, REPAIR_PASS_MAX_ITERATIONS, SUMMARY_CHAR_LIMIT,
-    TOKEN_ESTIMATE_DIVISOR,
+    StepSummarySource, TokenCountSource, WorkflowRunRole, CONTEXT_SAFETY_MARGIN_TOKENS,
+    REPAIR_PASS_MAX_ITERATIONS, SUMMARY_CHAR_LIMIT, TOKEN_ESTIMATE_DIVISOR,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -365,27 +362,27 @@ impl<'a> WorkflowTurnRunner<'a> {
                 step_prompt,
                 current_execute_item.clone(),
             ) {
-                    Ok(step_input) => {
-                        self.send_step_input_diagnostics(
-                            &diagnostic_context,
-                            &step_input,
-                            ExecuteLoopProgressState {
-                                current_item: current_execute_item.clone(),
-                                repeat_count: current_item_repeat_count,
-                                completion_source: None,
-                            },
-                        );
-                        step_input
-                    }
-                    Err(error) => {
-                        self.send_step_input_error_diagnostics(
-                            &diagnostic_context,
-                            session_context,
-                            &error.to_string(),
-                        );
-                        return Err(error);
-                    }
-                };
+                Ok(step_input) => {
+                    self.send_step_input_diagnostics(
+                        &diagnostic_context,
+                        &step_input,
+                        ExecuteLoopProgressState {
+                            current_item: current_execute_item.clone(),
+                            repeat_count: current_item_repeat_count,
+                            completion_source: None,
+                        },
+                    );
+                    step_input
+                }
+                Err(error) => {
+                    self.send_step_input_error_diagnostics(
+                        &diagnostic_context,
+                        session_context,
+                        &error.to_string(),
+                    );
+                    return Err(error);
+                }
+            };
             let hook_runtime = StepHookRuntime::new(
                 self.hook_host.clone(),
                 hook_session.clone(),
@@ -420,10 +417,11 @@ impl<'a> WorkflowTurnRunner<'a> {
                 is_final_step,
                 session_context.routing.recognized_scene_id.as_deref(),
                 current_execute_item.as_ref(),
+                step.id != PLAN_STEP_ID,
             );
             response_streamer.begin();
             let step_attempt_checkpoint = agent.messages().to_vec();
-            let max_validation_retries = max_output_validation_retries(&step.output_contract);
+            let max_validation_retries = max_output_validation_retries(&step);
             let mut validation_attempt = 0u32;
             let mut last_validation_error = None::<String>;
             let mut last_validation_failure = None::<OutputValidationFailure>;
@@ -467,11 +465,18 @@ impl<'a> WorkflowTurnRunner<'a> {
                     &stage_text,
                 ) {
                     Ok(structured_output) => {
+                        if step.id == PLAN_STEP_ID {
+                            response_streamer.append_final_text(&canonical_step_summary_text(
+                                &step,
+                                &stage_text,
+                                structured_output.as_ref(),
+                            ));
+                        }
                         response_streamer.complete();
                         break (
                             stage_text,
                             structured_output,
-                            completed_output_attempts(&step.output_contract, validation_attempt),
+                            completed_output_attempts(&step, validation_attempt),
                         );
                     }
                     Err(validation_failure) => {
@@ -501,10 +506,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                                 recovery_decision: recovery_decision_for_failure(
                                     can_retry,
                                     allows_root_routing_text_fallback(role, &step),
-                                    next_retry_attempt_kind(
-                                        &step.output_contract,
-                                        validation_attempt + 1,
-                                    ),
+                                    next_retry_attempt_kind(&step, validation_attempt + 1),
                                 ),
                                 session_writes: Vec::new(),
                             },
@@ -525,10 +527,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                             recovery_decision_for_failure(
                                 can_retry,
                                 allows_root_routing_text_fallback(role, &step),
-                                next_retry_attempt_kind(
-                                    &step.output_contract,
-                                    validation_attempt + 1,
-                                ),
+                                next_retry_attempt_kind(&step, validation_attempt + 1),
                             ),
                             &validation_failure,
                         );
@@ -561,9 +560,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                             }
                             let _ = hook_runtime.step_failed(&format!(
                                 "step '{}' failed output validation after {} attempt(s): {}",
-                                step.id,
-                                attempts,
-                                validation_failure.message
+                                step.id, attempts, validation_failure.message
                             ));
                             return Err(anyhow::anyhow!(
                                 "step '{}' failed output validation after {} attempt(s): {}",
@@ -574,8 +571,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                         }
 
                         validation_attempt += 1;
-                        let attempt_kind =
-                            next_retry_attempt_kind(&step.output_contract, validation_attempt);
+                        let attempt_kind = next_retry_attempt_kind(&step, validation_attempt);
                         send_warning_text(
                             &*self.tx_result,
                             self.turn_id,
@@ -684,13 +680,16 @@ impl<'a> WorkflowTurnRunner<'a> {
                             validation_error: matches!(output_status, StepOutputStatus::Invalid)
                                 .then_some(last_validation_error.as_deref())
                                 .flatten(),
-                            previous_response_preview: matches!(output_status, StepOutputStatus::Invalid)
-                                .then_some(
-                                    last_validation_failure
-                                        .as_ref()
-                                        .map(|failure| failure.previous_response_preview.as_str()),
-                                )
-                                .flatten(),
+                            previous_response_preview: matches!(
+                                output_status,
+                                StepOutputStatus::Invalid
+                            )
+                            .then_some(
+                                last_validation_failure
+                                    .as_ref()
+                                    .map(|failure| failure.previous_response_preview.as_str()),
+                            )
+                            .flatten(),
                             recovery_decision: None,
                             session_writes: step_result.session_writes.clone(),
                         },
@@ -762,7 +761,9 @@ impl<'a> WorkflowTurnRunner<'a> {
             if let Some(current_item) = current_execute_item.as_ref() {
                 let subflow_state = match step_result.transition {
                     StepTransition::Repeat => StepSubflowState::Running,
-                    StepTransition::RepeatItem | StepTransition::Continue | StepTransition::FinishTurn => {
+                    StepTransition::RepeatItem
+                    | StepTransition::Continue
+                    | StepTransition::FinishTurn => {
                         if progress_completion_source.is_some() {
                             StepSubflowState::Complete
                         } else {
@@ -795,13 +796,15 @@ impl<'a> WorkflowTurnRunner<'a> {
                 }
                 StepTransition::RepeatItem => {
                     if let Some(current_item) = current_execute_item.as_ref() {
-                        item_repeat_counts.remove(&self.execute_item_repeat_key(&step, current_item));
+                        item_repeat_counts
+                            .remove(&self.execute_item_repeat_key(&step, current_item));
                     }
                 }
                 _ => {
                     step_repeat_counts.remove(&step.id);
                     if let Some(current_item) = current_execute_item.as_ref() {
-                        item_repeat_counts.remove(&self.execute_item_repeat_key(&step, current_item));
+                        item_repeat_counts
+                            .remove(&self.execute_item_repeat_key(&step, current_item));
                     }
                 }
             }
@@ -828,7 +831,10 @@ impl<'a> WorkflowTurnRunner<'a> {
                 &step_result.session_writes,
             );
 
-            if !matches!(step_result.transition, StepTransition::Repeat | StepTransition::RepeatItem) {
+            if !matches!(
+                step_result.transition,
+                StepTransition::Repeat | StepTransition::RepeatItem
+            ) {
                 hook_runtime.after_step(
                     &step_result.final_text,
                     step_result.structured_output.as_ref(),
@@ -889,96 +895,98 @@ impl<'a> WorkflowTurnRunner<'a> {
         let mut cancel_turn_rx = self.cancel_turn_rx.clone();
         let context_facade = Arc::clone(self.context_facade);
 
-        let stage_text = self.handle.block_on(agent.run_loop_with_events_until_turn_change(
-            {
-                let tx_callback = self.tx_callback.clone();
-                let turn_id = self.turn_id;
-                let tool_runs = tool_runs.clone();
-                let hook_runtime = hook_runtime.clone();
-                let hook_error = hook_error.clone();
-            let context_facade = context_facade.clone();
-                move |tool_use_id, name, tool_input, tool_result| {
-                    let command = if name == "bash" {
-                        tool_input
-                            .get("command")
-                            .and_then(|value| value.as_str())
-                            .map(ToOwned::to_owned)
-                    } else {
-                        None
-                    };
+        let stage_text = self
+            .handle
+            .block_on(agent.run_loop_with_events_until_turn_change(
+                {
+                    let tx_callback = self.tx_callback.clone();
+                    let turn_id = self.turn_id;
+                    let tool_runs = tool_runs.clone();
+                    let hook_runtime = hook_runtime.clone();
+                    let hook_error = hook_error.clone();
+                    let context_facade = context_facade.clone();
+                    move |tool_use_id, name, tool_input, tool_result| {
+                        let command = if name == "bash" {
+                            tool_input
+                                .get("command")
+                                .and_then(|value| value.as_str())
+                                .map(ToOwned::to_owned)
+                        } else {
+                            None
+                        };
 
-                    crate::ui_emit::send_tool_call_preview(
-                        &tx_callback,
-                        turn_id,
-                        name,
-                        command,
-                        crate::preview_text(
-                            &tool_result
-                                .preview
-                                .clone()
-                                .unwrap_or_else(|| tool_result.output.clone()),
-                            100,
-                        ),
-                    );
+                        crate::ui_emit::send_tool_call_preview(
+                            &tx_callback,
+                            turn_id,
+                            name,
+                            command,
+                            crate::preview_text(
+                                &tool_result
+                                    .preview
+                                    .clone()
+                                    .unwrap_or_else(|| tool_result.output.clone()),
+                                100,
+                            ),
+                        );
 
-                    tool_runs.lock().unwrap().complete_tool_run(
-                        tool_use_id,
-                        name,
-                        tool_input,
-                        tool_result,
-                    );
+                        tool_runs.lock().unwrap().complete_tool_run(
+                            tool_use_id,
+                            name,
+                            tool_input,
+                            tool_result,
+                        );
 
-                    if name == "todo" && !tool_result.is_error() {
-                        send_todo_snapshot(&tx_callback, turn_id, &tool_result.output);
-                    }
+                        if name == "todo" && !tool_result.is_error() {
+                            send_todo_snapshot(&tx_callback, turn_id, &tool_result.output);
+                        }
 
-                    let context_diagnostics = context_facade.diagnostics.context_diagnostics();
-                    maybe_emit_context_observability(
-                        &tx_callback,
-                        turn_id,
-                        name,
-                        tool_input,
-                        tool_result,
-                        &context_diagnostics,
-                    );
+                        let context_diagnostics = context_facade.diagnostics.context_diagnostics();
+                        maybe_emit_context_observability(
+                            &tx_callback,
+                            turn_id,
+                            name,
+                            tool_input,
+                            tool_result,
+                            &context_diagnostics,
+                        );
 
-                    if let Some(hook_runtime) = &hook_runtime {
-                        if let Err(error) =
-                            hook_runtime.after_tool_call(tool_use_id, name, tool_input, tool_result)
-                        {
-                            *hook_error.lock().unwrap() = Some(error.to_string());
+                        if let Some(hook_runtime) = &hook_runtime {
+                            if let Err(error) = hook_runtime.after_tool_call(
+                                tool_use_id,
+                                name,
+                                tool_input,
+                                tool_result,
+                            ) {
+                                *hook_error.lock().unwrap() = Some(error.to_string());
+                            }
                         }
                     }
-                }
-            },
-            {
-                let tool_runs = tool_runs.clone();
-                let usage = usage.clone();
-                move |event| {
-                    tool_runs.lock().unwrap().observe_chat_event(event);
-                    if let omega_core::ChatEvent::MessageComplete {
-                        usage: Some(usage_update),
-                        ..
-                    } = event
-                    {
-                        *usage.lock().unwrap() = Some(usage_update.clone());
+                },
+                {
+                    let tool_runs = tool_runs.clone();
+                    let usage = usage.clone();
+                    move |event| {
+                        tool_runs.lock().unwrap().observe_chat_event(event);
+                        if let omega_core::ChatEvent::MessageComplete {
+                            usage: Some(usage_update),
+                            ..
+                        } = event
+                        {
+                            *usage.lock().unwrap() = Some(usage_update.clone());
+                        }
+                        response_streamer.push_chat_event(event);
                     }
-                    response_streamer.push_chat_event(event);
-                }
-            },
-            Some(&mut cancel_turn_rx),
-            Some(self.turn_id),
-        ))?;
+                },
+                Some(&mut cancel_turn_rx),
+                Some(self.turn_id),
+            ))?;
 
         if let Some(error) = hook_error.lock().unwrap().take() {
             return Err(anyhow::anyhow!(error));
         }
 
         let usage = usage.lock().unwrap().clone();
-        Ok(StepRunOutput {
-            stage_text,
-            usage,
-        })
+        Ok(StepRunOutput { stage_text, usage })
     }
 
     fn ensure_turn_active(&self) -> anyhow::Result<()> {
@@ -1112,7 +1120,9 @@ impl<'a> WorkflowTurnRunner<'a> {
             step_prompt: step_prompt.to_string(),
             structured_input: structured_input.cloned(),
             todo_snapshot: todo_snapshot.map(ToOwned::to_owned),
-            current_execute_item: current_execute_item.cloned().map(context_execute_item_from_session),
+            current_execute_item: current_execute_item
+                .cloned()
+                .map(context_execute_item_from_session),
             visible_tool_names: resolved_tools.tool_names().to_vec(),
             tool_definitions: resolved_tools.tool_definitions().to_vec(),
             messages: agent_messages.to_vec(),
@@ -1256,7 +1266,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                 usage: None,
                 attempts: 0,
                 retry_count: 0,
-                max_retries: max_output_validation_retries(&context.step.output_contract),
+                max_retries: max_output_validation_retries(context.step),
                 validation_error: None,
                 previous_response_preview: None,
                 recovery_decision: None,
@@ -1289,7 +1299,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                 usage: None,
                 attempts: 0,
                 retry_count: 0,
-                max_retries: max_output_validation_retries(&context.step.output_contract),
+                max_retries: max_output_validation_retries(context.step),
                 validation_error: None,
                 previous_response_preview: None,
                 recovery_decision: None,
@@ -1400,8 +1410,7 @@ impl<'a> WorkflowTurnRunner<'a> {
         step: &WorkflowStep,
     ) -> anyhow::Result<Option<ExecuteLoopItemContext>> {
         let Some(StepLoopContract::TodoItems {
-            child_step_prefix,
-            ..
+            child_step_prefix, ..
         }) = &step.loop_contract
         else {
             return Ok(None);
@@ -1422,7 +1431,8 @@ impl<'a> WorkflowTurnRunner<'a> {
             .enumerate()
             .find(|(_, item)| item.status == TodoStatus::InProgress)
             .or_else(|| {
-                items.iter()
+                items
+                    .iter()
                     .enumerate()
                     .find(|(_, item)| item.status != TodoStatus::Completed)
             })
@@ -1524,7 +1534,9 @@ impl<'a> WorkflowTurnRunner<'a> {
     ) -> anyhow::Result<StepTransition> {
         if !matches!(
             transition,
-            StepTransition::Continue | StepTransition::StartWorkflow { .. } | StepTransition::FinishTurn
+            StepTransition::Continue
+                | StepTransition::StartWorkflow { .. }
+                | StepTransition::FinishTurn
         ) {
             return Ok(transition);
         }
@@ -1656,7 +1668,9 @@ impl<'a> WorkflowTurnRunner<'a> {
     ) -> anyhow::Result<StepTransition> {
         if !matches!(
             base_transition,
-            StepTransition::Continue | StepTransition::StartWorkflow { .. } | StepTransition::FinishTurn
+            StepTransition::Continue
+                | StepTransition::StartWorkflow { .. }
+                | StepTransition::FinishTurn
         ) {
             return Ok(base_transition);
         }
@@ -1858,6 +1872,17 @@ impl<'a> WorkflowTurnRunner<'a> {
         current_item: Option<&ExecuteLoopItemContext>,
         final_text: &str,
     ) -> Result<Option<Value>, OutputValidationFailure> {
+        if step.id == crate::REPORT_STEP_ID {
+            validate_report_step_output(final_text).map_err(|error| {
+                OutputValidationFailure::new(
+                    OutputValidationErrorKind::SemanticInvalid,
+                    error.to_string(),
+                    final_text,
+                    None,
+                )
+            })?;
+        }
+
         match &step.output_contract {
             StepOutputContract::None => Ok(None),
             StepOutputContract::Required {
@@ -1866,6 +1891,16 @@ impl<'a> WorkflowTurnRunner<'a> {
                 ..
             } => {
                 let candidates = parse_structured_output_candidates(*format, final_text);
+                if step.id == PLAN_STEP_ID {
+                    validate_plan_step_output(final_text, &candidates).map_err(|error| {
+                        OutputValidationFailure::new(
+                            OutputValidationErrorKind::SemanticInvalid,
+                            error.to_string(),
+                            final_text,
+                            candidates.first().cloned(),
+                        )
+                    })?;
+                }
                 if candidates.is_empty() {
                     return Err(OutputValidationFailure::new(
                         OutputValidationErrorKind::ExtractFailed,
@@ -2031,11 +2066,7 @@ impl<'a> WorkflowTurnRunner<'a> {
 
                 if let Some(first_failure) = first_failure {
                     Err(first_failure)
-                } else if step_requires_structured_execute_output(
-                    workflow_id,
-                    step,
-                    current_item,
-                ) {
+                } else if step_requires_structured_execute_output(workflow_id, step, current_item) {
                     Err(OutputValidationFailure::new(
                         OutputValidationErrorKind::ExtractFailed,
                         "hook-managed itemized execute steps must emit JSON completed_tasks/open_tasks for the current todo item"
@@ -2050,45 +2081,47 @@ impl<'a> WorkflowTurnRunner<'a> {
         }
     }
 
-
-fn step_uses_json_output(step: &WorkflowStep) -> bool {
-    matches!(
-        step.output_contract,
-        StepOutputContract::Required {
-            format: DataFormat::Json,
-            ..
-        } | StepOutputContract::Optional {
-            format: DataFormat::Json,
-            ..
-        }
-    )
-}
-
-fn canonical_step_summary_text(
-    step: &WorkflowStep,
-    final_text: &str,
-    structured_output: Option<&Value>,
-) -> String {
-    if step_uses_json_output(step) {
-        if let Some(output) = structured_output {
-            return summarize_step_text(&crate::preview_json_value(output, SUMMARY_CHAR_LIMIT));
-        }
+    fn step_uses_json_output(step: &WorkflowStep) -> bool {
+        matches!(
+            step.output_contract,
+            StepOutputContract::Required {
+                format: DataFormat::Json,
+                ..
+            } | StepOutputContract::Optional {
+                format: DataFormat::Json,
+                ..
+            }
+        )
     }
 
-    summarize_step_text(final_text)
-}
+    fn canonical_step_summary_text(
+        step: &WorkflowStep,
+        final_text: &str,
+        structured_output: Option<&Value>,
+    ) -> String {
+        if step_uses_json_output(step) {
+            if let Some(output) = structured_output {
+                return summarize_step_text(&crate::preview_json_value(output, SUMMARY_CHAR_LIMIT));
+            }
+        }
 
-fn step_requires_structured_execute_output(
-    workflow_id: &str,
-    step: &WorkflowStep,
-    current_item: Option<&ExecuteLoopItemContext>,
-) -> bool {
-    matches!(workflow_id, FEATURE_WORKFLOW_ID | RESEARCH_WORKFLOW_ID)
-        && step.id == EXECUTE_STEP_ID
-        && current_item.is_some()
-        && matches!(step.loop_contract, Some(StepLoopContract::TodoItems { .. }))
-        && step.hooks.iter().any(|hook_id| hook_id == "todo_managed_execute")
-}
+        summarize_step_text(final_text)
+    }
+
+    fn step_requires_structured_execute_output(
+        workflow_id: &str,
+        step: &WorkflowStep,
+        current_item: Option<&ExecuteLoopItemContext>,
+    ) -> bool {
+        matches!(workflow_id, FEATURE_WORKFLOW_ID | RESEARCH_WORKFLOW_ID)
+            && step.id == EXECUTE_STEP_ID
+            && current_item.is_some()
+            && matches!(step.loop_contract, Some(StepLoopContract::TodoItems { .. }))
+            && step
+                .hooks
+                .iter()
+                .any(|hook_id| hook_id == "todo_managed_execute")
+    }
     fn validate_itemized_execute_output(
         &self,
         workflow_id: &str,
@@ -2117,6 +2150,12 @@ fn step_requires_structured_execute_output(
             .iter()
             .filter_map(|item| item.id.as_deref())
             .collect::<std::collections::BTreeSet<_>>();
+        let already_completed = manager
+            .items()
+            .iter()
+            .filter(|item| item.status == TodoStatus::Completed)
+            .filter_map(|item| item.id.as_deref())
+            .collect::<std::collections::BTreeSet<_>>();
         let allowed_completed = manager
             .items()
             .iter()
@@ -2136,6 +2175,26 @@ fn step_requires_structured_execute_output(
                 anyhow::bail!(
                     "itemized execute output cannot complete future todo item '{}' while current item is '{}'",
                     task_id,
+                    current_item.item_id
+                );
+            }
+        }
+
+        let current_item_completed = execute
+            .completed_tasks
+            .iter()
+            .map(|task_id| task_id.trim())
+            .any(|task_id| task_id == current_item.item_id);
+        if !current_item_completed {
+            if let Some(repeated_completed_id) = execute
+                .completed_tasks
+                .iter()
+                .map(|task_id| task_id.trim())
+                .find(|task_id| already_completed.contains(task_id))
+            {
+                anyhow::bail!(
+                    "itemized execute output repeated previously completed todo item '{}' while current todo item '{}' remains open",
+                    repeated_completed_id,
                     current_item.item_id
                 );
             }
@@ -2173,6 +2232,14 @@ fn step_requires_structured_execute_output(
 
         let current_item = current_item?;
         let execute = parse_feature_execute_output(value.clone()).ok()?;
+        let current_item_completed = execute
+            .completed_tasks
+            .iter()
+            .any(|task_id| task_id.trim() == current_item.item_id);
+
+        if !current_item_completed {
+            return None;
+        }
 
         let manager = self.todo_manager.lock().ok()?;
         let allowed_completed: std::collections::BTreeSet<&str> = manager
@@ -2209,10 +2276,7 @@ fn step_requires_structured_execute_output(
             "completed_tasks".to_string(),
             serde_json::json!(repaired_completed),
         );
-        obj.insert(
-            "open_tasks".to_string(),
-            serde_json::json!(repaired_open),
-        );
+        obj.insert("open_tasks".to_string(), serde_json::json!(repaired_open));
 
         info!(
             step_id = %step.id,
@@ -2611,8 +2675,12 @@ fn build_structured_input_payload(
     Value::Object(payload)
 }
 
-fn max_output_validation_retries(output_contract: &StepOutputContract) -> u32 {
-    match output_contract {
+fn max_output_validation_retries(step: &WorkflowStep) -> u32 {
+    if step.id == crate::REPORT_STEP_ID {
+        return 1;
+    }
+
+    match &step.output_contract {
         StepOutputContract::Required { max_retries, .. } => *max_retries,
         StepOutputContract::Optional { max_retries, .. } => *max_retries,
         StepOutputContract::None => 0,
@@ -2644,8 +2712,12 @@ fn final_output_status(
     }
 }
 
-fn completed_output_attempts(output_contract: &StepOutputContract, retry_count: u32) -> u32 {
-    match output_contract {
+fn completed_output_attempts(step: &WorkflowStep, retry_count: u32) -> u32 {
+    if step.id == crate::REPORT_STEP_ID {
+        return retry_count + 1;
+    }
+
+    match &step.output_contract {
         StepOutputContract::None => 0,
         StepOutputContract::Required { .. } | StepOutputContract::Optional { .. } => {
             retry_count + 1
@@ -2653,11 +2725,12 @@ fn completed_output_attempts(output_contract: &StepOutputContract, retry_count: 
     }
 }
 
-fn next_retry_attempt_kind(
-    output_contract: &StepOutputContract,
-    retry_count: u32,
-) -> StepOutputAttemptKind {
-    match output_contract {
+fn next_retry_attempt_kind(step: &WorkflowStep, retry_count: u32) -> StepOutputAttemptKind {
+    if step.id == crate::REPORT_STEP_ID {
+        return StepOutputAttemptKind::Regenerate;
+    }
+
+    match &step.output_contract {
         StepOutputContract::Required {
             recovery_mode: OutputRecoveryMode::RepairThenRegenerate,
             ..
@@ -2670,6 +2743,70 @@ fn next_retry_attempt_kind(
             StepOutputAttemptKind::Regenerate
         }
         StepOutputContract::None => StepOutputAttemptKind::Primary,
+    }
+}
+
+fn validate_report_step_output(final_text: &str) -> anyhow::Result<()> {
+    let trimmed = final_text.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("report step must produce a non-empty user-facing response");
+    }
+
+    if serde_json::from_str::<Value>(trimmed)
+        .ok()
+        .is_some_and(|value| matches!(value, Value::Object(_) | Value::Array(_)))
+    {
+        anyhow::bail!(
+            "report step must produce user-facing prose, not a raw JSON object or array"
+        );
+    }
+
+    Ok(())
+}
+
+fn validate_plan_step_output(final_text: &str, candidates: &[Value]) -> anyhow::Result<()> {
+    let trimmed = final_text.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!(
+            "plan step must return only a single JSON object with goal, tasks, and validation_targets"
+        );
+    }
+
+    match serde_json::from_str::<Value>(trimmed) {
+        Ok(Value::Object(_)) => Ok(()),
+        Ok(_) => anyhow::bail!(
+            "plan step must return only a single JSON object with goal, tasks, and validation_targets"
+        ),
+        Err(_) if has_single_plan_shaped_candidate(candidates) => Ok(()),
+        Err(_) if candidates.is_empty() => anyhow::bail!(
+            "plan step must return only a single JSON object with goal, tasks, and validation_targets; do not include headings, markdown, code fences, or report prose"
+        ),
+        Err(_) => anyhow::bail!(
+            "plan step must resolve to a single JSON object with goal, tasks, and validation_targets; avoid multiple JSON blocks or non-plan wrappers"
+        ),
+    }
+}
+
+/// Returns true when exactly one candidate is a plan-shaped JSON object
+/// (has `goal`, `tasks`, and `validation_targets` keys).  This handles
+/// two scenarios: (1) a single JSON object wrapped in prose, and
+/// (2) multiple JSON blocks where only one is the actual plan (the rest
+/// are echoed explore output or other non-plan JSON).
+fn has_single_plan_shaped_candidate(candidates: &[Value]) -> bool {
+    let plan_count = candidates
+        .iter()
+        .filter(|value| is_plan_shaped(value))
+        .count();
+    plan_count == 1
+}
+
+fn is_plan_shaped(value: &Value) -> bool {
+    if let Value::Object(map) = value {
+        map.contains_key("goal")
+            && map.contains_key("tasks")
+            && map.contains_key("validation_targets")
+    } else {
+        false
     }
 }
 
@@ -2860,7 +2997,10 @@ fn execute_output_marks_item_complete(
         return Ok(false);
     };
     let execute = parse_feature_execute_output(structured_output.clone())?;
-    Ok(execute.completed_tasks.iter().any(|task_id| task_id == item_id))
+    Ok(execute
+        .completed_tasks
+        .iter()
+        .any(|task_id| task_id == item_id))
 }
 
 fn build_step_input_diagnostics(step_input: &StepExecutionInput) -> StepInputDiagnostics {
@@ -3089,9 +3229,8 @@ fn should_trigger_context_compaction(
     available_input_budget: u32,
     summary_count: usize,
 ) -> bool {
-    let threshold_tokens = available_input_budget
-        .saturating_mul(CONTEXT_COMPACTION_THRESHOLD_PERCENT)
-        / 100;
+    let threshold_tokens =
+        available_input_budget.saturating_mul(CONTEXT_COMPACTION_THRESHOLD_PERCENT) / 100;
     base_input_tokens >= threshold_tokens || summary_count > MAX_UNCOMPACTED_SUMMARIES
 }
 
@@ -3115,13 +3254,8 @@ fn rank_summary_candidates(
                 has_execute_item,
                 total.saturating_sub(index),
             );
-            let compacted_summary = maybe_compact_summary(
-                summary,
-                priority,
-                compaction_triggered,
-                index,
-                total,
-            );
+            let compacted_summary =
+                maybe_compact_summary(summary, priority, compaction_triggered, index, total);
             SummaryCandidate {
                 compacted: compacted_summary.summary != summary.summary,
                 summary: compacted_summary,
@@ -3223,7 +3357,6 @@ fn summary_relevance_score(
     score
 }
 
-
 fn step_uses_json_output(step: &WorkflowStep) -> bool {
     matches!(
         step.output_contract,
@@ -3260,7 +3393,10 @@ fn step_requires_structured_execute_output(
         && step.id == EXECUTE_STEP_ID
         && current_item.is_some()
         && matches!(step.loop_contract, Some(StepLoopContract::TodoItems { .. }))
-        && step.hooks.iter().any(|hook_id| hook_id == "todo_managed_execute")
+        && step
+            .hooks
+            .iter()
+            .any(|hook_id| hook_id == "todo_managed_execute")
 }
 fn maybe_compact_summary(
     summary: &StepSummary,
@@ -3328,19 +3464,30 @@ fn summarize_step_text(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
 
-    use omega_context::{ContextCacheDiagnostics, ContextTokenCountSource};
+    use omega_client::test_support::IdleLlmClient;
+    use omega_context::{ContextCacheDiagnostics, ContextTokenCountSource, OmegaContextFacade};
+    use omega_core::{DynLlmClient, TodoManager};
+    use omega_hooks::HookHost;
+    use omega_test_support::persistent_test_root;
     use omega_workflow::{
         DataFormat, OutputRecoveryMode, StepInputContract, StepLoopMode, StepOutputContract,
-        StepSkillRequest, StepToolRequest, WorkflowStep,
+        StepSkillRequest, StepToolRequest, WorkflowStep, LoadedWorkflowCatalog,
+        RESEARCH_WORKFLOW_ID, ROOT_WORKFLOW_ID,
     };
+    use tokio::sync::watch;
 
     use super::{
         build_context_compaction_log, classify_summary_priority, compact_summary_text,
         maybe_compact_summary, rank_summary_candidates, should_trigger_context_compaction,
-        step_summary_to_context, SlotPriority,
+        step_summary_to_context, SlotPriority, WorkflowTurnRunner,
     };
-    use crate::{session_state::StepSummary, EXECUTE_STEP_ID, PLAN_STEP_ID};
+    use crate::{
+        session_state::{SessionContext, StepSummary}, RuntimeContentKind,
+        RuntimeEnvelopeRecorder, RuntimeMessage, RuntimeSource, SessionSkillCatalog,
+        SessionToolCatalog, StateMessage, EXECUTE_STEP_ID, PLAN_STEP_ID,
+    };
 
     fn workflow_step(step_id: &str, sources: Vec<&str>) -> WorkflowStep {
         WorkflowStep {
@@ -3411,16 +3558,18 @@ mod tests {
         );
 
         assert_eq!(ranked[0].summary.step_id, PLAN_STEP_ID);
-        assert!(ranked
-            .iter()
-            .position(|candidate| candidate.summary.step_id == PLAN_STEP_ID)
-            .unwrap()
-            < ranked
+        assert!(
+            ranked
                 .iter()
-                .position(|candidate| {
-                    candidate.summary.step_id == omega_workflow::SELECT_WORKFLOW_STEP_ID
-                })
-                .unwrap());
+                .position(|candidate| candidate.summary.step_id == PLAN_STEP_ID)
+                .unwrap()
+                < ranked
+                    .iter()
+                    .position(|candidate| {
+                        candidate.summary.step_id == omega_workflow::SELECT_WORKFLOW_STEP_ID
+                    })
+                    .unwrap()
+        );
     }
 
     #[test]
@@ -3475,19 +3624,11 @@ mod tests {
         );
 
         assert_eq!(
-            classify_summary_priority(
-                &plan_summary,
-                &step,
-                omega_workflow::FEATURE_WORKFLOW_ID,
-            ),
+            classify_summary_priority(&plan_summary, &step, omega_workflow::FEATURE_WORKFLOW_ID,),
             SlotPriority::Medium
         );
         assert_eq!(
-            classify_summary_priority(
-                &routing_summary,
-                &step,
-                omega_workflow::FEATURE_WORKFLOW_ID,
-            ),
+            classify_summary_priority(&routing_summary, &step, omega_workflow::FEATURE_WORKFLOW_ID,),
             SlotPriority::Low
         );
     }
@@ -3516,5 +3657,75 @@ mod tests {
         assert!(summary.contains("context.compact"));
         assert!(summary.contains("selected=1/4"));
         assert!(summary.contains("token_source=estimated"));
+    }
+
+    #[test]
+    fn ensure_selected_workflow_replaces_root_child_target_with_scene_workflow() {
+        let client: DynLlmClient = Arc::new(IdleLlmClient::new(
+            "chat should not run in ensure_selected_workflow test",
+        ));
+        let cwd = persistent_test_root("session-runner-selected-workflow-root-guard");
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let loaded_catalog = LoadedWorkflowCatalog::load(&cwd);
+        let context_facade = Arc::new(OmegaContextFacade::local(cwd.clone()));
+        let skill_catalog = Arc::new(SessionSkillCatalog::default());
+        let tool_catalog = Arc::new(SessionToolCatalog::new(Vec::new()));
+        let todo_manager = Arc::new(Mutex::new(TodoManager::new()));
+        let hook_host = Arc::new(HookHost::load(&cwd).unwrap());
+        let (_cancel_tx, cancel_rx) = watch::channel(0u64);
+        let recorder = RuntimeEnvelopeRecorder::new();
+        let bridge = recorder.runtime_bridge();
+        let runner = WorkflowTurnRunner::new(
+            runtime.handle(),
+            &client,
+            &context_facade,
+            &skill_catalog,
+            &tool_catalog,
+            "system",
+            "inspect routing",
+            &cwd,
+            &todo_manager,
+            &hook_host,
+            &loaded_catalog.scene_catalog,
+            &loaded_catalog.workflow_catalog,
+            &loaded_catalog.prompt_catalog,
+            200_000,
+            32_000,
+            91,
+            cancel_rx,
+            bridge.clone(),
+            bridge,
+        );
+        let mut session_context = SessionContext::new(ROOT_WORKFLOW_ID);
+        session_context.routing.recognized_scene_id = Some("research".to_string());
+        session_context.routing.selected_workflow_id = Some(ROOT_WORKFLOW_ID.to_string());
+
+        let selected = runner.ensure_selected_workflow(&mut session_context);
+
+        assert_eq!(selected, RESEARCH_WORKFLOW_ID);
+        assert_eq!(
+            session_context.routing.selected_workflow_id.as_deref(),
+            Some(RESEARCH_WORKFLOW_ID)
+        );
+        let messages = recorder.runtime_messages();
+        assert!(messages.iter().any(|envelope| {
+            matches!(
+                &envelope.message,
+                RuntimeMessage::State(StateMessage::SessionRouting(status))
+                    if status.recognized_scene_id.as_deref() == Some("research")
+                        && status.selected_workflow_id.as_deref() == Some(RESEARCH_WORKFLOW_ID)
+            )
+        }));
+        assert!(messages.iter().any(|envelope| {
+            matches!(
+                &envelope.message,
+                RuntimeMessage::State(StateMessage::Activity {
+                    source: RuntimeSource::SessionRouting,
+                    kind: RuntimeContentKind::Summary,
+                    text,
+                    ..
+                }) if text.contains("Ignoring root workflow as child target")
+            )
+        }));
     }
 }

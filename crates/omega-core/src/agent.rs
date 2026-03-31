@@ -111,13 +111,8 @@ impl Agent {
         F: FnMut(&str, &str, &serde_json::Value, &ToolResult),
         E: FnMut(&ChatEvent),
     {
-        self.run_loop_with_events_until_turn_change(
-            on_tool_call,
-            on_chat_event,
-            None,
-            None,
-        )
-        .await
+        self.run_loop_with_events_until_turn_change(on_tool_call, on_chat_event, None, None)
+            .await
     }
 
     pub async fn run_loop_with_events_until_turn_change<F, E>(
@@ -304,7 +299,8 @@ impl Agent {
     }
 
     fn base_request(&self) -> ChatRequest {
-        let request = ChatRequest::new(self.messages.clone()).with_system_blocks(self.system_blocks.clone());
+        let request =
+            ChatRequest::new(self.messages.clone()).with_system_blocks(self.system_blocks.clone());
         if self.system.is_empty() {
             request
         } else {

@@ -1,16 +1,15 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::Arc;
+use std::time::Duration;
 
-use async_trait::async_trait;
 use omega_client::{
-    test_support::{IdleLlmClient, ScriptedLlmClient}, ChatRequest, ChatResponse, ClientError,
-    ContentBlock, LlmClient, ProviderCapabilityError, STOP_REASON_END_TURN,
-    STOP_REASON_TOOL_USE,
+    test_support::{IdleLlmClient, ScriptedLlmClient},
+    ChatResponse, ContentBlock, STOP_REASON_END_TURN, STOP_REASON_TOOL_USE,
 };
 use omega_core::DynLlmClient;
+use omega_test_support::persistent_test_root;
 use omega_workflow::{
     DataFormat, LoadedWorkflowCatalog, OutputRecoveryMode, StepInputContract, StepLoopMode,
     StepOutputContract, CHAT_STEP_ID, CHAT_WORKFLOW_ID, DEFAULT_EXPLORE_SCHEMA_PATH,
@@ -23,109 +22,14 @@ use super::{
     parse_json_values, preview_text, render_output_contract, resolve_structured_input,
     validate_schema_file, validate_structured_output, AgentSession, AgentSessionConfig,
     ConversationMessage, ProviderMarkupSanitizer, ResponseSectionDelta, ResponseSectionKind,
-    ResponseSectionState, RuntimeContentKind, RuntimeMessage, RuntimeMessageEnvelope,
-    RuntimeSource, RuntimeUiEffect, RuntimeUiEnvelope, SessionContext, SessionSkillCatalog,
-    SessionToolCatalog, StateMessage, StatusSlot, StatusValue, StepContextWriteKind,
-    StepOutputAttemptKind, StepOutputStatus, StepSkillRequest, StepToolRequest, ToolRunStatus,
-    UiMessageKind, UiSource, UiTarget, WorkflowRunRole,
+    ResponseSectionState, RuntimeContentKind, RuntimeEnvelopeRecorder, RuntimeMessage,
+    RuntimeMessageEnvelope, RuntimeSource, RuntimeUiEffect, RuntimeUiEnvelope, SessionContext,
+    SessionSkillCatalog, SessionToolCatalog, StateMessage, StatusSlot, StatusValue,
+    StepContextWriteKind, StepOutputAttemptKind, StepOutputStatus, StepSkillRequest,
+    StepToolRequest, ToolRunStatus, UiMessageKind, UiSource, UiTarget, WorkflowRunRole,
 };
 
 type SequencedClient = ScriptedLlmClient;
-
-#[derive(Debug)]
-struct CountingSequencedClient {
-    inner: SequencedClient,
-    count_requests: Mutex<Vec<ChatRequest>>,
-    token_count: u32,
-}
-
-impl CountingSequencedClient {
-    fn new(responses: Vec<ChatResponse>, token_count: u32) -> Arc<Self> {
-        Arc::new(Self {
-            inner: SequencedClient::from_responses(responses),
-            count_requests: Mutex::new(Vec::new()),
-            token_count,
-        })
-    }
-
-    fn recorded_requests(&self) -> Vec<ChatRequest> {
-        self.inner.recorded_requests()
-    }
-
-    fn recorded_count_requests(&self) -> Vec<ChatRequest> {
-        self.count_requests.lock().unwrap().clone()
-    }
-}
-
-#[derive(Debug)]
-struct FailingCountSequencedClient {
-    inner: SequencedClient,
-    count_requests: Mutex<Vec<ChatRequest>>,
-}
-
-impl FailingCountSequencedClient {
-    fn new(responses: Vec<ChatResponse>) -> Arc<Self> {
-        Arc::new(Self {
-            inner: SequencedClient::from_responses(responses),
-            count_requests: Mutex::new(Vec::new()),
-        })
-    }
-
-    fn recorded_count_requests(&self) -> Vec<ChatRequest> {
-        self.count_requests.lock().unwrap().clone()
-    }
-}
-
-#[async_trait]
-impl LlmClient for FailingCountSequencedClient {
-    async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, ClientError> {
-        self.inner.chat(request).await
-    }
-
-    async fn chat_stream(
-        &self,
-        request: ChatRequest,
-    ) -> Result<omega_client::ChatEventStream, ClientError> {
-        self.inner.chat_stream(request).await
-    }
-
-    async fn count_tokens(&self, request: ChatRequest) -> Result<u32, ClientError> {
-        self.count_requests.lock().unwrap().push(request);
-        Err(ProviderCapabilityError {
-            provider: "failing-scripted".to_string(),
-            operation: "messages.count_tokens".to_string(),
-            detail: "precise token counting is not supported by this client".to_string(),
-        })
-        .map_err(Into::into)
-    }
-
-    fn provider_name(&self) -> &'static str {
-        "failing-scripted"
-    }
-}
-
-#[async_trait]
-impl LlmClient for CountingSequencedClient {
-    async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, ClientError> {
-        self.inner.chat(request).await
-    }
-
-    async fn chat_stream(
-        &self,
-        request: ChatRequest,
-    ) -> Result<omega_client::ChatEventStream, ClientError> {
-        self.inner.chat_stream(request).await
-    }
-
-    async fn count_tokens(&self, request: ChatRequest) -> Result<u32, ClientError> {
-        self.count_requests.lock().unwrap().push(request);
-        Ok(self.token_count)
-    }
-
-    fn provider_name(&self) -> &'static str {
-        "counting-scripted"
-    }
-}
 
 #[allow(non_upper_case_globals)]
 const IdleClient: IdleLlmClient =
@@ -133,6 +37,38 @@ const IdleClient: IdleLlmClient =
 
 fn sequenced_client(responses: Vec<ChatResponse>) -> Arc<SequencedClient> {
     Arc::new(SequencedClient::from_responses(responses))
+}
+
+fn counting_sequenced_client(
+    responses: Vec<ChatResponse>,
+    token_count: u32,
+) -> Arc<SequencedClient> {
+    let mut builder = SequencedClient::builder();
+    for _ in 0..16 {
+        builder = builder.push_count_tokens(token_count);
+    }
+    for response in responses {
+        builder = builder.push_response(response);
+    }
+    Arc::new(builder.build())
+}
+
+fn failing_count_sequenced_client(responses: Vec<ChatResponse>) -> Arc<SequencedClient> {
+    let mut builder = SequencedClient::builder();
+    for _ in 0..16 {
+        builder = builder.push_count_tokens_error(
+            omega_client::ProviderCapabilityError {
+                provider: "failing-scripted".to_string(),
+                operation: "messages.count_tokens".to_string(),
+                detail: "precise token counting is not supported by this client".to_string(),
+            }
+            .into(),
+        );
+    }
+    for response in responses {
+        builder = builder.push_response(response);
+    }
+    Arc::new(builder.build())
 }
 
 fn feature_explore_json() -> &'static str {
@@ -145,6 +81,22 @@ fn feature_plan_json() -> &'static str {
 
 fn research_plan_json() -> &'static str {
     r#"{"goal":"Analyze the requested topic with read-only evidence","tasks":[{"id":"task-1","title":"Inspect relevant implementation","description":"Gather evidence from the relevant code, config, and tests using read-only tools"},{"id":"task-2","title":"Validate the key risks","description":"Confirm or reject the suspected risks with read-only checks and summarize the evidence"}],"validation_targets":["rg --files crates"]}"#
+}
+
+fn research_plan_report_prose_json() -> &'static str {
+    r#"# Omega 项目分析报告
+
+## 项目概述
+
+{"goal":"Analyze the requested topic with read-only evidence","tasks":[{"id":"task-1","title":"Inspect relevant implementation","description":"Gather evidence from the relevant code, config, and tests using read-only tools"},{"id":"task-2","title":"Validate the key risks","description":"Confirm or reject the suspected risks with read-only checks and summarize the evidence"}],"validation_targets":["rg --files crates"]}"#
+}
+
+fn research_plan_with_explore_echo_json() -> String {
+    format!(
+        "根据探索阶段的发现：\n\n{}\n\n以下是执行计划：\n\n{}",
+        feature_explore_json(),
+        research_plan_json()
+    )
 }
 
 fn feature_execute_partial_json() -> &'static str {
@@ -167,19 +119,16 @@ fn research_execute_complete_json() -> &'static str {
     r#"{"completed_tasks":["task-1","task-2"],"open_tasks":[],"validation_results":[{"target":"rg --files crates","status":"passed"}],"changed_paths":[]}"#
 }
 
+fn research_execute_future_only_json() -> &'static str {
+    r#"{"completed_tasks":["task-2"],"open_tasks":["task-1"],"validation_results":[{"target":"rg --files crates","status":"passed"}],"changed_paths":[]}"#
+}
+
 fn feature_execute_future_completion_json() -> &'static str {
     r#"{"completed_tasks":["task-1","task-2"],"open_tasks":[],"validation_results":[{"target":"cargo test -p omega-workflow -p omega-session","status":"passed"}],"changed_paths":["crates/omega-session/src/lib.rs"]}"#
 }
 
 fn unique_session_test_root(name: &str) -> PathBuf {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("omega-agent-session-{name}-{unique}"));
-    let _ = std::fs::remove_dir_all(&root);
-    let _ = std::fs::create_dir_all(&root);
-    root
+    persistent_test_root(&format!("agent-session-{name}"))
 }
 
 fn write_review_skill(root: &Path) {
@@ -506,12 +455,12 @@ fn spawn_turn_emits_hook_diagnostics_for_execute_step() {
         }
     }
 
-    assert!(system_logs.iter().any(|line| {
-        line.contains("Hook todo_managed_execute [info] fixture before step")
-    }));
-    assert!(system_logs.iter().any(|line| {
-        line.contains("Hook todo_managed_execute [info] fixture after step")
-    }));
+    assert!(system_logs
+        .iter()
+        .any(|line| { line.contains("Hook todo_managed_execute [info] fixture before step") }));
+    assert!(system_logs
+        .iter()
+        .any(|line| { line.contains("Hook todo_managed_execute [info] fixture after step") }));
 }
 
 #[test]
@@ -691,9 +640,18 @@ fn parse_json_values_unwraps_array_candidates_to_individual_objects() {
 
     // Array + 2 unwrapped objects = 3 candidates.
     assert_eq!(values.len(), 3);
-    assert!(values[0].is_array(), "first candidate is the original array");
-    assert!(values[1].is_object(), "second candidate is first unwrapped object");
-    assert!(values[2].is_object(), "third candidate is second unwrapped object");
+    assert!(
+        values[0].is_array(),
+        "first candidate is the original array"
+    );
+    assert!(
+        values[1].is_object(),
+        "second candidate is first unwrapped object"
+    );
+    assert!(
+        values[2].is_object(),
+        "third candidate is second unwrapped object"
+    );
     assert_eq!(values[1]["completed_tasks"], serde_json::json!(["task-1"]));
     assert_eq!(
         values[2]["completed_tasks"],
@@ -773,78 +731,124 @@ fn research_plan_validation_allows_read_only_upgrade_recommendations() {
 }
 
 #[test]
+fn research_plan_validation_allows_analytical_tasks_mentioning_optimization_concepts() {
+    let root = unique_session_test_root("research-plan-optimization-analysis");
+    write_review_skill(&root);
+    let loaded = LoadedWorkflowCatalog::load(&root);
+    let workflow = loaded
+        .workflow_catalog
+        .workflow(RESEARCH_WORKFLOW_ID)
+        .expect("research workflow should exist");
+    let plan_step = workflow
+        .enabled_steps()
+        .find(|step| step.id == PLAN_STEP_ID)
+        .expect("plan step should exist")
+        .clone();
+
+    // These tasks describe optimization analysis but mention words like "update",
+    // "config", "code", "module" in an analytical context — not as write actions.
+    let value = serde_json::json!({
+        "goal": "Identify optimization opportunities in the Omega Rust workspace",
+        "tasks": [
+            {
+                "id": "opt-1",
+                "title": "Analyze config update patterns",
+                "description": "Review config loading code for unnecessary clone allocations and identify hot-path update patterns that could use references instead"
+            },
+            {
+                "id": "opt-2",
+                "title": "Evaluate module concurrency model",
+                "description": "Examine Arc<Mutex<...>> usage across session code and assess whether RwLock or sharded locks would reduce contention"
+            },
+            {
+                "id": "opt-3",
+                "title": "Assess workflow config caching opportunity",
+                "description": "Analyze how frequently workflow configs and prompt files are read from disk and evaluate whether an in-memory LRU cache would reduce file I/O"
+            }
+        ],
+        "validation_targets": [
+            "rg --files crates",
+            "Cargo.toml dependency analysis completed"
+        ]
+    });
+
+    validate_workflow_step_output(RESEARCH_WORKFLOW_ID, &plan_step, &value)
+        .expect("analytical tasks mentioning optimization concepts should pass read-only validation");
+}
+
+#[test]
 fn spawn_turn_clears_plan_validation_error_after_successful_regenerate() {
     let client: Arc<SequencedClient> = sequenced_client(vec![
-            ChatResponse {
-                id: "scene-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("{\"recognized_scene_id\":\"research\"}")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "select-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(
-                    "{\"selected_workflow_id\":\"research\"}",
-                )],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "analysis-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(feature_explore_json())],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "plan-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(feature_explore_json())],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "plan-2".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(feature_explore_json())],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "plan-3".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(format!(
-                    "项目评估总结\n{}\n{}",
-                    feature_explore_json(),
-                    research_plan_json()
-                ))],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "execute-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(research_execute_partial_json())],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "execute-2".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(research_execute_complete_json())],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "report-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("done")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-        ]);
+        ChatResponse {
+            id: "scene-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"recognized_scene_id\":\"research\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(
+                "{\"selected_workflow_id\":\"research\"}",
+            )],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "analysis-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_explore_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "plan-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_explore_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "plan-2".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_explore_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "plan-3".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(format!(
+                "项目评估总结\n{}\n{}",
+                feature_explore_json(),
+                research_plan_json()
+            ))],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_execute_partial_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-2".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_execute_complete_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "report-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("done")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+    ]);
     let client_dyn: DynLlmClient = client.clone();
     let root = std::env::temp_dir().join("omega-agent-session-plan-validation-clear-test");
     let _ = std::fs::remove_dir_all(&root);
@@ -923,7 +927,9 @@ fn spawn_turn_clears_plan_validation_error_after_successful_regenerate() {
         .output
         .extracted_json_preview
         .as_deref()
-        .is_some_and(|preview| preview.contains("Analyze the requested topic with read-only evidence")));
+        .is_some_and(
+            |preview| preview.contains("Analyze the requested topic with read-only evidence")
+        ));
 }
 
 #[test]
@@ -939,7 +945,9 @@ fn spawn_turn_rejects_research_plan_that_requires_write_access() {
         ChatResponse {
             id: "select-1".to_string(),
             model: Some("test-model".to_string()),
-            content: vec![ContentBlock::text("{\"selected_workflow_id\":\"research\"}")],
+            content: vec![ContentBlock::text(
+                "{\"selected_workflow_id\":\"research\"}",
+            )],
             stop_reason: Some(STOP_REASON_END_TURN.to_string()),
             usage: None,
         },
@@ -1077,58 +1085,436 @@ fn spawn_turn_rejects_research_plan_that_requires_write_access() {
 }
 
 #[test]
+fn spawn_turn_accepts_plan_when_response_wraps_single_json_object() {
+    let client: Arc<SequencedClient> = sequenced_client(vec![
+        ChatResponse {
+            id: "scene-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"recognized_scene_id\":\"research\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(
+                "{\"selected_workflow_id\":\"research\"}",
+            )],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "explore-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_explore_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "plan-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_plan_report_prose_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "plan-2".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_plan_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_execute_partial_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-2".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_execute_complete_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "report-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("done")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+    ]);
+    let client_dyn: DynLlmClient = client.clone();
+    let root = unique_session_test_root("plan-accepts-wrapped-json");
+    write_review_skill(&root);
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: client_dyn,
+        system: "system".to_string(),
+        cwd: root,
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+    let (tx, rx) = mpsc::channel();
+
+    session
+        .spawn_turn_ui_compat("请你分析当前项目并给出研究计划".to_string(), 97, tx)
+        .unwrap();
+
+    let mut diagnostics = Vec::new();
+    let mut saw_result = false;
+    loop {
+        match rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+            RuntimeUiEnvelope::Message { turn_id, message }
+                if turn_id == 97
+                    && matches!(message.source, UiSource::Assistant)
+                    && message.kind == UiMessageKind::Result =>
+            {
+                assert_eq!(message.content.as_text(), "done");
+                saw_result = true;
+            }
+            RuntimeUiEnvelope::Effect {
+                turn_id,
+                effect:
+                    RuntimeUiEffect::UpsertStepDiagnostics {
+                        diagnostics: update,
+                    },
+            } => {
+                assert_eq!(turn_id, 97);
+                diagnostics.push(*update);
+            }
+            RuntimeUiEnvelope::Effect {
+                turn_id,
+                effect:
+                    RuntimeUiEffect::SetStatusSlot {
+                        slot: StatusSlot::Agent,
+                        value: StatusValue::Label(label),
+                    },
+            } => {
+                assert_eq!(turn_id, 97);
+                assert_eq!(label, "Idle");
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    assert!(diagnostics.iter().any(|diagnostics| {
+        diagnostics.step_id == PLAN_STEP_ID
+            && diagnostics.output.status == StepOutputStatus::Valid
+            && diagnostics.output.attempt_kind == StepOutputAttemptKind::Primary
+    }));
+    assert!(saw_result);
+}
+
+#[test]
+fn spawn_turn_accepts_plan_when_response_contains_explore_echo_plus_plan_json() {
+    let client: Arc<SequencedClient> = sequenced_client(vec![
+        ChatResponse {
+            id: "scene-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"recognized_scene_id\":\"research\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(
+                "{\"selected_workflow_id\":\"research\"}",
+            )],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "explore-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_explore_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "plan-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(
+                research_plan_with_explore_echo_json(),
+            )],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_execute_partial_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-2".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_execute_complete_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "report-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("done")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+    ]);
+    let client_dyn: DynLlmClient = client.clone();
+    let root = unique_session_test_root("plan-accepts-explore-echo-plus-plan");
+    write_review_skill(&root);
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: client_dyn,
+        system: "system".to_string(),
+        cwd: root,
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+    let (tx, rx) = mpsc::channel();
+
+    session
+        .spawn_turn_ui_compat("请你分析项目优化方向".to_string(), 98, tx)
+        .unwrap();
+
+    let mut diagnostics = Vec::new();
+    let mut saw_result = false;
+    loop {
+        match rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+            RuntimeUiEnvelope::Message { turn_id, message }
+                if turn_id == 98
+                    && matches!(message.source, UiSource::Assistant)
+                    && message.kind == UiMessageKind::Result =>
+            {
+                assert_eq!(message.content.as_text(), "done");
+                saw_result = true;
+            }
+            RuntimeUiEnvelope::Effect {
+                turn_id,
+                effect:
+                    RuntimeUiEffect::UpsertStepDiagnostics {
+                        diagnostics: update,
+                    },
+            } => {
+                assert_eq!(turn_id, 98);
+                diagnostics.push(*update);
+            }
+            RuntimeUiEnvelope::Effect {
+                turn_id,
+                effect:
+                    RuntimeUiEffect::SetStatusSlot {
+                        slot: StatusSlot::Agent,
+                        value: StatusValue::Label(label),
+                    },
+            } => {
+                assert_eq!(turn_id, 98);
+                assert_eq!(label, "Idle");
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    // Plan passes on primary attempt with no retry needed — the plan-shaped
+    // candidate is selected even though explore JSON is also present.
+    assert!(diagnostics.iter().any(|diagnostics| {
+        diagnostics.step_id == PLAN_STEP_ID
+            && diagnostics.output.status == StepOutputStatus::Valid
+            && diagnostics.output.attempt_kind == StepOutputAttemptKind::Primary
+    }));
+    assert!(saw_result);
+}
+
+#[test]
+fn plan_section_hides_invalid_report_prose_and_only_shows_validated_plan_summary() {
+    let client: Arc<SequencedClient> = sequenced_client(vec![
+        ChatResponse {
+            id: "scene-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"recognized_scene_id\":\"research\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(
+                "{\"selected_workflow_id\":\"research\"}",
+            )],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "explore-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_explore_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "plan-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_plan_report_prose_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "plan-2".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_plan_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_execute_partial_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-2".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_execute_complete_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "report-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("done")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+    ]);
+    let client_dyn: DynLlmClient = client;
+    let root = unique_session_test_root("plan-section-suppresses-invalid-prose");
+    write_review_skill(&root);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: client_dyn,
+        system: "system".to_string(),
+        cwd: root,
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+    let recorder = RuntimeEnvelopeRecorder::new();
+
+    session
+        .spawn_turn_with_test_bridge(
+            "请你分析当前项目并给出研究计划".to_string(),
+            98,
+            recorder.runtime_bridge(),
+        )
+        .unwrap();
+
+    let recorded = recorder.wait_for_turn_finished_messages(98, Duration::from_secs(2));
+    let plan_text = recorded
+        .iter()
+        .filter_map(|envelope| match envelope {
+            RuntimeMessageEnvelope {
+                turn_id,
+                message:
+                    RuntimeMessage::Conversation(ConversationMessage::AppendSection { id, delta }),
+            } if *turn_id == 98 && id == "turn-98:child:research:plan" => match delta {
+                ResponseSectionDelta::Text(text) => Some(text.as_str()),
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(!plan_text.contains("Omega 项目分析报告"));
+    assert!(!plan_text.contains("## 项目概述"));
+    assert!(plan_text.contains("Analyze the requested topic with read-only evidence"));
+    assert!(plan_text.contains("\"tasks\""));
+}
+
+#[test]
 fn spawn_turn_retries_invalid_required_structured_output() {
     let client: Arc<SequencedClient> = sequenced_client(vec![
-            ChatResponse {
-                id: "scene-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("{\"recognized_scene_id\":\"feature\"}")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "select-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("{\"selected_workflow_id\":\"feature\"}")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "analysis-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("explore")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "analysis-2".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(feature_explore_json())],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "plan-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(feature_plan_json())],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "execute-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("execution complete")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "report-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("done")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-        ]);
+        ChatResponse {
+            id: "scene-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"recognized_scene_id\":\"feature\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"selected_workflow_id\":\"feature\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "analysis-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("explore")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "analysis-2".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_explore_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "plan-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_plan_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("execution complete")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "report-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("done")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+    ]);
     let client_dyn: DynLlmClient = client.clone();
     let root = std::env::temp_dir().join("omega-agent-session-structured-retry-test");
     let _ = std::fs::remove_dir_all(&root);
@@ -1220,56 +1606,56 @@ fn spawn_turn_retries_invalid_required_structured_output() {
 #[test]
 fn spawn_turn_syncs_execute_output_back_into_todo_state_for_report() {
     let client: Arc<SequencedClient> = sequenced_client(vec![
-            ChatResponse {
-                id: "scene-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("{\"recognized_scene_id\":\"feature\"}")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "select-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("{\"selected_workflow_id\":\"feature\"}")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "analysis-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(feature_explore_json())],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "plan-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(feature_plan_json())],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "execute-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(feature_execute_partial_json())],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "execute-2".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(feature_execute_complete_json())],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "report-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("done")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-        ]);
+        ChatResponse {
+            id: "scene-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"recognized_scene_id\":\"feature\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"selected_workflow_id\":\"feature\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "analysis-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_explore_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "plan-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_plan_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_execute_partial_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-2".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_execute_complete_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "report-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("done")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+    ]);
     let client_dyn: DynLlmClient = client.clone();
     let root = std::env::temp_dir().join("omega-agent-session-execute-todo-sync-test");
     let _ = std::fs::remove_dir_all(&root);
@@ -1537,7 +1923,9 @@ fn itemized_execute_auto_repairs_future_todo_completion() {
 
     // Auto-repair strips future items silently — no invalid-output warnings.
     assert!(
-        !warnings.iter().any(|w| w.contains("cannot complete future todo item")),
+        !warnings
+            .iter()
+            .any(|w| w.contains("cannot complete future todo item")),
         "auto-repair should prevent future-item validation warnings"
     );
 }
@@ -1555,7 +1943,9 @@ fn research_itemized_execute_auto_repairs_future_todo_completion() {
         ChatResponse {
             id: "select-1".to_string(),
             model: Some("test-model".to_string()),
-            content: vec![ContentBlock::text("{\"selected_workflow_id\":\"research\"}")],
+            content: vec![ContentBlock::text(
+                "{\"selected_workflow_id\":\"research\"}",
+            )],
             stop_reason: Some(STOP_REASON_END_TURN.to_string()),
             usage: None,
         },
@@ -1655,7 +2045,9 @@ fn research_itemized_execute_auto_repairs_future_todo_completion() {
 
     // Auto-repair strips future items silently — no invalid-output warnings.
     assert!(
-        !warnings.iter().any(|w| w.contains("cannot complete future todo item")),
+        !warnings
+            .iter()
+            .any(|w| w.contains("cannot complete future todo item")),
         "auto-repair should prevent future-item validation warnings"
     );
 }
@@ -1673,7 +2065,9 @@ fn research_itemized_execute_auto_repairs_multiple_future_completions() {
         ChatResponse {
             id: "select-1".to_string(),
             model: Some("test-model".to_string()),
-            content: vec![ContentBlock::text("{\"selected_workflow_id\":\"research\"}")],
+            content: vec![ContentBlock::text(
+                "{\"selected_workflow_id\":\"research\"}",
+            )],
             stop_reason: Some(STOP_REASON_END_TURN.to_string()),
             usage: None,
         },
@@ -1789,9 +2183,12 @@ fn research_itemized_execute_auto_repairs_multiple_future_completions() {
         .iter()
         .find(|summary| summary.step_id == EXECUTE_STEP_ID)
         .expect("first execute summary should be stored");
-    let summary_value: serde_json::Value =
-        serde_json::from_str(&first_execute_summary.summary).expect("summary should stay canonical JSON");
-    assert_eq!(summary_value["completed_tasks"], serde_json::json!(["task-1"]));
+    let summary_value: serde_json::Value = serde_json::from_str(&first_execute_summary.summary)
+        .expect("summary should stay canonical JSON");
+    assert_eq!(
+        summary_value["completed_tasks"],
+        serde_json::json!(["task-1"])
+    );
     assert_eq!(summary_value["open_tasks"], serde_json::json!(["task-2"]));
     assert!(saw_result);
 }
@@ -1809,7 +2206,9 @@ fn research_itemized_execute_retries_when_current_item_response_omits_json() {
         ChatResponse {
             id: "select-1".to_string(),
             model: Some("test-model".to_string()),
-            content: vec![ContentBlock::text("{\"selected_workflow_id\":\"research\"}")],
+            content: vec![ContentBlock::text(
+                "{\"selected_workflow_id\":\"research\"}",
+            )],
             stop_reason: Some(STOP_REASON_END_TURN.to_string()),
             usage: None,
         },
@@ -1929,7 +2328,9 @@ fn research_itemized_execute_retries_when_current_item_response_omits_json() {
         }
     }
 
-    assert!(!warnings.iter().any(|warning| warning.contains("advance denied")));
+    assert!(!warnings
+        .iter()
+        .any(|warning| warning.contains("advance denied")));
     assert!(diagnostics.iter().any(|diagnostics| {
         diagnostics.step_id == EXECUTE_STEP_ID
             && diagnostics.output.status == StepOutputStatus::Invalid
@@ -1944,60 +2345,525 @@ fn research_itemized_execute_retries_when_current_item_response_omits_json() {
 }
 
 #[test]
+fn research_itemized_execute_retries_when_current_item_output_repeats_previous_completion() {
+    let client: Arc<SequencedClient> = sequenced_client(vec![
+        ChatResponse {
+            id: "scene-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"recognized_scene_id\":\"research\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(
+                "{\"selected_workflow_id\":\"research\"}",
+            )],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "analysis-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_explore_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "plan-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_plan_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_execute_partial_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-2".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(
+                r#"{"completed_tasks":["task-1"],"open_tasks":["task-2"],"validation_results":[{"target":"rg --files crates","status":"passed"}],"changed_paths":[]}"#,
+            )],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-3".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_execute_complete_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "report-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("done")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+    ]);
+    let client_dyn: DynLlmClient = client.clone();
+    let root = unique_session_test_root("research-itemized-execute-stale-completion");
+    write_review_skill(&root);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: client_dyn,
+        system: "system".to_string(),
+        cwd: root,
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+    let (tx, rx) = mpsc::channel();
+
+    session
+        .spawn_turn_ui_compat("hello".to_string(), 196, tx)
+        .unwrap();
+
+    let mut warnings = Vec::new();
+    let mut diagnostics = Vec::new();
+    loop {
+        match rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+            RuntimeUiEnvelope::Message { turn_id, message }
+                if turn_id == 196
+                    && matches!(message.source, UiSource::System)
+                    && message.kind == UiMessageKind::Warning =>
+            {
+                warnings.push(message.content.as_text().to_string());
+            }
+            RuntimeUiEnvelope::Effect {
+                turn_id,
+                effect:
+                    RuntimeUiEffect::UpsertStepDiagnostics {
+                        diagnostics: update,
+                    },
+            } => {
+                assert_eq!(turn_id, 196);
+                diagnostics.push(*update);
+            }
+            RuntimeUiEnvelope::Effect {
+                turn_id,
+                effect:
+                    RuntimeUiEffect::SetStatusSlot {
+                        slot: StatusSlot::Agent,
+                        value: StatusValue::Label(label),
+                    },
+            } => {
+                assert_eq!(turn_id, 196);
+                assert_eq!(label, "Idle");
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    assert!(warnings.iter().any(|warning| {
+        warning.contains("Step 'execute' produced invalid structured output")
+            && warning.contains("current todo item")
+    }));
+    assert!(diagnostics.iter().any(|diagnostics| {
+        diagnostics.step_id == EXECUTE_STEP_ID
+            && diagnostics.output.status == StepOutputStatus::Invalid
+            && diagnostics.output.validation_error.as_deref().is_some_and(|error| {
+                error.contains("current todo item") && error.contains("task-2")
+            })
+    }));
+    assert!(diagnostics.iter().any(|diagnostics| {
+        diagnostics.step_id == EXECUTE_STEP_ID
+            && diagnostics.output.status == StepOutputStatus::Valid
+            && diagnostics
+                .execute_progress
+                .as_ref()
+                .is_some_and(|progress| {
+                    progress.current_item_id.as_deref() == Some("task-2")
+                        && progress.completion_source.as_deref() == Some("structured_output")
+                        && progress.todo_completed == 2
+                        && progress.todo_open == 0
+                })
+    }));
+    assert!(!warnings
+        .iter()
+        .any(|warning| warning.contains("advance denied")));
+}
+
+#[test]
+fn research_itemized_execute_retries_when_current_item_completes_only_future_todo() {
+    let client: Arc<SequencedClient> = sequenced_client(vec![
+        ChatResponse {
+            id: "scene-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"recognized_scene_id\":\"research\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(
+                "{\"selected_workflow_id\":\"research\"}",
+            )],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "analysis-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_explore_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "plan-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_plan_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_execute_future_only_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-2".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_execute_partial_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-3".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_execute_complete_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "report-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("done")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+    ]);
+    let client_dyn: DynLlmClient = client.clone();
+    let root = unique_session_test_root("research-execute-future-only-retry");
+    write_review_skill(&root);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: client_dyn,
+        system: "system".to_string(),
+        cwd: root,
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+    let (tx, rx) = mpsc::channel();
+
+    session
+        .spawn_turn_ui_compat("hello".to_string(), 198, tx)
+        .unwrap();
+
+    let mut warnings = Vec::new();
+    let mut diagnostics = Vec::new();
+    let mut saw_result = false;
+    loop {
+        match rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+            RuntimeUiEnvelope::Message { turn_id, message }
+                if turn_id == 198
+                    && matches!(message.source, UiSource::System)
+                    && message.kind == UiMessageKind::Warning =>
+            {
+                warnings.push(message.content.as_text().to_string());
+            }
+            RuntimeUiEnvelope::Message { turn_id, message }
+                if turn_id == 198
+                    && matches!(message.source, UiSource::Assistant)
+                    && message.kind == UiMessageKind::Result =>
+            {
+                assert_eq!(message.content.as_text(), "done");
+                saw_result = true;
+            }
+            RuntimeUiEnvelope::Effect {
+                turn_id,
+                effect:
+                    RuntimeUiEffect::UpsertStepDiagnostics {
+                        diagnostics: update,
+                    },
+            } => {
+                assert_eq!(turn_id, 198);
+                diagnostics.push(*update);
+            }
+            RuntimeUiEnvelope::Effect {
+                turn_id,
+                effect:
+                    RuntimeUiEffect::SetStatusSlot {
+                        slot: StatusSlot::Agent,
+                        value: StatusValue::Label(label),
+                    },
+            } => {
+                assert_eq!(turn_id, 198);
+                assert_eq!(label, "Idle");
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    assert!(warnings.iter().any(|warning| {
+        warning.contains("Step 'execute' produced invalid structured output")
+            && warning.contains("cannot complete future todo item")
+    }));
+    assert!(diagnostics.iter().any(|diagnostics| {
+        diagnostics.step_id == EXECUTE_STEP_ID
+            && diagnostics.output.status == StepOutputStatus::Invalid
+            && diagnostics.output.validation_error.as_deref().is_some_and(|error| {
+                error.contains("cannot complete future todo item 'task-2'")
+                    && error.contains("current item is 'task-1'")
+            })
+    }));
+    assert!(diagnostics.iter().any(|diagnostics| {
+        diagnostics.step_id == EXECUTE_STEP_ID
+            && diagnostics.output.status == StepOutputStatus::Valid
+            && diagnostics.output.attempt_kind != StepOutputAttemptKind::Primary
+    }));
+    assert!(!warnings
+        .iter()
+        .any(|warning| warning.contains("advance denied")));
+    assert!(saw_result);
+}
+
+#[test]
+fn research_report_retries_when_final_answer_is_raw_json() {
+    let client: Arc<SequencedClient> = sequenced_client(vec![
+        ChatResponse {
+            id: "scene-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"recognized_scene_id\":\"research\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(
+                "{\"selected_workflow_id\":\"research\"}",
+            )],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "analysis-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_explore_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "plan-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_plan_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_execute_partial_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-2".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_execute_complete_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "report-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(
+                r#"{"completed_tasks":["analysis-1","analysis-2","analysis-3","analysis-4","analysis-5","analysis-6","analysis-7"],"open_tasks":[],"validation_results":[{"target":"架构设计分析","status":"verified"}],"changed_paths":[]}"#,
+            )],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "report-2".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(
+                "项目分析报告：架构分层清晰，context/tool/test 基础设施扎实，但 runner.rs 仍然过重，跨 crate 学习成本偏高。",
+            )],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+    ]);
+    let client_dyn: DynLlmClient = client.clone();
+    let root = unique_session_test_root("research-report-json-retry");
+    write_review_skill(&root);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: client_dyn,
+        system: "system".to_string(),
+        cwd: root,
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+    let (tx, rx) = mpsc::channel();
+
+    session
+        .spawn_turn_ui_compat("请你给出结构化的项目优劣分析报告".to_string(), 197, tx)
+        .unwrap();
+
+    let mut warnings = Vec::new();
+    let mut diagnostics = Vec::new();
+    let mut assistant_results = Vec::new();
+    loop {
+        match rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+            RuntimeUiEnvelope::Message { turn_id, message }
+                if turn_id == 197
+                    && matches!(message.source, UiSource::System)
+                    && message.kind == UiMessageKind::Warning =>
+            {
+                warnings.push(message.content.as_text().to_string());
+            }
+            RuntimeUiEnvelope::Message { turn_id, message }
+                if turn_id == 197
+                    && matches!(message.source, UiSource::Assistant)
+                    && message.kind == UiMessageKind::Result =>
+            {
+                assistant_results.push(message.content.as_text().to_string());
+            }
+            RuntimeUiEnvelope::Effect {
+                turn_id,
+                effect:
+                    RuntimeUiEffect::UpsertStepDiagnostics {
+                        diagnostics: update,
+                    },
+            } => {
+                assert_eq!(turn_id, 197);
+                diagnostics.push(*update);
+            }
+            RuntimeUiEnvelope::Effect {
+                turn_id,
+                effect:
+                    RuntimeUiEffect::SetStatusSlot {
+                        slot: StatusSlot::Agent,
+                        value: StatusValue::Label(label),
+                    },
+            } => {
+                assert_eq!(turn_id, 197);
+                assert_eq!(label, "Idle");
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    assert!(warnings.iter().any(|warning| {
+        warning.contains("Step 'report' produced invalid structured output")
+            && warning.contains("user-facing prose")
+    }));
+    assert!(diagnostics.iter().any(|diagnostics| {
+        diagnostics.step_id == REPORT_STEP_ID
+            && diagnostics.output.status == StepOutputStatus::Invalid
+            && diagnostics.output.validation_error.as_deref().is_some_and(|error| {
+                error.contains("user-facing prose")
+            })
+    }));
+    assert_eq!(
+        assistant_results,
+        vec!["项目分析报告：架构分层清晰，context/tool/test 基础设施扎实，但 runner.rs 仍然过重，跨 crate 学习成本偏高。".to_string()]
+    );
+    assert_eq!(client.remaining_steps(), 0);
+}
+
+#[test]
 fn spawn_turn_syncs_research_execute_output_back_into_todo_state_for_report() {
     let client: Arc<SequencedClient> = sequenced_client(vec![
-            ChatResponse {
-                id: "scene-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("{\"recognized_scene_id\":\"research\"}")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "select-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(
-                    "{\"selected_workflow_id\":\"research\"}",
-                )],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "analysis-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(feature_explore_json())],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "plan-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(research_plan_json())],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "execute-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(research_execute_partial_json())],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "execute-2".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(research_execute_complete_json())],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "report-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("done")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-        ]);
+        ChatResponse {
+            id: "scene-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"recognized_scene_id\":\"research\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(
+                "{\"selected_workflow_id\":\"research\"}",
+            )],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "analysis-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_explore_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "plan-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_plan_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_execute_partial_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-2".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_execute_complete_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "report-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("done")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+    ]);
     let client_dyn: DynLlmClient = client.clone();
     let root = std::env::temp_dir().join("omega-agent-session-research-execute-todo-sync-test");
     let _ = std::fs::remove_dir_all(&root);
@@ -2156,65 +3022,65 @@ fn spawn_turn_syncs_research_execute_output_back_into_todo_state_for_report() {
 #[test]
 fn spawn_turn_repeats_research_execute_without_initial_todo_diff() {
     let client: Arc<SequencedClient> = sequenced_client(vec![
-            ChatResponse {
-                id: "scene-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("{\"recognized_scene_id\":\"research\"}")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "select-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(
-                    "{\"selected_workflow_id\":\"research\"}",
-                )],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "explore-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(feature_explore_json())],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "plan-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(research_plan_json())],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "execute-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(research_execute_no_progress_json())],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "execute-2".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(research_execute_partial_json())],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "execute-3".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(research_execute_complete_json())],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "report-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("done")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-        ]);
+        ChatResponse {
+            id: "scene-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"recognized_scene_id\":\"research\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(
+                "{\"selected_workflow_id\":\"research\"}",
+            )],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "explore-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_explore_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "plan-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_plan_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_execute_no_progress_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-2".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_execute_partial_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-3".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_execute_complete_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "report-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("done")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+    ]);
     let client_dyn: DynLlmClient = client.clone();
     let root = std::env::temp_dir().join("omega-agent-session-research-execute-repeat-test");
     let _ = std::fs::remove_dir_all(&root);
@@ -2311,7 +3177,9 @@ fn spawn_turn_emits_execute_progress_diagnostics_for_item_loop() {
         ChatResponse {
             id: "select-1".to_string(),
             model: Some("test-model".to_string()),
-            content: vec![ContentBlock::text("{\"selected_workflow_id\":\"research\"}")],
+            content: vec![ContentBlock::text(
+                "{\"selected_workflow_id\":\"research\"}",
+            )],
             stop_reason: Some(STOP_REASON_END_TURN.to_string()),
             usage: None,
         },
@@ -2380,7 +3248,9 @@ fn spawn_turn_emits_execute_progress_diagnostics_for_item_loop() {
     .unwrap();
     let (tx, rx) = mpsc::channel();
 
-    session.spawn_turn_ui_compat("hello".to_string(), 91, tx).unwrap();
+    session
+        .spawn_turn_ui_compat("hello".to_string(), 91, tx)
+        .unwrap();
 
     let mut diagnostics = Vec::new();
     loop {
@@ -2550,15 +3420,15 @@ fn spawn_turn_fails_when_before_advance_denial_exhausts_repeat_budget() {
         }
     }
 
-    assert!(warnings.iter().any(|warning| {
-        warning.contains("Step 'execute' advance denied; repeating (1/1)")
-    }));
+    assert!(warnings
+        .iter()
+        .any(|warning| { warning.contains("Step 'execute' advance denied; repeating (1/1)") }));
     assert!(errors.iter().any(|error| {
         error.contains("Hook-managed step failed: step 'execute' exhausted max_step_repeats=1")
     }));
-    assert!(errors.iter().any(|error| {
-        error.contains("Error: step 'execute' exhausted max_step_repeats=1")
-    }));
+    assert!(errors
+        .iter()
+        .any(|error| { error.contains("Error: step 'execute' exhausted max_step_repeats=1") }));
 
     let systems = client.recorded_systems();
     assert!(
@@ -2641,7 +3511,9 @@ fn spawn_turn_fails_when_item_repeat_budget_exhausts_before_step_budget() {
     .unwrap();
     let (tx, rx) = mpsc::channel();
 
-    session.spawn_turn_ui_compat("hello".to_string(), 92, tx).unwrap();
+    session
+        .spawn_turn_ui_compat("hello".to_string(), 92, tx)
+        .unwrap();
 
     let mut diagnostics = Vec::new();
     let mut errors = Vec::new();
@@ -2752,67 +3624,67 @@ fn interrupt_restores_checkpoint_messages() {
 #[test]
 fn spawn_turn_emits_root_then_child_workflow_steps_and_uses_phase_prompts() {
     let client: Arc<SequencedClient> = sequenced_client(vec![
-            ChatResponse {
-                id: "scene-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("{\"recognized_scene_id\":\"feature\"}")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "select-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("{\"selected_workflow_id\":\"feature\"}")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "analysis-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(feature_explore_json())],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "plan-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(feature_plan_json())],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "execute-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::tool_use(
-                    "tool-1",
-                    "bash",
-                    serde_json::json!({"command": "echo hi"}),
-                )],
-                stop_reason: Some(STOP_REASON_TOOL_USE.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "execute-2".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(feature_execute_partial_json())],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "execute-3".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(feature_execute_complete_json())],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "report-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("done")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-        ]);
+        ChatResponse {
+            id: "scene-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"recognized_scene_id\":\"feature\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"selected_workflow_id\":\"feature\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "analysis-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_explore_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "plan-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_plan_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::tool_use(
+                "tool-1",
+                "bash",
+                serde_json::json!({"command": "echo hi"}),
+            )],
+            stop_reason: Some(STOP_REASON_TOOL_USE.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-2".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_execute_partial_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-3".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_execute_complete_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "report-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("done")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+    ]);
     let client_dyn: DynLlmClient = client.clone();
     let root = std::env::temp_dir().join("omega-agent-session-workflow-test");
     let _ = std::fs::remove_dir_all(&root);
@@ -3119,28 +3991,28 @@ fn spawn_turn_emits_root_then_child_workflow_steps_and_uses_phase_prompts() {
 #[test]
 fn chat_scene_routes_to_chat_workflow_without_showing_root_text() {
     let client: Arc<SequencedClient> = sequenced_client(vec![
-            ChatResponse {
-                id: "scene-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("{\"recognized_scene_id\":\"chat\"}")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "select-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("{\"selected_workflow_id\":\"chat\"}")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "chat-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("chat answer")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-        ]);
+        ChatResponse {
+            id: "scene-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"recognized_scene_id\":\"chat\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"selected_workflow_id\":\"chat\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "chat-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("chat answer")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+    ]);
     let client_dyn: DynLlmClient = client.clone();
     let root = std::env::temp_dir().join("omega-agent-session-chat-test");
     let _ = std::fs::remove_dir_all(&root);
@@ -3301,56 +4173,56 @@ fn chat_scene_routes_to_chat_workflow_without_showing_root_text() {
 #[test]
 fn unresolved_scene_and_workflow_fallback_to_feature_not_chat() {
     let client: Arc<SequencedClient> = sequenced_client(vec![
-            ChatResponse {
-                id: "scene-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("{\"recognized_scene_id\":\"unknown\"}")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "select-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("{\"selected_workflow_id\":\"unknown\"}")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "analysis-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(feature_explore_json())],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "plan-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(feature_plan_json())],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "execute-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(feature_execute_partial_json())],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "execute-2".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(feature_execute_complete_json())],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "report-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("done")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-        ]);
+        ChatResponse {
+            id: "scene-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"recognized_scene_id\":\"unknown\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"selected_workflow_id\":\"unknown\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "analysis-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_explore_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "plan-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_plan_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_execute_partial_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-2".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_execute_complete_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "report-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("done")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+    ]);
     let client_dyn: DynLlmClient = client;
     let root = std::env::temp_dir().join("omega-agent-session-default-feature-fallback-test");
     let _ = std::fs::remove_dir_all(&root);
@@ -3435,58 +4307,323 @@ fn unresolved_scene_and_workflow_fallback_to_feature_not_chat() {
 }
 
 #[test]
+fn recognized_research_scene_with_unknown_workflow_falls_back_to_scene_workflow() {
+    let client: Arc<SequencedClient> = sequenced_client(vec![
+        ChatResponse {
+            id: "scene-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"recognized_scene_id\":\"research\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"selected_workflow_id\":\"unknown\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "analysis-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_explore_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "plan-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_plan_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_execute_partial_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-2".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_execute_complete_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "report-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("done")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+    ]);
+    let client_dyn: DynLlmClient = client.clone();
+    let root = unique_session_test_root("research-unknown-workflow-fallback");
+    write_review_skill(&root);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: client_dyn,
+        system: "system".to_string(),
+        cwd: root,
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+    let (tx, rx) = mpsc::channel();
+
+    session
+        .spawn_turn_ui_compat(
+            "请对这个仓库做一次深度复杂的综合分析和探索".to_string(),
+            79,
+            tx,
+        )
+        .unwrap();
+
+    let mut routes = Vec::new();
+    loop {
+        match rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+            RuntimeUiEnvelope::Effect {
+                turn_id,
+                effect:
+                    RuntimeUiEffect::SetStatusSlot {
+                        slot: StatusSlot::Session,
+                        value:
+                            StatusValue::SessionRouting {
+                                recognized_scene_id,
+                                selected_workflow_id,
+                                ..
+                            },
+                    },
+            } => {
+                assert_eq!(turn_id, 79);
+                routes.push((recognized_scene_id, selected_workflow_id));
+            }
+            RuntimeUiEnvelope::Effect {
+                turn_id,
+                effect:
+                    RuntimeUiEffect::SetStatusSlot {
+                        slot: StatusSlot::Agent,
+                        value: StatusValue::Label(label),
+                    },
+            } => {
+                assert_eq!(turn_id, 79);
+                assert_eq!(label, "Idle");
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    assert!(routes.iter().any(|route| {
+        route
+            == &(
+                Some("research".to_string()),
+                Some(RESEARCH_WORKFLOW_ID.to_string()),
+            )
+    }));
+    assert!(client.recorded_systems().iter().any(|system| {
+        system
+            .as_deref()
+            .is_some_and(|system| system.contains("Selected workflow: research."))
+    }));
+}
+
+#[test]
+fn recognized_research_scene_with_root_workflow_selection_falls_back_to_scene_workflow() {
+    let client: Arc<SequencedClient> = sequenced_client(vec![
+        ChatResponse {
+            id: "scene-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"recognized_scene_id\":\"research\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"selected_workflow_id\":\"root\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "analysis-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_explore_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "plan-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_plan_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_execute_partial_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-2".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_execute_complete_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "report-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("done")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+    ]);
+    let client_dyn: DynLlmClient = client.clone();
+    let root = unique_session_test_root("research-root-workflow-fallback");
+    write_review_skill(&root);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: client_dyn,
+        system: "system".to_string(),
+        cwd: root,
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+    let (tx, rx) = mpsc::channel();
+
+    session
+        .spawn_turn_ui_compat(
+            "请对这个仓库做一次深度复杂的综合分析和探索".to_string(),
+            80,
+            tx,
+        )
+        .unwrap();
+
+    let mut routes = Vec::new();
+    loop {
+        match rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+            RuntimeUiEnvelope::Effect {
+                turn_id,
+                effect:
+                    RuntimeUiEffect::SetStatusSlot {
+                        slot: StatusSlot::Session,
+                        value:
+                            StatusValue::SessionRouting {
+                                recognized_scene_id,
+                                selected_workflow_id,
+                                ..
+                            },
+                    },
+            } => {
+                assert_eq!(turn_id, 80);
+                routes.push((recognized_scene_id, selected_workflow_id));
+            }
+            RuntimeUiEnvelope::Effect {
+                turn_id,
+                effect:
+                    RuntimeUiEffect::SetStatusSlot {
+                        slot: StatusSlot::Agent,
+                        value: StatusValue::Label(label),
+                    },
+            } => {
+                assert_eq!(turn_id, 80);
+                assert_eq!(label, "Idle");
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    assert!(routes.iter().any(|route| {
+        route
+            == &(
+                Some("research".to_string()),
+                Some(RESEARCH_WORKFLOW_ID.to_string()),
+            )
+    }));
+    assert!(routes
+        .iter()
+        .all(|route| route.1.as_deref() != Some(ROOT_WORKFLOW_ID)));
+    assert!(client.recorded_systems().iter().any(|system| {
+        system
+            .as_deref()
+            .is_some_and(|system| system.contains("Selected workflow: research."))
+    }));
+}
+
+#[test]
 fn implementation_requests_are_promoted_from_chat_to_feature() {
     let client: Arc<SequencedClient> = sequenced_client(vec![
-            ChatResponse {
-                id: "scene-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("{\"recognized_scene_id\":\"chat\"}")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "select-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("{\"selected_workflow_id\":\"chat\"}")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "analysis-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(feature_explore_json())],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "plan-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(feature_plan_json())],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "execute-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(feature_execute_partial_json())],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "execute-2".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(feature_execute_complete_json())],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "report-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("done")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-        ]);
+        ChatResponse {
+            id: "scene-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"recognized_scene_id\":\"chat\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"selected_workflow_id\":\"chat\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "analysis-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_explore_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "plan-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_plan_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_execute_partial_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-2".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_execute_complete_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "report-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("done")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+    ]);
     let client_dyn: DynLlmClient = client;
     let root = std::env::temp_dir().join("omega-agent-session-scene-promotion-test");
     let _ = std::fs::remove_dir_all(&root);
@@ -3573,56 +4710,56 @@ fn implementation_requests_are_promoted_from_chat_to_feature() {
 #[test]
 fn research_requests_are_promoted_to_research_scene_and_workflow() {
     let client: Arc<SequencedClient> = sequenced_client(vec![
-            ChatResponse {
-                id: "scene-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("{\"recognized_scene_id\":\"chat\"}")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "select-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("{\"selected_workflow_id\":\"feature\"}")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "analysis-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(feature_explore_json())],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "plan-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(research_plan_json())],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "execute-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(research_execute_partial_json())],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "execute-2".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(research_execute_complete_json())],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "report-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("done")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-        ]);
+        ChatResponse {
+            id: "scene-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"recognized_scene_id\":\"chat\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"selected_workflow_id\":\"feature\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "analysis-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_explore_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "plan-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_plan_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_execute_partial_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-2".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_execute_complete_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "report-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("done")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+    ]);
     let client_dyn: DynLlmClient = client;
     let root = std::env::temp_dir().join("omega-agent-session-research-promotion-test");
     let _ = std::fs::remove_dir_all(&root);
@@ -3717,49 +4854,49 @@ fn research_requests_are_promoted_to_research_scene_and_workflow() {
 #[test]
 fn session_context_persists_step_summaries_across_turns() {
     let client: Arc<SequencedClient> = sequenced_client(vec![
-            ChatResponse {
-                id: "scene-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("{\"recognized_scene_id\":\"chat\"}")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "select-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("{\"selected_workflow_id\":\"chat\"}")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "chat-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("first answer")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "scene-2".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("{\"recognized_scene_id\":\"chat\"}")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "select-2".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("{\"selected_workflow_id\":\"chat\"}")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "chat-2".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("second answer")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-        ]);
+        ChatResponse {
+            id: "scene-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"recognized_scene_id\":\"chat\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"selected_workflow_id\":\"chat\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "chat-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("first answer")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "scene-2".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"recognized_scene_id\":\"chat\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-2".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"selected_workflow_id\":\"chat\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "chat-2".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("second answer")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+    ]);
     let client_dyn: DynLlmClient = client.clone();
     let root = std::env::temp_dir().join("omega-agent-session-context-persistence-test");
     let _ = std::fs::remove_dir_all(&root);
@@ -3826,34 +4963,34 @@ fn session_context_persists_step_summaries_across_turns() {
 #[test]
 fn spawn_turn_emits_response_sections_for_routing_and_thinking() {
     let client: Arc<SequencedClient> = sequenced_client(vec![
-            ChatResponse {
-                id: "scene-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("{\"recognized_scene_id\":\"chat\"}")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "select-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("{\"selected_workflow_id\":\"chat\"}")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "chat-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![
-                    ContentBlock::Thinking {
-                        thinking: "outline answer".to_string(),
-                        signature: None,
-                    },
-                    ContentBlock::text("chat answer"),
-                ],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-        ]);
+        ChatResponse {
+            id: "scene-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"recognized_scene_id\":\"chat\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"selected_workflow_id\":\"chat\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "chat-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![
+                ContentBlock::Thinking {
+                    thinking: "outline answer".to_string(),
+                    signature: None,
+                },
+                ContentBlock::text("chat answer"),
+            ],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+    ]);
     let client_dyn: DynLlmClient = client;
     let root = std::env::temp_dir().join("omega-agent-session-response-section-test");
     let _ = std::fs::remove_dir_all(&root);
@@ -4016,42 +5153,42 @@ fn spawn_turn_emits_response_sections_for_routing_and_thinking() {
 #[test]
 fn spawn_turn_falls_back_to_text_routing_when_root_json_validation_fails() {
     let client: Arc<SequencedClient> = sequenced_client(vec![
-            ChatResponse {
-                id: "scene-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("This request fits the chat scene.")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "scene-2".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("I still think this belongs to chat.")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "select-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("Use the chat workflow.")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "select-2".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("chat is the right workflow here.")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "chat-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("chat answer")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-        ]);
+        ChatResponse {
+            id: "scene-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("This request fits the chat scene.")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "scene-2".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("I still think this belongs to chat.")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("Use the chat workflow.")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-2".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("chat is the right workflow here.")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "chat-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("chat answer")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+    ]);
     let client_dyn: DynLlmClient = client;
     let root = std::env::temp_dir().join("omega-agent-session-root-routing-fallback-test");
     let _ = std::fs::remove_dir_all(&root);
@@ -4142,53 +5279,53 @@ fn spawn_turn_falls_back_to_text_routing_when_root_json_validation_fails() {
 #[test]
 fn spawn_turn_accepts_root_json_when_model_adds_short_preface() {
     let client: Arc<SequencedClient> = sequenced_client(vec![
-            ChatResponse {
-                id: "scene-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(
-                    "Best match is feature.\n{\"recognized_scene_id\":\"feature\"}",
-                )],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "select-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(
-                    "Use the feature workflow.\n{\"selected_workflow_id\":\"feature\"}",
-                )],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "analysis-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(feature_explore_json())],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "plan-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(feature_plan_json())],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "execute-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("execution complete")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "report-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("done")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-        ]);
+        ChatResponse {
+            id: "scene-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(
+                "Best match is feature.\n{\"recognized_scene_id\":\"feature\"}",
+            )],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(
+                "Use the feature workflow.\n{\"selected_workflow_id\":\"feature\"}",
+            )],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "analysis-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_explore_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "plan-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_plan_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("execution complete")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "report-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("done")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+    ]);
     let client_dyn: DynLlmClient = client;
     let root = std::env::temp_dir().join("omega-agent-session-root-embedded-json-test");
     let _ = std::fs::remove_dir_all(&root);
@@ -4275,7 +5412,7 @@ fn spawn_turn_accepts_root_json_when_model_adds_short_preface() {
 
 #[test]
 fn spawn_turn_uses_precise_token_count_and_emits_cache_diagnostics() {
-    let client = CountingSequencedClient::new(
+    let client = counting_sequenced_client(
         vec![
             ChatResponse {
                 id: "scene-1".to_string(),
@@ -4346,42 +5483,25 @@ fn spawn_turn_uses_precise_token_count_and_emits_cache_diagnostics() {
         batch_max_requests: omega_core::default_batch_max_requests(),
     })
     .unwrap();
-    let (tx, rx) = mpsc::channel();
+    let recorder = RuntimeEnvelopeRecorder::new();
 
     session
-        .spawn_turn_ui_compat("fix this bug".to_string(), 77, tx)
+        .spawn_turn_with_test_bridge("fix this bug".to_string(), 77, recorder.runtime_bridge())
         .unwrap();
 
-    let mut diagnostics = Vec::new();
-    loop {
-        match rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+    let diagnostics: Vec<_> = recorder
+        .wait_for_idle_ui(77, Duration::from_secs(2))
+        .into_iter()
+        .filter_map(|envelope| match envelope {
             RuntimeUiEnvelope::Effect {
                 turn_id,
-                effect:
-                    RuntimeUiEffect::UpsertStepDiagnostics {
-                        diagnostics: update,
-                    },
-            } => {
-                assert_eq!(turn_id, 77);
-                diagnostics.push(*update);
-            }
-            RuntimeUiEnvelope::Effect {
-                turn_id,
-                effect:
-                    RuntimeUiEffect::SetStatusSlot {
-                        slot: StatusSlot::Agent,
-                        value: StatusValue::Label(label),
-                    },
-            } => {
-                assert_eq!(turn_id, 77);
-                assert_eq!(label, "Idle");
-                break;
-            }
-            _ => {}
-        }
-    }
+                effect: RuntimeUiEffect::UpsertStepDiagnostics { diagnostics },
+            } if turn_id == 77 => Some(*diagnostics),
+            _ => None,
+        })
+        .collect();
 
-    assert!(!client.recorded_count_requests().is_empty());
+    assert!(!client.recorded_count_token_requests().is_empty());
     assert!(client.recorded_requests().iter().any(|request| {
         request.cache_last_assistant_turn
             && !request.system_blocks.is_empty()
@@ -4391,19 +5511,31 @@ fn spawn_turn_uses_precise_token_count_and_emits_cache_diagnostics() {
                 .any(|block| block.cache_control.is_some())
     }));
     assert!(diagnostics.iter().any(|update| {
+        update.cache.as_ref().is_some_and(|cache| {
+            cache.token_count_source == super::runtime_ui::TokenCountSource::ProviderCountTokens
+                && cache.request_input_tokens == 321
+                && cache
+                    .cache_breakpoints
+                    .iter()
+                    .any(|anchor| anchor == "tools")
+        })
+    }));
+    assert!(diagnostics.iter().any(|update| {
         update.step_id == EXECUTE_STEP_ID
             && update.cache.as_ref().is_some_and(|cache| {
-                cache.request_input_tokens == 321
-                    && cache.cache_read_input_tokens == Some(60)
+                cache.cache_read_input_tokens == Some(60)
                     && cache.cache_creation_input_tokens == Some(40)
-                    && cache.cache_breakpoints.iter().any(|anchor| anchor == "tools")
+                    && cache
+                        .cache_breakpoints
+                        .iter()
+                        .any(|anchor| anchor == "tools")
             })
     }));
 }
 
 #[test]
 fn spawn_turn_falls_back_to_estimated_token_count_and_records_all_cache_breakpoints() {
-    let client = FailingCountSequencedClient::new(vec![
+    let client = failing_count_sequenced_client(vec![
         ChatResponse {
             id: "scene-1".to_string(),
             model: Some("test-model".to_string()),
@@ -4471,53 +5603,37 @@ fn spawn_turn_falls_back_to_estimated_token_count_and_records_all_cache_breakpoi
         batch_max_requests: omega_core::default_batch_max_requests(),
     })
     .unwrap();
-    let (tx, rx) = mpsc::channel();
+    let recorder = RuntimeEnvelopeRecorder::new();
 
     session
-        .spawn_turn_ui_compat("fix this bug".to_string(), 88, tx)
+        .spawn_turn_with_test_bridge("fix this bug".to_string(), 88, recorder.runtime_bridge())
         .unwrap();
 
-    let mut diagnostics = Vec::new();
-    loop {
-        match rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+    let diagnostics: Vec<_> = recorder
+        .wait_for_idle_ui(88, Duration::from_secs(2))
+        .into_iter()
+        .filter_map(|envelope| match envelope {
             RuntimeUiEnvelope::Effect {
                 turn_id,
-                effect:
-                    RuntimeUiEffect::UpsertStepDiagnostics {
-                        diagnostics: update,
-                    },
-            } => {
-                assert_eq!(turn_id, 88);
-                diagnostics.push(*update);
-            }
-            RuntimeUiEnvelope::Effect {
-                turn_id,
-                effect:
-                    RuntimeUiEffect::SetStatusSlot {
-                        slot: StatusSlot::Agent,
-                        value: StatusValue::Label(label),
-                    },
-            } => {
-                assert_eq!(turn_id, 88);
-                assert_eq!(label, "Idle");
-                break;
-            }
-            _ => {}
-        }
-    }
+                effect: RuntimeUiEffect::UpsertStepDiagnostics { diagnostics },
+            } if turn_id == 88 => Some(*diagnostics),
+            _ => None,
+        })
+        .collect();
 
-    assert!(!client.recorded_count_requests().is_empty());
+    assert!(!client.recorded_count_token_requests().is_empty());
     assert!(diagnostics.iter().any(|update| {
         update.step_id == EXECUTE_STEP_ID
             && update.cache.as_ref().is_some_and(|cache| {
                 cache.token_count_source == super::runtime_ui::TokenCountSource::Estimated
                     && cache.request_input_tokens > 0
-                    && cache.cache_breakpoints == vec![
-                        "tools".to_string(),
-                        "system:stable".to_string(),
-                        "system:summaries".to_string(),
-                        "messages:last_assistant_turn".to_string(),
-                    ]
+                    && cache.cache_breakpoints
+                        == vec![
+                            "tools".to_string(),
+                            "system:stable".to_string(),
+                            "system:summaries".to_string(),
+                            "messages:last_assistant_turn".to_string(),
+                        ]
             })
     }));
 }
@@ -4757,65 +5873,65 @@ fn preview_tool_invocation_formats_bash_description_and_workdir() {
 #[test]
 fn spawn_turn_emits_batch_tool_run_metadata() {
     let client: Arc<SequencedClient> = sequenced_client(vec![
-            ChatResponse {
-                id: "scene-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("{\"recognized_scene_id\":\"feature\"}")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "select-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("{\"selected_workflow_id\":\"feature\"}")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "analysis-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(feature_explore_json())],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "plan-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text(feature_plan_json())],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "execute-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::tool_use(
-                    "tool-1",
-                    "batch",
-                    serde_json::json!({
-                        "requests": [
-                            {"tool": "list_dir", "input": {"path": "."}},
-                            {"tool": "read_file", "input": {"path": "notes.txt", "start_line": 1, "end_line": 1}}
-                        ]
-                    }),
-                )],
-                stop_reason: Some(STOP_REASON_TOOL_USE.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "execute-2".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("execution complete")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-            ChatResponse {
-                id: "report-1".to_string(),
-                model: Some("test-model".to_string()),
-                content: vec![ContentBlock::text("done")],
-                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-                usage: None,
-            },
-        ]);
+        ChatResponse {
+            id: "scene-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"recognized_scene_id\":\"feature\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"selected_workflow_id\":\"feature\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "analysis-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_explore_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "plan-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_plan_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::tool_use(
+                "tool-1",
+                "batch",
+                serde_json::json!({
+                    "requests": [
+                        {"tool": "list_dir", "input": {"path": "."}},
+                        {"tool": "read_file", "input": {"path": "notes.txt", "start_line": 1, "end_line": 1}}
+                    ]
+                }),
+            )],
+            stop_reason: Some(STOP_REASON_TOOL_USE.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-2".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("execution complete")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "report-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("done")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+    ]);
     let client_dyn: DynLlmClient = client;
     let root = std::env::temp_dir().join("omega-agent-session-batch-tool-run-test");
     let _ = std::fs::remove_dir_all(&root);
@@ -4960,9 +6076,7 @@ fn spawn_turn_emits_runtime_message_envelopes_for_streaming_text_and_turn_finish
         },
     ]);
     let client_dyn: DynLlmClient = client;
-    let root = std::env::temp_dir().join("omega-agent-session-runtime-message-chat-test");
-    let _ = std::fs::remove_dir_all(&root);
-    let _ = std::fs::create_dir_all(&root);
+    let root = unique_session_test_root("runtime-message-chat");
     write_review_skill(&root);
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let loaded_catalog = LoadedWorkflowCatalog::load(&root);
@@ -4980,41 +6094,36 @@ fn spawn_turn_emits_runtime_message_envelopes_for_streaming_text_and_turn_finish
         batch_max_requests: omega_core::default_batch_max_requests(),
     })
     .unwrap();
-    let (tx, rx) = mpsc::channel();
+    let recorder = RuntimeEnvelopeRecorder::new();
 
     session
-        .spawn_turn("just chat".to_string(), 31, tx)
+        .spawn_turn_with_test_bridge("just chat".to_string(), 31, recorder.runtime_bridge())
         .unwrap();
 
-    let mut began = Vec::new();
-    let mut appended = Vec::new();
-    let finished = loop {
-        match rx.recv_timeout(Duration::from_secs(2)).unwrap() {
-            RuntimeMessageEnvelope {
-                turn_id,
-                message: RuntimeMessage::Conversation(ConversationMessage::BeginSection { section }),
-            } => {
-                assert_eq!(turn_id, 31);
-                began.push((section.id, section.kind));
-            }
+    let recorded = recorder.wait_for_turn_finished_messages(31, Duration::from_secs(2));
+    let began: Vec<_> =
+        recorded
+            .iter()
+            .filter_map(|envelope| match envelope {
+                RuntimeMessageEnvelope {
+                    turn_id,
+                    message:
+                        RuntimeMessage::Conversation(ConversationMessage::BeginSection { section }),
+                } if *turn_id == 31 => Some((section.id.clone(), section.kind)),
+                _ => None,
+            })
+            .collect();
+    let appended: Vec<_> = recorded
+        .iter()
+        .filter_map(|envelope| match envelope {
             RuntimeMessageEnvelope {
                 turn_id,
                 message:
                     RuntimeMessage::Conversation(ConversationMessage::AppendSection { id, delta }),
-            } => {
-                assert_eq!(turn_id, 31);
-                appended.push((id, delta));
-            }
-            RuntimeMessageEnvelope {
-                turn_id,
-                message: RuntimeMessage::State(StateMessage::TurnFinished),
-            } => {
-                assert_eq!(turn_id, 31);
-                break true;
-            }
-            _ => {}
-        }
-    };
+            } if *turn_id == 31 => Some((id.clone(), delta.clone())),
+            _ => None,
+        })
+        .collect();
 
     assert!(began.iter().any(|entry| {
         entry
@@ -5044,7 +6153,13 @@ fn spawn_turn_emits_runtime_message_envelopes_for_streaming_text_and_turn_finish
                 ResponseSectionDelta::Text("chat answer".to_string()),
             )
     }));
-    assert!(finished);
+    assert!(recorded.iter().any(|envelope| {
+        envelope.turn_id == 31
+            && matches!(
+                envelope.message,
+                RuntimeMessage::State(StateMessage::TurnFinished)
+            )
+    }));
 }
 
 #[test]
@@ -5083,11 +6198,7 @@ fn spawn_turn_emits_runtime_message_tool_activity_and_completion() {
             model: Some("test-model".to_string()),
             content: vec![
                 ContentBlock::text("before <invoke name=\"bash\">ignored</invoke> after"),
-                ContentBlock::tool_use(
-                    "tool-1",
-                    "bash",
-                    serde_json::json!({"command": "echo hi"}),
-                ),
+                ContentBlock::tool_use("tool-1", "bash", serde_json::json!({"command": "echo hi"})),
             ],
             stop_reason: Some(STOP_REASON_TOOL_USE.to_string()),
             usage: None,
@@ -5115,9 +6226,7 @@ fn spawn_turn_emits_runtime_message_tool_activity_and_completion() {
         },
     ]);
     let client_dyn: DynLlmClient = client;
-    let root = std::env::temp_dir().join("omega-agent-session-runtime-message-tool-test");
-    let _ = std::fs::remove_dir_all(&root);
-    let _ = std::fs::create_dir_all(&root);
+    let root = unique_session_test_root("runtime-message-tool");
     write_review_skill(&root);
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let loaded_catalog = LoadedWorkflowCatalog::load(&root);
@@ -5135,60 +6244,44 @@ fn spawn_turn_emits_runtime_message_tool_activity_and_completion() {
         batch_max_requests: omega_core::default_batch_max_requests(),
     })
     .unwrap();
-    let (tx, rx) = mpsc::channel();
+    let recorder = RuntimeEnvelopeRecorder::new();
 
-    session.spawn_turn("hello".to_string(), 32, tx).unwrap();
+    session
+        .spawn_turn_with_test_bridge("hello".to_string(), 32, recorder.runtime_bridge())
+        .unwrap();
 
-    let mut saw_tool_begin = false;
-    let mut saw_tool_complete = false;
-    let mut saw_tool_log = false;
-    loop {
-        match rx.recv_timeout(Duration::from_secs(2)).unwrap() {
-            RuntimeMessageEnvelope {
-                turn_id,
-                message:
-                    RuntimeMessage::Conversation(ConversationMessage::BeginToolRun { tool_run }),
-            } => {
-                assert_eq!(turn_id, 32);
-                assert_eq!(tool_run.id, "tool-1");
-                saw_tool_begin = true;
-            }
-            RuntimeMessageEnvelope {
-                turn_id,
-                message:
-                    RuntimeMessage::Conversation(ConversationMessage::CompleteToolRun { id, status }),
-            } => {
-                assert_eq!(turn_id, 32);
-                assert_eq!(id, "tool-1");
-                assert_eq!(status, ToolRunStatus::Complete);
-                saw_tool_complete = true;
-            }
-            RuntimeMessageEnvelope {
-                turn_id,
-                message:
-                    RuntimeMessage::State(StateMessage::Activity { source, kind, text, .. }),
-            } => {
-                assert_eq!(turn_id, 32);
-                if let RuntimeSource::Tool { .. } = source {
-                    if kind == RuntimeContentKind::Log && text == "$ echo hi" {
-                        saw_tool_log = true;
-                    }
-                }
-            }
-            RuntimeMessageEnvelope {
-                turn_id,
-                message: RuntimeMessage::State(StateMessage::TurnFinished),
-            } => {
-                assert_eq!(turn_id, 32);
-                break;
-            }
-            _ => {}
-        }
-    }
+    let recorded = recorder.wait_for_turn_finished_messages(32, Duration::from_secs(2));
 
-    assert!(saw_tool_begin);
-    assert!(saw_tool_complete);
-    assert!(saw_tool_log);
+    assert!(recorded.iter().any(|envelope| {
+        matches!(
+            envelope,
+            RuntimeMessageEnvelope {
+                turn_id,
+                message: RuntimeMessage::Conversation(ConversationMessage::BeginToolRun { tool_run }),
+            } if *turn_id == 32 && tool_run.id == "tool-1"
+        )
+    }));
+    assert!(recorded.iter().any(|envelope| {
+        matches!(
+            envelope,
+            RuntimeMessageEnvelope {
+                turn_id,
+                message: RuntimeMessage::Conversation(ConversationMessage::CompleteToolRun { id, status }),
+            } if *turn_id == 32 && id == "tool-1" && *status == ToolRunStatus::Complete
+        )
+    }));
+    assert!(recorded.iter().any(|envelope| {
+        matches!(
+            envelope,
+            RuntimeMessageEnvelope {
+                turn_id,
+                message: RuntimeMessage::State(StateMessage::Activity { source, kind, text, .. }),
+            } if *turn_id == 32
+                && matches!(source, RuntimeSource::Tool { .. })
+                && *kind == RuntimeContentKind::Log
+                && text == "$ echo hi"
+        )
+    }));
 }
 
 #[test]

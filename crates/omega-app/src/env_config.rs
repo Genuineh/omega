@@ -170,9 +170,7 @@ fn validate_env_key(key: &str) -> Result<()> {
     }
 
     if !chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_') {
-        anyhow::bail!(
-            "env key '{key}' must contain only ASCII letters, digits, or underscores"
-        );
+        anyhow::bail!("env key '{key}' must contain only ASCII letters, digits, or underscores");
     }
 
     Ok(())
@@ -191,18 +189,19 @@ mod tests {
     use super::{AppEnvConfig, AppEnvConfigSource, DEFAULT_ENV_CONFIG_PATH};
 
     fn temp_root(name: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "omega-env-config-{}-{}",
-            name,
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("omega-env-config-{}-{}", name, std::process::id()));
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).unwrap();
         path
     }
 
     fn unique_env_key(name: &str) -> String {
-        format!("OMEGA_TEST_ENV_{}_{}", name.to_ascii_uppercase(), std::process::id())
+        format!(
+            "OMEGA_TEST_ENV_{}_{}",
+            name.to_ascii_uppercase(),
+            std::process::id()
+        )
     }
 
     #[test]
@@ -274,7 +273,10 @@ mod tests {
 
         let loaded = AppEnvConfig::load_and_apply(&root);
 
-        assert!(matches!(loaded.source, AppEnvConfigSource::FileWithFallback(_)));
+        assert!(matches!(
+            loaded.source,
+            AppEnvConfigSource::FileWithFallback(_)
+        ));
         assert!(loaded.applied_keys.is_empty());
         assert!(loaded.warnings[0].contains("must start with an ASCII letter or underscore"));
     }

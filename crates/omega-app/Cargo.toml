@@ -3,6 +3,10 @@ name = "omega-app"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = []
+document-backend = ["omega-core/document-backend", "omega-session/document-backend"]
+
 [[bin]]
 name = "omega"
 path = "src/main.rs"

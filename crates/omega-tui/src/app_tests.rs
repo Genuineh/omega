@@ -1,13 +1,13 @@
 use omega_session::{
     ActivityTarget, CacheDiagnostics, ContextBudgetDiagnostics, ContextDiagnostics,
     ContextDocumentDiagnostics, ContextMemoryDiagnostics, ContextStoreDiagnostics,
-    ExecuteProgressDiagnostics, HealthScore, OverlayRequest, ResponseSection,
-    ResponseSectionDelta, ResponseSectionKind, ResponseSectionMetadata, RuntimeUiEffect,
-    RuntimeUiMessage, StepContextWrite, StepContextWriteKind, StepDiagnostics,
-    StepInputDiagnostics, StepInputStatus, StepOutputAttemptKind, StepOutputContractMode,
-    StepOutputDiagnostics, StepOutputRecoveryDecision, StepOutputStatus, StepSubflowRef,
-    StepSubflowState, StepSubflowStatus, StepSummarySource, TokenCountSource,
-    ToolRunDetail, UiContent, UiMessageKind, UiSource, UiTarget, WorkflowRunRole,
+    ExecuteProgressDiagnostics, HealthScore, OverlayRequest, ResponseSection, ResponseSectionDelta,
+    ResponseSectionKind, ResponseSectionMetadata, RuntimeUiEffect, RuntimeUiMessage,
+    StepContextWrite, StepContextWriteKind, StepDiagnostics, StepInputDiagnostics, StepInputStatus,
+    StepOutputAttemptKind, StepOutputContractMode, StepOutputDiagnostics,
+    StepOutputRecoveryDecision, StepOutputStatus, StepSubflowRef, StepSubflowState,
+    StepSubflowStatus, StepSummarySource, TokenCountSource, ToolRunDetail, UiContent,
+    UiMessageKind, UiSource, UiTarget, WorkflowRunRole,
 };
 use ratatui::layout::Rect;
 
@@ -159,14 +159,12 @@ fn upserting_step_diagnostics_builds_sidebar_lines() {
         .diagnostics_lines
         .iter()
         .any(|line| line.text.contains("headroom=703")));
-    assert!(app
-        .diagnostics_lines
-        .iter()
-        .any(|line| line.text.contains("context memory turns=2 compact=1 summaries=1")));
-    assert!(app
-        .diagnostics_lines
-        .iter()
-        .any(|line| line.text.contains("context docs files=12 chunks=48 health=needs_attention")));
+    assert!(app.diagnostics_lines.iter().any(|line| line
+        .text
+        .contains("context memory turns=2 compact=1 summaries=1")));
+    assert!(app.diagnostics_lines.iter().any(|line| line
+        .text
+        .contains("context docs files=12 chunks=48 health=needs_attention")));
     assert!(app
         .diagnostics_lines
         .iter()
@@ -199,7 +197,8 @@ fn activating_diagnostics_item_opens_detail_overlay() {
             assert!(detail
                 .lines
                 .iter()
-                .any(|line| line.contains("context_memory: turns_archived=2 compactions_triggered=1")));
+                .any(|line| line
+                    .contains("context_memory: turns_archived=2 compactions_triggered=1")));
             assert!(detail
                 .lines
                 .iter()
@@ -1062,7 +1061,9 @@ fn activating_subflow_header_opens_detail_overlay() {
     let selected_index = app
         .response_display_lines()
         .iter()
-        .position(|line| line.text == "  subflow  execute-2  #risk-2  Validate risk  [running]  repeat 1")
+        .position(|line| {
+            line.text == "  subflow  execute-2  #risk-2  Validate risk  [running]  repeat 1"
+        })
         .unwrap();
     app.response_state.select(Some(selected_index));
 
@@ -1254,7 +1255,9 @@ fn search_overlay_target_can_show_runtime_results_and_hide() {
         turn_id,
         RuntimeUiEffect::ShowOverlay(OverlayRequest {
             target: OverlayTarget::Search,
-            content: UiContent::Text("Mode: hybrid\n1. crates/omega-context/src/lib.rs".to_string()),
+            content: UiContent::Text(
+                "Mode: hybrid\n1. crates/omega-context/src/lib.rs".to_string(),
+            ),
         }),
     ));
 

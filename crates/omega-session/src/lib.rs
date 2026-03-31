@@ -1,11 +1,11 @@
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 
+use omega_context::OmegaContextFacade;
 pub use omega_context::{
     ContextBudgetDiagnostics, ContextDiagnostics, ContextDocumentDiagnostics,
     ContextMemoryDiagnostics, ContextStoreDiagnostics, HealthScore,
 };
-use omega_context::OmegaContextFacade;
 use omega_core::{Agent, CoreSharedTodoManager, DynLlmClient, Message, TodoManager};
 use omega_hooks::HookHost;
 use omega_skills::SkillLoader;
@@ -19,14 +19,16 @@ const CONTEXT_SAFETY_MARGIN_TOKENS: u32 = 2_000;
 const TOKEN_ESTIMATE_DIVISOR: usize = 4;
 const REPAIR_PASS_MAX_ITERATIONS: u32 = 1;
 
+mod hook_adapter;
 mod output;
 mod routing;
-mod runtime_message;
 mod runner;
+mod runtime_message;
 mod runtime_ui;
-mod hook_adapter;
 mod session_state;
 mod skill_catalog;
+#[cfg(any(test, feature = "test-support"))]
+mod test_support;
 mod tool_catalog;
 mod ui_emit;
 
@@ -35,30 +37,31 @@ pub use omega_workflow::{
     FEATURE_WORKFLOW_ID, PLAN_STEP_ID, REPORT_STEP_ID, RESEARCH_SCENE_ID, RESEARCH_WORKFLOW_ID,
     SCENE_RECOGNITION_STEP_ID, SELECT_WORKFLOW_STEP_ID,
 };
-pub use runtime_ui::{
-    ActivityTarget, CacheDiagnostics, OverlayRequest, OverlayTarget, ResponseSection,
-    ResponseSectionDelta, ResponseSectionKind, ResponseSectionMetadata, ResponseSectionState,
-    StepSubflowRef, StepSubflowState, StepSubflowStatus,
-    ExecuteProgressDiagnostics, RuntimeUiBridge, RuntimeUiEffect, RuntimeUiEnvelope,
-    RuntimeUiMessage, RuntimeUiSink, SessionRuntimeContext, StatusSlot, StatusValue,
-    StepContextWrite, StepContextWriteKind, StepDiagnostics, StepInputDiagnostics,
-    StepInputStatus, StepOutputAttemptKind, StepOutputContractMode, StepOutputDiagnostics,
-    StepOutputRecoveryDecision, StepOutputStatus, StepSummarySource, TokenCountSource, ToolRun,
-    ToolRunDetail, ToolRunStatus, UiContent, UiMessageKind, UiPriority, UiSource, UiTarget,
-    WorkflowRunRole,
-};
 pub use runtime_message::{
     ConversationMessage, LegacyRuntimeUiBridge, RuntimeContentKind, RuntimeMessage,
     RuntimeMessageBridge, RuntimeMessageEnvelope, RuntimePriority, RuntimeSource,
     SessionRoutingStatus, SharedRuntimeMessageBridge, StateMessage, WorkflowStepStatus,
 };
+pub use runtime_ui::{
+    ActivityTarget, CacheDiagnostics, ExecuteProgressDiagnostics, OverlayRequest, OverlayTarget,
+    ResponseSection, ResponseSectionDelta, ResponseSectionKind, ResponseSectionMetadata,
+    ResponseSectionState, RuntimeUiBridge, RuntimeUiEffect, RuntimeUiEnvelope, RuntimeUiMessage,
+    RuntimeUiSink, SessionRuntimeContext, StatusSlot, StatusValue, StepContextWrite,
+    StepContextWriteKind, StepDiagnostics, StepInputDiagnostics, StepInputStatus,
+    StepOutputAttemptKind, StepOutputContractMode, StepOutputDiagnostics,
+    StepOutputRecoveryDecision, StepOutputStatus, StepSubflowRef, StepSubflowState,
+    StepSubflowStatus, StepSummarySource, TokenCountSource, ToolRun, ToolRunDetail, ToolRunStatus,
+    UiContent, UiMessageKind, UiPriority, UiSource, UiTarget, WorkflowRunRole,
+};
 pub use skill_catalog::{ResolvedSkillSet, SessionSkillCatalog};
+#[cfg(any(test, feature = "test-support"))]
+pub use test_support::RuntimeEnvelopeRecorder;
 pub use tool_catalog::{ResolvedToolSet, SessionToolCatalog};
 
 #[cfg(test)]
-pub(crate) use output::{parse_json_values, validate_schema_file};
-#[cfg(test)]
 pub(crate) use omega_context::render_output_contract;
+#[cfg(test)]
+pub(crate) use output::{parse_json_values, validate_schema_file};
 #[cfg(test)]
 pub(crate) use routing::{
     latest_user_turn_prefers_research_scene, latest_user_turn_requires_feature_scene,
@@ -244,6 +247,16 @@ impl AgentSession {
         tx: mpsc::Sender<RuntimeUiEnvelope>,
     ) -> anyhow::Result<()> {
         self.spawn_turn_with_bridge(input, turn_id, Arc::new(LegacyRuntimeUiBridge::new(tx)))
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn spawn_turn_with_test_bridge(
+        &self,
+        input: String,
+        turn_id: u64,
+        tx: SharedRuntimeMessageBridge,
+    ) -> anyhow::Result<()> {
+        self.spawn_turn_with_bridge(input, turn_id, tx)
     }
 
     fn spawn_turn_with_bridge(

@@ -95,7 +95,10 @@ impl HookManifestEntry {
 
         let id = manifest.id.trim().to_string();
         if id.is_empty() {
-            bail!("hook manifest {} must declare a non-empty id", manifest_path.display());
+            bail!(
+                "hook manifest {} must declare a non-empty id",
+                manifest_path.display()
+            );
         }
 
         let package = manifest.package.trim().to_string();

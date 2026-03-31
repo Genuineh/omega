@@ -23,6 +23,7 @@ members = [
     "crates/omega-core",
     "crates/omega-session",
     "crates/omega-observability",
+    "crates/omega-test-support",
     "crates/omega-tui",
 ]
 resolver = "2"
@@ -46,6 +47,7 @@ thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tempfile = "3"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 dirs = "6"

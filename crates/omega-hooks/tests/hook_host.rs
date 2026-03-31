@@ -1,12 +1,11 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use omega_hooks::{
     HookAdvanceOutcome, HookDispatchInput, HookEventKind, HookHost, HookSessionContextSnapshot,
-    HookStepKey, HookTodoSnapshot, HookWorkflowRole, DEFAULT_HOOK_MANIFEST_FILE,
-    DEFAULT_HOOKS_DIR,
+    HookStepKey, HookTodoSnapshot, HookWorkflowRole, DEFAULT_HOOKS_DIR, DEFAULT_HOOK_MANIFEST_FILE,
 };
+use omega_test_support::persistent_test_root;
 
 #[test]
 fn hook_host_loads_dynamic_fixture_and_preserves_storage_until_after_step() {
@@ -67,10 +66,7 @@ fn hook_host_loads_dynamic_fixture_and_preserves_storage_until_after_step() {
             },
         )
         .unwrap();
-    assert!(matches!(
-        advance.advance,
-        HookAdvanceOutcome::Deny { .. }
-    ));
+    assert!(matches!(advance.advance, HookAdvanceOutcome::Deny { .. }));
     assert_eq!(
         session
             .hook_storage(&step_key, "todo_managed_execute")
@@ -153,10 +149,7 @@ fn hook_host_dispatches_builtin_todo_managed_execute_without_manifest() {
         )
         .unwrap();
 
-    assert!(matches!(
-        summary.advance,
-        HookAdvanceOutcome::Deny { .. }
-    ));
+    assert!(matches!(summary.advance, HookAdvanceOutcome::Deny { .. }));
 }
 
 fn base_input(event: HookEventKind) -> HookDispatchInput {
@@ -168,6 +161,9 @@ fn base_input(event: HookEventKind) -> HookDispatchInput {
         step_label: "Execute".to_string(),
         step_index: 3,
         step_total: 4,
+        current_item_id: None,
+        item_index: None,
+        item_total: None,
         visible_tools: vec!["bash".to_string(), "todo".to_string()],
         structured_input: None,
         structured_output: None,
@@ -254,12 +250,5 @@ pub extern "C" fn omega_hook_free_string(ptr: *mut c_char) {
 }
 
 fn unique_test_root(name: &str) -> PathBuf {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("omega-hooks-{name}-{unique}"));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
-    root
+    persistent_test_root(&format!("hooks-{name}"))
 }

@@ -5,9 +5,8 @@ use super::{
     LoadedWorkflow, LoadedWorkflowCatalog, OutputRecoveryMode, SceneCatalog, StepInputContract,
     StepLoopContract, StepLoopMode, StepOutputContract, StepSkillRequest, StepToolRequest,
     WorkflowDefinition, WorkflowPrompts, WorkflowSource, CHAT_WORKFLOW_ID,
-    DEFAULT_EXECUTE_SCHEMA_PATH,
-    DEFAULT_EXPLORE_SCHEMA_PATH, DEFAULT_HOOK_MANIFEST_FILE, DEFAULT_HOOKS_DIR,
-    DEFAULT_PLAN_SCHEMA_PATH, DEFAULT_SCENES_PATH,
+    DEFAULT_EXECUTE_SCHEMA_PATH, DEFAULT_EXPLORE_SCHEMA_PATH, DEFAULT_HOOKS_DIR,
+    DEFAULT_HOOK_MANIFEST_FILE, DEFAULT_PLAN_SCHEMA_PATH, DEFAULT_SCENES_PATH,
     DEFAULT_WORKFLOW_PATH, EXECUTE_STEP_ID, EXPLORE_STEP_ID, FEATURE_SCENE_ID, FEATURE_WORKFLOW_ID,
     PLAN_STEP_ID, REPORT_STEP_ID, RESEARCH_SCENE_ID, RESEARCH_WORKFLOW_ID, ROOT_WORKFLOW_ID,
     SCENE_RECOGNITION_STEP_ID,
@@ -125,6 +124,11 @@ fn builtin_explore_and_plan_prompts_include_structured_field_guidance() {
     assert!(prompts
         .prompt_for(PLAN_STEP_ID)
         .is_some_and(|prompt| prompt.contains("Set `goal` to the overall outcome")));
+    assert!(prompts.prompt_for(PLAN_STEP_ID).is_some_and(|prompt| prompt
+        .contains("Return exactly one JSON object and nothing else.")));
+    assert!(prompts
+        .prompt_for(PLAN_STEP_ID)
+        .is_some_and(|prompt| prompt.contains("Do not write a report")));
 }
 
 #[test]
@@ -450,7 +454,8 @@ fn default_feature_workflow_file_documents_hook_manifest_contract() {
 
     let _ = LoadedWorkflowCatalog::load(&root);
 
-    let workflow_text = std::fs::read_to_string(root.join(".omega/workflows/feature.toml")).unwrap();
+    let workflow_text =
+        std::fs::read_to_string(root.join(".omega/workflows/feature.toml")).unwrap();
     assert!(workflow_text.contains("loop_contract = { kind = \"todo_items\""));
     assert!(workflow_text.contains("max_step_repeats = 8"));
     assert!(workflow_text.contains("hooks = [\"todo_managed_execute\"]"));
@@ -474,7 +479,10 @@ fn workflow_file_rejects_invalid_hook_ids() {
         &super::ToolPolicyConfig::builtin_default(),
     )
     .unwrap_err();
-    let messages = error.chain().map(|cause| cause.to_string()).collect::<Vec<_>>();
+    let messages = error
+        .chain()
+        .map(|cause| cause.to_string())
+        .collect::<Vec<_>>();
     assert!(
         messages
             .iter()

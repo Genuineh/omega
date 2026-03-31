@@ -2,18 +2,17 @@ use std::collections::BTreeMap;
 
 use omega_context::{ContextDiagnostics, HealthScore};
 use omega_core::{ChatEvent, CoreToolResult};
-use serde_json::Value;
 use omega_workflow::{WorkflowStep, WorkflowStepState};
+use serde_json::Value;
 
 use crate::runtime_message::{
     ConversationMessage, RuntimeContentKind, RuntimeMessageBridge, RuntimeMessageEnvelope,
     RuntimePriority, RuntimeSource, SessionRoutingStatus, StateMessage, WorkflowStepStatus,
 };
 use crate::runtime_ui::{
-    OverlayRequest, OverlayTarget,
-    ResponseSection, ResponseSectionDelta, ResponseSectionKind, ResponseSectionMetadata,
-    ResponseSectionState, StepSubflowRef, StepSubflowStatus, ToolRun, ToolRunDetail,
-    ToolRunStatus, UiContent, WorkflowRunRole,
+    OverlayRequest, OverlayTarget, ResponseSection, ResponseSectionDelta, ResponseSectionKind,
+    ResponseSectionMetadata, ResponseSectionState, StepSubflowRef, StepSubflowStatus, ToolRun,
+    ToolRunDetail, ToolRunStatus, UiContent, WorkflowRunRole,
 };
 use crate::session_state::SessionContext;
 use crate::{preview_json_value, preview_text};
@@ -110,22 +109,14 @@ fn build_tool_run_detail_lines(
     lines
 }
 
-pub(crate) fn send_begin_tool_run(
-    tx: &dyn RuntimeMessageBridge,
-    turn_id: u64,
-    tool_run: ToolRun,
-) {
+pub(crate) fn send_begin_tool_run(tx: &dyn RuntimeMessageBridge, turn_id: u64, tool_run: ToolRun) {
     tx.send(RuntimeMessageEnvelope::conversation(
         turn_id,
         ConversationMessage::BeginToolRun { tool_run },
     ));
 }
 
-pub(crate) fn send_update_tool_run(
-    tx: &dyn RuntimeMessageBridge,
-    turn_id: u64,
-    tool_run: ToolRun,
-) {
+pub(crate) fn send_update_tool_run(tx: &dyn RuntimeMessageBridge, turn_id: u64, tool_run: ToolRun) {
     tx.send(RuntimeMessageEnvelope::conversation(
         turn_id,
         ConversationMessage::UpdateToolRun { tool_run },
@@ -337,11 +328,7 @@ pub(crate) fn send_tool_call_preview(
     ));
 }
 
-pub(crate) fn send_todo_snapshot(
-    tx: &dyn RuntimeMessageBridge,
-    turn_id: u64,
-    rendered: &str,
-) {
+pub(crate) fn send_todo_snapshot(tx: &dyn RuntimeMessageBridge, turn_id: u64, rendered: &str) {
     tx.send(RuntimeMessageEnvelope::state(
         turn_id,
         StateMessage::TodoSnapshot {
@@ -472,7 +459,8 @@ fn emit_search_observability(
     let query = metadata_string(&tool_result.metadata, &["query"])
         .or_else(|| json_string(tool_input, &["query"]))
         .unwrap_or_else(|| "(unknown)".to_string());
-    let mode = metadata_string(&tool_result.metadata, &["mode"]).unwrap_or_else(|| "keyword".to_string());
+    let mode =
+        metadata_string(&tool_result.metadata, &["mode"]).unwrap_or_else(|| "keyword".to_string());
     let result_count = metadata_u64(&tool_result.metadata, &["result_count"]).unwrap_or(0);
 
     send_system_log_text(
@@ -507,7 +495,7 @@ fn emit_document_observability(
     tool_result: &CoreToolResult,
     context: &ContextDiagnostics,
 ) {
-    let action = metadata_string(&tool_result.metadata, &["action"]) 
+    let action = metadata_string(&tool_result.metadata, &["action"])
         .unwrap_or_else(|| "unknown".to_string());
     let ok = metadata_bool(&tool_result.metadata, &["ok"]).unwrap_or(true);
     let file_count = metadata_u64(&tool_result.metadata, &["file_count"]).unwrap_or(0);
@@ -590,12 +578,17 @@ fn build_document_health_overlay_text(
     context: &ContextDiagnostics,
 ) -> String {
     let health_score = health_score_label(context.document.governance_health).to_string();
-    let structure_violations = metadata_u64(&tool_result.metadata, &["health", "structure_violations"]).unwrap_or(0);
-    let naming_violations = metadata_u64(&tool_result.metadata, &["health", "naming_violations"]).unwrap_or(0);
-    let broken_crossrefs = metadata_u64(&tool_result.metadata, &["health", "broken_crossrefs"]).unwrap_or(0);
+    let structure_violations =
+        metadata_u64(&tool_result.metadata, &["health", "structure_violations"]).unwrap_or(0);
+    let naming_violations =
+        metadata_u64(&tool_result.metadata, &["health", "naming_violations"]).unwrap_or(0);
+    let broken_crossrefs =
+        metadata_u64(&tool_result.metadata, &["health", "broken_crossrefs"]).unwrap_or(0);
     let stale_docs = metadata_u64(&tool_result.metadata, &["health", "stale_docs"]).unwrap_or(0);
-    let missing_frontmatter = metadata_u64(&tool_result.metadata, &["health", "missing_frontmatter"]).unwrap_or(0);
-    let orphaned_docs = metadata_u64(&tool_result.metadata, &["health", "orphaned_docs"]).unwrap_or(0);
+    let missing_frontmatter =
+        metadata_u64(&tool_result.metadata, &["health", "missing_frontmatter"]).unwrap_or(0);
+    let orphaned_docs =
+        metadata_u64(&tool_result.metadata, &["health", "orphaned_docs"]).unwrap_or(0);
 
     format!(
         "Document health\nscore: {}\nindexed_files: {}\nindexed_chunks: {}\nindex_staleness_seconds: {}\nstore_tantivy_bytes: {}\nstore_lance_bytes: {}\ntodo_items_count: {}\nturn_archive_count: {}\nstructure_violations: {}\nnaming_violations: {}\nbroken_crossrefs: {}\nstale_docs: {}\nmissing_frontmatter: {}\norphaned_docs: {}\n\n{}",
@@ -649,11 +642,15 @@ fn json_value_at_path<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> 
 }
 
 fn metadata_string(metadata: &Value, path: &[&str]) -> Option<String> {
-    json_value_at_path(metadata, path)?.as_str().map(ToOwned::to_owned)
+    json_value_at_path(metadata, path)?
+        .as_str()
+        .map(ToOwned::to_owned)
 }
 
 fn json_string(value: &Value, path: &[&str]) -> Option<String> {
-    json_value_at_path(value, path)?.as_str().map(ToOwned::to_owned)
+    json_value_at_path(value, path)?
+        .as_str()
+        .map(ToOwned::to_owned)
 }
 
 fn metadata_u64(metadata: &Value, path: &[&str]) -> Option<u64> {
@@ -672,6 +669,7 @@ pub(crate) struct StepResponseStreamer<'a> {
     primary_section: ResponseSection,
     thinking_section: ResponseSection,
     thinking_started: bool,
+    stream_primary_text: bool,
     primary_sanitizer: ProviderMarkupSanitizer,
     thinking_sanitizer: ProviderMarkupSanitizer,
 }
@@ -686,6 +684,7 @@ impl<'a> StepResponseStreamer<'a> {
         is_final_step: bool,
         scene_id: Option<&str>,
         current_item: Option<&crate::hook_adapter::ExecuteLoopItemContext>,
+        stream_primary_text: bool,
     ) -> Self {
         let primary_step_id = current_item
             .map(|item| item.child_step_id.as_str())
@@ -748,6 +747,7 @@ impl<'a> StepResponseStreamer<'a> {
                 metadata,
             },
             thinking_started: false,
+            stream_primary_text,
             primary_sanitizer: ProviderMarkupSanitizer::default(),
             thinking_sanitizer: ProviderMarkupSanitizer::default(),
         }
@@ -765,7 +765,9 @@ impl<'a> StepResponseStreamer<'a> {
         match event {
             ChatEvent::TextDelta { text } if !text.is_empty() => {
                 let sanitized = self.primary_sanitizer.push(text);
-                self.append_primary_text(&sanitized);
+                if self.stream_primary_text {
+                    self.append_primary_text(&sanitized);
+                }
             }
             ChatEvent::ThinkingDelta { thinking, .. } if !thinking.is_empty() => {
                 let sanitized = self.thinking_sanitizer.push(thinking);
@@ -773,6 +775,10 @@ impl<'a> StepResponseStreamer<'a> {
             }
             _ => {}
         }
+    }
+
+    pub(crate) fn append_final_text(&mut self, text: &str) {
+        self.append_primary_text(text);
     }
 
     pub(crate) fn complete(&mut self) {
@@ -843,7 +849,9 @@ impl<'a> StepResponseStreamer<'a> {
 
     fn flush_pending_sanitized_text(&mut self) {
         let remaining_primary = self.primary_sanitizer.finish();
-        self.append_primary_text(&remaining_primary);
+        if self.stream_primary_text {
+            self.append_primary_text(&remaining_primary);
+        }
 
         let remaining_thinking = self.thinking_sanitizer.finish();
         self.append_thinking_text(&remaining_thinking);

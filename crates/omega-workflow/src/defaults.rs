@@ -314,6 +314,9 @@ Turn the exploration into a concrete execution plan with ordered steps and valid
 Use tools when they materially improve the plan.
 Do not produce the final user-facing answer.
 Produce only the internal plan needed for execution.
+Return exactly one JSON object and nothing else.
+Do not include markdown headings, narrative explanation, report prose, summaries, or code fences before or after the JSON.
+Do not write a report, recommendation section, or final wrap-up.
 The plan must be directly mappable to the todo system.
 Use the explore context, especially key findings, risks, constraints, and affected paths, to decide what should happen next.
 Each task should be actionable, ordered, and small enough to complete or validate in one execution slice.

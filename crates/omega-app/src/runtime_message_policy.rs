@@ -19,19 +19,14 @@ fn apply_conversation(surface: &mut dyn TuiSurface, message: ConversationMessage
     match message {
         ConversationMessage::BeginSection { section } => surface.begin_section(section),
         ConversationMessage::AppendSection { id, delta } => surface.append_section(&id, delta),
-        ConversationMessage::CompleteSection { id, state } => {
-            surface.complete_section(&id, state)
-        }
+        ConversationMessage::CompleteSection { id, state } => surface.complete_section(&id, state),
         ConversationMessage::BeginToolRun { tool_run } => surface.begin_tool_run(tool_run),
         ConversationMessage::UpdateToolRun { tool_run } => surface.update_tool_run(tool_run),
         ConversationMessage::CompleteToolRun { id, status } => {
             surface.complete_tool_run(&id, status)
         }
         ConversationMessage::Text {
-            source,
-            kind,
-            text,
-            ..
+            source, kind, text, ..
         } => match (&source, kind) {
             (RuntimeSource::WorkflowStep { .. }, RuntimeContentKind::Narrative)
             | (RuntimeSource::WorkflowStep { .. }, RuntimeContentKind::Result)
@@ -58,10 +53,7 @@ fn apply_state(surface: &mut dyn TuiSurface, message: StateMessage) {
             surface.upsert_step_subflow(subflow);
         }
         StateMessage::Activity {
-            source,
-            kind,
-            text,
-            ..
+            source, kind, text, ..
         } => surface.add_activity_line(format_activity_line(&source, kind, text)),
         StateMessage::TurnFinished => surface.mark_turn_finished(),
     }
@@ -127,15 +119,14 @@ fn format_activity_line(source: &RuntimeSource, kind: RuntimeContentKind, text: 
 mod tests {
     use omega_session::{
         ContextBudgetDiagnostics, ContextDiagnostics, ContextDocumentDiagnostics,
-        ContextMemoryDiagnostics, ContextStoreDiagnostics, ConversationMessage,
-        HealthScore, OverlayRequest, OverlayTarget, ResponseSection, ResponseSectionDelta,
-        ResponseSectionKind, ResponseSectionMetadata, ResponseSectionState,
-        RuntimeMessageEnvelope, RuntimeSource, SessionRoutingStatus, StateMessage,
-        StepContextWrite, StepContextWriteKind, StepDiagnostics, StepInputDiagnostics,
-        StepInputStatus, StepOutputAttemptKind, StepOutputContractMode,
-        StepOutputDiagnostics, StepOutputRecoveryDecision, StepOutputStatus,
-        StepSubflowState, StepSubflowStatus, StepSummarySource, ToolRun, ToolRunDetail,
-        ToolRunStatus, UiContent, WorkflowRunRole, WorkflowStepStatus,
+        ContextMemoryDiagnostics, ContextStoreDiagnostics, ConversationMessage, HealthScore,
+        OverlayRequest, OverlayTarget, ResponseSection, ResponseSectionDelta, ResponseSectionKind,
+        ResponseSectionMetadata, ResponseSectionState, RuntimeMessageEnvelope, RuntimeSource,
+        SessionRoutingStatus, StateMessage, StepContextWrite, StepContextWriteKind,
+        StepDiagnostics, StepInputDiagnostics, StepInputStatus, StepOutputAttemptKind,
+        StepOutputContractMode, StepOutputDiagnostics, StepOutputRecoveryDecision,
+        StepOutputStatus, StepSubflowState, StepSubflowStatus, StepSummarySource, ToolRun,
+        ToolRunDetail, ToolRunStatus, UiContent, WorkflowRunRole, WorkflowStepStatus,
     };
     use omega_tui::{apply_runtime_message_with_policy, TuiSurface};
 
@@ -175,7 +166,8 @@ mod tests {
 
         fn append_section(&mut self, id: &str, delta: ResponseSectionDelta) {
             let ResponseSectionDelta::Text(text) = delta;
-            self.ops.push(SurfaceOp::AppendSection(id.to_string(), text));
+            self.ops
+                .push(SurfaceOp::AppendSection(id.to_string(), text));
         }
 
         fn complete_section(&mut self, id: &str, state: ResponseSectionState) {
@@ -239,7 +231,8 @@ mod tests {
             let preview = match request.content {
                 UiContent::Text(text) => text,
             };
-            self.ops.push(SurfaceOp::ShowOverlay(request.target, preview));
+            self.ops
+                .push(SurfaceOp::ShowOverlay(request.target, preview));
         }
 
         fn push_agent_message(&mut self, text: &str) {
@@ -475,10 +468,7 @@ mod tests {
                     state: ResponseSectionState::Complete,
                 },
             ),
-            RuntimeMessageEnvelope::state(
-                42,
-                StateMessage::TurnFinished,
-            ),
+            RuntimeMessageEnvelope::state(42, StateMessage::TurnFinished),
         ];
 
         for event in events {
@@ -490,9 +480,7 @@ mod tests {
             surface.ops,
             vec![
                 SurfaceOp::WorkflowStep("feature".to_string(), "plan".to_string()),
-                SurfaceOp::Activity(
-                    "[route] Delegating to child workflow 'feature'.".to_string(),
-                ),
+                SurfaceOp::Activity("[route] Delegating to child workflow 'feature'.".to_string(),),
                 SurfaceOp::BeginSection("turn-42:child:feature:plan".to_string()),
                 SurfaceOp::AppendSection(
                     "turn-42:child:feature:plan".to_string(),
@@ -503,7 +491,9 @@ mod tests {
                 SurfaceOp::CompleteToolRun("tool-1".to_string(), ToolRunStatus::Complete),
                 SurfaceOp::TodoSnapshot("[>] #1: Code".to_string()),
                 SurfaceOp::Diagnostics("child:feature:plan".to_string()),
-                SurfaceOp::Activity("[item] child:feature execute-2 2/5 running #risk-2 r1".to_string()),
+                SurfaceOp::Activity(
+                    "[item] child:feature execute-2 2/5 running #risk-2 r1".to_string()
+                ),
                 SurfaceOp::StepSubflow("execute".to_string(), "execute-2".to_string()),
                 SurfaceOp::CompleteSection(
                     "turn-42:child:feature:plan".to_string(),

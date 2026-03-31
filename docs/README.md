@@ -33,6 +33,7 @@ This directory contains the working documentation set for the Omega Rust project
 | `docs/specs/omega-tui-non-ui-extraction.md` | Specification | Historical Task 15D extraction baseline; keep for boundary rationale, not as the latest runtime-path source of truth |
 | `docs/specs/omega-app-package.md` | Specification | Implemented `omega-app` assembly package and main-entry boundary |
 | `docs/specs/omega-runtime-message-pipeline.md` | Specification | Implemented runtime message pipeline v0.3: session produces frontend-neutral `RuntimeMessageEnvelope`, app owns message policy, TUI keeps runtime shell and engine |
+| `docs/specs/omega-deterministic-test-seams.md` | Specification | Deterministic test seam contract for shared LLM, runtime, process, temp-root, and TUI replay harnesses |
 | `docs/specs/omega-scene-routing.md` | Specification | Planned scene-aware routing layer above execution workflows |
 | `docs/specs/omega-runtime-ui-message-contract.md` | Specification | Implemented legacy/compat `RuntimeUiEnvelope` baseline and historical bridge-to-reducer contract |
 | `docs/specs/omega-step-session-asset-model.md` | Index | Entry point for the split step/session asset model specification |

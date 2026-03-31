@@ -137,11 +137,7 @@ mod tests {
     fn catalog() -> SessionToolCatalog {
         SessionToolCatalog::with_available_tools(
             vec![tool("bash"), tool("read_file")],
-            vec![
-                tool("bash"),
-                tool("read_file"),
-                tool("todo"),
-            ],
+            vec![tool("bash"), tool("read_file"), tool("todo")],
         )
     }
 

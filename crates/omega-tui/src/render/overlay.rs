@@ -261,9 +261,7 @@ pub(super) fn overlay_hint_text(app: &App) -> &'static str {
         Some(OverlayState::Search(_)) => {
             " Search popup: type to filter the focused panel  Enter=keep query  Esc=Close"
         }
-        Some(OverlayState::SearchResults(_)) => {
-            " Search results: ↑/↓ scroll  Esc=Close"
-        }
+        Some(OverlayState::SearchResults(_)) => " Search results: ↑/↓ scroll  Esc=Close",
         Some(OverlayState::Confirm(_)) => {
             " Confirm dialog: ←/→/Tab switch  Enter accepts selected action  Esc=Cancel"
         }

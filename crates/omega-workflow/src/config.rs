@@ -336,7 +336,10 @@ impl StepLoopContractConfig {
     fn into_contract(self, step_id: BuiltinWorkflowStepId) -> Result<StepLoopContract> {
         let source = self.source.trim().to_string();
         if source.is_empty() {
-            bail!("workflow step '{}' loop_contract.source must be non-empty", step_id.as_str());
+            bail!(
+                "workflow step '{}' loop_contract.source must be non-empty",
+                step_id.as_str()
+            );
         }
 
         let child_step_prefix = self

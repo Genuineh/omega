@@ -2,9 +2,9 @@ use std::sync::{mpsc, Arc};
 
 use crate::runtime_ui::{
     OverlayRequest, ResponseSection, ResponseSectionDelta, ResponseSectionState, RuntimeUiEffect,
-    RuntimeUiEnvelope, RuntimeUiMessage, StatusSlot, StatusValue, StepDiagnostics, ToolRun,
-    ToolRunStatus, UiContent, UiMessageKind, UiPriority, UiSource, UiTarget, WorkflowRunRole,
-    StepSubflowStatus,
+    RuntimeUiEnvelope, RuntimeUiMessage, StatusSlot, StatusValue, StepDiagnostics,
+    StepSubflowStatus, ToolRun, ToolRunStatus, UiContent, UiMessageKind, UiPriority, UiSource,
+    UiTarget, WorkflowRunRole,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,12 +37,27 @@ pub enum RuntimeMessage {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConversationMessage {
-    BeginSection { section: ResponseSection },
-    AppendSection { id: String, delta: ResponseSectionDelta },
-    CompleteSection { id: String, state: ResponseSectionState },
-    BeginToolRun { tool_run: ToolRun },
-    UpdateToolRun { tool_run: ToolRun },
-    CompleteToolRun { id: String, status: ToolRunStatus },
+    BeginSection {
+        section: ResponseSection,
+    },
+    AppendSection {
+        id: String,
+        delta: ResponseSectionDelta,
+    },
+    CompleteSection {
+        id: String,
+        state: ResponseSectionState,
+    },
+    BeginToolRun {
+        tool_run: ToolRun,
+    },
+    UpdateToolRun {
+        tool_run: ToolRun,
+    },
+    CompleteToolRun {
+        id: String,
+        status: ToolRunStatus,
+    },
     Text {
         source: RuntimeSource,
         kind: RuntimeContentKind,
@@ -55,12 +70,22 @@ pub enum ConversationMessage {
 pub enum StateMessage {
     WorkflowStep(WorkflowStepStatus),
     ClearWorkflowStep,
-    StepSubflow { subflow: StepSubflowStatus },
-    AgentStatus { label: Option<String> },
+    StepSubflow {
+        subflow: StepSubflowStatus,
+    },
+    AgentStatus {
+        label: Option<String>,
+    },
     SessionRouting(SessionRoutingStatus),
-    TodoSnapshot { rendered: String },
-    ShowOverlay { request: OverlayRequest },
-    Diagnostics { diagnostics: Box<StepDiagnostics> },
+    TodoSnapshot {
+        rendered: String,
+    },
+    ShowOverlay {
+        request: OverlayRequest,
+    },
+    Diagnostics {
+        diagnostics: Box<StepDiagnostics>,
+    },
     Activity {
         source: RuntimeSource,
         kind: RuntimeContentKind,
@@ -186,10 +211,9 @@ impl RuntimeMessageBridge for LegacyRuntimeUiBridge {
 
 pub fn legacy_runtime_ui_envelopes(envelope: RuntimeMessageEnvelope) -> Vec<RuntimeUiEnvelope> {
     match envelope.message {
-        RuntimeMessage::Conversation(message) => legacy_ui_envelopes_from_conversation(
-            envelope.turn_id,
-            message,
-        ),
+        RuntimeMessage::Conversation(message) => {
+            legacy_ui_envelopes_from_conversation(envelope.turn_id, message)
+        }
         RuntimeMessage::State(message) => legacy_ui_envelopes_from_state(envelope.turn_id, message),
     }
 }
@@ -411,7 +435,10 @@ mod tests {
 
         assert_eq!(
             envelopes,
-            vec![RuntimeUiEnvelope::effect(9, RuntimeUiEffect::ShowOverlay(request))]
+            vec![RuntimeUiEnvelope::effect(
+                9,
+                RuntimeUiEffect::ShowOverlay(request)
+            )]
         );
     }
 }
