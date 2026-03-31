@@ -1,6 +1,10 @@
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 
+pub use omega_context::{
+    ContextBudgetDiagnostics, ContextDiagnostics, ContextDocumentDiagnostics,
+    ContextMemoryDiagnostics, ContextStoreDiagnostics, HealthScore,
+};
 use omega_context::OmegaContextFacade;
 use omega_core::{Agent, CoreSharedTodoManager, DynLlmClient, Message, TodoManager};
 use omega_hooks::HookHost;

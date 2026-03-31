@@ -1,10 +1,11 @@
 use omega_session::{
-    ResponseSection, ResponseSectionDelta, ResponseSectionState, SessionRoutingStatus,
-    StatusSlot, StatusValue, StepDiagnostics, StepSubflowStatus, ToolRun, ToolRunStatus,
-    WorkflowStepStatus,
+    OverlayRequest, ResponseSection, ResponseSectionDelta, ResponseSectionState,
+    RuntimeUiEffect, RuntimeUiEnvelope, SessionRoutingStatus, StatusSlot, StatusValue,
+    StepDiagnostics, StepSubflowStatus, ToolRun, ToolRunStatus, WorkflowStepStatus,
 };
 
 use crate::app::{App, MsgKind};
+use crate::reducer::TuiUpdateReducer;
 
 pub trait TuiSurface {
     fn begin_section(&mut self, section: ResponseSection);
@@ -23,6 +24,7 @@ pub trait TuiSurface {
     fn upsert_diagnostics(&mut self, diagnostics: StepDiagnostics);
     fn upsert_step_subflow(&mut self, subflow: StepSubflowStatus);
     fn add_activity_line(&mut self, line: String);
+    fn show_overlay(&mut self, request: OverlayRequest);
     fn push_agent_message(&mut self, text: &str);
     fn push_error_message(&mut self, text: &str);
     fn mark_turn_finished(&mut self);
@@ -123,6 +125,16 @@ impl TuiSurface for TuiEngine<'_> {
 
     fn add_activity_line(&mut self, line: String) {
         self.app.add_log(line);
+    }
+
+    fn show_overlay(&mut self, request: OverlayRequest) {
+        TuiUpdateReducer::apply(
+            self.app,
+            RuntimeUiEnvelope::effect(
+                self.app.active_turn_id,
+                RuntimeUiEffect::ShowOverlay(request),
+            ),
+        );
     }
 
     fn push_agent_message(&mut self, text: &str) {

@@ -13,7 +13,7 @@ use omega_session::{
 
 use crate::overlay::{
     ConfirmChoice, ConfirmIntent, ConfirmOverlay, DetailOverlay, InputPromptOverlay, OverlayState,
-    PickerOverlay, SearchOverlay,
+    PickerOverlay, SearchOverlay, SearchResultsOverlay,
 };
 use crate::reducer::{session_status_from_status, workflow_summary_from_status, TuiUpdateReducer};
 use crate::sidebar::{SidebarSection, SidebarState};
@@ -354,6 +354,7 @@ impl App {
     pub fn hide_overlay_target(&mut self, target: OverlayTarget) {
         match (target, self.overlay.as_ref()) {
             (OverlayTarget::Search, Some(OverlayState::Search(_)))
+            | (OverlayTarget::Search, Some(OverlayState::SearchResults(_)))
             | (OverlayTarget::Confirm, Some(OverlayState::Confirm(_)))
             | (OverlayTarget::Detail, Some(OverlayState::Detail(_)))
             | (OverlayTarget::Picker, Some(OverlayState::Picker(_)))
@@ -884,6 +885,22 @@ impl App {
         }));
         self.clear_leader_pending();
         self.status_notice = Some("Search popup opened for the focused panel.".to_string());
+    }
+
+    pub fn open_search_results_overlay(
+        &mut self,
+        title: impl Into<String>,
+        lines: Vec<String>,
+    ) {
+        self.overlay = Some(OverlayState::SearchResults(SearchResultsOverlay {
+            origin_panel: self.focused_panel,
+            title: title.into(),
+            lines,
+            scroll: 0,
+            dismiss_on_backdrop: true,
+        }));
+        self.clear_leader_pending();
+        self.status_notice = Some("Search results overlay opened.".to_string());
     }
 
     pub fn open_interrupt_confirm_overlay(&mut self, turn_id: u64) {

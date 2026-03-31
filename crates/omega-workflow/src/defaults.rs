@@ -118,7 +118,7 @@ hooks = ["todo_managed_execute"]
 tool_request = { mode = "block", groups = ["feature_non_execute_blocked"] }
 skill_request = { mode = "match_task" }
 input_contract = { mode = "required", sources = ["plan"] }
-output_contract = { mode = "optional", format = "json", schema_path = ".omega/schema/step/execute.json", max_retries = 2, recovery_mode = "repair_then_regenerate" }
+output_contract = { mode = "required", format = "json", schema_path = ".omega/schema/step/execute.json", max_retries = 2, recovery_mode = "repair_then_regenerate" }
 enabled = true
 
 [[steps]]
@@ -172,7 +172,7 @@ hooks = ["todo_managed_execute"]
 tool_request = { mode = "inherit" }
 skill_request = { mode = "match_task" }
 input_contract = { mode = "required", sources = ["plan"] }
-output_contract = { mode = "optional", format = "json", schema_path = ".omega/schema/step/execute.json", max_retries = 2, recovery_mode = "repair_then_regenerate" }
+output_contract = { mode = "required", format = "json", schema_path = ".omega/schema/step/execute.json", max_retries = 2, recovery_mode = "repair_then_regenerate" }
 enabled = true
 
 [[steps]]
@@ -228,7 +228,7 @@ hooks = ["todo_managed_execute"]
 tool_request = { mode = "inherit" }
 skill_request = { mode = "match_task" }
 input_contract = { mode = "required", sources = ["plan"] }
-output_contract = { mode = "optional", format = "json", schema_path = ".omega/schema/step/execute.json", max_retries = 2, recovery_mode = "repair_then_regenerate" }
+output_contract = { mode = "required", format = "json", schema_path = ".omega/schema/step/execute.json", max_retries = 2, recovery_mode = "repair_then_regenerate" }
 enabled = true
 
 [[steps]]
@@ -335,7 +335,7 @@ If this workflow is read-only, gather evidence instead of editing files and leav
 In a read-only workflow, mark the current todo item as completed once you have gathered the requested evidence or finished the read-only validation for that item.
 Do not keep a read-only todo item open merely because no files changed.
 Prefer `apply_patch` and `create_file` for workspace edits, and use structured read-only tools for inspection. Use `bash` mainly for validation commands or gaps the structured tools do not cover.
-If you emit structured output, report completed_tasks, open_tasks, validation_results, and changed_paths using the configured JSON contract.
+When the step has a JSON execute contract, emit that JSON object and include completed_tasks, open_tasks, validation_results, and changed_paths for the current item.
 "#;
 
 const DEFAULT_REPORT_PROMPT: &str = r#"You are in the report phase.

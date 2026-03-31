@@ -1,5 +1,7 @@
 use std::sync::{mpsc, Arc};
 
+use omega_context::ContextDiagnostics;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeUiEnvelope {
     Message {
@@ -247,6 +249,7 @@ pub struct StepDiagnostics {
     pub step_label: String,
     pub index: usize,
     pub total: usize,
+    pub context: Option<ContextDiagnostics>,
     pub cache: Option<CacheDiagnostics>,
     pub execute_progress: Option<ExecuteProgressDiagnostics>,
     pub input: StepInputDiagnostics,

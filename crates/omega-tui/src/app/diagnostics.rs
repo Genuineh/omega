@@ -1,7 +1,8 @@
 use omega_observability::strip_ansi;
 use omega_session::{
-    CacheDiagnostics, StepContextWrite, StepContextWriteKind, StepDiagnostics, StepInputStatus,
-    StepOutputAttemptKind, StepOutputRecoveryDecision, StepOutputStatus,
+    CacheDiagnostics, ContextDiagnostics, HealthScore, StepContextWrite,
+    StepContextWriteKind, StepDiagnostics, StepInputStatus, StepOutputAttemptKind,
+    StepOutputRecoveryDecision, StepOutputStatus,
 };
 
 use super::{App, DiagnosticsLine, Panel};
@@ -155,6 +156,23 @@ fn sanitize_cache_diagnostics(mut diagnostics: CacheDiagnostics) -> CacheDiagnos
     diagnostics
 }
 
+fn context_budget_percent(cache: &CacheDiagnostics) -> Option<u8> {
+    if cache.budget_input_tokens == 0 {
+        return None;
+    }
+
+    Some(
+        ((cache.request_input_tokens.saturating_mul(100)) / cache.budget_input_tokens)
+            .min(100) as u8,
+    )
+}
+
+fn context_headroom_tokens(cache: &CacheDiagnostics) -> u32 {
+    cache
+        .budget_input_tokens
+        .saturating_sub(cache.request_input_tokens)
+}
+
 fn build_diagnostics_lines(diagnostics: &StepDiagnostics) -> Vec<DiagnosticsLine> {
     let header = format!(
         "{}:{} {}/{} {}",
@@ -207,17 +225,53 @@ fn build_diagnostics_lines(diagnostics: &StepDiagnostics) -> Vec<DiagnosticsLine
     ];
     if let Some(cache) = diagnostics.cache.as_ref() {
         let mut cache_line = format!(
-            "  cache {} · input={}/{} · anchors={}",
+            "  cache {} · budget={}{} · anchors={}",
             cache.token_count_source.as_str(),
-            cache.request_input_tokens,
-            cache.budget_input_tokens,
+            context_budget_percent(cache)
+                .map(|percent| format!("{percent}%"))
+                .unwrap_or_else(|| "n/a".to_string()),
+            if cache.budget_input_tokens > 0 {
+                format!(" · headroom={}", context_headroom_tokens(cache))
+            } else {
+                String::new()
+            },
             cache.cache_breakpoints.len()
         );
         if let Some(hit_ratio) = cache.cache_hit_ratio_percent {
             cache_line.push_str(&format!(" · hit={}%", hit_ratio));
         }
+        cache_line = cache_line.replace("%,", "%");
         lines.push(DiagnosticsLine {
             text: cache_line,
+            diagnostic_id: Some(diagnostics.id.clone()),
+        });
+    }
+    if let Some(context) = diagnostics.context.as_ref() {
+        lines.push(DiagnosticsLine {
+            text: format!(
+                "  context memory turns={} compact={} summaries={}",
+                context.memory.total_turns_archived,
+                context.memory.compactions_triggered,
+                context.memory.current_summary_count
+            ),
+            diagnostic_id: Some(diagnostics.id.clone()),
+        });
+        lines.push(DiagnosticsLine {
+            text: format!(
+                "  context docs files={} chunks={} health={}",
+                context.document.total_files_indexed,
+                context.document.total_chunks,
+                context_health_label(context)
+            ),
+            diagnostic_id: Some(diagnostics.id.clone()),
+        });
+        lines.push(DiagnosticsLine {
+            text: format!(
+                "  context store todo={} tantivy={} lance={}",
+                context.store.todo_items_count,
+                context.store.tantivy_index_size_bytes,
+                context.store.lance_db_size_bytes
+            ),
             diagnostic_id: Some(diagnostics.id.clone()),
         });
     }
@@ -331,6 +385,13 @@ fn build_step_diagnostics_detail_lines(diagnostics: &StepDiagnostics) -> Vec<Str
             cache.request_input_tokens,
             cache.budget_input_tokens
         ));
+        if let Some(percent) = context_budget_percent(cache) {
+            lines.push(format!("context_budget_percent: {percent}"));
+        }
+        lines.push(format!(
+            "context_headroom_tokens: {}",
+            context_headroom_tokens(cache)
+        ));
         lines.push(format!(
             "cache_breakpoints: {}",
             if cache.cache_breakpoints.is_empty() {
@@ -351,6 +412,41 @@ fn build_step_diagnostics_detail_lines(diagnostics: &StepDiagnostics) -> Vec<Str
         if let Some(hit_ratio) = cache.cache_hit_ratio_percent {
             lines.push(format!("cache_hit_ratio_percent: {hit_ratio}"));
         }
+    }
+
+    if let Some(context) = diagnostics.context.as_ref() {
+        lines.push(format!(
+            "context_budget: request_tokens={} budget_tokens={} headroom_tokens={} usage_percent={} selected_summaries={}/{}",
+            context.budget.request_input_tokens,
+            context.budget.budget_input_tokens,
+            context.budget.headroom_tokens,
+            context.budget.usage_percent,
+            context.budget.selected_summary_count,
+            context.budget.available_summary_count,
+        ));
+        lines.push(format!(
+            "context_memory: turns_archived={} compactions_triggered={} current_summary_tokens={} current_summary_count={} compression_ratio_avg_percent={}",
+            context.memory.total_turns_archived,
+            context.memory.compactions_triggered,
+            context.memory.current_summary_tokens,
+            context.memory.current_summary_count,
+            context.memory.compression_ratio_avg_percent,
+        ));
+        lines.push(format!(
+            "context_document: files={} chunks={} embeddings={} staleness_seconds={} governance_health={}",
+            context.document.total_files_indexed,
+            context.document.total_chunks,
+            context.document.total_embeddings,
+            context.document.index_staleness_seconds,
+            context_health_label(context),
+        ));
+        lines.push(format!(
+            "context_store: todo_items={} turn_archive_count={} tantivy_index_size_bytes={} lance_db_size_bytes={}",
+            context.store.todo_items_count,
+            context.store.turn_archive_count,
+            context.store.tantivy_index_size_bytes,
+            context.store.lance_db_size_bytes,
+        ));
     }
 
     if let Some(progress) = diagnostics.execute_progress.as_ref() {
@@ -490,6 +586,15 @@ fn diagnostics_output_recovery_decision_label(
         StepOutputRecoveryDecision::Regenerate => "regenerate",
         StepOutputRecoveryDecision::FallbackTextRouting => "fallback-text-routing",
         StepOutputRecoveryDecision::Abort => "abort",
+    }
+}
+
+fn context_health_label(context: &ContextDiagnostics) -> &'static str {
+    match context.document.governance_health {
+        Some(HealthScore::Good) => "good",
+        Some(HealthScore::NeedsAttention) => "needs_attention",
+        Some(HealthScore::Critical) => "critical",
+        None => "unknown",
     }
 }
 

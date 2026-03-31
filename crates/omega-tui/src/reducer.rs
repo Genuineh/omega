@@ -145,6 +145,13 @@ impl TuiUpdateReducer {
         match request {
             OverlayRequest {
                 target: OverlayTarget::Search,
+                content: UiContent::Text(text),
+            } if !text.trim().is_empty() => app.open_search_results_overlay(
+                " Search Results ",
+                text.lines().map(str::to_string).collect(),
+            ),
+            OverlayRequest {
+                target: OverlayTarget::Search,
                 ..
             } => app.open_search_overlay(),
             OverlayRequest {

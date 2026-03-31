@@ -1,5 +1,7 @@
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use omega_client::{
@@ -104,7 +106,7 @@ pub struct OutputRepairContextRequest {
     pub failure: OutputRepairFailure,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ContextTokenCountSource {
     ProviderCountTokens,
     Estimated,
@@ -119,7 +121,7 @@ impl ContextTokenCountSource {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextCacheDiagnostics {
     pub token_count_source: ContextTokenCountSource,
     pub request_input_tokens: u32,
@@ -166,7 +168,51 @@ pub struct CompactionResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub struct ContextDiagnostics;
+pub struct ContextDiagnostics {
+    pub budget: ContextBudgetDiagnostics,
+    pub cache: Option<ContextCacheDiagnostics>,
+    pub memory: ContextMemoryDiagnostics,
+    pub document: ContextDocumentDiagnostics,
+    pub store: ContextStoreDiagnostics,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ContextBudgetDiagnostics {
+    pub budget_input_tokens: u32,
+    pub request_input_tokens: u32,
+    pub headroom_tokens: u32,
+    pub usage_percent: u8,
+    pub selected_summary_count: u32,
+    pub available_summary_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ContextMemoryDiagnostics {
+    pub total_turns_archived: u64,
+    pub compactions_triggered: u64,
+    pub last_compaction_at: Option<u64>,
+    pub current_summary_tokens: u32,
+    pub current_summary_count: u32,
+    pub compression_ratio_avg_percent: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ContextDocumentDiagnostics {
+    pub total_files_indexed: u64,
+    pub total_chunks: u64,
+    pub total_embeddings: u64,
+    pub index_staleness_seconds: u64,
+    pub governance_health: Option<HealthScore>,
+    pub last_health_check: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ContextStoreDiagnostics {
+    pub lance_db_size_bytes: u64,
+    pub tantivy_index_size_bytes: u64,
+    pub todo_items_count: u32,
+    pub turn_archive_count: u32,
+}
 
 pub trait ContextTokenCounter: Send + Sync {
     fn count_request_tokens(&self, request: ChatRequest) -> Result<u32>;
@@ -204,6 +250,14 @@ pub trait DocumentGovernanceService: Send + Sync {
 pub trait ContextDiagnosticsProvider: Send + Sync {
     fn context_diagnostics(&self) -> ContextDiagnostics;
     fn cache_diagnostics(&self) -> Option<ContextCacheDiagnostics>;
+    fn record_context_assembly(
+        &self,
+        cache: &ContextCacheDiagnostics,
+        selected_step_summaries: &[ContextStepSummary],
+        total_available_summaries: usize,
+    );
+    fn record_document_scan(&self, scan: &ScanResult);
+    fn record_document_health(&self, health: &DocumentHealthReport);
 }
 
 pub struct OmegaContextFacade {
@@ -216,8 +270,9 @@ pub struct OmegaContextFacade {
 
 impl OmegaContextFacade {
     pub fn local(root: PathBuf) -> Self {
+        let diagnostics_root = root.clone();
         let documents = Arc::new(OmegaDocument::new(root));
-        let diagnostics = Arc::new(LocalDiagnostics::default());
+        let diagnostics = Arc::new(LocalDiagnostics::new(diagnostics_root));
         Self {
             assembler: Arc::new(DefaultContextAssembler),
             memory: Arc::new(LocalMemoryService::default()),
@@ -383,17 +438,172 @@ impl DocumentGovernanceService for LocalDocumentGovernanceService {
     }
 }
 
-#[derive(Default)]
-struct LocalDiagnostics;
+#[derive(Debug, Default)]
+struct DiagnosticsState {
+    budget: ContextBudgetDiagnostics,
+    cache: Option<ContextCacheDiagnostics>,
+    memory: ContextMemoryDiagnostics,
+    document: ContextDocumentDiagnostics,
+    last_scan_at: Option<u64>,
+    compression_ratio_total_percent: u64,
+    compression_ratio_samples: u64,
+}
+
+struct LocalDiagnostics {
+    root: PathBuf,
+    state: Mutex<DiagnosticsState>,
+}
+
+impl LocalDiagnostics {
+    fn new(root: PathBuf) -> Self {
+        Self {
+            root,
+            state: Mutex::new(DiagnosticsState::default()),
+        }
+    }
+
+    fn store_diagnostics(&self, turn_archive_count: u32) -> ContextStoreDiagnostics {
+        ContextStoreDiagnostics {
+            lance_db_size_bytes: dir_size_bytes(&self.root.join(".omega/store/lance")),
+            tantivy_index_size_bytes: dir_size_bytes(&self.root.join(".omega/store/tantivy")),
+            todo_items_count: count_jsonl_items(&self.root.join(".omega/store/todos.jsonl")),
+            turn_archive_count,
+        }
+    }
+}
 
 impl ContextDiagnosticsProvider for LocalDiagnostics {
     fn context_diagnostics(&self) -> ContextDiagnostics {
-        ContextDiagnostics
+        let state = self.state.lock().unwrap();
+        let document = ContextDocumentDiagnostics {
+            index_staleness_seconds: state
+                .last_scan_at
+                .map(|timestamp| current_unix_timestamp().saturating_sub(timestamp))
+                .unwrap_or(0),
+            ..state.document.clone()
+        };
+        let store = self.store_diagnostics(state.memory.total_turns_archived as u32);
+        ContextDiagnostics {
+            budget: state.budget.clone(),
+            cache: state.cache.clone(),
+            memory: state.memory.clone(),
+            document,
+            store,
+        }
     }
 
     fn cache_diagnostics(&self) -> Option<ContextCacheDiagnostics> {
-        None
+        self.state.lock().unwrap().cache.clone()
     }
+
+    fn record_context_assembly(
+        &self,
+        cache: &ContextCacheDiagnostics,
+        selected_step_summaries: &[ContextStepSummary],
+        total_available_summaries: usize,
+    ) {
+        let mut state = self.state.lock().unwrap();
+        let selected_summary_tokens = selected_step_summaries
+            .iter()
+            .map(|summary| summary.estimated_tokens)
+            .sum::<u32>();
+        let selected_summary_count = selected_step_summaries.len() as u32;
+        let available_summary_count = total_available_summaries as u32;
+        let headroom_tokens = cache
+            .budget_input_tokens
+            .saturating_sub(cache.request_input_tokens);
+        let usage_percent = if cache.budget_input_tokens == 0 {
+            0
+        } else {
+            ((cache.request_input_tokens.saturating_mul(100)) / cache.budget_input_tokens)
+                .min(100) as u8
+        };
+
+        state.budget = ContextBudgetDiagnostics {
+            budget_input_tokens: cache.budget_input_tokens,
+            request_input_tokens: cache.request_input_tokens,
+            headroom_tokens,
+            usage_percent,
+            selected_summary_count,
+            available_summary_count,
+        };
+        state.cache = Some(cache.clone());
+        state.memory.total_turns_archived = available_summary_count as u64;
+        state.memory.current_summary_tokens = selected_summary_tokens;
+        state.memory.current_summary_count = selected_summary_count;
+
+        if available_summary_count > 0 {
+            let compression_ratio_percent = ((selected_summary_count.saturating_mul(100))
+                / available_summary_count)
+                .min(100) as u8;
+            state.compression_ratio_total_percent = state
+                .compression_ratio_total_percent
+                .saturating_add(compression_ratio_percent as u64);
+            state.compression_ratio_samples = state.compression_ratio_samples.saturating_add(1);
+            state.memory.compression_ratio_avg_percent = (state
+                .compression_ratio_total_percent
+                / state.compression_ratio_samples.max(1)) as u8;
+        }
+
+        if total_available_summaries > selected_step_summaries.len() {
+            state.memory.compactions_triggered = state.memory.compactions_triggered.saturating_add(1);
+            state.memory.last_compaction_at = Some(current_unix_timestamp());
+        }
+    }
+
+    fn record_document_scan(&self, scan: &ScanResult) {
+        let mut state = self.state.lock().unwrap();
+        state.document.total_files_indexed = scan.files_indexed as u64;
+        state.document.total_chunks = scan.chunks_indexed as u64;
+        state.document.total_embeddings = scan.chunks_indexed as u64;
+        state.last_scan_at = Some(current_unix_timestamp());
+    }
+
+    fn record_document_health(&self, health: &DocumentHealthReport) {
+        let mut state = self.state.lock().unwrap();
+        state.document.governance_health = Some(health.overall_health);
+        state.document.last_health_check = Some(current_unix_timestamp());
+        state.document.total_files_indexed = state
+            .document
+            .total_files_indexed
+            .max(health.total_docs as u64);
+    }
+}
+
+fn current_unix_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+fn dir_size_bytes(path: &Path) -> u64 {
+    let Ok(metadata) = fs::metadata(path) else {
+        return 0;
+    };
+    if metadata.is_file() {
+        return metadata.len();
+    }
+
+    let Ok(entries) = fs::read_dir(path) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|entry| dir_size_bytes(&entry.path()))
+        .sum()
+}
+
+fn count_jsonl_items(path: &Path) -> u32 {
+    fs::read_to_string(path)
+        .ok()
+        .map(|contents| {
+            contents
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .count() as u32
+        })
+        .unwrap_or(0)
 }
 
 pub struct ContextToolRegistry {
@@ -470,6 +680,8 @@ impl ToolHandler for SearchCodebaseHandler {
         let input: SearchCodebaseInput = serde_json::from_value(input).map_err(|error| {
             anyhow::anyhow!("invalid search_codebase input: {error}")
         })?;
+        let scan = self.facade.query.scan_workspace()?;
+        self.facade.diagnostics.record_document_scan(&scan);
         let query = SearchQuery {
             text: Some(input.query.clone()),
             mode: input.mode.unwrap_or(SearchMode::Hybrid),
@@ -482,7 +694,14 @@ impl ToolHandler for SearchCodebaseHandler {
         Ok(ToolResult::success(output)
             .with_preview(format!("{} result(s) for '{}'", results.len(), input.query))
             .with_metadata(json!({
+                "query": input.query,
+                "mode": input.mode.unwrap_or(SearchMode::Hybrid),
                 "result_count": results.len(),
+                "scan": {
+                    "files_indexed": scan.files_indexed,
+                    "chunks_indexed": scan.chunks_indexed,
+                    "deleted_marked": scan.deleted_marked,
+                },
             })))
     }
 }
@@ -544,16 +763,42 @@ impl ToolHandler for ManageDocumentHandler {
         let input: ManageDocumentInput = serde_json::from_value(input).map_err(|error| {
             anyhow::anyhow!("invalid manage_document input: {error}")
         })?;
+        let action = input.action.clone();
+        let scan = matches!(action.as_str(), "health_check" | "list")
+            .then(|| self.facade.query.scan_workspace())
+            .transpose()?;
         let op = input.into_op()?;
         let result = self.facade.governance.manage_document(op)?;
+        if let Some(scan) = scan.as_ref() {
+            self.facade.diagnostics.record_document_scan(scan);
+        }
+        if let Some(health) = result.health.as_ref() {
+            self.facade.diagnostics.record_document_health(health);
+        }
         let output = serde_json::to_string_pretty(&result)?;
         let tool_result = ToolResult::success(output)
             .with_preview(result.message.clone())
             .with_metadata(json!({
+                "action": action,
                 "ok": result.ok,
                 "has_plan": result.plan.is_some(),
                 "file_count": result.files.len(),
                 "warning_count": result.warnings.len(),
+                "health": result.health.as_ref().map(|health| json!({
+                    "overall_health": health.overall_health,
+                    "structure_violations": health.structure_violations.len(),
+                    "naming_violations": health.naming_violations.len(),
+                    "orphaned_docs": health.orphaned_docs.len(),
+                    "broken_crossrefs": health.broken_crossrefs.len(),
+                    "stale_docs": health.stale_docs.len(),
+                    "missing_frontmatter": health.missing_frontmatter.len(),
+                    "total_docs": health.total_docs,
+                })),
+                "scan": scan.as_ref().map(|scan| json!({
+                    "files_indexed": scan.files_indexed,
+                    "chunks_indexed": scan.chunks_indexed,
+                    "deleted_marked": scan.deleted_marked,
+                })),
             }));
         Ok(if result.ok {
             tool_result
@@ -1168,7 +1413,9 @@ mod tests {
     use super::{
         render_output_contract, ContextAssembler, ContextExecuteItem, ContextRouting, ContextSession,
         ContextStep, ContextTokenCounter, ContextWorkflowRole, DefaultContextAssembler,
-        OutputRepairContextRequest, OutputRepairFailure, StepContextRequest,
+        DocumentHealthReport, HealthScore, OmegaContextFacade, OutputRepairContextRequest,
+        OutputRepairFailure,
+        ScanResult, StepContextRequest,
     };
 
     struct FixedTokenCounter;
@@ -1427,5 +1674,47 @@ mod tests {
         assert!(rendered.contains("mode: required"));
         assert!(rendered.contains("format: json"));
         assert!(rendered.contains("rules: respond with a single JSON object"));
+    }
+
+    #[test]
+    fn local_diagnostics_snapshot_tracks_context_and_document_metrics() {
+        let facade = OmegaContextFacade::local(PathBuf::from("/tmp/omega-context-diagnostics"));
+        let assembled = DefaultContextAssembler
+            .assemble_step_context(step_request(), &FixedTokenCounter)
+            .unwrap();
+
+        facade.diagnostics.record_context_assembly(
+            &assembled.cache_diagnostics,
+            &assembled.selected_step_summaries,
+            3,
+        );
+        facade.diagnostics.record_document_scan(&ScanResult {
+            files_indexed: 12,
+            chunks_indexed: 48,
+            deleted_marked: 0,
+            manifest_path: ".omega/store/files.jsonl".to_string(),
+            keyword_index_path: ".omega/store/tantivy".to_string(),
+        });
+        facade.diagnostics.record_document_health(&DocumentHealthReport {
+            total_docs: 12,
+            structure_violations: Vec::new(),
+            naming_violations: Vec::new(),
+            orphaned_docs: Vec::new(),
+            broken_crossrefs: Vec::new(),
+            stale_docs: Vec::new(),
+            missing_frontmatter: Vec::new(),
+            overall_health: HealthScore::NeedsAttention,
+        });
+
+        let diagnostics = facade.diagnostics.context_diagnostics();
+        assert_eq!(diagnostics.budget.request_input_tokens, 320);
+        assert_eq!(diagnostics.budget.selected_summary_count, 1);
+        assert_eq!(diagnostics.budget.available_summary_count, 3);
+        assert_eq!(diagnostics.memory.total_turns_archived, 3);
+        assert_eq!(diagnostics.memory.compactions_triggered, 1);
+        assert_eq!(diagnostics.document.total_files_indexed, 12);
+        assert_eq!(diagnostics.document.total_chunks, 48);
+        assert_eq!(diagnostics.document.governance_health, Some(HealthScore::NeedsAttention));
+        assert_eq!(diagnostics.cache, Some(assembled.cache_diagnostics));
     }
 }

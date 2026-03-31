@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
+use omega_context::{ContextDiagnostics, HealthScore};
 use omega_core::{ChatEvent, CoreToolResult};
+use serde_json::Value;
 use omega_workflow::{WorkflowStep, WorkflowStepState};
 
 use crate::runtime_message::{
@@ -8,9 +10,10 @@ use crate::runtime_message::{
     RuntimePriority, RuntimeSource, SessionRoutingStatus, StateMessage, WorkflowStepStatus,
 };
 use crate::runtime_ui::{
+    OverlayRequest, OverlayTarget,
     ResponseSection, ResponseSectionDelta, ResponseSectionKind, ResponseSectionMetadata,
     ResponseSectionState, StepSubflowRef, StepSubflowStatus, ToolRun, ToolRunDetail,
-    ToolRunStatus, WorkflowRunRole,
+    ToolRunStatus, UiContent, WorkflowRunRole,
 };
 use crate::session_state::SessionContext;
 use crate::{preview_json_value, preview_text};
@@ -347,6 +350,40 @@ pub(crate) fn send_todo_snapshot(
     ));
 }
 
+pub(crate) fn send_show_overlay(
+    tx: &dyn RuntimeMessageBridge,
+    turn_id: u64,
+    request: OverlayRequest,
+) {
+    tx.send(RuntimeMessageEnvelope::state(
+        turn_id,
+        StateMessage::ShowOverlay { request },
+    ));
+}
+
+pub(crate) fn maybe_emit_context_observability(
+    tx: &dyn RuntimeMessageBridge,
+    turn_id: u64,
+    tool_name: &str,
+    tool_input: &Value,
+    tool_result: &CoreToolResult,
+    context: &ContextDiagnostics,
+) {
+    if tool_result.is_error() {
+        return;
+    }
+
+    emit_index_scan_activity(tx, turn_id, &tool_result.metadata, context);
+
+    match tool_name {
+        "search_codebase" => {
+            emit_search_observability(tx, turn_id, tool_input, tool_result, context)
+        }
+        "manage_document" => emit_document_observability(tx, turn_id, tool_result, context),
+        _ => {}
+    }
+}
+
 pub(crate) fn send_begin_response_section(
     tx: &dyn RuntimeMessageBridge,
     turn_id: u64,
@@ -423,6 +460,208 @@ pub(crate) fn send_routing_log(tx: &dyn RuntimeMessageBridge, turn_id: u64, text
             priority: None,
         },
     ));
+}
+
+fn emit_search_observability(
+    tx: &dyn RuntimeMessageBridge,
+    turn_id: u64,
+    tool_input: &Value,
+    tool_result: &CoreToolResult,
+    context: &ContextDiagnostics,
+) {
+    let query = metadata_string(&tool_result.metadata, &["query"])
+        .or_else(|| json_string(tool_input, &["query"]))
+        .unwrap_or_else(|| "(unknown)".to_string());
+    let mode = metadata_string(&tool_result.metadata, &["mode"]).unwrap_or_else(|| "keyword".to_string());
+    let result_count = metadata_u64(&tool_result.metadata, &["result_count"]).unwrap_or(0);
+
+    send_system_log_text(
+        tx,
+        turn_id,
+        &format!(
+            "context.search query={query:?} mode={mode} results={result_count} files={} chunks={} stale={}s",
+            context.document.total_files_indexed,
+            context.document.total_chunks,
+            context.document.index_staleness_seconds,
+        ),
+    );
+    send_show_overlay(
+        tx,
+        turn_id,
+        OverlayRequest {
+            target: OverlayTarget::Search,
+            content: UiContent::Text(build_search_overlay_text(
+                &query,
+                &mode,
+                result_count,
+                &tool_result.output,
+                context,
+            )),
+        },
+    );
+}
+
+fn emit_document_observability(
+    tx: &dyn RuntimeMessageBridge,
+    turn_id: u64,
+    tool_result: &CoreToolResult,
+    context: &ContextDiagnostics,
+) {
+    let action = metadata_string(&tool_result.metadata, &["action"]) 
+        .unwrap_or_else(|| "unknown".to_string());
+    let ok = metadata_bool(&tool_result.metadata, &["ok"]).unwrap_or(true);
+    let file_count = metadata_u64(&tool_result.metadata, &["file_count"]).unwrap_or(0);
+    let warning_count = metadata_u64(&tool_result.metadata, &["warning_count"]).unwrap_or(0);
+    let issues = document_issue_count(&tool_result.metadata);
+    let summary = format!(
+        "document.{action} ok={ok} files={file_count} warnings={warning_count} issues={issues} health={} indexed_files={} todo={}",
+        health_score_label(context.document.governance_health),
+        context.document.total_files_indexed,
+        context.store.todo_items_count,
+    );
+
+    if warning_count > 0 || issues > 0 || !ok {
+        send_warning_text(tx, turn_id, &summary);
+    } else {
+        send_system_log_text(tx, turn_id, &summary);
+    }
+
+    if action == "health_check" {
+        send_show_overlay(
+            tx,
+            turn_id,
+            OverlayRequest {
+                target: OverlayTarget::Detail,
+                content: UiContent::Text(build_document_health_overlay_text(tool_result, context)),
+            },
+        );
+    }
+}
+
+fn emit_index_scan_activity(
+    tx: &dyn RuntimeMessageBridge,
+    turn_id: u64,
+    metadata: &Value,
+    context: &ContextDiagnostics,
+) {
+    let files_indexed = metadata_u64(metadata, &["scan", "files_indexed"])
+        .unwrap_or(context.document.total_files_indexed);
+    if files_indexed == 0 {
+        return;
+    }
+    let chunks_indexed = metadata_u64(metadata, &["scan", "chunks_indexed"])
+        .unwrap_or(context.document.total_chunks);
+    let deleted_marked = metadata_u64(metadata, &["scan", "deleted_marked"]).unwrap_or(0);
+
+    send_system_log_text(
+        tx,
+        turn_id,
+        &format!(
+            "context.index files={} chunks={} deleted={} stale={}s tantivy={} lance={}",
+            files_indexed,
+            chunks_indexed,
+            deleted_marked,
+            context.document.index_staleness_seconds,
+            context.store.tantivy_index_size_bytes,
+            context.store.lance_db_size_bytes,
+        ),
+    );
+}
+
+fn build_search_overlay_text(
+    query: &str,
+    mode: &str,
+    result_count: u64,
+    output: &str,
+    context: &ContextDiagnostics,
+) -> String {
+    format!(
+        "Search results\nquery: {query}\nmode: {mode}\nresults: {result_count}\nindexed_files: {}\nindexed_chunks: {}\nindex_staleness_seconds: {}\nstore_tantivy_bytes: {}\nstore_lance_bytes: {}\n\n{output}",
+        context.document.total_files_indexed,
+        context.document.total_chunks,
+        context.document.index_staleness_seconds,
+        context.store.tantivy_index_size_bytes,
+        context.store.lance_db_size_bytes,
+    )
+}
+
+fn build_document_health_overlay_text(
+    tool_result: &CoreToolResult,
+    context: &ContextDiagnostics,
+) -> String {
+    let health_score = health_score_label(context.document.governance_health).to_string();
+    let structure_violations = metadata_u64(&tool_result.metadata, &["health", "structure_violations"]).unwrap_or(0);
+    let naming_violations = metadata_u64(&tool_result.metadata, &["health", "naming_violations"]).unwrap_or(0);
+    let broken_crossrefs = metadata_u64(&tool_result.metadata, &["health", "broken_crossrefs"]).unwrap_or(0);
+    let stale_docs = metadata_u64(&tool_result.metadata, &["health", "stale_docs"]).unwrap_or(0);
+    let missing_frontmatter = metadata_u64(&tool_result.metadata, &["health", "missing_frontmatter"]).unwrap_or(0);
+    let orphaned_docs = metadata_u64(&tool_result.metadata, &["health", "orphaned_docs"]).unwrap_or(0);
+
+    format!(
+        "Document health\nscore: {}\nindexed_files: {}\nindexed_chunks: {}\nindex_staleness_seconds: {}\nstore_tantivy_bytes: {}\nstore_lance_bytes: {}\ntodo_items_count: {}\nturn_archive_count: {}\nstructure_violations: {}\nnaming_violations: {}\nbroken_crossrefs: {}\nstale_docs: {}\nmissing_frontmatter: {}\norphaned_docs: {}\n\n{}",
+        health_score,
+        context.document.total_files_indexed,
+        context.document.total_chunks,
+        context.document.index_staleness_seconds,
+        context.store.tantivy_index_size_bytes,
+        context.store.lance_db_size_bytes,
+        context.store.todo_items_count,
+        context.store.turn_archive_count,
+        structure_violations,
+        naming_violations,
+        broken_crossrefs,
+        stale_docs,
+        missing_frontmatter,
+        orphaned_docs,
+        tool_result.output,
+    )
+}
+
+fn health_score_label(score: Option<HealthScore>) -> &'static str {
+    match score {
+        Some(HealthScore::Good) => "good",
+        Some(HealthScore::NeedsAttention) => "needs_attention",
+        Some(HealthScore::Critical) => "critical",
+        None => "unknown",
+    }
+}
+
+fn document_issue_count(metadata: &Value) -> u64 {
+    [
+        ["health", "structure_violations"],
+        ["health", "naming_violations"],
+        ["health", "broken_crossrefs"],
+        ["health", "stale_docs"],
+        ["health", "missing_frontmatter"],
+        ["health", "orphaned_docs"],
+    ]
+    .into_iter()
+    .filter_map(|path| metadata_u64(metadata, &path))
+    .sum()
+}
+
+fn json_value_at_path<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    let mut current = value;
+    for segment in path {
+        current = current.get(*segment)?;
+    }
+    Some(current)
+}
+
+fn metadata_string(metadata: &Value, path: &[&str]) -> Option<String> {
+    json_value_at_path(metadata, path)?.as_str().map(ToOwned::to_owned)
+}
+
+fn json_string(value: &Value, path: &[&str]) -> Option<String> {
+    json_value_at_path(value, path)?.as_str().map(ToOwned::to_owned)
+}
+
+fn metadata_u64(metadata: &Value, path: &[&str]) -> Option<u64> {
+    json_value_at_path(metadata, path)?.as_u64()
+}
+
+fn metadata_bool(metadata: &Value, path: &[&str]) -> Option<bool> {
+    json_value_at_path(metadata, path)?.as_bool()
 }
 
 pub(crate) struct StepResponseStreamer<'a> {
@@ -753,5 +992,169 @@ impl ProviderMarkupSanitizer {
         } else {
             std::mem::take(&mut self.carry)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+
+    use omega_context::{
+        ContextBudgetDiagnostics, ContextDiagnostics, ContextDocumentDiagnostics,
+        ContextMemoryDiagnostics, ContextStoreDiagnostics,
+    };
+    use omega_core::CoreToolResult;
+    use serde_json::json;
+
+    use super::maybe_emit_context_observability;
+    use crate::runtime_message::{RuntimeMessage, RuntimeMessageEnvelope, StateMessage};
+    use crate::{OverlayTarget, UiContent};
+
+    fn drain_envelopes(rx: &mpsc::Receiver<RuntimeMessageEnvelope>) -> Vec<RuntimeMessageEnvelope> {
+        let mut envelopes = Vec::new();
+        while let Ok(envelope) = rx.try_recv() {
+            envelopes.push(envelope);
+        }
+        envelopes
+    }
+
+    fn sample_context_diagnostics() -> ContextDiagnostics {
+        ContextDiagnostics {
+            budget: ContextBudgetDiagnostics {
+                budget_input_tokens: 1024,
+                request_input_tokens: 321,
+                headroom_tokens: 703,
+                usage_percent: 31,
+                selected_summary_count: 1,
+                available_summary_count: 2,
+            },
+            cache: None,
+            memory: ContextMemoryDiagnostics {
+                total_turns_archived: 2,
+                compactions_triggered: 1,
+                last_compaction_at: Some(1),
+                current_summary_tokens: 144,
+                current_summary_count: 1,
+                compression_ratio_avg_percent: 50,
+            },
+            document: ContextDocumentDiagnostics {
+                total_files_indexed: 12,
+                total_chunks: 48,
+                total_embeddings: 48,
+                index_staleness_seconds: 4,
+                governance_health: Some(omega_context::HealthScore::NeedsAttention),
+                last_health_check: Some(2),
+            },
+            store: ContextStoreDiagnostics {
+                lance_db_size_bytes: 4096,
+                tantivy_index_size_bytes: 2048,
+                todo_items_count: 3,
+                turn_archive_count: 2,
+            },
+        }
+    }
+
+    #[test]
+    fn search_observability_emits_index_log_and_search_overlay() {
+        let (tx, rx) = mpsc::channel();
+        let tool_result = CoreToolResult::success(
+            r#"[{"path":"docs/specs/omega-context-management.md","score":0.9}]"#,
+        )
+        .with_preview("1 result")
+        .with_metadata(json!({
+            "query": "context management",
+            "mode": "hybrid",
+            "result_count": 1,
+            "scan": {
+                "files_indexed": 12,
+                "chunks_indexed": 48,
+                "deleted_marked": 0
+            }
+        }));
+
+        maybe_emit_context_observability(
+            &tx,
+            7,
+            "search_codebase",
+            &json!({ "query": "context management" }),
+            &tool_result,
+            &sample_context_diagnostics(),
+        );
+
+        let envelopes = drain_envelopes(&rx);
+        assert!(envelopes.iter().any(|envelope| matches!(
+            &envelope.message,
+            RuntimeMessage::State(StateMessage::Activity { text, .. })
+                if text.contains("context.index files=12 chunks=48 deleted=0")
+                    && text.contains("tantivy=2048")
+        )));
+        assert!(envelopes.iter().any(|envelope| matches!(
+            &envelope.message,
+            RuntimeMessage::State(StateMessage::Activity { text, .. })
+                if text.contains("context.search") && text.contains("hybrid")
+        )));
+        assert!(envelopes.iter().any(|envelope| matches!(
+            &envelope.message,
+            RuntimeMessage::State(StateMessage::ShowOverlay { request })
+                if request.target == OverlayTarget::Search
+                    && matches!(&request.content, UiContent::Text(text) if text.contains("query: context management") && text.contains("results: 1") && text.contains("store_lance_bytes: 4096"))
+        )));
+    }
+
+    #[test]
+    fn document_health_observability_emits_warning_and_detail_overlay() {
+        let (tx, rx) = mpsc::channel();
+        let tool_result = CoreToolResult::success(
+            json!({
+                "health": {
+                    "overall_health": "needs_attention",
+                    "broken_crossrefs": ["docs/README.md -> missing.md"]
+                }
+            })
+            .to_string(),
+        )
+        .with_preview("health check")
+        .with_metadata(json!({
+            "action": "health_check",
+            "ok": true,
+            "file_count": 3,
+            "warning_count": 1,
+            "health": {
+                "overall_health": "needs_attention",
+                "structure_violations": 0,
+                "naming_violations": 0,
+                "broken_crossrefs": 1,
+                "stale_docs": 0,
+                "missing_frontmatter": 0,
+                "orphaned_docs": 0
+            },
+            "scan": {
+                "files_indexed": 3,
+                "chunks_indexed": 9,
+                "deleted_marked": 0
+            }
+        }));
+
+        maybe_emit_context_observability(
+            &tx,
+            9,
+            "manage_document",
+            &json!({}),
+            &tool_result,
+            &sample_context_diagnostics(),
+        );
+
+        let envelopes = drain_envelopes(&rx);
+        assert!(envelopes.iter().any(|envelope| matches!(
+            &envelope.message,
+            RuntimeMessage::State(StateMessage::Activity { text, .. })
+                if text.contains("document.health") && text.contains("issues=1")
+        )));
+        assert!(envelopes.iter().any(|envelope| matches!(
+            &envelope.message,
+            RuntimeMessage::State(StateMessage::ShowOverlay { request })
+                if request.target == OverlayTarget::Detail
+                    && matches!(&request.content, UiContent::Text(text) if text.contains("Document health") && text.contains("broken_crossrefs: 1") && text.contains("score: needs_attention") && text.contains("todo_items_count: 3"))
+        )));
     }
 }

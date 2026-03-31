@@ -51,6 +51,7 @@ fn apply_state(surface: &mut dyn TuiSurface, message: StateMessage) {
         StateMessage::AgentStatus { label: None } => surface.clear_agent_status(),
         StateMessage::SessionRouting(routing) => surface.set_session_routing(routing),
         StateMessage::TodoSnapshot { rendered } => surface.set_todo_snapshot(&rendered),
+        StateMessage::ShowOverlay { request } => surface.show_overlay(request),
         StateMessage::Diagnostics { diagnostics } => surface.upsert_diagnostics(*diagnostics),
         StateMessage::StepSubflow { subflow } => {
             surface.add_activity_line(format_step_subflow_line(&subflow));
@@ -125,13 +126,16 @@ fn format_activity_line(source: &RuntimeSource, kind: RuntimeContentKind, text: 
 #[cfg(test)]
 mod tests {
     use omega_session::{
-        ConversationMessage, ResponseSection, ResponseSectionDelta, ResponseSectionKind,
-        ResponseSectionMetadata, ResponseSectionState, RuntimeMessageEnvelope, RuntimeSource,
-        SessionRoutingStatus, StateMessage, StepContextWrite, StepContextWriteKind,
-        StepDiagnostics, StepInputDiagnostics, StepInputStatus, StepOutputAttemptKind,
-        StepOutputContractMode, StepOutputDiagnostics, StepOutputRecoveryDecision,
-        StepOutputStatus, StepSubflowState, StepSubflowStatus, StepSummarySource, ToolRun,
-        ToolRunDetail, ToolRunStatus, WorkflowRunRole, WorkflowStepStatus,
+        ContextBudgetDiagnostics, ContextDiagnostics, ContextDocumentDiagnostics,
+        ContextMemoryDiagnostics, ContextStoreDiagnostics, ConversationMessage,
+        HealthScore, OverlayRequest, OverlayTarget, ResponseSection, ResponseSectionDelta,
+        ResponseSectionKind, ResponseSectionMetadata, ResponseSectionState,
+        RuntimeMessageEnvelope, RuntimeSource, SessionRoutingStatus, StateMessage,
+        StepContextWrite, StepContextWriteKind, StepDiagnostics, StepInputDiagnostics,
+        StepInputStatus, StepOutputAttemptKind, StepOutputContractMode,
+        StepOutputDiagnostics, StepOutputRecoveryDecision, StepOutputStatus,
+        StepSubflowState, StepSubflowStatus, StepSummarySource, ToolRun, ToolRunDetail,
+        ToolRunStatus, UiContent, WorkflowRunRole, WorkflowStepStatus,
     };
     use omega_tui::{apply_runtime_message_with_policy, TuiSurface};
 
@@ -153,6 +157,7 @@ mod tests {
         Diagnostics(String),
         StepSubflow(String, String),
         Activity(String),
+        ShowOverlay(OverlayTarget, String),
         AgentText(String),
         ErrorText(String),
         TurnFinished,
@@ -230,6 +235,13 @@ mod tests {
             self.ops.push(SurfaceOp::Activity(line));
         }
 
+        fn show_overlay(&mut self, request: OverlayRequest) {
+            let preview = match request.content {
+                UiContent::Text(text) => text,
+            };
+            self.ops.push(SurfaceOp::ShowOverlay(request.target, preview));
+        }
+
         fn push_agent_message(&mut self, text: &str) {
             self.ops.push(SurfaceOp::AgentText(text.to_string()));
         }
@@ -252,6 +264,39 @@ mod tests {
             step_label: "Plan".to_string(),
             index: 2,
             total: 4,
+            context: Some(ContextDiagnostics {
+                budget: ContextBudgetDiagnostics {
+                    budget_input_tokens: 1024,
+                    request_input_tokens: 321,
+                    headroom_tokens: 703,
+                    usage_percent: 31,
+                    selected_summary_count: 1,
+                    available_summary_count: 2,
+                },
+                cache: None,
+                memory: ContextMemoryDiagnostics {
+                    total_turns_archived: 2,
+                    compactions_triggered: 1,
+                    last_compaction_at: Some(1),
+                    current_summary_tokens: 144,
+                    current_summary_count: 1,
+                    compression_ratio_avg_percent: 50,
+                },
+                document: ContextDocumentDiagnostics {
+                    total_files_indexed: 12,
+                    total_chunks: 48,
+                    total_embeddings: 48,
+                    index_staleness_seconds: 4,
+                    governance_health: Some(HealthScore::NeedsAttention),
+                    last_health_check: Some(2),
+                },
+                store: ContextStoreDiagnostics {
+                    lance_db_size_bytes: 4096,
+                    tantivy_index_size_bytes: 2048,
+                    todo_items_count: 3,
+                    turn_archive_count: 2,
+                },
+            }),
             cache: None,
             execute_progress: None,
             input: StepInputDiagnostics {
@@ -516,6 +561,35 @@ mod tests {
                 SurfaceOp::ErrorText("boom".to_string()),
                 SurfaceOp::Activity("[tool] $ echo hi".to_string()),
             ]
+        );
+    }
+
+    #[test]
+    fn policy_routes_show_overlay_state_messages_to_surface() {
+        let policy = DefaultRuntimeMessagePolicy;
+        let mut surface = RecordingSurface::default();
+
+        let _ = apply_runtime_message_with_policy(
+            7,
+            RuntimeMessageEnvelope::state(
+                7,
+                StateMessage::ShowOverlay {
+                    request: OverlayRequest {
+                        target: OverlayTarget::Search,
+                        content: UiContent::Text("results".to_string()),
+                    },
+                },
+            ),
+            &policy,
+            &mut surface,
+        );
+
+        assert_eq!(
+            surface.ops,
+            vec![SurfaceOp::ShowOverlay(
+                OverlayTarget::Search,
+                "results".to_string(),
+            )]
         );
     }
 }

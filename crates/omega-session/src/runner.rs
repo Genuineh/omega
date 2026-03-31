@@ -3,15 +3,15 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use omega_context::{
-    ContextCacheDiagnostics, ContextExecuteItem, ContextRouting, ContextSession, ContextStep,
-    ContextStepSummary, ContextTokenCountSource, ContextTokenCounter, ContextWorkflowRole,
-    OmegaContextFacade, OutputRepairContextRequest, OutputRepairFailure,
-    StepContextRequest,
+    ContextCacheDiagnostics, ContextDiagnostics, ContextExecuteItem, ContextRouting,
+    ContextSession, ContextStep, ContextStepSummary, ContextTokenCountSource,
+    ContextTokenCounter, ContextWorkflowRole, OmegaContextFacade,
+    OutputRepairContextRequest, OutputRepairFailure, StepContextRequest,
 };
 use omega_core::{Agent, ChatRequest, CoreSharedTodoManager, DynLlmClient, TodoItem, TodoStatus};
 use omega_hooks::{HookAdvanceOutcome, HookHost};
 use omega_workflow::{
-    OutputRecoveryMode, SceneCatalog, StepInputContract, StepLoopContract,
+    DataFormat, OutputRecoveryMode, SceneCatalog, StepInputContract, StepLoopContract,
     StepOutputContract, WorkflowCatalog, WorkflowPromptCatalog, WorkflowPrompts, WorkflowStep,
     EXECUTE_STEP_ID, FEATURE_SCENE_ID, FEATURE_WORKFLOW_ID, PLAN_STEP_ID,
     RESEARCH_WORKFLOW_ID, ROOT_WORKFLOW_ID, SCENE_RECOGNITION_STEP_ID,
@@ -33,9 +33,9 @@ use crate::routing::{
 };
 use crate::session_state::{SessionContext, StepSummary};
 use crate::ui_emit::{
-    send_routing_log, send_session_status, send_step_text, send_system_log_text,
-    send_step_subflow_status, send_todo_snapshot, send_warning_text, send_workflow_step,
-    StepResponseStreamer, ToolRunTracker,
+    maybe_emit_context_observability, send_routing_log, send_session_status, send_step_text,
+    send_system_log_text, send_step_subflow_status, send_todo_snapshot, send_warning_text,
+    send_workflow_step, StepResponseStreamer, ToolRunTracker,
 };
 use crate::{
     CacheDiagnostics, ExecuteProgressDiagnostics, ResolvedSkillSet, ResolvedToolSet,
@@ -56,6 +56,7 @@ pub(crate) struct StepExecutionInput {
     pub(crate) resolved_tools: ResolvedToolSet,
     pub(crate) resolved_skills: ResolvedSkillSet,
     pub(crate) system_blocks: Vec<omega_core::SystemBlock>,
+    pub(crate) context_diagnostics: ContextDiagnostics,
     pub(crate) cache_diagnostics: CacheDiagnostics,
     pub(crate) session_context: SessionContext,
     pub(crate) structured_input: Option<Value>,
@@ -166,14 +167,13 @@ impl OutputValidationFailure {
         }
     }
 
-    pub(crate) fn extracted_json_preview(&self) -> Option<String> {
+    fn extracted_json_preview(&self) -> Option<String> {
         self.extracted_json
             .as_ref()
-            .map(|value| crate::preview_json_value(value, 600))
+            .map(|value| crate::preview_json_value(value, 300))
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum StepTransition {
     Continue,
@@ -652,6 +652,12 @@ impl<'a> WorkflowTurnRunner<'a> {
                 step_result.structured_output.as_ref(),
             );
 
+            let progress_completion_source = self.execute_completion_source(
+                &step,
+                current_execute_item.as_ref(),
+                step_result.structured_output.as_ref(),
+            )?;
+
             step_result.transition = match self.apply_before_advance_gate(
                 &step,
                 step_result.transition.clone(),
@@ -664,6 +670,36 @@ impl<'a> WorkflowTurnRunner<'a> {
             ) {
                 Ok(transition) => transition,
                 Err(error) => {
+                    self.send_step_output_diagnostics(
+                        &diagnostic_context,
+                        &step_input,
+                        OutputDiagnosticState {
+                            status: output_status,
+                            attempt_kind: current_attempt_kind,
+                            structured_output: step_result.structured_output.as_ref(),
+                            usage: last_usage.as_ref(),
+                            attempts: validation_attempts,
+                            retry_count: validation_attempt,
+                            max_retries: max_validation_retries,
+                            validation_error: matches!(output_status, StepOutputStatus::Invalid)
+                                .then_some(last_validation_error.as_deref())
+                                .flatten(),
+                            previous_response_preview: matches!(output_status, StepOutputStatus::Invalid)
+                                .then_some(
+                                    last_validation_failure
+                                        .as_ref()
+                                        .map(|failure| failure.previous_response_preview.as_str()),
+                                )
+                                .flatten(),
+                            recovery_decision: None,
+                            session_writes: step_result.session_writes.clone(),
+                        },
+                        ExecuteLoopProgressState {
+                            current_item: current_execute_item.clone(),
+                            repeat_count: current_item_repeat_count,
+                            completion_source: progress_completion_source.clone(),
+                        },
+                    );
                     if let Some(current_item) = current_execute_item.as_ref() {
                         self.emit_step_subflow_status(
                             workflow_id,
@@ -679,12 +715,6 @@ impl<'a> WorkflowTurnRunner<'a> {
                     return Err(error);
                 }
             };
-
-            let progress_completion_source = self.execute_completion_source(
-                &step,
-                current_execute_item.as_ref(),
-                step_result.structured_output.as_ref(),
-            )?;
 
             step_result.transition = self.apply_execute_loop_progression(
                 &step,
@@ -857,6 +887,7 @@ impl<'a> WorkflowTurnRunner<'a> {
         let hook_error = Arc::new(Mutex::new(None::<String>));
         let usage = Arc::new(Mutex::new(None::<omega_core::Usage>));
         let mut cancel_turn_rx = self.cancel_turn_rx.clone();
+        let context_facade = Arc::clone(self.context_facade);
 
         let stage_text = self.handle.block_on(agent.run_loop_with_events_until_turn_change(
             {
@@ -865,6 +896,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                 let tool_runs = tool_runs.clone();
                 let hook_runtime = hook_runtime.clone();
                 let hook_error = hook_error.clone();
+            let context_facade = context_facade.clone();
                 move |tool_use_id, name, tool_input, tool_result| {
                     let command = if name == "bash" {
                         tool_input
@@ -899,6 +931,16 @@ impl<'a> WorkflowTurnRunner<'a> {
                     if name == "todo" && !tool_result.is_error() {
                         send_todo_snapshot(&tx_callback, turn_id, &tool_result.output);
                     }
+
+                    let context_diagnostics = context_facade.diagnostics.context_diagnostics();
+                    maybe_emit_context_observability(
+                        &tx_callback,
+                        turn_id,
+                        name,
+                        tool_input,
+                        tool_result,
+                        &context_diagnostics,
+                    );
 
                     if let Some(hook_runtime) = &hook_runtime {
                         if let Err(error) =
@@ -995,6 +1037,11 @@ impl<'a> WorkflowTurnRunner<'a> {
             .context_facade
             .assembler
             .assemble_step_context(step_request, &token_counter)?;
+        self.context_facade.diagnostics.record_context_assembly(
+            &assembled.cache_diagnostics,
+            &assembled.selected_step_summaries,
+            session_context.step_summaries.len(),
+        );
         self.log_context_assembly(
             step,
             session_context,
@@ -1007,6 +1054,7 @@ impl<'a> WorkflowTurnRunner<'a> {
             resolved_tools,
             resolved_skills,
             system_blocks: assembled.system_blocks,
+            context_diagnostics: self.context_facade.diagnostics.context_diagnostics(),
             cache_diagnostics: cache_diagnostics_from_context(&assembled.cache_diagnostics),
             session_context: SessionContext {
                 latest_user_turn: session_context.latest_user_turn.clone(),
@@ -1158,6 +1206,14 @@ impl<'a> WorkflowTurnRunner<'a> {
             total_available_summaries = session_context.step_summaries.len(),
             "step context summary budget resolved"
         );
+
+        if let Some(summary) = build_context_compaction_log(
+            session_context.step_summaries.len(),
+            selected_summaries,
+            cache_diagnostics,
+        ) {
+            send_system_log_text(&*self.tx_result, self.turn_id, &summary);
+        }
     }
 
     fn todo_snapshot_for_step(
@@ -1209,6 +1265,7 @@ impl<'a> WorkflowTurnRunner<'a> {
         );
         self.send_step_diagnostics_effect(build_step_diagnostics(
             context,
+            Some(step_input.context_diagnostics.clone()),
             Some(step_input.cache_diagnostics.clone()),
             self.build_execute_progress_diagnostics(context.step, &progress_state),
             build_step_input_diagnostics(step_input),
@@ -1241,6 +1298,7 @@ impl<'a> WorkflowTurnRunner<'a> {
         );
         self.send_step_diagnostics_effect(build_step_diagnostics(
             context,
+            Some(self.context_facade.diagnostics.context_diagnostics()),
             None,
             self.build_execute_progress_diagnostics(
                 context.step,
@@ -1272,6 +1330,7 @@ impl<'a> WorkflowTurnRunner<'a> {
     ) {
         let diagnostics = build_step_diagnostics(
             context,
+            Some(self.context_facade.diagnostics.context_diagnostics()),
             Some(cache_diagnostics_for_output(
                 &step_input.cache_diagnostics,
                 output_state.usage,
@@ -1566,7 +1625,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                 };
                 format!("Selected workflow: {selected_workflow_id}.")
             }
-            _ => summarize_step_text(&final_text),
+            _ => canonical_step_summary_text(step, &final_text, structured_output.as_ref()),
         };
 
         Ok(StepExecutionResult {
@@ -1972,6 +2031,18 @@ impl<'a> WorkflowTurnRunner<'a> {
 
                 if let Some(first_failure) = first_failure {
                     Err(first_failure)
+                } else if step_requires_structured_execute_output(
+                    workflow_id,
+                    step,
+                    current_item,
+                ) {
+                    Err(OutputValidationFailure::new(
+                        OutputValidationErrorKind::ExtractFailed,
+                        "hook-managed itemized execute steps must emit JSON completed_tasks/open_tasks for the current todo item"
+                            .to_string(),
+                        final_text,
+                        None,
+                    ))
                 } else {
                     Ok(None)
                 }
@@ -1979,6 +2050,45 @@ impl<'a> WorkflowTurnRunner<'a> {
         }
     }
 
+
+fn step_uses_json_output(step: &WorkflowStep) -> bool {
+    matches!(
+        step.output_contract,
+        StepOutputContract::Required {
+            format: DataFormat::Json,
+            ..
+        } | StepOutputContract::Optional {
+            format: DataFormat::Json,
+            ..
+        }
+    )
+}
+
+fn canonical_step_summary_text(
+    step: &WorkflowStep,
+    final_text: &str,
+    structured_output: Option<&Value>,
+) -> String {
+    if step_uses_json_output(step) {
+        if let Some(output) = structured_output {
+            return summarize_step_text(&crate::preview_json_value(output, SUMMARY_CHAR_LIMIT));
+        }
+    }
+
+    summarize_step_text(final_text)
+}
+
+fn step_requires_structured_execute_output(
+    workflow_id: &str,
+    step: &WorkflowStep,
+    current_item: Option<&ExecuteLoopItemContext>,
+) -> bool {
+    matches!(workflow_id, FEATURE_WORKFLOW_ID | RESEARCH_WORKFLOW_ID)
+        && step.id == EXECUTE_STEP_ID
+        && current_item.is_some()
+        && matches!(step.loop_contract, Some(StepLoopContract::TodoItems { .. }))
+        && step.hooks.iter().any(|hook_id| hook_id == "todo_managed_execute")
+}
     fn validate_itemized_execute_output(
         &self,
         workflow_id: &str,
@@ -2642,8 +2752,32 @@ fn emit_output_recovery_activity(
     }
 }
 
+fn build_context_compaction_log(
+    total_available_summaries: usize,
+    selected_summaries: &[ContextStepSummary],
+    cache_diagnostics: &ContextCacheDiagnostics,
+) -> Option<String> {
+    if total_available_summaries <= selected_summaries.len() {
+        return None;
+    }
+
+    Some(format!(
+        "context.compact selected={}/{} summary_tokens={} budget={} request_tokens={} token_source={}",
+        selected_summaries.len(),
+        total_available_summaries,
+        selected_summaries
+            .iter()
+            .map(|summary| summary.estimated_tokens)
+            .sum::<u32>(),
+        cache_diagnostics.budget_input_tokens,
+        cache_diagnostics.request_input_tokens,
+        cache_diagnostics.token_count_source.as_str(),
+    ))
+}
+
 fn build_step_diagnostics(
     context: &StepDiagnosticContext<'_>,
+    snapshot: Option<ContextDiagnostics>,
     cache: Option<CacheDiagnostics>,
     execute_progress: Option<ExecuteProgressDiagnostics>,
     input: StepInputDiagnostics,
@@ -2684,6 +2818,7 @@ fn build_step_diagnostics(
         step_label: context.step.label.clone(),
         index: context.index,
         total: context.total,
+        context: snapshot,
         cache,
         execute_progress,
         input,
@@ -3088,6 +3223,45 @@ fn summary_relevance_score(
     score
 }
 
+
+fn step_uses_json_output(step: &WorkflowStep) -> bool {
+    matches!(
+        step.output_contract,
+        StepOutputContract::Required {
+            format: DataFormat::Json,
+            ..
+        } | StepOutputContract::Optional {
+            format: DataFormat::Json,
+            ..
+        }
+    )
+}
+
+fn canonical_step_summary_text(
+    step: &WorkflowStep,
+    final_text: &str,
+    structured_output: Option<&Value>,
+) -> String {
+    if step_uses_json_output(step) {
+        if let Some(output) = structured_output {
+            return summarize_step_text(&crate::preview_json_value(output, SUMMARY_CHAR_LIMIT));
+        }
+    }
+
+    summarize_step_text(final_text)
+}
+
+fn step_requires_structured_execute_output(
+    workflow_id: &str,
+    step: &WorkflowStep,
+    current_item: Option<&ExecuteLoopItemContext>,
+) -> bool {
+    matches!(workflow_id, FEATURE_WORKFLOW_ID | RESEARCH_WORKFLOW_ID)
+        && step.id == EXECUTE_STEP_ID
+        && current_item.is_some()
+        && matches!(step.loop_contract, Some(StepLoopContract::TodoItems { .. }))
+        && step.hooks.iter().any(|hook_id| hook_id == "todo_managed_execute")
+}
 fn maybe_compact_summary(
     summary: &StepSummary,
     priority: SlotPriority,
@@ -3155,14 +3329,16 @@ fn summarize_step_text(text: &str) -> String {
 mod tests {
     use std::path::PathBuf;
 
+    use omega_context::{ContextCacheDiagnostics, ContextTokenCountSource};
     use omega_workflow::{
         DataFormat, OutputRecoveryMode, StepInputContract, StepLoopMode, StepOutputContract,
         StepSkillRequest, StepToolRequest, WorkflowStep,
     };
 
     use super::{
-        classify_summary_priority, compact_summary_text, maybe_compact_summary,
-        rank_summary_candidates, should_trigger_context_compaction, SlotPriority,
+        build_context_compaction_log, classify_summary_priority, compact_summary_text,
+        maybe_compact_summary, rank_summary_candidates, should_trigger_context_compaction,
+        step_summary_to_context, SlotPriority,
     };
     use crate::{session_state::StepSummary, EXECUTE_STEP_ID, PLAN_STEP_ID};
 
@@ -3314,5 +3490,31 @@ mod tests {
             ),
             SlotPriority::Low
         );
+    }
+
+    #[test]
+    fn build_context_compaction_log_reports_dropped_history() {
+        let selected = vec![step_summary_to_context(summary(
+            omega_workflow::FEATURE_WORKFLOW_ID,
+            PLAN_STEP_ID,
+            "plan summary",
+        ))];
+        let cache = ContextCacheDiagnostics {
+            token_count_source: ContextTokenCountSource::Estimated,
+            request_input_tokens: 8_200,
+            budget_input_tokens: 6_000,
+            cache_breakpoints: Vec::new(),
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
+            uncached_input_tokens: None,
+            cache_hit_ratio_percent: None,
+        };
+
+        let summary = build_context_compaction_log(4, &selected, &cache)
+            .expect("expected compaction summary when history is dropped");
+
+        assert!(summary.contains("context.compact"));
+        assert!(summary.contains("selected=1/4"));
+        assert!(summary.contains("token_source=estimated"));
     }
 }

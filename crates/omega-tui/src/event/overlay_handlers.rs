@@ -62,6 +62,19 @@ pub(super) fn handle_overlay_key_event(
             }
             _ => {}
         },
+        OverlayState::SearchResults(overlay) => match key.code {
+            KeyCode::Esc => {
+                app_guard.close_overlay();
+                app_guard.set_status_notice("Search results overlay closed.");
+            }
+            KeyCode::Up => {
+                overlay.scroll = overlay.scroll.saturating_sub(1);
+            }
+            KeyCode::Down => {
+                overlay.scroll = overlay.scroll.saturating_add(1);
+            }
+            _ => {}
+        },
         OverlayState::Confirm(overlay) => match key.code {
             KeyCode::Esc => {
                 app_guard.close_overlay();

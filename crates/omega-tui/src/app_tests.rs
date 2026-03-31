@@ -1,12 +1,13 @@
 use omega_session::{
-    ActivityTarget, CacheDiagnostics, ExecuteProgressDiagnostics, OverlayRequest,
-    ResponseSection, ResponseSectionDelta, ResponseSectionKind, ResponseSectionMetadata,
-    RuntimeUiEffect, RuntimeUiMessage, StepContextWrite, StepContextWriteKind,
-    StepDiagnostics, StepInputDiagnostics, StepInputStatus, StepOutputAttemptKind,
-    StepOutputContractMode, StepOutputDiagnostics, StepOutputRecoveryDecision,
-    StepOutputStatus, StepSubflowRef, StepSubflowState, StepSubflowStatus,
-    StepSummarySource, TokenCountSource, ToolRunDetail, UiContent, UiMessageKind, UiSource,
-    UiTarget, WorkflowRunRole,
+    ActivityTarget, CacheDiagnostics, ContextBudgetDiagnostics, ContextDiagnostics,
+    ContextDocumentDiagnostics, ContextMemoryDiagnostics, ContextStoreDiagnostics,
+    ExecuteProgressDiagnostics, HealthScore, OverlayRequest, ResponseSection,
+    ResponseSectionDelta, ResponseSectionKind, ResponseSectionMetadata, RuntimeUiEffect,
+    RuntimeUiMessage, StepContextWrite, StepContextWriteKind, StepDiagnostics,
+    StepInputDiagnostics, StepInputStatus, StepOutputAttemptKind, StepOutputContractMode,
+    StepOutputDiagnostics, StepOutputRecoveryDecision, StepOutputStatus, StepSubflowRef,
+    StepSubflowState, StepSubflowStatus, StepSummarySource, TokenCountSource,
+    ToolRunDetail, UiContent, UiMessageKind, UiSource, UiTarget, WorkflowRunRole,
 };
 use ratatui::layout::Rect;
 
@@ -21,6 +22,39 @@ fn sample_step_diagnostics() -> StepDiagnostics {
         step_label: "Plan".to_string(),
         index: 2,
         total: 4,
+        context: Some(ContextDiagnostics {
+            budget: ContextBudgetDiagnostics {
+                budget_input_tokens: 1024,
+                request_input_tokens: 321,
+                headroom_tokens: 703,
+                usage_percent: 31,
+                selected_summary_count: 1,
+                available_summary_count: 2,
+            },
+            cache: None,
+            memory: ContextMemoryDiagnostics {
+                total_turns_archived: 2,
+                compactions_triggered: 1,
+                last_compaction_at: Some(1),
+                current_summary_tokens: 144,
+                current_summary_count: 1,
+                compression_ratio_avg_percent: 50,
+            },
+            document: ContextDocumentDiagnostics {
+                total_files_indexed: 12,
+                total_chunks: 48,
+                total_embeddings: 48,
+                index_staleness_seconds: 4,
+                governance_health: Some(HealthScore::NeedsAttention),
+                last_health_check: Some(2),
+            },
+            store: ContextStoreDiagnostics {
+                lance_db_size_bytes: 4096,
+                tantivy_index_size_bytes: 2048,
+                todo_items_count: 3,
+                turn_archive_count: 2,
+            },
+        }),
         cache: Some(CacheDiagnostics {
             token_count_source: TokenCountSource::ProviderCountTokens,
             request_input_tokens: 321,
@@ -120,6 +154,22 @@ fn upserting_step_diagnostics_builds_sidebar_lines() {
     assert!(app
         .diagnostics_lines
         .iter()
+        .any(|line| line.text.contains("budget=31%")));
+    assert!(app
+        .diagnostics_lines
+        .iter()
+        .any(|line| line.text.contains("headroom=703")));
+    assert!(app
+        .diagnostics_lines
+        .iter()
+        .any(|line| line.text.contains("context memory turns=2 compact=1 summaries=1")));
+    assert!(app
+        .diagnostics_lines
+        .iter()
+        .any(|line| line.text.contains("context docs files=12 chunks=48 health=needs_attention")));
+    assert!(app
+        .diagnostics_lines
+        .iter()
         .any(|line| line.text.contains("current=task-2")));
     assert_eq!(app.rail_badge(SidebarSection::Diagnostics), "D 1");
 }
@@ -138,6 +188,26 @@ fn activating_diagnostics_item_opens_detail_overlay() {
     match app.overlay.as_ref() {
         Some(OverlayState::Detail(detail)) => {
             assert!(detail.title.contains("Plan"));
+            assert!(detail
+                .lines
+                .iter()
+                .any(|line| line.contains("context_budget_percent: 31")));
+            assert!(detail
+                .lines
+                .iter()
+                .any(|line| line.contains("context_headroom_tokens: 703")));
+            assert!(detail
+                .lines
+                .iter()
+                .any(|line| line.contains("context_memory: turns_archived=2 compactions_triggered=1")));
+            assert!(detail
+                .lines
+                .iter()
+                .any(|line| line.contains("context_document: files=12 chunks=48 embeddings=48 staleness_seconds=4 governance_health=needs_attention")));
+            assert!(detail
+                .lines
+                .iter()
+                .any(|line| line.contains("context_store: todo_items=3 turn_archive_count=2 tantivy_index_size_bytes=2048 lance_db_size_bytes=4096")));
             assert!(detail
                 .lines
                 .iter()
@@ -1169,6 +1239,43 @@ fn detail_overlay_target_can_be_shown_and_hidden() {
         turn_id,
         RuntimeUiEffect::HideOverlay {
             target: OverlayTarget::Detail,
+        },
+    ));
+
+    assert!(app.overlay.is_none());
+}
+
+#[test]
+fn search_overlay_target_can_show_runtime_results_and_hide() {
+    let mut app = App::new();
+    let turn_id = app.begin_turn();
+
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::ShowOverlay(OverlayRequest {
+            target: OverlayTarget::Search,
+            content: UiContent::Text("Mode: hybrid\n1. crates/omega-context/src/lib.rs".to_string()),
+        }),
+    ));
+
+    match app.overlay.as_ref() {
+        Some(OverlayState::SearchResults(overlay)) => {
+            assert!(overlay.title.contains("Search Results"));
+            assert_eq!(
+                overlay.lines,
+                vec![
+                    "Mode: hybrid".to_string(),
+                    "1. crates/omega-context/src/lib.rs".to_string(),
+                ]
+            );
+        }
+        other => panic!("expected search results overlay, got {other:?}"),
+    }
+
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::HideOverlay {
+            target: OverlayTarget::Search,
         },
     ));
 

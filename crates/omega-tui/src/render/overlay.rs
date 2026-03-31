@@ -89,6 +89,30 @@ pub(super) fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorSch
                 inner[2],
             );
         }
+        OverlayState::SearchResults(results) => {
+            let block = Block::default()
+                .border_type(colors.overlay_border_type)
+                .title(results.title.as_str())
+                .borders(Borders::ALL)
+                .border_style(
+                    Style::default()
+                        .fg(colors.focus_border)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .style(Style::default().bg(colors.overlay_bg));
+            let inner = block.inner(overlay_rect);
+            frame.render_widget(block, overlay_rect);
+            let items: Vec<ListItem> = results
+                .lines
+                .iter()
+                .skip(results.scroll)
+                .map(|line| ListItem::new(line.clone()))
+                .collect();
+            frame.render_widget(
+                List::new(items).style(Style::default().fg(colors.text).bg(colors.overlay_bg)),
+                inner,
+            );
+        }
         OverlayState::Confirm(confirm) => {
             let inner = Layout::default()
                 .direction(Direction::Vertical)
@@ -236,6 +260,9 @@ pub(super) fn overlay_hint_text(app: &App) -> &'static str {
     match app.overlay.as_ref() {
         Some(OverlayState::Search(_)) => {
             " Search popup: type to filter the focused panel  Enter=keep query  Esc=Close"
+        }
+        Some(OverlayState::SearchResults(_)) => {
+            " Search results: ↑/↓ scroll  Esc=Close"
         }
         Some(OverlayState::Confirm(_)) => {
             " Confirm dialog: ←/→/Tab switch  Enter accepts selected action  Esc=Cancel"

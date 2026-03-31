@@ -2,7 +2,7 @@
 
 ## Current Priorities
 
-_按当前仓库真实主路径重排。判断依据：`cargo test` 全工作区通过；`Task 15F-26 ~ 15F-28` 及 `Task 15F-29 / 15B-28 / 15B-29` 已完成。execute 已收敛到 itemized loop 并具备 subflow visibility。当前主要瓶颈已从"runtime loop 缺失"转变为"上下文管理不足"——`Task 11A` 与 `Task 11B` 已在现行 `omega-context` / `omega-memory` 主路径上重新验证完成；prompt/context 组装路径已稳定并抽离出独立上下文层，长期知识、治理与检索能力也已具备 keyword + vector 双索引基线。下一优先级先推进 `Task 11F`，随后回到 `Task 10`。_
+_按当前仓库真实主路径重排。判断依据：`cargo test` 全工作区通过；`Task 15F-26 ~ 15F-28` 及 `Task 15F-29 / 15B-28 / 15B-29` 已完成。execute 已收敛到 itemized loop 并具备 subflow visibility。上下文主线 `Task 11A ~ 11F-3` 已完成：prompt/context 组装路径已稳定并抽离出独立上下文层，长期知识与 keyword + vector 双索引基线也已落地，`ContextDiagnostics` 统一聚合快照已贯通 `omega-context -> omega-session -> omega-tui / omega-app`，budget/search/document/index/memory/store observability 已接入 runtime/TUI。主线优先级回到 `Task 10`。_
 
 _任务编号以 `docs/specs/omega-agent-impl-plan.md` 为准；为支持可运行里程碑拆分，`TODO` 中允许使用 `8A/8B`、`15A/15B/15C/15D` 这类子任务后缀。_
 
@@ -16,7 +16,10 @@ _任务编号以 `docs/specs/omega-agent-impl-plan.md` 为准；为支持可运�
 
 ### Medium — Context Observability
 
-- **Task 11F**: Observability + TUI Integration — context budget indicator、cache hit dashboard、document health popup、search results overlay、compaction/index event feed。建立在 `Task 11A ~ 11E` 之上。
+- **Task 11F**: Observability + TUI Integration — 已完成：context budget/caching 调试视图、runtime search results overlay、document health popup 与 compaction/index event feed 已接入 `omega-session` / `omega-tui`。
+- **Task 11F-1**: Unified `ContextDiagnostics` Snapshot — 已完成：`omega-context` 已输出真实 budget/cache/memory/document/store 聚合快照。
+- **Task 11F-2**: Diagnostics Producer Refactor — 已完成：`omega-session` / `omega-app` 已优先消费统一 diagnostics snapshot，overlay/log 不再只靠 metadata 片段拼装。
+- **Task 11F-3**: Context Dashboard Follow-up — 已完成：TUI diagnostics 现已消费完整 snapshot，补齐 memory/store 维度与统一 dashboard 视图。
 
 ### High — 原有主线
 
@@ -25,6 +28,7 @@ _任务编号以 `docs/specs/omega-agent-impl-plan.md` 为准；为支持可运�
 
 ### Medium
 
+- **Task 15F-30 ~ 15F-35**: deterministic test foundation 现应作为 `Task 10 / 12 / 13` 的配套安全网推进，优先把 LLM / runtime event / process / fs 这类真实外部边界收敛成稳定 mock seam，同时保持 workflow/session/core 逻辑尽量 real-tested。
 - **Task 4**: `omega-tasks` 作为持久化任务层，价值明确，但不应先于 context management。
 - **Task 12**: `omega-background` 排在任务系统附近，但它的 runtime-visible 状态在当前前端上如何投射，应建立在新的 app-owned runtime message policy 之上。
 - **Task 3**: `omega-message` 仍重要，但它真正释放价值要等到 subagent、team 与 runtime message boundary 都接通，因此不再放在最前。
@@ -483,6 +487,7 @@ _2026-03-26 架构评审后收敛：(1) `BeforeAdvance` 在 item loop 下变为 
 - **Complexity**: XL
 - **Planning Note**: 该任务是 execute 稳定性的主收敛点；实现时必须保留共享 `SessionContext`、structured input/output 与现有 hook storage，同时补齐 deterministic matrix tests，覆盖 no-progress、partial progress、all-complete、item fail、budget exhaustion 与 research read-only execute 路径。`BeforeAdvance` 在 item loop 下变为 per-item gate，runtime 接管 item progression（见 lifecycle hooks spec "BeforeAdvance 双层语义过渡"）。如实现复杂度超出单轮收敛范围，可拆为 15F-28a（runtime loop + tests）和 15F-28b（TUI item-level visibility），但优先尝试一次完成。
 - **Completed Note**: `omega-session` 现按当前 todo item 驱动 execute repeat，并在 item 完成后由 runtime 推进到下一个 item；`HookDispatchInput` 已带 `current_item_id / item_index / item_total`；builtin `todo_managed_execute` 改为 per-item gate；新增 deterministic tests 覆盖 execute progress diagnostics 与 `max_item_repeats` exhaustion。2026-03-27 follow-up：`execute` 的 optional structured output contract 现也支持 `max_retries / recovery_mode`，当模型错误地一次关闭 future items 时会先 repair/regenerate，而不是直接整步失败。后续又补了两层容错：itemized execute output 会自动把 future items 从 `completed_tasks` 挪回 `open_tasks`，`parse_json_values()` 也会在保留原数组候选的同时解包 array-of-object repair output，避免 `expected object at $` 这类 schema 失败反复中断 execute。
+- **Completed Note**: `omega-session` 现按当前 todo item 驱动 execute repeat，并在 item 完成后由 runtime 推进到下一个 item；`HookDispatchInput` 已带 `current_item_id / item_index / item_total`；builtin `todo_managed_execute` 改为 per-item gate；新增 deterministic tests 覆盖 execute progress diagnostics 与 `max_item_repeats` exhaustion。2026-03-27 follow-up：`execute` 的 optional structured output contract 现也支持 `max_retries / recovery_mode`，当模型错误地一次关闭 future items 时会先 repair/regenerate，而不是直接整步失败。后续又补了两层容错：itemized execute output 会自动把 future items 从 `completed_tasks` 挪回 `open_tasks`，`parse_json_values()` 也会在保留原数组候选的同时解包 array-of-object repair output，避免 `expected object at $` 这类 schema 失败反复中断 execute。2026-03-31 follow-up：hook-managed itemized execute 现把 JSON execute output 视为 canonical contract，repo-local/default workflow 都改为 required；`runner` 会用修正后的 structured output 生成 execute summary，并在 advance gate exhaustion 前补发最终 output diagnostics，避免 UI 停在 `output pending` 或把已 auto-repair 的 future completions 继续写回 session summary。
 - **Blocks**: Task 10, Task 11
 - **Related**: docs/specs/omega-step-lifecycle-hooks.md, docs/specs/omega-step-session-asset-model/session-context-and-data-contracts.md, docs/specs/omega-runtime-message-pipeline.md
 
@@ -519,6 +524,72 @@ _2026-03-26 TUI follow-up planning：M2F 已把 execute 收敛为 itemized loop�
 - **Completed Note**: `Response` 中的 subflow header 已可直接激活 detail overlay，overlay 会展示 item identity、status、repeat/no-progress、completion source 与 tool/body 摘要；现有 response 选择态与滚动即可在多个 item run 之间稳定移动并恢复焦点。
 - **Blocked by**: Task 15B-28
 - **Related**: docs/specs/omega-tui-step-subflow-visibility.md, docs/specs/omega-tui-overlay-popups.md, docs/specs/omega-tui-modal-keymap.md
+
+### ── M2G: Deterministic Test Foundation Follow-up ──
+
+> 验证方式：通过共享 scripted/mock harness 稳定复现 LLM streaming、structured output retry、runtime envelope 顺序、stale turn drop、hook lifecycle、tool/process failure、temp-dir 并发与 TUI event replay；对外部边界使用 mock，对 workflow/session/core 逻辑保持尽量 real-tested，避免 flaky regression 再次混进主路径
+> 对标：把当前散落在 `omega-client` / `omega-session` / `omega-core` / `omega-subagent` / `omega-tui` 的局部 test support 收敛成一致的 deterministic test seam，而不是每个 crate 各自复制一套 mock client / tmp helper / envelope capture
+
+_2026-03-31 规划补充：当前仓库已经具备 `omega-client::test_support::ScriptedLlmClient`、`IdleLlmClient`、hook fixture 编译测试、runtime message matrix tests 与部分 mock embedding / fake clipboard，但 seam 仍然分散，且 temp-dir、process/tool 与 runtime event replay 没有统一支撑。下一轮 follow-up 的目标不是“到处加 mock”，而是明确只在真实外部边界上 mock，并把 deterministic harness 提升为后续 Task 10/12/13 的配套安全网。_
+
+### Task 15F-30: docs/specs / omega-client / omega-session / omega-app / omega-tui — Deterministic Test Seam Contract
+- **Status**: Pending
+- **Priority**: High
+- **Description**: 盘点并固化当前仓库中真正需要 mock 的外部边界，包括 LLM chat/stream/count_tokens、HTTP/SSE、runtime message bridge、process execution、filesystem/temp root、hook artifact loading 与 TUI input event source；明确哪些逻辑必须继续走真实实现测试（如 workflow/session/core/todo/schema/gate/repair）。
+- **Complexity**: M
+- **Planning Note**: 该任务先定义 contract，再做大规模 harness 收敛。核心约束是“mock only at true external boundaries”：不要为了测试方便把 `runner`、`AgentSession`、todo sync、output validation 这类内核逻辑一起 fake 掉，否则只会得到稳定但低价值的测试。
+- **Blocks**: Task 15F-31, Task 15F-32, Task 15F-33, Task 15F-34, Task 15F-35
+- **Related**: docs/specs/omega-step-lifecycle-hooks.md, docs/specs/omega-runtime-message-pipeline.md, docs/specs/omega-tui-runtime-experience.md
+
+### Task 15F-31: omega-client / omega-core / omega-session / omega-subagent — Shared Scripted LLM Harness Consolidation
+- **Status**: Pending
+- **Priority**: High
+- **Description**: 扩展并统一 `omega-client::test_support`，覆盖 response/scripted stream、event 序列、mid-stream failure、`count_tokens` preset、request recording 与 max-token capture；同时替换 `omega-core` / `omega-subagent` / `omega-session` 中重复的 `MockLlmClient` / `SequencedClient` 实现，收敛到共享 harness。
+- **Complexity**: L
+- **Planning Note**: `Task 15F-19` 已完成首轮抽离，但当前仍存在重复 mock client 与不同粒度的 response builder。该任务的目标是把 LLM 相关不稳定性集中到单一 harness，而不是继续让每个 crate 自行造轮子。
+- **Blocked by**: Task 15F-30
+- **Blocks**: Task 15F-34, Task 10, Task 12, Task 13
+- **Related**: crates/omega-client/src/test_support.rs, crates/omega-session/src/lib_tests.rs, crates/omega-core/src/lib_tests.rs, crates/omega-subagent/src/lib.rs
+
+### Task 15F-32: omega-session / omega-app / omega-tui — Runtime Envelope Recorder And Event Ordering Matrix
+- **Status**: Pending
+- **Priority**: High
+- **Description**: 在现有 `RuntimeMessageEnvelope -> current-turn filter -> policy -> engine` 基础上补齐共享 recorder / sink test support，稳定断言 envelope 顺序、stale turn drop、tool/diagnostics/todo interleave 与 step/subflow event ordering，而不再依赖 `mpsc::channel` + 手写循环在测试里逐条捞消息。
+- **Complexity**: M
+- **Planning Note**: 当前 `Task 15F-25` 已覆盖主路径 matrix，但 producer/consumer 两侧仍然各自手搓 message capture。该任务应该沉淀出可复用 recorder，不改变 runtime contract 本身。
+- **Blocked by**: Task 15F-30
+- **Blocks**: Task 15F-34, Task 10, Task 12, Task 13
+- **Related**: crates/omega-session/src/runtime_ui.rs, crates/omega-session/src/runtime_message.rs, crates/omega-app/src/runtime_message_policy.rs, crates/omega-tui/src/app_tests.rs
+
+### Task 15F-33: omega-tools / omega-tools-builtin / omega-hooks / workspace — External Boundary Mock Adapters And Stable Temp Roots
+- **Status**: Pending
+- **Priority**: High
+- **Description**: 为 bash/process、filesystem-heavy tool 路径与 hook fixture tests 收敛统一的 mock/fixture adapter，并新增稳定的 shared temp-root helper，消除 timestamp-only `/tmp` 命名、环境命令可用性与并发写入导致的 test flake。
+- **Complexity**: L
+- **Planning Note**: 不应把所有文件工具都切成纯 mock；工具 contract 仍需保留一层 real fs / real process regression。该任务重点是把“跨 crate 的环境不稳定因素”抽到可控边界，而不是完全放弃真实集成测试。
+- **Blocked by**: Task 15F-30
+- **Blocks**: Task 15F-35, Task 10, Task 12
+- **Related**: crates/omega-tools-builtin/tests/common.rs, crates/omega-hooks/tests/hook_host.rs, memories/repo/test-temp-dir-collisions.md
+
+### Task 15F-34: omega-tui / omega-session / omega-app — Deterministic User-Event Replay Tests
+- **Status**: Pending
+- **Priority**: Medium
+- **Description**: 建立可复放的 user-input + runtime-envelope replay harness，覆盖输入编辑、overlay 焦点、sidebar/response 切换、streaming response append、todo/diagnostics 刷新与 step subflow 导航，确保 TUI 行为测试不再依赖手工拼装零散 event 顺序。
+- **Complexity**: L
+- **Planning Note**: 现有 `app_tests.rs` 与 `event_tests.rs` 已覆盖大量 reducer 行为，但缺统一的“时序级”测试面。该任务应复用 Task 15F-32 的 recorder/sequencer，而不是再造一套 UI 专用 transport。
+- **Blocked by**: Task 15F-31, Task 15F-32
+- **Blocks**: Task 12, Task 13
+- **Related**: crates/omega-tui/src/app_tests.rs, crates/omega-tui/src/event_tests.rs, docs/specs/omega-tui-runtime-experience.md
+
+### Task 15F-35: workspace-wide — Flaky Test Retirement And Scenario Backfill
+- **Status**: Pending
+- **Priority**: Medium
+- **Description**: 基于前述 shared harness，把当前容易抖动或重复造 mock 的测试迁移到统一 test-support，并为 execute loop、subagent、document search、runtime message、tool side effects 与 read-only research 这些高风险场景补齐 deterministic scenario matrix。
+- **Complexity**: XL
+- **Planning Note**: 这一步是“完善测试”的真正收口点。目标不是追求覆盖率数字，而是把当前已知高风险链路都锁到稳定、可维护、可解释的场景测试上，并把历史 flaky helper 逐步退役。
+- **Blocked by**: Task 15F-31, Task 15F-32, Task 15F-33, Task 15F-34
+- **Blocks**: Task 10, Task 12, Task 13, Task 16
+- **Related**: crates/omega-session/src/lib_tests.rs, crates/omega-document/src/lib.rs, crates/omega-tools-builtin/tests/, crates/omega-app/src/runtime_message_policy.rs
 
 ### ── M3: Todo 管理 (s03) ──
 
@@ -620,12 +691,45 @@ _2026-03-26 TUI follow-up planning：M2F 已把 execute 收敛为 itemized loop�
 - **Summary**: `omega-document` 现已新增 `.omega/store/lance/` 派生向量索引与 `.omega/store/index-commit-log.json` revision commit log，使用 LanceDB 维护 `files/chunks/turns` 表，其中 `chunks` 与 `files` 已接入 embedding 列和本地语义检索；`search()` 现支持 `keyword / semantic / hybrid` 三种模式，并在 Lance revision 落后于 manifest 或向量查询失败时自动降级到 keyword。运行时默认使用 fastembed `AllMiniLML6V2` 生成 embedding，测试路径使用 deterministic mock embedding 避免模型下载；`omega-context` 的 `search_codebase` 工具说明与默认 mode 也已同步改为 hybrid。验证已通过 `cargo test -p omega-document --color never`、`cargo test -p omega-context --color never`、`cargo test -p omega-core --color never` 与 `cargo test -p omega-session --lib --color never`。
 
 ### Task 11F: Observability + TUI Integration
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-03-30
 - **Priority**: Medium
 - **Complexity**: Medium
 - **Description**: 实现 `ContextDiagnostics` 聚合指标（budget + cache + memory + document + store），通过 `ContextRuntimeMessage` 向 TUI 推送状态。默认采用后台索引和 readiness 状态，不阻塞启动。TUI 新增：(1) 最小化 budget/caching 调试视图；(2) document health dashboard；(3) search results overlay；(4) compaction/index event feed。关键操作记入 tracing spans。
 - **Blocks**: —
 - **Related**: docs/specs/omega-context-management.md §Observability, §TUI Integration
+- **Summary**: 2026-03-30 已完成 11F 全链路 observability 收口：`omega-tui` diagnostics sidebar/detail overlay 现会把 `CacheDiagnostics` 转成可读的 context budget 使用率、headroom 与 cache hit 信息；`OverlayTarget::Search` 的 runtime 文本内容现会打开专用 search results overlay，不再被 reducer 丢弃，同时保留原有 focused-panel 搜索弹窗行为；`manage_document health_check` 现会触发 document health detail popup，`search_codebase` / `manage_document` 的 scan metadata 会写入 runtime index feed，而 summary 裁剪也会发出 `context.compact` 日志。验证已通过 `cargo test -p omega-session --lib --color never`、`cargo test -p omega-context --color never`、`cargo test -p omega-tui --color never upserting_step_diagnostics_builds_sidebar_lines`、`cargo test -p omega-tui --color never activating_diagnostics_item_opens_detail_overlay`、`cargo test -p omega-tui --color never search_overlay_target_can_show_runtime_results_and_hide`、`cargo test -p omega-tui --color never detail_overlay_target_can_be_shown_and_hidden` 与 `cargo test -p omega-tui --color never`。
+
+### Task 11F-1: Unified `ContextDiagnostics` Snapshot
+- **Status**: Completed
+- **Completed**: 2026-03-31
+- **Priority**: Medium
+- **Complexity**: Medium
+- **Description**: 将当前空壳 `ContextDiagnostics` 扩展为真实聚合模型，统一承载 budget、cache、memory、document、store 五类指标，并让 `ContextDiagnosticsProvider` 返回可消费的快照，而不是 `ContextCacheDiagnostics` 与 tool metadata 的分散组合。
+- **Blocks**: Task 11F-2, Task 11F-3
+- **Related**: docs/specs/omega-context-management.md §Observability, crates/omega-context/src/lib.rs
+- **Summary**: `omega-context` 现已把 `ContextDiagnostics` 从空壳扩展为真实聚合快照，统一输出 budget/cache/memory/document/store 五类指标；`LocalDiagnostics` 会在 context assembly、workspace scan 与 document health 流程后更新状态，并按需计算 store 尺寸与 TODO/archive 计数。验证已通过 `cargo test -p omega-context --color never`。
+
+### Task 11F-2: Diagnostics Producer Refactor
+- **Status**: Completed
+- **Completed**: 2026-03-31
+- **Priority**: Medium
+- **Complexity**: Medium
+- **Description**: 在统一 `ContextDiagnostics` 快照落地后，收敛 `omega-session` / `omega-app` 当前直接拼接 overlay 文本与 runtime log 的实现，让 search/document/index/compaction 事件优先复用 facade diagnostics 输出，减少 metadata key 漂移。
+- **Blocks**: Task 11F-3
+- **Blocked by**: Task 11F-1
+- **Related**: docs/specs/omega-context-management.md §Runtime Message Integration, crates/omega-session/src/ui_emit.rs, crates/omega-app/src/runtime_message_policy.rs
+- **Summary**: `omega-session::runner` 现会把 unified snapshot 带进 `StepDiagnostics`，tool observability 也会在 search/document/index overlay/log 中优先消费 `ContextDiagnostics`，`omega-app` runtime message policy 已同步适配。验证已通过 `cargo test -p omega-session --lib --color never` 与 `cargo test -p omega-app --color never`。
+
+### Task 11F-3: Context Dashboard Follow-up
+- **Status**: Completed
+- **Completed**: 2026-03-31
+- **Priority**: Medium
+- **Complexity**: Medium
+- **Description**: 基于统一 diagnostics 快照补齐 TUI 的 memory/store 维度视图与完整 context dashboard，使现有 budget indicator、search overlay、document popup 不再只是点状入口，而是统一 dashboard 的子视图。
+- **Blocked by**: Task 11F-1, Task 11F-2
+- **Related**: docs/specs/omega-context-management.md §TUI Integration, crates/omega-tui/src/app/diagnostics.rs, crates/omega-tui/src/render/overlay.rs
+- **Summary**: `omega-tui` diagnostics sidebar/detail overlay 现已渲染 context memory/document/store 指标，并把预算、cache、memory、document、store 收敛为单一 dashboard 入口。验证已通过 `cargo test -p omega-tui --color never`。
 
 ### ── M7: 任务系统 (s07) ──
 

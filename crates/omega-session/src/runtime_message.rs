@@ -1,7 +1,7 @@
 use std::sync::{mpsc, Arc};
 
 use crate::runtime_ui::{
-    ResponseSection, ResponseSectionDelta, ResponseSectionState, RuntimeUiEffect,
+    OverlayRequest, ResponseSection, ResponseSectionDelta, ResponseSectionState, RuntimeUiEffect,
     RuntimeUiEnvelope, RuntimeUiMessage, StatusSlot, StatusValue, StepDiagnostics, ToolRun,
     ToolRunStatus, UiContent, UiMessageKind, UiPriority, UiSource, UiTarget, WorkflowRunRole,
     StepSubflowStatus,
@@ -59,6 +59,7 @@ pub enum StateMessage {
     AgentStatus { label: Option<String> },
     SessionRouting(SessionRoutingStatus),
     TodoSnapshot { rendered: String },
+    ShowOverlay { request: OverlayRequest },
     Diagnostics { diagnostics: Box<StepDiagnostics> },
     Activity {
         source: RuntimeSource,
@@ -298,6 +299,10 @@ fn legacy_ui_envelopes_from_state(turn_id: u64, message: StateMessage) -> Vec<Ru
                 content: UiContent::Text(rendered),
             },
         )],
+        StateMessage::ShowOverlay { request } => vec![RuntimeUiEnvelope::effect(
+            turn_id,
+            RuntimeUiEffect::ShowOverlay(request),
+        )],
         StateMessage::Diagnostics { diagnostics } => vec![RuntimeUiEnvelope::effect(
             turn_id,
             RuntimeUiEffect::UpsertStepDiagnostics { diagnostics },
@@ -383,4 +388,30 @@ fn legacy_ui_priority(priority: Option<RuntimePriority>) -> Option<UiPriority> {
         RuntimePriority::Low => UiPriority::Low,
         RuntimePriority::High => UiPriority::High,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{OverlayRequest, OverlayTarget, UiContent};
+
+    #[test]
+    fn show_overlay_state_message_maps_to_runtime_ui_effect() {
+        let request = OverlayRequest {
+            target: OverlayTarget::Search,
+            content: UiContent::Text("results".to_string()),
+        };
+
+        let envelopes = legacy_runtime_ui_envelopes(RuntimeMessageEnvelope::state(
+            9,
+            StateMessage::ShowOverlay {
+                request: request.clone(),
+            },
+        ));
+
+        assert_eq!(
+            envelopes,
+            vec![RuntimeUiEnvelope::effect(9, RuntimeUiEffect::ShowOverlay(request))]
+        );
+    }
 }

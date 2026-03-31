@@ -29,6 +29,15 @@ pub struct SearchOverlay {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchResultsOverlay {
+    pub origin_panel: Panel,
+    pub title: String,
+    pub lines: Vec<String>,
+    pub scroll: usize,
+    pub dismiss_on_backdrop: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfirmOverlay {
     pub origin_panel: Panel,
     pub title: String,
@@ -72,6 +81,7 @@ pub struct InputPromptOverlay {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OverlayState {
     Search(SearchOverlay),
+    SearchResults(SearchResultsOverlay),
     Confirm(ConfirmOverlay),
     Detail(DetailOverlay),
     Picker(PickerOverlay),
@@ -82,6 +92,7 @@ impl OverlayState {
     pub fn origin_panel(&self) -> Panel {
         match self {
             Self::Search(overlay) => overlay.origin_panel,
+            Self::SearchResults(overlay) => overlay.origin_panel,
             Self::Confirm(overlay) => overlay.origin_panel,
             Self::Detail(overlay) => overlay.origin_panel,
             Self::Picker(overlay) => overlay.origin_panel,
@@ -92,6 +103,7 @@ impl OverlayState {
     pub fn size(&self) -> OverlaySize {
         match self {
             Self::Search(_) => OverlaySize::Small,
+            Self::SearchResults(_) => OverlaySize::Large,
             Self::Confirm(_) => OverlaySize::Small,
             Self::Detail(_) => OverlaySize::Large,
             Self::Picker(_) => OverlaySize::Medium,
@@ -102,6 +114,7 @@ impl OverlayState {
     pub fn dismiss_on_backdrop(&self) -> bool {
         match self {
             Self::Search(_) => true,
+            Self::SearchResults(overlay) => overlay.dismiss_on_backdrop,
             Self::Confirm(overlay) => overlay.dismiss_on_backdrop,
             Self::Detail(overlay) => overlay.dismiss_on_backdrop,
             Self::Picker(overlay) => overlay.dismiss_on_backdrop,

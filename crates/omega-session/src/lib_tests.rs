@@ -269,7 +269,7 @@ hooks = ["{hook_id}"]
 tool_request = {{ mode = "inherit" }}
 skill_request = {{ mode = "match_task" }}
 input_contract = {{ mode = "required", sources = ["plan"] }}
-output_contract = {{ mode = "optional", format = "json", schema_path = ".omega/schema/step/execute.json" }}
+output_contract = {{ mode = "required", format = "json", schema_path = ".omega/schema/step/execute.json", max_retries = 2, recovery_mode = "repair_then_regenerate" }}
 enabled = true
 
 [[steps]]
@@ -336,7 +336,7 @@ hooks = ["{hook_id}"]
 tool_request = {{ mode = "inherit" }}
 skill_request = {{ mode = "match_task" }}
 input_contract = {{ mode = "required", sources = ["plan"] }}
-output_contract = {{ mode = "optional", format = "json", schema_path = ".omega/schema/step/execute.json" }}
+output_contract = {{ mode = "required", format = "json", schema_path = ".omega/schema/step/execute.json", max_retries = 2, recovery_mode = "repair_then_regenerate" }}
 enabled = true
 
 [[steps]]
@@ -428,7 +428,14 @@ fn spawn_turn_emits_hook_diagnostics_for_execute_step() {
         ChatResponse {
             id: "execute-1".to_string(),
             model: Some("test-model".to_string()),
-            content: vec![ContentBlock::text("execution complete")],
+            content: vec![ContentBlock::text(feature_execute_partial_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-2".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_execute_complete_json())],
             stop_reason: Some(STOP_REASON_END_TURN.to_string()),
             usage: None,
         },
@@ -1776,6 +1783,163 @@ fn research_itemized_execute_auto_repairs_multiple_future_completions() {
             .count(),
         0
     );
+    let session_context = session.session_context.lock().unwrap();
+    let first_execute_summary = session_context
+        .step_summaries
+        .iter()
+        .find(|summary| summary.step_id == EXECUTE_STEP_ID)
+        .expect("first execute summary should be stored");
+    let summary_value: serde_json::Value =
+        serde_json::from_str(&first_execute_summary.summary).expect("summary should stay canonical JSON");
+    assert_eq!(summary_value["completed_tasks"], serde_json::json!(["task-1"]));
+    assert_eq!(summary_value["open_tasks"], serde_json::json!(["task-2"]));
+    assert!(saw_result);
+}
+
+#[test]
+fn research_itemized_execute_retries_when_current_item_response_omits_json() {
+    let client: Arc<SequencedClient> = sequenced_client(vec![
+        ChatResponse {
+            id: "scene-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"recognized_scene_id\":\"research\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"selected_workflow_id\":\"research\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "analysis-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_explore_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "plan-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_plan_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(
+                "Inspected the relevant code and validated the first research task.",
+            )],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-2".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_execute_partial_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-3".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(research_execute_complete_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "report-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("done")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+    ]);
+    let client_dyn: DynLlmClient = client.clone();
+    let root = unique_session_test_root("research-execute-missing-json-retry");
+    write_review_skill(&root);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: client_dyn,
+        system: "system".to_string(),
+        cwd: root,
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+    let (tx, rx) = mpsc::channel();
+
+    session
+        .spawn_turn_ui_compat("hello".to_string(), 144, tx)
+        .unwrap();
+
+    let mut warnings = Vec::new();
+    let mut diagnostics = Vec::new();
+    let mut saw_result = false;
+    loop {
+        match rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+            RuntimeUiEnvelope::Message { turn_id, message }
+                if turn_id == 144
+                    && matches!(message.source, UiSource::System)
+                    && message.kind == UiMessageKind::Warning =>
+            {
+                warnings.push(message.content.as_text().to_string());
+            }
+            RuntimeUiEnvelope::Message { turn_id, message }
+                if turn_id == 144
+                    && matches!(message.source, UiSource::Assistant)
+                    && message.kind == UiMessageKind::Result =>
+            {
+                assert_eq!(message.content.as_text(), "done");
+                saw_result = true;
+            }
+            RuntimeUiEnvelope::Effect {
+                turn_id,
+                effect:
+                    RuntimeUiEffect::UpsertStepDiagnostics {
+                        diagnostics: update,
+                    },
+            } => {
+                assert_eq!(turn_id, 144);
+                diagnostics.push(*update);
+            }
+            RuntimeUiEnvelope::Effect {
+                turn_id,
+                effect:
+                    RuntimeUiEffect::SetStatusSlot {
+                        slot: StatusSlot::Agent,
+                        value: StatusValue::Label(label),
+                    },
+            } => {
+                assert_eq!(turn_id, 144);
+                assert_eq!(label, "Idle");
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    assert!(!warnings.iter().any(|warning| warning.contains("advance denied")));
+    assert!(diagnostics.iter().any(|diagnostics| {
+        diagnostics.step_id == EXECUTE_STEP_ID
+            && diagnostics.output.status == StepOutputStatus::Invalid
+            && diagnostics.output.validation_error.is_some()
+    }));
+    assert!(diagnostics.iter().any(|diagnostics| {
+        diagnostics.step_id == EXECUTE_STEP_ID
+            && diagnostics.output.status == StepOutputStatus::Valid
+            && diagnostics.output.attempt_kind != StepOutputAttemptKind::Primary
+    }));
     assert!(saw_result);
 }
 
@@ -2479,9 +2643,20 @@ fn spawn_turn_fails_when_item_repeat_budget_exhausts_before_step_budget() {
 
     session.spawn_turn_ui_compat("hello".to_string(), 92, tx).unwrap();
 
+    let mut diagnostics = Vec::new();
     let mut errors = Vec::new();
     loop {
         match rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+            RuntimeUiEnvelope::Effect {
+                turn_id,
+                effect:
+                    RuntimeUiEffect::UpsertStepDiagnostics {
+                        diagnostics: update,
+                    },
+            } => {
+                assert_eq!(turn_id, 92);
+                diagnostics.push(*update);
+            }
             RuntimeUiEnvelope::Message { turn_id, message }
                 if turn_id == 92
                     && matches!(message.source, UiSource::System)
@@ -2507,6 +2682,27 @@ fn spawn_turn_fails_when_item_repeat_budget_exhausts_before_step_budget() {
 
     assert!(errors.iter().any(|error| {
         error.contains("exhausted max_item_repeats=1") && error.contains("todo item 'task-1'")
+    }));
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|diagnostics| {
+                diagnostics.step_id == EXECUTE_STEP_ID
+                    && diagnostics.output.status == StepOutputStatus::Valid
+            })
+            .count(),
+        2
+    );
+    assert!(diagnostics.iter().any(|diagnostics| {
+        diagnostics.step_id == EXECUTE_STEP_ID
+            && diagnostics.output.status == StepOutputStatus::Valid
+            && diagnostics
+                .execute_progress
+                .as_ref()
+                .is_some_and(|progress| {
+                    progress.current_item_id.as_deref() == Some("task-1")
+                        && progress.repeat_count == 1
+                })
     }));
 }
 
