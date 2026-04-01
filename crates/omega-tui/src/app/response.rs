@@ -4,6 +4,8 @@ use omega_session::{
     ToolRun, ToolRunStatus,
 };
 
+use crate::render::markdown::{parse_markdown_lines, StyledSpan};
+
 use super::{
     App, Msg, MsgKind, ResponseActivation, ResponseDisplayLine, ResponseLineAction,
     ThinkingLineKind, WorkflowRunRole,
@@ -92,6 +94,14 @@ impl App {
                     Some(ResponseActivation::ThinkingExpanded)
                 }
             }
+            ResponseLineAction::ToggleToolLane(id) => {
+                let collapsed = self.toggle_tool_lane(&id)?;
+                if collapsed {
+                    Some(ResponseActivation::ToolLaneCollapsed)
+                } else {
+                    Some(ResponseActivation::ToolLaneExpanded)
+                }
+            }
             ResponseLineAction::OpenToolRunDetail(id) => self
                 .open_tool_run_detail(&id)
                 .map(ResponseActivation::ToolDetailOpened),
@@ -149,21 +159,48 @@ impl App {
         Some(message.collapsed)
     }
 
+    fn toggle_tool_lane(&mut self, id: &str) -> Option<bool> {
+        let message = self.output_msgs.iter_mut().find(|message| {
+            message.id.as_deref() == Some(id)
+                && matches!(message.kind, MsgKind::Step | MsgKind::FinalAnswer)
+        })?;
+        message.tool_lane_collapsed = !message.tool_lane_collapsed;
+        Some(message.tool_lane_collapsed)
+    }
+
     fn render_message_lines(&self, message: &Msg) -> Vec<ResponseDisplayLine> {
         match message.kind {
             MsgKind::User | MsgKind::Agent | MsgKind::Error | MsgKind::Separator => {
                 split_or_empty(&message.text)
                     .into_iter()
-                    .map(|text| ResponseDisplayLine {
-                        kind: message.kind,
-                        text,
-                        is_header: false,
-                        message_id: message.id.clone(),
-                        action: None,
-                        is_tool_line: false,
-                        tool_status: None,
-                        response_state: None,
-                        thinking_line_kind: None,
+                    .enumerate()
+                    .map(|(i, text)| {
+                        let badge_prefix = if i == 0 {
+                            match message.kind {
+                                MsgKind::User => Some("▶ "),
+                                MsgKind::Error => Some("✗ "),
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        };
+                        let display_text = if let Some(prefix) = badge_prefix {
+                            format!("{prefix}{text}")
+                        } else {
+                            text
+                        };
+                        ResponseDisplayLine {
+                            kind: message.kind,
+                            text: display_text,
+                            is_header: false,
+                            message_id: message.id.clone(),
+                            action: None,
+                            is_tool_line: false,
+                            tool_status: None,
+                            response_state: None,
+                            thinking_line_kind: None,
+                            spans: Vec::new(),
+                        }
                     })
                     .collect()
             }
@@ -178,6 +215,23 @@ impl App {
                 } else {
                     None
                 };
+
+                // Final Answer: decorative top rule (15B-43)
+                if message.kind == MsgKind::FinalAnswer {
+                    lines.push(ResponseDisplayLine {
+                        kind: message.kind,
+                        text: "━".repeat(40),
+                        is_header: false,
+                        message_id: message.id.clone(),
+                        action: None,
+                        is_tool_line: false,
+                        tool_status: None,
+                        response_state: None,
+                        thinking_line_kind: None,
+                        spans: Vec::new(),
+                    });
+                }
+
                 lines.push(ResponseDisplayLine {
                     kind: message.kind,
                     text: format_response_header(message),
@@ -188,6 +242,7 @@ impl App {
                     tool_status: None,
                     response_state: message.state,
                     thinking_line_kind: None,
+                    spans: Vec::new(),
                 });
 
                 if message.kind != MsgKind::Thinking {
@@ -202,6 +257,7 @@ impl App {
                             tool_status: None,
                             response_state: None,
                             thinking_line_kind: None,
+                            spans: Vec::new(),
                         });
                     }
                 }
@@ -219,6 +275,7 @@ impl App {
                                 tool_status: None,
                                 response_state: None,
                                 thinking_line_kind: None,
+                                spans: Vec::new(),
                             });
                         }
                     }
@@ -229,11 +286,23 @@ impl App {
                             .map(|section_id| self.tool_runs_for_section(section_id))
                             .unwrap_or_default();
                         let body_lines = split_or_empty(&message.text);
+                        let colors = self.theme_palette();
+                        let base_style = ratatui::style::Style::default();
+                        let body_indent = if message.kind == MsgKind::FinalAnswer {
+                            "  │ "
+                        } else {
+                            "  "
+                        };
+                        let body_indent_style = if message.kind == MsgKind::FinalAnswer {
+                            base_style.fg(colors.final_answer_border_fg)
+                        } else {
+                            base_style
+                        };
                         if body_lines.len() == 1 && body_lines[0].is_empty() && tool_runs.is_empty()
                         {
                             lines.push(ResponseDisplayLine {
                                 kind: message.kind,
-                                text: "  …".to_string(),
+                                text: format!("{body_indent}…"),
                                 is_header: false,
                                 message_id: message.id.clone(),
                                 action: None,
@@ -241,55 +310,85 @@ impl App {
                                 tool_status: None,
                                 response_state: None,
                                 thinking_line_kind: None,
+                                spans: Vec::new(),
                             });
                         } else if !(body_lines.len() == 1 && body_lines[0].is_empty()) {
-                            lines.extend(body_lines.into_iter().map(|line| ResponseDisplayLine {
-                                kind: message.kind,
-                                text: format!("  {line}"),
-                                is_header: false,
-                                message_id: message.id.clone(),
-                                action: None,
-                                is_tool_line: false,
-                                tool_status: None,
-                                response_state: None,
-                                thinking_line_kind: None,
-                            }));
+                            // Markdown rendering (15B-40 / 15B-41 / 15B-46)
+                            let md_lines =
+                                parse_markdown_lines(&message.text, base_style, &colors);
+                            for md_line in md_lines {
+                                let plain: String =
+                                    md_line.spans.iter().map(|s| s.text.as_str()).collect();
+                                let prefixed_spans: Vec<StyledSpan> = {
+                                    let mut s = vec![StyledSpan {
+                                        text: body_indent.to_string(),
+                                        style: body_indent_style,
+                                    }];
+                                    s.extend(md_line.spans);
+                                    s
+                                };
+                                lines.push(ResponseDisplayLine {
+                                    kind: message.kind,
+                                    text: format!("{body_indent}{plain}"),
+                                    is_header: false,
+                                    message_id: message.id.clone(),
+                                    action: None,
+                                    is_tool_line: false,
+                                    tool_status: None,
+                                    response_state: None,
+                                    thinking_line_kind: None,
+                                    spans: prefixed_spans,
+                                });
+                            }
                         }
+                        // Tool lane with folding (15B-44)
                         if !tool_runs.is_empty() {
+                            let can_toggle = tool_runs.len() >= 6;
+                            let collapsed = can_toggle && message.tool_lane_collapsed;
                             lines.push(ResponseDisplayLine {
                                 kind: message.kind,
-                                text: format_tool_lane_header(&tool_runs),
+                                text: format_tool_lane_header(&tool_runs, can_toggle, collapsed),
                                 is_header: false,
                                 message_id: message.id.clone(),
-                                action: None,
+                                action: can_toggle.then(|| {
+                                    ResponseLineAction::ToggleToolLane(
+                                        message.id.clone().unwrap_or_default(),
+                                    )
+                                }),
                                 is_tool_line: true,
                                 tool_status: None,
                                 response_state: None,
                                 thinking_line_kind: None,
+                                spans: Vec::new(),
                             });
-                            lines.extend(tool_runs.into_iter().map(|tool_run| {
-                                ResponseDisplayLine {
-                                    kind: message.kind,
-                                    text: format_tool_summary(tool_run),
-                                    is_header: false,
-                                    message_id: message.id.clone(),
-                                    action: Some(ResponseLineAction::OpenToolRunDetail(
-                                        tool_run.id.clone(),
-                                    )),
-                                    is_tool_line: true,
-                                    tool_status: Some(tool_run.status),
-                                    response_state: None,
-                                    thinking_line_kind: None,
-                                }
-                            }));
+                            if !collapsed {
+                                let name_width = tool_name_width(&tool_runs);
+                                lines.extend(tool_runs.into_iter().map(|tool_run| {
+                                    ResponseDisplayLine {
+                                        kind: message.kind,
+                                        text: format_tool_summary(tool_run, name_width),
+                                        is_header: false,
+                                        message_id: message.id.clone(),
+                                        action: Some(ResponseLineAction::OpenToolRunDetail(
+                                            tool_run.id.clone(),
+                                        )),
+                                        is_tool_line: true,
+                                        tool_status: Some(tool_run.status),
+                                        response_state: None,
+                                        thinking_line_kind: None,
+                                        spans: Vec::new(),
+                                    }
+                                }));
+                            }
                         }
                     }
                     MsgKind::Thinking => {
                         if message.collapsed {
+                            // 15B-45: ▸ prefix for collapsed (expandable)
                             lines.push(ResponseDisplayLine {
                                 kind: message.kind,
                                 text: format!(
-                                    "    = {}",
+                                    "    ▸ {}",
                                     summarize_thinking_text(&message.text, message_state)
                                 ),
                                 is_header: false,
@@ -299,14 +398,16 @@ impl App {
                                 tool_status: None,
                                 response_state: Some(message_state),
                                 thinking_line_kind: Some(ThinkingLineKind::Summary),
+                                spans: Vec::new(),
                             });
                         } else {
                             let body_lines = split_or_empty(&message.text);
+                            let thinking_prefix = thinking_body_prefix(message_state, self.spinner_tick);
                             if body_lines.len() == 1 && body_lines[0].is_empty() {
                                 lines.push(ResponseDisplayLine {
                                     kind: message.kind,
                                     text: format!(
-                                        "    | {}",
+                                        "    {thinking_prefix} {}",
                                         thinking_placeholder_text(message_state)
                                     ),
                                     is_header: false,
@@ -316,12 +417,14 @@ impl App {
                                     tool_status: None,
                                     response_state: Some(message_state),
                                     thinking_line_kind: Some(ThinkingLineKind::Placeholder),
+                                    spans: Vec::new(),
                                 });
                             } else {
+                                // 15B-45: spinner while streaming, │ once complete/failed
                                 lines.extend(body_lines.into_iter().map(|line| {
                                     ResponseDisplayLine {
                                         kind: message.kind,
-                                        text: format!("    | {line}"),
+                                        text: format!("    {thinking_prefix} {line}"),
                                         is_header: false,
                                         message_id: message.id.clone(),
                                         action: default_action.clone(),
@@ -329,6 +432,7 @@ impl App {
                                         tool_status: None,
                                         response_state: Some(message_state),
                                         thinking_line_kind: Some(ThinkingLineKind::Body),
+                                        spans: Vec::new(),
                                     }
                                 }));
                             }
@@ -378,6 +482,7 @@ impl App {
             scene_id: scene_id.clone(),
             subflow_ref: None,
             collapsed: false,
+            tool_lane_collapsed: true,
         };
 
         let total = self.subflow_total(messages, first_ref);
@@ -402,6 +507,7 @@ impl App {
             tool_status: None,
             response_state: parent_message.state,
             thinking_line_kind: None,
+            spans: Vec::new(),
         }];
 
         if let Some(scene_id) = scene_id {
@@ -415,6 +521,7 @@ impl App {
                 tool_status: None,
                 response_state: None,
                 thinking_line_kind: None,
+                spans: Vec::new(),
             });
         }
 
@@ -441,6 +548,7 @@ impl App {
             tool_status: None,
             response_state: None,
             thinking_line_kind: None,
+            spans: Vec::new(),
         });
 
         for item_index in 1..=total.max(1) {
@@ -506,6 +614,7 @@ impl App {
                 tool_status: None,
                 response_state: None,
                 thinking_line_kind: None,
+                spans: Vec::new(),
             }];
         }
 
@@ -563,6 +672,7 @@ impl App {
             tool_status: None,
             response_state: primary.and_then(|message| message.state),
             thinking_line_kind: None,
+            spans: Vec::new(),
         }];
 
         let expanded = matches!(status, StepSubflowState::Running | StepSubflowState::Failed);
@@ -583,6 +693,7 @@ impl App {
                     tool_status: None,
                     response_state: None,
                     thinking_line_kind: None,
+                    spans: Vec::new(),
                 });
             } else {
                 lines.extend(body_lines.into_iter().map(|line| ResponseDisplayLine {
@@ -595,6 +706,7 @@ impl App {
                     tool_status: None,
                     response_state: None,
                     thinking_line_kind: None,
+                    spans: Vec::new(),
                 }));
             }
 
@@ -617,6 +729,7 @@ impl App {
                         tool_status: None,
                         response_state: Some(thinking_state),
                         thinking_line_kind: Some(ThinkingLineKind::Summary),
+                        spans: Vec::new(),
                     });
                 }
             }
@@ -627,28 +740,43 @@ impl App {
                 .map(|section_id| self.tool_runs_for_section(section_id))
                 .unwrap_or_default();
             if !tool_runs.is_empty() {
+                let can_toggle = tool_runs.len() >= 6;
+                let collapsed = can_toggle && primary.tool_lane_collapsed;
                 lines.push(ResponseDisplayLine {
                     kind: MsgKind::Step,
-                    text: format!("    {}", format_tool_lane_header(&tool_runs).trim()),
+                    text: format!(
+                        "    {}",
+                        format_tool_lane_header(&tool_runs, can_toggle, collapsed).trim()
+                    ),
                     is_header: false,
                     message_id: primary.id.clone(),
-                    action: None,
+                    action: can_toggle.then(|| {
+                        ResponseLineAction::ToggleToolLane(primary.id.clone().unwrap_or_default())
+                    }),
                     is_tool_line: true,
                     tool_status: None,
                     response_state: None,
                     thinking_line_kind: None,
+                    spans: Vec::new(),
                 });
-                lines.extend(tool_runs.into_iter().map(|tool_run| ResponseDisplayLine {
-                    kind: MsgKind::Step,
-                    text: format!("      {}", format_tool_summary(tool_run).trim()),
-                    is_header: false,
-                    message_id: primary.id.clone(),
-                    action: Some(ResponseLineAction::OpenToolRunDetail(tool_run.id.clone())),
-                    is_tool_line: true,
-                    tool_status: Some(tool_run.status),
-                    response_state: None,
-                    thinking_line_kind: None,
-                }));
+                if !collapsed {
+                    let name_width = tool_name_width(&tool_runs);
+                    lines.extend(tool_runs.into_iter().map(|tool_run| ResponseDisplayLine {
+                        kind: MsgKind::Step,
+                        text: format!(
+                            "      {}",
+                            format_tool_summary(tool_run, name_width).trim()
+                        ),
+                        is_header: false,
+                        message_id: primary.id.clone(),
+                        action: Some(ResponseLineAction::OpenToolRunDetail(tool_run.id.clone())),
+                        is_tool_line: true,
+                        tool_status: Some(tool_run.status),
+                        response_state: None,
+                        thinking_line_kind: None,
+                        spans: Vec::new(),
+                    }));
+                }
             }
         }
 
@@ -756,6 +884,7 @@ impl Msg {
             scene_id: None,
             subflow_ref: None,
             collapsed: false,
+            tool_lane_collapsed: true,
         }
     }
 
@@ -777,6 +906,7 @@ impl Msg {
             scene_id: section.metadata.scene_id,
             subflow_ref: section.metadata.subflow_ref,
             collapsed: false,
+            tool_lane_collapsed: true,
         }
     }
 }
@@ -851,7 +981,7 @@ fn sanitize_tool_run(mut tool_run: ToolRun) -> ToolRun {
     tool_run
 }
 
-fn format_tool_lane_header(tool_runs: &[&ToolRun]) -> String {
+fn format_tool_lane_header(tool_runs: &[&ToolRun], can_toggle: bool, collapsed: bool) -> String {
     let running = tool_runs
         .iter()
         .filter(|tool_run| tool_run.status == ToolRunStatus::Running)
@@ -862,21 +992,34 @@ fn format_tool_lane_header(tool_runs: &[&ToolRun]) -> String {
         .count();
     let total = tool_runs.len();
 
-    if running > 0 {
+    let mut text = if running > 0 {
         format!("  tools  {total} total · {running} running")
     } else if failed > 0 {
         format!("  tools  {total} total · {failed} failed")
     } else {
         format!("  tools  {total} total")
+    };
+    if can_toggle {
+        text.push_str(if collapsed { "  [expand]" } else { "  [collapse]" });
     }
+    text
 }
 
-fn format_tool_summary(tool_run: &ToolRun) -> String {
+fn tool_name_width(tool_runs: &[&ToolRun]) -> usize {
+    tool_runs
+        .iter()
+        .map(|tool_run| tool_run.tool_name.chars().count())
+        .max()
+        .unwrap_or(0)
+}
+
+fn format_tool_summary(tool_run: &ToolRun, name_width: usize) -> String {
     let mut summary = format!(
-        "    {}  [{}]  {}",
-        tool_run.tool_name,
-        tool_run_status_label(tool_run.status),
-        tool_run.invocation_preview
+        "    {tool_name:<name_width$}  [{status}]  {invoke}",
+        tool_name = tool_run.tool_name,
+        status = tool_run_status_label(tool_run.status),
+        invoke = tool_run.invocation_preview,
+        name_width = name_width,
     );
     if let Some(result_preview) = tool_run.result_preview.as_deref() {
         summary.push_str(" -> ");
@@ -963,6 +1106,16 @@ fn thinking_placeholder_text(state: ResponseSectionState) -> &'static str {
         ResponseSectionState::Streaming => "waiting for reasoning...",
         ResponseSectionState::Complete => "no reasoning captured",
         ResponseSectionState::Failed => "reasoning ended before content arrived",
+    }
+}
+
+fn thinking_body_prefix(state: ResponseSectionState, spinner_tick: u8) -> String {
+    match state {
+        ResponseSectionState::Streaming => {
+            const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+            SPINNER_FRAMES[(spinner_tick as usize / 2) % SPINNER_FRAMES.len()].to_string()
+        }
+        ResponseSectionState::Complete | ResponseSectionState::Failed => "│".to_string(),
     }
 }
 

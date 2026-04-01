@@ -1,3 +1,4 @@
+pub(crate) mod markdown;
 mod layout;
 mod overlay;
 mod sidebar;

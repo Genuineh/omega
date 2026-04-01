@@ -135,6 +135,28 @@ pub struct RenderPalette {
     pub overlay_button_fg: Color,
     pub overlay_button_selected_fg: Color,
     pub overlay_button_selected_bg: Color,
+    // Markdown rendering (15B-40)
+    pub heading_1_fg: Color,
+    pub heading_2_fg: Color,
+    pub heading_3_fg: Color,
+    pub inline_code_fg: Color,
+    pub inline_code_bg: Color,
+    pub hr_fg: Color,
+    // Code block (15B-41)
+    pub code_block_bg: Color,
+    pub code_lang_fg: Color,
+    pub code_border_fg: Color,
+    // Message badges (15B-42)
+    pub user_badge_fg: Color,
+    pub assistant_badge_fg: Color,
+    pub warning_badge_fg: Color,
+    pub error_badge_fg: Color,
+    // Final answer (15B-43)
+    pub final_answer_accent_fg: Color,
+    pub final_answer_border_fg: Color,
+    // Thinking (15B-45)
+    pub thinking_summary_fg: Color,
+    pub thinking_body_fg: Color,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -253,6 +275,28 @@ impl OmegaTheme {
             overlay_button_fg: self.overlay.button_fg,
             overlay_button_selected_fg: self.overlay.selected_button_fg,
             overlay_button_selected_bg: self.overlay.selected_button_bg,
+            // Markdown rendering
+            heading_1_fg: Color::Rgb(86, 156, 214),   // bright blue
+            heading_2_fg: Color::Rgb(78, 201, 176),   // teal
+            heading_3_fg: Color::Rgb(172, 179, 189),  // muted
+            inline_code_fg: Color::Rgb(206, 145, 120),// orange-ish
+            inline_code_bg: Color::Rgb(40, 40, 48),   // subtle dark
+            hr_fg: Color::Rgb(98, 107, 120),           // dim
+            // Code block
+            code_block_bg: Color::Rgb(30, 30, 46),    // dark surface
+            code_lang_fg: Color::Rgb(116, 126, 140),  // muted label
+            code_border_fg: Color::Rgb(68, 71, 90),   // dim border
+            // Message badges
+            user_badge_fg: Color::Rgb(80, 250, 123),   // green
+            assistant_badge_fg: Color::Rgb(139, 148, 158),// muted
+            warning_badge_fg: Color::Rgb(255, 196, 104), // amber
+            error_badge_fg: Color::Rgb(255, 85, 85),     // red
+            // Final answer
+            final_answer_accent_fg: Color::Rgb(80, 250, 123), // bright green
+            final_answer_border_fg: Color::Rgb(68, 71, 90),   // dim
+            // Thinking
+            thinking_summary_fg: Color::Rgb(98, 114, 164),    // muted blue
+            thinking_body_fg: Color::Rgb(68, 71, 90),         // very dim
         }
     }
 

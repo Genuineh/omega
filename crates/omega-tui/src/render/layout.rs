@@ -1,7 +1,9 @@
+use ratatui::text::Span;
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
+    text::Line,
     Frame,
 };
 
@@ -9,6 +11,7 @@ use omega_keymap::InteractionMode;
 use omega_theme::{OmegaTheme, RenderPalette as ColorScheme};
 
 use crate::app::{wrap_text_segments, App, Panel};
+use crate::render::markdown::StyledSpan;
 
 use super::overlay::render_overlay;
 use super::sidebar::{list_item_with_selection, render_sidebar_body, render_sidebar_rail};
@@ -17,6 +20,7 @@ use super::style::response_line_style;
 
 pub(crate) fn render(frame: &mut Frame, app: &mut App, model_name: &str, theme: &OmegaTheme) {
     let colors = theme.render_palette();
+    app.cached_palette = Some(colors);
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -81,21 +85,36 @@ pub(crate) fn render(frame: &mut Frame, app: &mut App, model_name: &str, theme: 
         .iter()
         .enumerate()
         .flat_map(|(line_index, line)| {
-            let style = response_line_style(line, &colors);
-            wrap_text_segments(&line.text, resp_inner_w)
-                .into_iter()
-                .map(move |(source_column_start, wrapped)| {
-                    list_item_with_selection(
-                        &wrapped,
-                        style,
-                        app_ref.selection_range_for_segment(
-                            Panel::Response,
-                            line_index,
-                            source_column_start,
-                            source_column_start + wrapped.chars().count(),
-                        ),
-                    )
-                })
+            let fallback_style = response_line_style(line, &colors);
+            if line.spans.is_empty() {
+                // Legacy path: single-style text
+                wrap_text_segments(&line.text, resp_inner_w)
+                    .into_iter()
+                    .map(move |(source_column_start, wrapped)| {
+                        list_item_with_selection(
+                            &wrapped,
+                            fallback_style,
+                            app_ref.selection_range_for_segment(
+                                Panel::Response,
+                                line_index,
+                                source_column_start,
+                                source_column_start + wrapped.chars().count(),
+                            ),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                wrap_styled_spans(&line.spans, resp_inner_w)
+                    .into_iter()
+                    .map(|wrapped_spans| {
+                        let ratatui_spans: Vec<Span<'static>> = wrapped_spans
+                            .into_iter()
+                            .map(|span| Span::styled(span.text, span.style))
+                            .collect();
+                        ListItem::new(Line::from(ratatui_spans))
+                    })
+                    .collect::<Vec<_>>()
+            }
         })
         .collect();
     let resp_total = output_items.len();
@@ -226,6 +245,63 @@ pub(crate) fn render(frame: &mut Frame, app: &mut App, model_name: &str, theme: 
     frame.render_widget(context, chunks[1]);
 
     render_overlay(frame, app, &colors);
+}
+
+fn wrap_styled_spans(spans: &[StyledSpan], width: usize) -> Vec<Vec<StyledSpan>> {
+    if width == 0 {
+        return vec![spans.to_vec()];
+    }
+    if spans.is_empty() {
+        return vec![Vec::new()];
+    }
+
+    let mut lines: Vec<Vec<StyledSpan>> = Vec::new();
+    let mut current_line: Vec<StyledSpan> = Vec::new();
+    let mut current_width = 0usize;
+
+    for span in spans {
+        if span.text.is_empty() {
+            if current_line.is_empty() {
+                current_line.push(span.clone());
+            }
+            continue;
+        }
+
+        let chars: Vec<char> = span.text.chars().collect();
+        let mut start = 0usize;
+        while start < chars.len() {
+            if current_width == width {
+                lines.push(current_line);
+                current_line = Vec::new();
+                current_width = 0;
+            }
+
+            let take = (width - current_width).min(chars.len() - start);
+            let text: String = chars[start..start + take].iter().collect();
+            current_line.push(StyledSpan {
+                text,
+                style: span.style,
+            });
+            current_width += take;
+            start += take;
+
+            if current_width == width {
+                lines.push(current_line);
+                current_line = Vec::new();
+                current_width = 0;
+            }
+        }
+    }
+
+    if current_line.is_empty() {
+        if lines.is_empty() {
+            lines.push(Vec::new());
+        }
+    } else {
+        lines.push(current_line);
+    }
+
+    lines
 }
 
 fn panel_border_style(selected: bool, colors: &ColorScheme) -> Style {

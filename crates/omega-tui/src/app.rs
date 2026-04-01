@@ -10,6 +10,7 @@ use omega_session::{
     StepDiagnostics, StepOutputStatus, StepSubflowRef, StepSubflowStatus, ToolRun, ToolRunStatus,
     WorkflowRunRole,
 };
+use omega_theme::RenderPalette;
 
 use crate::overlay::{
     ConfirmChoice, ConfirmIntent, ConfirmOverlay, DetailOverlay, InputPromptOverlay, OverlayState,
@@ -91,6 +92,7 @@ pub struct Msg {
     pub scene_id: Option<String>,
     pub subflow_ref: Option<StepSubflowRef>,
     pub collapsed: bool,
+    pub tool_lane_collapsed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,11 +106,32 @@ pub struct ResponseDisplayLine {
     pub tool_status: Option<ToolRunStatus>,
     pub response_state: Option<ResponseSectionState>,
     pub thinking_line_kind: Option<ThinkingLineKind>,
+    /// Multi-span styled fragments. When non-empty, layout uses these instead of
+    /// the single-style `text` field. Populated by the Markdown parser.
+    pub spans: Vec<crate::render::markdown::StyledSpan>,
+}
+
+impl ResponseDisplayLine {
+    pub fn plain(kind: MsgKind, text: String) -> Self {
+        Self {
+            kind,
+            text,
+            is_header: false,
+            message_id: None,
+            action: None,
+            is_tool_line: false,
+            tool_status: None,
+            response_state: None,
+            thinking_line_kind: None,
+            spans: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResponseLineAction {
     ToggleThinkingSection(String),
+    ToggleToolLane(String),
     OpenToolRunDetail(String),
     OpenStepSubflowDetail(String),
 }
@@ -117,6 +140,8 @@ pub enum ResponseLineAction {
 pub enum ResponseActivation {
     ThinkingCollapsed,
     ThinkingExpanded,
+    ToolLaneCollapsed,
+    ToolLaneExpanded,
     ToolDetailOpened(String),
     StepSubflowDetailOpened(String),
 }
@@ -226,6 +251,7 @@ pub struct App {
     pub sidebar: SidebarState,
     pub overlay: Option<OverlayState>,
     pub overlay_rect: Rect,
+    pub cached_palette: Option<RenderPalette>,
 }
 
 impl App {
@@ -284,6 +310,7 @@ impl App {
             sidebar: SidebarState::default(),
             overlay: None,
             overlay_rect: Rect::default(),
+            cached_palette: None,
         }
     }
 
@@ -296,6 +323,11 @@ impl App {
         self.step_subflows.clear();
         self.clear_step_diagnostics();
         self.active_turn_id
+    }
+
+    pub(crate) fn theme_palette(&self) -> RenderPalette {
+        self.cached_palette
+            .unwrap_or_else(|| omega_theme::OmegaTheme::dark().render_palette())
     }
 
     pub fn interrupt_turn(&mut self) {

@@ -36,7 +36,7 @@ _任务编号以 `docs/specs/omega-agent-impl-plan.md` 为准；为支持可运�
 
 ### Medium — TUI Message Display Polish (新增)
 
-- **Task 15B-40 ~ 15B-46**: 消息呈现体验优化。15B-40 (Markdown 基础渲染) 与 15B-42 (消息角色标识) 为 Phase 1，解锁显著阅读改善；15B-41 (代码块容器)、15B-43 (Final Answer 强化)、15B-46 (段间距) 为 Phase 2；15B-44 (Tool Lane 折叠)、15B-45 (Thinking 摘要增强) 为 Phase 3。详见 `docs/specs/omega-tui-message-display-polish.md`。
+- **Task 15B-40 ~ 15B-46**: 已完成：`omega-tui` response panel 现已支持 lightweight Markdown spans、代码块容器、消息角色标识、Final Answer 强化、Tool Lane 折叠与 Thinking 摘要增强，并补齐窄终端 wrapping / spacing 回归。详见 `docs/specs/omega-tui-message-display-polish.md`。
 - **Task 15B-8**: 原 Markdown 渲染任务由 15B-40 替代并细化，15B-8 标记为 Replaced。
 
 ### Low
@@ -1064,55 +1064,69 @@ _基础体验已在 M1.7 完成，此处保留高级特性。_
 > 规格：docs/specs/omega-tui-message-display-polish.md
 
 ### Task 15B-40: omega-tui — Markdown 基础渲染
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-04-01
 - **Priority**: Medium
 - **Description**: 在 response 消息文本渲染管线中引入轻量 Markdown 解析层：标题（H1~H3）加粗+颜色层级、列表自动缩进、行内代码反色/背景色、粗体/斜体 modifier、分隔线水平填充。ResponseDisplayLine 扩展为多 span 模型，新增 `omega-tui/src/render/markdown.rs` 模块，RenderPalette 新增 heading/inline_code/hr 主题色
 - **Complexity**: L
+- **Summary**: `ResponseDisplayLine` 已支持多 span 渲染；`render/markdown.rs` 已落地轻量逐行 Markdown 解析；`layout.rs` 现可在窄终端对 styled spans 正确换行，覆盖标题、列表、行内代码、粗斜体与水平分隔线。
 - **Related**: docs/specs/omega-tui-message-display-polish.md
 - **Blocks**: Task 15B-41, Task 15B-43, Task 15B-46
 
 ### Task 15B-41: omega-tui — 代码块视觉容器
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-04-01
 - **Priority**: Medium
 - **Description**: Markdown 代码块使用独立背景色 + 语言标注 + 首尾视觉边界；代码块内不做 Markdown 解析。RenderPalette 新增 code_block_bg/code_lang_fg/code_border_fg
 - **Complexity**: M
+- **Summary**: fenced code block 现已渲染语言标签、首尾边界与独立背景色，块内文本不再触发行内 Markdown 解析，并补齐前后段间距。
 - **Blocked by**: Task 15B-40
 - **Related**: docs/specs/omega-tui-message-display-polish.md
 
 ### Task 15B-42: omega-tui — 消息角色标识与分段
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-04-01
 - **Priority**: Medium
 - **Description**: User/Assistant/System/Tool 消息增加角色前缀符号（▶/◆/⚠/✗），不同源连续消息间自动插入空行分隔。RenderPalette 新增 badge 颜色
 - **Complexity**: M
+- **Summary**: User/Error 已加入显式 badge 前缀，Assistant/Final Answer 颜色分层已接入新 palette，turn separator 与 section spacing 共同提升不同来源消息的视觉边界。
 - **Related**: docs/specs/omega-tui-message-display-polish.md
 
 ### Task 15B-43: omega-tui — Final Answer 视觉强化
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-04-01
 - **Priority**: Medium
 - **Description**: Final Answer header 使用更亮前景色 + ━ 顶部装饰线，body 使用 │ 竖线边饰引导阅读
 - **Complexity**: S
+- **Summary**: Final Answer 现已加入顶部装饰线、强调色 header 与 `│` 边饰；其 body 同时复用 Markdown 渲染与 wrapping 路径。
 - **Blocked by**: Task 15B-40
 - **Related**: docs/specs/omega-tui-message-display-polish.md
 
 ### Task 15B-44: omega-tui — Tool Lane 折叠与密度优化
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-04-01
 - **Priority**: Medium
 - **Description**: ≥6 个 tool 时默认折叠为单行摘要，可展开完整列表；tool name 列宽对齐；≤3 个始终展开
 - **Complexity**: M
+- **Summary**: Step/Final Answer tool lane 现已具备独立折叠状态与 `ToggleToolLane` action；≥6 个 tool 默认折叠并可展开/收起，tool name 列统一左对齐。
 - **Related**: docs/specs/omega-tui-message-display-polish.md
 
 ### Task 15B-45: omega-tui — Thinking 折叠摘要视觉增强
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-04-01
 - **Priority**: Medium
 - **Description**: 折叠态用 ▸ + DIM+ITALIC + 专用色，展开态用 ▾，streaming 态用 spinner 脉冲，完成态 body 用较暗色 + │ 竖线前缀
 - **Complexity**: S
+- **Summary**: Thinking summary 现已使用 `▸` + `DIM|ITALIC` + 专用色；streaming body 复用 spinner frame，完成/失败态 body 统一为 `│` 前缀和更暗正文色。
 - **Related**: docs/specs/omega-tui-message-display-polish.md
 
 ### Task 15B-46: omega-tui — 段间距与长回复可扫读性
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-04-01
 - **Priority**: Medium
 - **Description**: Markdown 段落间自动插入空行、代码块前后保留空行、列表结束后空行、step 间空行标准化
 - **Complexity**: S
+- **Summary**: Markdown parser 现会折叠连续空行为单一段间距，并在列表结束、代码块前后自动补足可扫读的空行分隔。
 - **Blocked by**: Task 15B-40
 - **Related**: docs/specs/omega-tui-message-display-polish.md
 

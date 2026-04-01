@@ -1,4 +1,8 @@
-use omega_session::{ResponseSectionState, StepSubflowState, StepSubflowStatus};
+use omega_session::{
+    ResponseSection, ResponseSectionDelta, ResponseSectionKind, ResponseSectionMetadata,
+    ResponseSectionState, RuntimeUiEffect, RuntimeUiEnvelope, StepSubflowState,
+    StepSubflowStatus, WorkflowRunRole,
+};
 use omega_theme::OmegaTheme;
 use ratatui::{
     backend::TestBackend,
@@ -79,6 +83,52 @@ fn narrow_terminal_forces_sidebar_hidden() {
 }
 
 #[test]
+fn markdown_response_lines_wrap_in_narrow_terminal() {
+    let backend = TestBackend::new(24, 24);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut app = App::new();
+    let theme = OmegaTheme::dark();
+    let turn_id = app.begin_turn();
+
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::BeginResponseSection {
+            section: ResponseSection {
+                id: "turn-render:child:chat:final".to_string(),
+                parent_id: None,
+                kind: ResponseSectionKind::FinalAnswer,
+                title: "Final Answer".to_string(),
+                state: ResponseSectionState::Streaming,
+                metadata: ResponseSectionMetadata {
+                    scene_id: Some("chat".to_string()),
+                    workflow_id: "chat".to_string(),
+                    workflow_role: WorkflowRunRole::Child,
+                    step_id: Some("report".to_string()),
+                    step_label: Some("Report".to_string()),
+                    subflow_ref: None,
+                },
+            },
+        },
+    ));
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::AppendResponseSection {
+            id: "turn-render:child:chat:final".to_string(),
+            delta: ResponseSectionDelta::Text(
+                "This paragraph includes `inline code` and enough words to wrap.".to_string(),
+            ),
+        },
+    ));
+
+    let logical_lines = app.response_display_lines().len();
+    terminal
+        .draw(|frame| render(frame, &mut app, "test-model", &theme))
+        .unwrap();
+
+    assert!(app.response_displayed_count > logical_lines);
+}
+
+#[test]
 fn input_context_and_bottom_status_bars_have_stable_heights() {
     let backend = TestBackend::new(120, 30);
     let mut terminal = Terminal::new(backend).unwrap();
@@ -115,10 +165,11 @@ fn thinking_lines_use_stateful_styles() {
         tool_status: None,
         response_state: Some(ResponseSectionState::Streaming),
         thinking_line_kind: None,
+        spans: Vec::new(),
     };
     let summary = ResponseDisplayLine {
         kind: MsgKind::Thinking,
-        text: "    = reasoning · 2 lines · outline answer".to_string(),
+        text: "    ▸ reasoning · 2 lines · outline answer".to_string(),
         is_header: false,
         message_id: Some("thinking-1".to_string()),
         action: None,
@@ -126,6 +177,7 @@ fn thinking_lines_use_stateful_styles() {
         tool_status: None,
         response_state: Some(ResponseSectionState::Complete),
         thinking_line_kind: Some(ThinkingLineKind::Summary),
+        spans: Vec::new(),
     };
     let failed_body = ResponseDisplayLine {
         kind: MsgKind::Thinking,
@@ -137,6 +189,7 @@ fn thinking_lines_use_stateful_styles() {
         tool_status: None,
         response_state: Some(ResponseSectionState::Failed),
         thinking_line_kind: Some(ThinkingLineKind::Body),
+        spans: Vec::new(),
     };
 
     assert_eq!(
@@ -148,8 +201,8 @@ fn thinking_lines_use_stateful_styles() {
     assert_eq!(
         response_line_style(&summary, &colors),
         Style::default()
-            .fg(colors.context_label)
-            .add_modifier(Modifier::BOLD)
+            .fg(colors.thinking_summary_fg)
+            .add_modifier(Modifier::DIM | Modifier::ITALIC)
     );
     assert_eq!(
         response_line_style(&failed_body, &colors),

@@ -300,9 +300,10 @@ mod tests {
                 "step  child:feature  Plan  [done]".to_string(),
                 "  scene feature".to_string(),
                 "  draft patch".to_string(),
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".to_string(),
                 "final  child:feature  Final Answer  [done]".to_string(),
                 "  scene feature".to_string(),
-                "  hello".to_string(),
+                "  │ hello".to_string(),
             ]
         );
         assert_eq!(app.todo_lines, vec!["[>] #1: Code"]);
