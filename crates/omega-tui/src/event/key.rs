@@ -60,6 +60,8 @@ pub(super) fn handle_key_event(
                     let notice = match app_guard.activate_selected_response_item() {
                         Some(ResponseActivation::ThinkingCollapsed) => "Thinking collapsed.",
                         Some(ResponseActivation::ThinkingExpanded) => "Thinking expanded.",
+                        Some(ResponseActivation::ToolLaneCollapsed) => "Tool lane collapsed.",
+                        Some(ResponseActivation::ToolLaneExpanded) => "Tool lane expanded.",
                         Some(ResponseActivation::ToolDetailOpened(tool_name)) => {
                             app_guard
                                 .set_status_notice(format!("Opened {tool_name} detail overlay."));

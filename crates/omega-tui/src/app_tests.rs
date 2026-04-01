@@ -524,9 +524,10 @@ fn routing_and_final_answer_sections_form_response_timeline() {
         vec![
             "route  root:root  Scene Recognition  [done]".to_string(),
             "  result chat".to_string(),
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".to_string(),
             "final  child:chat  Final Answer  [done]".to_string(),
             "  scene chat".to_string(),
-            "  hello".to_string(),
+            "  │ hello".to_string(),
         ]
     );
 }
@@ -587,12 +588,13 @@ fn thinking_sections_stream_then_collapse_on_complete() {
     assert_eq!(
         app.response_lines(),
         vec![
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".to_string(),
             "final  child:chat  Final Answer  [streaming]".to_string(),
             "  scene chat".to_string(),
-            "  …".to_string(),
+            "  │ …".to_string(),
             "  reasoning  child:chat  Reasoning live  [streaming]".to_string(),
-            "    | outline answer".to_string(),
-            "    | check tone".to_string(),
+            "    ⠋ outline answer".to_string(),
+            "    ⠋ check tone".to_string(),
         ]
     );
 
@@ -607,11 +609,12 @@ fn thinking_sections_stream_then_collapse_on_complete() {
     assert_eq!(
         app.response_lines(),
         vec![
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".to_string(),
             "final  child:chat  Final Answer  [streaming]".to_string(),
             "  scene chat".to_string(),
-            "  …".to_string(),
+            "  │ …".to_string(),
             "  reasoning  child:chat  Reasoning  [done]".to_string(),
-            "    = reasoning · 2 lines · outline answer".to_string(),
+            "    ▸ reasoning · 2 lines · outline answer".to_string(),
         ]
     );
 
@@ -626,12 +629,13 @@ fn thinking_sections_stream_then_collapse_on_complete() {
     assert_eq!(
         app.response_lines(),
         vec![
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".to_string(),
             "final  child:chat  Final Answer  [streaming]".to_string(),
             "  scene chat".to_string(),
-            "  …".to_string(),
+            "  │ …".to_string(),
             "  reasoning  child:chat  Reasoning  [done]".to_string(),
-            "    | outline answer".to_string(),
-            "    | check tone".to_string(),
+            "    │ outline answer".to_string(),
+            "    │ check tone".to_string(),
         ]
     );
 }
@@ -680,7 +684,7 @@ fn failed_thinking_sections_surface_failure_summary() {
         app.response_lines(),
         vec![
             "  reasoning  child:chat  Reasoning failed  [failed]".to_string(),
-            "    = reasoning failed · 1 line · tool result mismatched".to_string(),
+            "    ▸ reasoning failed · 1 line · tool result mismatched".to_string(),
         ]
     );
 }
@@ -882,6 +886,98 @@ fn activating_tool_summary_opens_detail_overlay() {
         }
         other => panic!("expected detail overlay, got {other:?}"),
     }
+}
+
+#[test]
+fn tool_lane_defaults_to_collapsed_for_six_or_more_tools_and_can_toggle() {
+    let mut app = App::new();
+    let turn_id = app.begin_turn();
+
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::BeginResponseSection {
+            section: ResponseSection {
+                id: "turn-13b:child:feature:execute".to_string(),
+                parent_id: None,
+                kind: ResponseSectionKind::Step,
+                title: "Execute".to_string(),
+                state: ResponseSectionState::Streaming,
+                metadata: ResponseSectionMetadata {
+                    scene_id: Some("feature".to_string()),
+                    workflow_id: "feature".to_string(),
+                    workflow_role: WorkflowRunRole::Child,
+                    step_id: Some("execute".to_string()),
+                    step_label: Some("Execute".to_string()),
+                    subflow_ref: None,
+                },
+            },
+        },
+    ));
+
+    for index in 1..=6 {
+        app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+            turn_id,
+            RuntimeUiEffect::BeginToolRun {
+                tool_run: omega_session::ToolRun {
+                    id: format!("tool-collapse-{index}"),
+                    parent_section_id: "turn-13b:child:feature:execute".to_string(),
+                    tool_name: format!("tool_{index}"),
+                    status: omega_session::ToolRunStatus::Complete,
+                    invocation_preview: format!("arg-{index}"),
+                    result_preview: Some(format!("ok-{index}")),
+                    detail: ToolRunDetail {
+                        title: format!(" Tool: tool_{index} "),
+                        lines: vec![format!("tool: tool_{index}")],
+                    },
+                },
+            },
+        ));
+    }
+
+    assert_eq!(
+        app.response_lines(),
+        vec![
+            "step  child:feature  Execute  [streaming]".to_string(),
+            "  scene feature".to_string(),
+            "  tools  6 total  [expand]".to_string(),
+        ]
+    );
+
+    let header_index = app
+        .response_display_lines()
+        .iter()
+        .position(|line| line.text == "  tools  6 total  [expand]")
+        .unwrap();
+    app.response_state.select(Some(header_index));
+    assert_eq!(
+        app.activate_selected_response_item(),
+        Some(ResponseActivation::ToolLaneExpanded)
+    );
+
+    let expanded_lines = app.response_lines();
+    assert_eq!(expanded_lines[2], "  tools  6 total  [collapse]");
+    assert!(expanded_lines.iter().any(|line| line == "    tool_1  [done]  arg-1 -> ok-1"));
+    assert!(expanded_lines.iter().any(|line| line == "    tool_6  [done]  arg-6 -> ok-6"));
+
+    let header_index = app
+        .response_display_lines()
+        .iter()
+        .position(|line| line.text == "  tools  6 total  [collapse]")
+        .unwrap();
+    app.response_state.select(Some(header_index));
+    assert_eq!(
+        app.activate_selected_response_item(),
+        Some(ResponseActivation::ToolLaneCollapsed)
+    );
+
+    assert_eq!(
+        app.response_lines(),
+        vec![
+            "step  child:feature  Execute  [streaming]".to_string(),
+            "  scene feature".to_string(),
+            "  tools  6 total  [expand]".to_string(),
+        ]
+    );
 }
 
 #[test]
