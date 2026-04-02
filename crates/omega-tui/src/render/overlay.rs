@@ -69,6 +69,8 @@ pub(super) fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorSch
                 Panel::Response => "Response",
                 Panel::SidebarRail => "Sidebar",
                 Panel::Diagnostics => "Diagnostics",
+                Panel::Document => "Document",
+                Panel::Memory => "Memory",
                 Panel::Todo => "Todos",
                 Panel::Logs => "Logs",
             };

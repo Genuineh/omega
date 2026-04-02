@@ -54,6 +54,7 @@ fn sample_step_diagnostics() -> StepDiagnostics {
                 tantivy_index_size_bytes: 2048,
                 todo_items_count: 3,
                 turn_archive_count: 2,
+                turn_archive_size_bytes: 8192,
             },
         }),
         cache: Some(CacheDiagnostics {
@@ -85,6 +86,7 @@ fn sample_step_diagnostics() -> StepDiagnostics {
                 workflow_id: "feature".to_string(),
                 step_id: "explore".to_string(),
                 title: "Explore".to_string(),
+                preview: "Explored the workspace state and narrowed the active files.".to_string(),
             }],
             expected_structured_sources: vec!["explore".to_string()],
             resolved_structured_sources: vec!["explore".to_string()],

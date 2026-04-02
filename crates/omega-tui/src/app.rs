@@ -6,9 +6,9 @@ use ratatui::{layout::Rect, widgets::ListState};
 
 use omega_observability::strip_ansi;
 use omega_session::{
-    OverlayTarget, ResponseSectionState, RuntimeUiEnvelope, StatusSlot, StatusValue,
-    StepDiagnostics, StepOutputStatus, StepSubflowRef, StepSubflowStatus, ToolRun, ToolRunStatus,
-    WorkflowRunRole,
+    ContextSupervisionSnapshot, OverlayTarget, ResponseSectionState, RuntimeUiEnvelope,
+    StatusSlot, StatusValue, StepDiagnostics, StepOutputStatus, StepSubflowRef,
+    StepSubflowStatus, ToolRun, ToolRunStatus, WorkflowRunRole,
 };
 use omega_theme::RenderPalette;
 
@@ -21,12 +21,14 @@ use crate::sidebar::{SidebarSection, SidebarState};
 
 mod diagnostics;
 mod response;
+mod supervision;
 mod text;
 mod todo;
 
 pub(crate) use text::wrap_text_segments;
 #[cfg(test)]
 pub(crate) use todo::todo_empty_lines;
+use supervision::{document_placeholder_lines, memory_placeholder_lines};
 use todo::todo_unsynced_lines;
 
 const TODO_UNSYNCED_LINES: &[&str] = &[
@@ -43,6 +45,8 @@ pub enum Panel {
     Response,
     SidebarRail,
     Diagnostics,
+    Document,
+    Memory,
     Todo,
     Logs,
 }
@@ -202,19 +206,26 @@ pub struct App {
     pub tool_runs: Vec<ToolRun>,
     pub step_subflows: Vec<StepSubflowStatus>,
     step_diagnostics: Vec<StepDiagnostics>,
+    context_supervision: Option<ContextSupervisionSnapshot>,
     diagnostics_lines: Vec<DiagnosticsLine>,
+    pub document_lines: Vec<String>,
+    pub memory_lines: Vec<String>,
     pub todo_lines: Vec<String>,
     pub todo_status: TodoPanelStatus,
     pub todo_summary: Option<TodoSummary>,
     pub log_lines: Vec<String>,
     pub response_state: ListState,
     pub diagnostics_state: ListState,
+    pub document_state: ListState,
+    pub memory_state: ListState,
     pub todo_state: ListState,
     pub logs_state: ListState,
     pub focused_panel: Panel,
     pub interaction_mode: InteractionMode,
     pub response_pinned: bool,
     pub diagnostics_pinned: bool,
+    pub document_pinned: bool,
+    pub memory_pinned: bool,
     pub todo_pinned: bool,
     pub logs_pinned: bool,
     pub response_rect: Rect,
@@ -224,6 +235,8 @@ pub struct App {
     pub sidebar_rect: Rect,
     pub sidebar_rail_rect: Rect,
     pub diagnostics_rect: Rect,
+    pub document_rect: Rect,
+    pub memory_rect: Rect,
     pub todo_rect: Rect,
     pub logs_rect: Rect,
     pub bottom_status_rect: Rect,
@@ -240,6 +253,8 @@ pub struct App {
     pub spinner_tick: u8,
     pub response_displayed_count: usize,
     pub diagnostics_displayed_count: usize,
+    pub document_displayed_count: usize,
+    pub memory_displayed_count: usize,
     pub todo_displayed_count: usize,
     pub logs_displayed_count: usize,
     pub leader_pending_since: Option<Instant>,
@@ -261,19 +276,26 @@ impl App {
             tool_runs: vec![],
             step_subflows: vec![],
             step_diagnostics: vec![],
+            context_supervision: None,
             diagnostics_lines: vec![],
+            document_lines: document_placeholder_lines(),
+            memory_lines: memory_placeholder_lines(),
             todo_lines: todo_unsynced_lines(),
             todo_status: TodoPanelStatus::NeverSynced,
             todo_summary: None,
             log_lines: vec![],
             response_state: ListState::default(),
             diagnostics_state: ListState::default(),
+            document_state: ListState::default(),
+            memory_state: ListState::default(),
             todo_state: ListState::default(),
             logs_state: ListState::default(),
             focused_panel: Panel::Response,
             interaction_mode: InteractionMode::Normal,
             response_pinned: false,
             diagnostics_pinned: false,
+            document_pinned: false,
+            memory_pinned: false,
             todo_pinned: false,
             logs_pinned: false,
             response_rect: Rect::default(),
@@ -283,6 +305,8 @@ impl App {
             sidebar_rect: Rect::default(),
             sidebar_rail_rect: Rect::default(),
             diagnostics_rect: Rect::default(),
+            document_rect: Rect::default(),
+            memory_rect: Rect::default(),
             todo_rect: Rect::default(),
             logs_rect: Rect::default(),
             bottom_status_rect: Rect::default(),
@@ -299,6 +323,8 @@ impl App {
             spinner_tick: 0,
             response_displayed_count: 0,
             diagnostics_displayed_count: 0,
+            document_displayed_count: 0,
+            memory_displayed_count: 0,
             todo_displayed_count: 0,
             logs_displayed_count: 0,
             leader_pending_since: None,
@@ -322,6 +348,7 @@ impl App {
         self.agent_status_label = Some("Running".to_string());
         self.step_subflows.clear();
         self.clear_step_diagnostics();
+        self.clear_context_supervision();
         self.active_turn_id
     }
 
@@ -340,6 +367,7 @@ impl App {
         self.agent_status_label = Some("Idle".to_string());
         self.step_subflows.clear();
         self.clear_step_diagnostics();
+        self.clear_context_supervision();
     }
 
     pub fn is_current_turn(&self, turn_id: u64) -> bool {
@@ -557,6 +585,26 @@ impl App {
                 self.diagnostics_state
                     .select(Some(current.saturating_sub(amount)));
             }
+            Panel::Document => {
+                self.document_pinned = true;
+                let current = self.document_state.selected().unwrap_or_else(|| {
+                    self.document_displayed_count
+                        .max(self.document_lines.len())
+                        .saturating_sub(1)
+                });
+                self.document_state
+                    .select(Some(current.saturating_sub(amount)));
+            }
+            Panel::Memory => {
+                self.memory_pinned = true;
+                let current = self.memory_state.selected().unwrap_or_else(|| {
+                    self.memory_displayed_count
+                        .max(self.memory_lines.len())
+                        .saturating_sub(1)
+                });
+                self.memory_state
+                    .select(Some(current.saturating_sub(amount)));
+            }
             Panel::Todo => {
                 self.todo_pinned = true;
                 let current = self.todo_state.selected().unwrap_or_else(|| {
@@ -603,6 +651,30 @@ impl App {
                 self.diagnostics_state.select(Some(new_idx));
                 if new_idx >= last {
                     self.diagnostics_pinned = false;
+                }
+            }
+            Panel::Document => {
+                let last = self
+                    .document_displayed_count
+                    .max(self.document_lines.len())
+                    .saturating_sub(1);
+                let current = self.document_state.selected().unwrap_or(last);
+                let new_idx = (current + amount).min(last);
+                self.document_state.select(Some(new_idx));
+                if new_idx >= last {
+                    self.document_pinned = false;
+                }
+            }
+            Panel::Memory => {
+                let last = self
+                    .memory_displayed_count
+                    .max(self.memory_lines.len())
+                    .saturating_sub(1);
+                let current = self.memory_state.selected().unwrap_or(last);
+                let new_idx = (current + amount).min(last);
+                self.memory_state.select(Some(new_idx));
+                if new_idx >= last {
+                    self.memory_pinned = false;
                 }
             }
             Panel::Todo => {
@@ -654,6 +726,18 @@ impl App {
                     .saturating_add(self.diagnostics_rect.height)
         {
             Panel::Diagnostics
+        } else if self.document_rect.width > 0
+            && col >= self.document_rect.x
+            && row >= self.document_rect.y
+            && row < self.document_rect.y.saturating_add(self.document_rect.height)
+        {
+            Panel::Document
+        } else if self.memory_rect.width > 0
+            && col >= self.memory_rect.x
+            && row >= self.memory_rect.y
+            && row < self.memory_rect.y.saturating_add(self.memory_rect.height)
+        {
+            Panel::Memory
         } else if self.logs_rect.width > 0
             && col >= self.logs_rect.x
             && row >= self.logs_rect.y
@@ -679,6 +763,14 @@ impl App {
         self.diagnostics_rect.width > 0 && self.diagnostics_rect.height > 0
     }
 
+    pub fn document_visible(&self) -> bool {
+        self.document_rect.width > 0 && self.document_rect.height > 0
+    }
+
+    pub fn memory_visible(&self) -> bool {
+        self.memory_rect.width > 0 && self.memory_rect.height > 0
+    }
+
     pub fn logs_visible(&self) -> bool {
         self.logs_rect.width > 0 && self.logs_rect.height > 0
     }
@@ -692,6 +784,12 @@ impl App {
             self.focused_panel = Panel::Response;
         }
         if self.focused_panel == Panel::Diagnostics && !self.diagnostics_visible() {
+            self.focused_panel = Panel::Response;
+        }
+        if self.focused_panel == Panel::Document && !self.document_visible() {
+            self.focused_panel = Panel::Response;
+        }
+        if self.focused_panel == Panel::Memory && !self.memory_visible() {
             self.focused_panel = Panel::Response;
         }
         if self.focused_panel == Panel::Todo && !self.todo_visible() {
@@ -718,6 +816,12 @@ impl App {
         if self.diagnostics_visible() {
             panels.push(Panel::Diagnostics);
         }
+        if self.document_visible() {
+            panels.push(Panel::Document);
+        }
+        if self.memory_visible() {
+            panels.push(Panel::Memory);
+        }
         if self.todo_visible() {
             panels.push(Panel::Todo);
         }
@@ -741,6 +845,8 @@ impl App {
             Panel::Response => KeyFocus::Response,
             Panel::SidebarRail => KeyFocus::SidebarRail,
             Panel::Diagnostics => KeyFocus::Activity,
+            Panel::Document => KeyFocus::Activity,
+            Panel::Memory => KeyFocus::Activity,
             Panel::Todo => KeyFocus::Todo,
             Panel::Logs => KeyFocus::Activity,
         }
@@ -850,6 +956,22 @@ impl App {
                     self.focused_panel = Panel::Diagnostics;
                 }
             }
+            SidebarSection::Document => {
+                if !self.sidebar.document_expanded {
+                    self.sidebar.document_expanded = true;
+                }
+                if self.document_visible() {
+                    self.focused_panel = Panel::Document;
+                }
+            }
+            SidebarSection::Memory => {
+                if !self.sidebar.memory_expanded {
+                    self.sidebar.memory_expanded = true;
+                }
+                if self.memory_visible() {
+                    self.focused_panel = Panel::Memory;
+                }
+            }
             SidebarSection::Todos => {
                 if !self.sidebar.todos_expanded {
                     self.sidebar.todos_expanded = true;
@@ -902,6 +1024,25 @@ impl App {
                     "D --".to_string()
                 }
             }
+            SidebarSection::Document => match self.context_supervision.as_ref() {
+                Some(snapshot) if !snapshot.document.enabled => "off".to_string(),
+                Some(snapshot) => snapshot
+                    .document
+                    .current_hits
+                    .as_ref()
+                    .map(|hits| hits.result_count.to_string())
+                    .unwrap_or_else(|| snapshot.document.readiness.as_str().to_string()),
+                None => "--".to_string(),
+            },
+            SidebarSection::Memory => match self.context_supervision.as_ref() {
+                Some(snapshot) => snapshot
+                    .memory
+                    .current_hits
+                    .as_ref()
+                    .map(|hits| format!("{}/{}", hits.selected_count, snapshot.memory.totals.total_turns_archived))
+                    .unwrap_or_else(|| snapshot.memory.readiness.as_str().to_string()),
+                None => "--".to_string(),
+            },
             SidebarSection::Todos => match self.todo_summary {
                 Some(summary) => format!("T {}/{}", summary.completed, summary.total),
                 None => "T --".to_string(),

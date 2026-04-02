@@ -51,6 +51,8 @@ fn single_activity_section_occupies_sidebar_body() {
     let mut app = App::new();
     let theme = OmegaTheme::dark();
     app.sidebar.diagnostics_expanded = false;
+    app.sidebar.document_expanded = false;
+    app.sidebar.memory_expanded = false;
     app.sidebar.todos_expanded = false;
     app.sidebar.logs_expanded = true;
 

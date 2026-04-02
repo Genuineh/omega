@@ -1,5 +1,7 @@
 use std::sync::{mpsc, Arc};
 
+use omega_context::ContextSupervisionSnapshot;
+
 use crate::runtime_ui::{
     OverlayRequest, ResponseSection, ResponseSectionDelta, ResponseSectionState, RuntimeUiEffect,
     RuntimeUiEnvelope, RuntimeUiMessage, StatusSlot, StatusValue, StepDiagnostics,
@@ -98,6 +100,9 @@ pub enum StateMessage {
     },
     Diagnostics {
         diagnostics: Box<StepDiagnostics>,
+    },
+    ContextSupervision {
+        snapshot: Box<ContextSupervisionSnapshot>,
     },
     Activity {
         source: RuntimeSource,
@@ -359,6 +364,10 @@ fn legacy_ui_envelopes_from_state(turn_id: u64, message: StateMessage) -> Vec<Ru
         StateMessage::Diagnostics { diagnostics } => vec![RuntimeUiEnvelope::effect(
             turn_id,
             RuntimeUiEffect::UpsertStepDiagnostics { diagnostics },
+        )],
+        StateMessage::ContextSupervision { snapshot } => vec![RuntimeUiEnvelope::effect(
+            turn_id,
+            RuntimeUiEffect::UpsertContextSupervision { snapshot },
         )],
         StateMessage::Activity {
             source,

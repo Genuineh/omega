@@ -4,7 +4,10 @@ use std::thread;
 use omega_context::OmegaContextFacade;
 pub use omega_context::{
     ContextBudgetDiagnostics, ContextDiagnostics, ContextDocumentDiagnostics,
-    ContextMemoryDiagnostics, ContextStoreDiagnostics, HealthScore,
+    ContextMemoryDiagnostics, ContextStoreDiagnostics, ContextSupervisionSnapshot,
+    DocumentHitItem, DocumentHitSummary, DocumentSupervisionSnapshot,
+    DocumentSupervisionTotals, HealthScore, MemoryHitItem, MemoryHitSummary,
+    MemorySupervisionSnapshot, MemorySupervisionTotals, SupervisionReadiness,
 };
 use omega_core::{Agent, CoreSharedTodoManager, DynLlmClient, Message, TodoManager};
 use omega_hooks::HookHost;

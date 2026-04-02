@@ -67,6 +67,9 @@ fn apply_state(surface: &mut dyn TuiSurface, message: StateMessage) {
         }),
         StateMessage::ShowOverlay { request } => surface.show_overlay(request),
         StateMessage::Diagnostics { diagnostics } => surface.upsert_diagnostics(*diagnostics),
+        StateMessage::ContextSupervision { snapshot } => {
+            surface.set_context_supervision(*snapshot)
+        }
         StateMessage::StepSubflow { subflow } => {
             surface.add_activity_line(format_step_subflow_line(&subflow));
             surface.upsert_step_subflow(subflow);
@@ -165,6 +168,7 @@ mod tests {
         SessionRouting(String),
         TodoSnapshot(String),
         Diagnostics(String),
+        ContextSupervision,
         StepSubflow(String, String),
         Activity(String),
         ShowOverlay(OverlayTarget, String),
@@ -237,6 +241,13 @@ mod tests {
             self.ops.push(SurfaceOp::Diagnostics(diagnostics.id));
         }
 
+        fn set_context_supervision(
+            &mut self,
+            _snapshot: omega_session::ContextSupervisionSnapshot,
+        ) {
+            self.ops.push(SurfaceOp::ContextSupervision);
+        }
+
         fn upsert_step_subflow(&mut self, subflow: StepSubflowStatus) {
             self.ops
                 .push(SurfaceOp::StepSubflow(subflow.step_id, subflow.subflow_id));
@@ -307,6 +318,7 @@ mod tests {
                     tantivy_index_size_bytes: 2048,
                     todo_items_count: 3,
                     turn_archive_count: 2,
+                    turn_archive_size_bytes: 8192,
                 },
             }),
             cache: None,
@@ -317,6 +329,7 @@ mod tests {
                     workflow_id: "feature".to_string(),
                     step_id: "explore".to_string(),
                     title: "Explore".to_string(),
+                    preview: "Explored the active repository slice for the next step.".to_string(),
                 }],
                 expected_structured_sources: vec!["explore".to_string()],
                 resolved_structured_sources: vec!["explore".to_string()],

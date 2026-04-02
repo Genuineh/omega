@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::{mpsc, Arc};
 
-use omega_context::ContextDiagnostics;
+use omega_context::{ContextDiagnostics, ContextSupervisionSnapshot};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeUiEnvelope {
@@ -93,6 +93,9 @@ pub enum RuntimeUiEffect {
     },
     UpsertStepDiagnostics {
         diagnostics: Box<StepDiagnostics>,
+    },
+    UpsertContextSupervision {
+        snapshot: Box<ContextSupervisionSnapshot>,
     },
 }
 
@@ -350,6 +353,7 @@ pub struct StepSummarySource {
     pub workflow_id: String,
     pub step_id: String,
     pub title: String,
+    pub preview: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

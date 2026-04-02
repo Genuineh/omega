@@ -4,13 +4,16 @@ use std::sync::{Arc, Mutex};
 
 use omega_context::{
     ContextCacheDiagnostics, ContextDiagnostics, ContextExecuteItem, ContextRouting,
-    ContextSession, ContextStep, ContextStepSummary, ContextTokenCountSource, ContextTokenCounter,
-    ContextWorkflowRole, OmegaContextFacade, OutputRepairContextRequest, OutputRepairFailure,
-    StepContextRequest,
+    ContextSession, ContextStep, ContextStepSummary, ContextSupervisionSnapshot,
+    ContextTokenCountSource, ContextTokenCounter, ContextWorkflowRole, DocumentHitItem,
+    DocumentHitSummary, DocumentSupervisionSnapshot, DocumentSupervisionTotals, HealthScore,
+    MemoryHitItem, MemoryHitSummary, MemorySupervisionSnapshot, MemorySupervisionTotals,
+    OmegaContextFacade, OutputRepairContextRequest, OutputRepairFailure, SearchMode,
+    SearchResult, StepContextRequest, SupervisionReadiness,
 };
 use omega_core::{
-    Agent, ChatRequest, CoreSharedTodoManager, CoreToolExecutionContext, DynLlmClient,
-    TodoItem, TodoStatus,
+    Agent, ChatRequest, CoreSharedTodoManager, CoreToolExecutionContext, CoreToolResult,
+    DynLlmClient, TodoItem, TodoStatus,
 };
 use omega_hooks::{HookAdvanceOutcome, HookHost};
 use omega_workflow::{
@@ -116,6 +119,12 @@ struct OutputDiagnosticState<'a> {
     session_writes: Vec<StepContextWrite>,
 }
 
+#[derive(Debug, Clone, Default)]
+struct ContextSupervisionState {
+    document_hits: Option<DocumentHitSummary>,
+    memory_hits: Option<MemoryHitSummary>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum SlotPriority {
     Medium,
@@ -208,6 +217,7 @@ pub(crate) struct WorkflowTurnRunner<'a> {
     cancel_turn_rx: watch::Receiver<u64>,
     tx_callback: SharedRuntimeMessageBridge,
     tx_result: SharedRuntimeMessageBridge,
+    supervision_state: Arc<Mutex<ContextSupervisionState>>,
 }
 
 const CONTEXT_COMPACTION_THRESHOLD_PERCENT: u32 = 70;
@@ -257,6 +267,7 @@ impl<'a> WorkflowTurnRunner<'a> {
             cancel_turn_rx,
             tx_callback,
             tx_result,
+            supervision_state: Arc::new(Mutex::new(ContextSupervisionState::default())),
         }
     }
 
@@ -934,6 +945,7 @@ impl<'a> WorkflowTurnRunner<'a> {
         let usage = Arc::new(Mutex::new(None::<omega_core::Usage>));
         let mut cancel_turn_rx = self.cancel_turn_rx.clone();
         let context_facade = Arc::clone(self.context_facade);
+        let supervision_state = Arc::clone(&self.supervision_state);
 
         let stage_text = self
             .handle
@@ -945,6 +957,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                     let hook_runtime = hook_runtime.clone();
                     let hook_error = hook_error.clone();
                     let context_facade = context_facade.clone();
+                    let supervision_state = supervision_state.clone();
                     move |tool_use_id, name, tool_input, tool_result| {
                         let command = if name == "bash" {
                             tool_input
@@ -981,6 +994,17 @@ impl<'a> WorkflowTurnRunner<'a> {
                         }
 
                         let context_diagnostics = context_facade.diagnostics.context_diagnostics();
+                        update_document_supervision_hits(
+                            &supervision_state,
+                            name,
+                            tool_result,
+                        );
+                        send_context_supervision_snapshot(
+                            &tx_callback,
+                            turn_id,
+                            &context_diagnostics,
+                            &supervision_state,
+                        );
                         maybe_emit_context_observability(
                             &tx_callback,
                             turn_id,
@@ -1290,12 +1314,22 @@ impl<'a> WorkflowTurnRunner<'a> {
     }
 
     fn send_step_diagnostics_effect(&self, diagnostics: StepDiagnostics) {
+        update_memory_supervision_hits(&self.supervision_state, &diagnostics);
+        let context = diagnostics.context.clone();
         self.tx_result.send(crate::RuntimeMessageEnvelope::state(
             self.turn_id,
             crate::StateMessage::Diagnostics {
                 diagnostics: Box::new(diagnostics),
             },
         ));
+        if let Some(context) = context.as_ref() {
+            send_context_supervision_snapshot(
+                &*self.tx_result,
+                self.turn_id,
+                context,
+                &self.supervision_state,
+            );
+        }
     }
 
     fn send_step_input_diagnostics(
@@ -3271,6 +3305,7 @@ fn build_step_input_diagnostics(step_input: &StepExecutionInput) -> StepInputDia
                 workflow_id: summary.workflow_id.clone(),
                 step_id: summary.step_id.clone(),
                 title: summary.title.clone(),
+                preview: crate::preview_text(&summary.summary, 120),
             })
             .collect(),
         expected_structured_sources,
@@ -3323,6 +3358,171 @@ fn expected_and_missing_sources(
         .cloned()
         .collect::<Vec<_>>();
     (expected_structured_sources, missing_structured_sources)
+}
+
+fn update_document_supervision_hits(
+    supervision_state: &Arc<Mutex<ContextSupervisionState>>,
+    tool_name: &str,
+    tool_result: &CoreToolResult,
+) {
+    if tool_name != "search_codebase" || tool_result.is_error() {
+        return;
+    }
+
+    let summary = build_document_hit_summary(tool_result);
+    supervision_state.lock().unwrap().document_hits = Some(summary);
+}
+
+fn update_memory_supervision_hits(
+    supervision_state: &Arc<Mutex<ContextSupervisionState>>,
+    diagnostics: &StepDiagnostics,
+) {
+    let summary = (!diagnostics.input.summary_sources.is_empty()).then(|| MemoryHitSummary {
+        selected_count: diagnostics.input.summary_sources.len() as u32,
+        total_tokens: diagnostics
+            .context
+            .as_ref()
+            .map(|context| context.memory.current_summary_tokens)
+            .unwrap_or_default(),
+        top_hits: diagnostics
+            .input
+            .summary_sources
+            .iter()
+            .take(5)
+            .map(|source| MemoryHitItem {
+                workflow_id: source.workflow_id.clone(),
+                step_id: source.step_id.clone(),
+                title: source.title.clone(),
+                preview: source.preview.clone(),
+            })
+            .collect(),
+    });
+    supervision_state.lock().unwrap().memory_hits = summary;
+}
+
+fn send_context_supervision_snapshot(
+    tx: &dyn RuntimeMessageBridge,
+    turn_id: u64,
+    context: &ContextDiagnostics,
+    supervision_state: &Arc<Mutex<ContextSupervisionState>>,
+) {
+    let snapshot = build_context_supervision_snapshot(context, &supervision_state.lock().unwrap());
+    tx.send(crate::RuntimeMessageEnvelope::state(
+        turn_id,
+        crate::StateMessage::ContextSupervision {
+            snapshot: Box::new(snapshot),
+        },
+    ));
+}
+
+fn build_context_supervision_snapshot(
+    context: &ContextDiagnostics,
+    supervision_state: &ContextSupervisionState,
+) -> ContextSupervisionSnapshot {
+    ContextSupervisionSnapshot {
+        document: DocumentSupervisionSnapshot {
+            enabled: cfg!(feature = "document-backend"),
+            readiness: document_supervision_readiness(context),
+            totals: DocumentSupervisionTotals {
+                total_files_indexed: context.document.total_files_indexed,
+                total_chunks: context.document.total_chunks,
+                total_embeddings: context.document.total_embeddings,
+                index_staleness_seconds: context.document.index_staleness_seconds,
+                governance_health: context.document.governance_health,
+                lance_db_size_bytes: context.store.lance_db_size_bytes,
+                tantivy_index_size_bytes: context.store.tantivy_index_size_bytes,
+            },
+            current_hits: supervision_state.document_hits.clone(),
+        },
+        memory: MemorySupervisionSnapshot {
+            enabled: true,
+            readiness: memory_supervision_readiness(context),
+            totals: MemorySupervisionTotals {
+                total_turns_archived: context.memory.total_turns_archived,
+                compactions_triggered: context.memory.compactions_triggered,
+                current_summary_tokens: context.memory.current_summary_tokens,
+                current_summary_count: context.memory.current_summary_count,
+                turn_archive_count: context.store.turn_archive_count,
+                turn_archive_size_bytes: context.store.turn_archive_size_bytes,
+            },
+            current_hits: supervision_state.memory_hits.clone(),
+        },
+    }
+}
+
+fn document_supervision_readiness(context: &ContextDiagnostics) -> SupervisionReadiness {
+    if !cfg!(feature = "document-backend") {
+        return SupervisionReadiness::Disabled;
+    }
+    if context.document.total_files_indexed == 0 && context.document.total_chunks == 0 {
+        return SupervisionReadiness::Idle;
+    }
+    if matches!(context.document.governance_health, Some(HealthScore::Critical)) {
+        return SupervisionReadiness::Degraded;
+    }
+    SupervisionReadiness::Ready
+}
+
+fn memory_supervision_readiness(context: &ContextDiagnostics) -> SupervisionReadiness {
+    if context.memory.total_turns_archived == 0 && context.memory.current_summary_count == 0 {
+        SupervisionReadiness::Idle
+    } else {
+        SupervisionReadiness::Ready
+    }
+}
+
+fn build_document_hit_summary(tool_result: &CoreToolResult) -> DocumentHitSummary {
+    let query = tool_result
+        .metadata
+        .get("query")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let results = serde_json::from_str::<Vec<SearchResult>>(&tool_result.output).unwrap_or_default();
+    let mode = results
+        .first()
+        .map(|result| search_mode_label(result.mode_used).to_string())
+        .or_else(|| {
+            tool_result
+                .metadata
+                .get("mode")
+                .and_then(|value| value.as_str())
+                .map(ToOwned::to_owned)
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+    let degraded_from = results
+        .iter()
+        .find_map(|result| result.degraded_from.map(search_mode_label))
+        .map(ToOwned::to_owned);
+    let result_count = tool_result
+        .metadata
+        .get("result_count")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(results.len() as u64) as u32;
+
+    DocumentHitSummary {
+        query,
+        mode,
+        degraded_from,
+        result_count,
+        top_hits: results
+            .into_iter()
+            .take(5)
+            .map(|result| DocumentHitItem {
+                path: result.path,
+                preview: crate::preview_text(&result.preview, 140),
+            })
+            .collect(),
+    }
+}
+
+fn search_mode_label(mode: SearchMode) -> &'static str {
+    match mode {
+        SearchMode::Keyword => "keyword",
+        SearchMode::Semantic => "semantic",
+        SearchMode::Hybrid => "hybrid",
+    }
 }
 
 fn build_step_output_diagnostics(

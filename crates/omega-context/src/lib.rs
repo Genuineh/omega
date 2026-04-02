@@ -224,6 +224,101 @@ pub struct ContextStoreDiagnostics {
     pub tantivy_index_size_bytes: u64,
     pub todo_items_count: u32,
     pub turn_archive_count: u32,
+    pub turn_archive_size_bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SupervisionReadiness {
+    Disabled,
+    #[default]
+    Idle,
+    Ready,
+    Degraded,
+}
+
+impl SupervisionReadiness {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Idle => "idle",
+            Self::Ready => "ready",
+            Self::Degraded => "degraded",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ContextSupervisionSnapshot {
+    pub document: DocumentSupervisionSnapshot,
+    pub memory: MemorySupervisionSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct DocumentSupervisionSnapshot {
+    pub enabled: bool,
+    pub readiness: SupervisionReadiness,
+    pub totals: DocumentSupervisionTotals,
+    pub current_hits: Option<DocumentHitSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct DocumentSupervisionTotals {
+    pub total_files_indexed: u64,
+    pub total_chunks: u64,
+    pub total_embeddings: u64,
+    pub index_staleness_seconds: u64,
+    pub governance_health: Option<HealthScore>,
+    pub lance_db_size_bytes: u64,
+    pub tantivy_index_size_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct DocumentHitSummary {
+    pub query: String,
+    pub mode: String,
+    pub degraded_from: Option<String>,
+    pub result_count: u32,
+    pub top_hits: Vec<DocumentHitItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct DocumentHitItem {
+    pub path: String,
+    pub preview: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct MemorySupervisionSnapshot {
+    pub enabled: bool,
+    pub readiness: SupervisionReadiness,
+    pub totals: MemorySupervisionTotals,
+    pub current_hits: Option<MemoryHitSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct MemorySupervisionTotals {
+    pub total_turns_archived: u64,
+    pub compactions_triggered: u64,
+    pub current_summary_tokens: u32,
+    pub current_summary_count: u32,
+    pub turn_archive_count: u32,
+    pub turn_archive_size_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct MemoryHitSummary {
+    pub selected_count: u32,
+    pub total_tokens: u32,
+    pub top_hits: Vec<MemoryHitItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct MemoryHitItem {
+    pub workflow_id: String,
+    pub step_id: String,
+    pub title: String,
+    pub preview: String,
 }
 
 pub trait ContextTokenCounter: Send + Sync {
@@ -621,6 +716,7 @@ impl LocalDiagnostics {
             tantivy_index_size_bytes: dir_size_bytes(&self.root.join(".omega/store/tantivy")),
             todo_items_count: count_jsonl_items(&self.root.join(".omega/store/todos.jsonl")),
             turn_archive_count,
+            turn_archive_size_bytes: dir_size_bytes(&self.root.join(".omega/memory/turns")),
         }
     }
 }

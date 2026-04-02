@@ -33,6 +33,10 @@ pub(super) fn input_context_text(app: &App, sidebar_hidden: bool) -> &str {
                     " Sidebar rail: ←/→ cycle  Enter focus  x collapse  Space b=Toggle sidebar  Space Tab=Next focus"
                 } else if app.focused_panel == Panel::Diagnostics {
                     " Diagnostics: Enter/x=Open detail  Space Tab=Focus  Space b=Sidebar  Space /=Search  Space ↑/↓=Scroll"
+                } else if app.focused_panel == Panel::Document {
+                    " Document supervision: Enter/x=Open detail  Space Tab=Focus  Space b=Sidebar  Space /=Search  Space ↑/↓=Scroll"
+                } else if app.focused_panel == Panel::Memory {
+                    " Memory supervision: Enter/x=Open detail  Space Tab=Focus  Space b=Sidebar  Space /=Search  Space ↑/↓=Scroll"
                 } else if app.focused_panel == Panel::Response && app.show_thinking {
                     " Response: Enter/x=Toggle thinking or open subflow/tool detail  Space Tab=Focus  Space b=Sidebar  Space /=Search  Space ↑/↓=Scroll"
                 } else {

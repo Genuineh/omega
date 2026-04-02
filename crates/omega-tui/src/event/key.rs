@@ -119,6 +119,40 @@ pub(super) fn handle_key_event(
         }
     }
 
+    {
+        let mut app_guard = app.lock().unwrap();
+        if app_guard.interaction_mode == InteractionMode::Normal
+            && app_guard.focused_panel == Panel::Document
+        {
+            if matches!(key.code, KeyCode::Enter | KeyCode::Char('x')) {
+                let notice = if app_guard.open_document_supervision_detail() {
+                    "Opened document supervision overlay."
+                } else {
+                    "Document supervision snapshot is not available yet."
+                };
+                app_guard.set_status_notice(notice);
+                return Ok(false);
+            }
+        }
+    }
+
+    {
+        let mut app_guard = app.lock().unwrap();
+        if app_guard.interaction_mode == InteractionMode::Normal
+            && app_guard.focused_panel == Panel::Memory
+        {
+            if matches!(key.code, KeyCode::Enter | KeyCode::Char('x')) {
+                let notice = if app_guard.open_memory_supervision_detail() {
+                    "Opened memory supervision overlay."
+                } else {
+                    "Memory supervision snapshot is not available yet."
+                };
+                app_guard.set_status_notice(notice);
+                return Ok(false);
+            }
+        }
+    }
+
     let resolution = {
         let app_guard = app.lock().unwrap();
         let context = KeyContext {

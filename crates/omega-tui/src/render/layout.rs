@@ -57,6 +57,8 @@ pub(crate) fn render(frame: &mut Frame, app: &mut App, model_name: &str, theme: 
     app.sidebar_rect = main_chunks[1];
     app.sidebar_rail_rect = Rect::default();
     app.todo_rect = Rect::default();
+    app.document_rect = Rect::default();
+    app.memory_rect = Rect::default();
     app.logs_rect = Rect::default();
     app.bottom_status_rect = chunks[3];
     app.normalize_focus();
@@ -71,6 +73,8 @@ pub(crate) fn render(frame: &mut Frame, app: &mut App, model_name: &str, theme: 
     let sidebar_border = panel_border_style(app.focused_panel == Panel::SidebarRail, &colors);
     let todo_border = panel_border_style(app.focused_panel == Panel::Todo, &colors);
     let diagnostics_border = panel_border_style(app.focused_panel == Panel::Diagnostics, &colors);
+    let document_border = panel_border_style(app.focused_panel == Panel::Document, &colors);
+    let memory_border = panel_border_style(app.focused_panel == Panel::Memory, &colors);
     let logs_border = panel_border_style(app.focused_panel == Panel::Logs, &colors);
 
     let response_title = if app.focused_panel == Panel::Response {
@@ -161,6 +165,8 @@ pub(crate) fn render(frame: &mut Frame, app: &mut App, model_name: &str, theme: 
             &colors,
             sidebar_chunks[1],
             diagnostics_border,
+            document_border,
+            memory_border,
             todo_border,
             logs_border,
         );

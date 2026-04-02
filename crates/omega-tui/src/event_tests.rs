@@ -764,9 +764,9 @@ fn sidebar_rail_cycles_and_toggles_selected_section() {
     let app_guard = app.lock().unwrap();
     assert_eq!(
         app_guard.sidebar.rail_selection,
-        crate::sidebar::SidebarSection::Todos
+        crate::sidebar::SidebarSection::Document
     );
-    assert!(!app_guard.sidebar.todos_expanded);
+    assert!(!app_guard.sidebar.document_expanded);
     assert_eq!(app_guard.focused_panel, Panel::SidebarRail);
 }
 

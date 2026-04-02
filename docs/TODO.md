@@ -13,6 +13,8 @@ _任务编号以 `docs/specs/omega-agent-impl-plan.md` 为准；`8A/8B`、`15A/1
 
 ### Medium
 
+- **2026-04-02 document backend default enablement**: `omega-app` 默认 feature 现已包含 `document-backend`，因此默认 `cargo run -p omega-app` 会直接接通 `omega-document` / LanceDB / Tantivy 后端；`.omega/store/` 仍按需惰性生成，但不再需要额外 `--features document-backend` 才能使用 `search_codebase` 与 `manage_document`。
+- **2026-04-02 context supervision follow-up**: 下一轮 TUI/context 工作应为 document system 与 memory system 规划专门监管面板，统一回答“是否启用、总量/大小、当前命中摘要”三类问题；详细方案见 `docs/specs/omega-tui-document-memory-supervision.md`。
 - **2026-04-02 runtime maintenance**: 默认只读分析已拆为两条 child workflow：`research = explore -> report` 与 `deep-research = explore -> plan -> execute -> report`；root workflow 也已收敛为单步 `select-workflow`，并在一次结构化输出中同时写入 `recognized_scene_id` 与 `selected_workflow_id`。对系统性、全局性、深入式分析优先提升到 `deep-research`，实现类请求仍优先提升到 `feature`。
 - **2026-04-02 interrupt + provider maintenance**: `omega-tui` 手动中断时会立即把仍在 `streaming` 的 response/thinking section 与运行中的 tool run 收口为 failed；`omega-client` provider transport 现默认启用 pacing（`100ms` 全局节流、并发 `1`、`10s` 的 `429` retry floor）并支持 `Retry-After`，`.omega/model.toml` 的 `[provider]` 也已暴露这些覆盖项。
 - **2026-04-02 documentation hygiene**: `docs/README.md` 与本文件的首屏摘要已改为分组入口和精简状态说明；同时将已完成的 `observability-logging` PRD 与 `omega-tui-non-ui-extraction` 设计基线迁入 `docs/archive/`，避免历史材料继续混入 active spec 路径。
@@ -869,6 +871,17 @@ _2026-03-31 规划补充：当前仓库已经具备 `omega-client::test_support:
 - **Blocked by**: Task 11F-1, Task 11F-2
 - **Related**: docs/specs/omega-context-management.md §TUI Integration, crates/omega-tui/src/app/diagnostics.rs, crates/omega-tui/src/render/overlay.rs
 - **Summary**: `omega-tui` diagnostics sidebar/detail overlay 现已渲染 context memory/document/store 指标，并把预算、cache、memory、document、store 收敛为单一 dashboard 入口。验证已通过 `cargo test -p omega-tui --color never`。
+
+### Task 11F-4: omega-context / omega-session / omega-app / omega-tui — Document And Memory Supervision Panels
+- **Status**: Completed
+- **Priority**: Medium
+- **Complexity**: L
+- **Description**: 在现有 `ContextDiagnostics` dashboard 之上，为 document system 与 memory system 增加专门监管面板，稳定展示 enablement/readiness、总量/大小统计，以及当前 active step 命中的 document results 与 memory summary 摘要。
+- **Planning Note**: 不建议再新增顶层永久列；更合理的落点是在现有 `Sidebar / Activity` 架构内新增 `Document` 与 `Memory` 专门视图，并通过 additive-only `ContextSupervisionSnapshot` state message 提供 typed `current hits` 数据。实现时需要补 `turn_archive_size_bytes` 与 selected summary preview，否则 memory 监管仍只能停留在 count 级别。
+- **Blocked by**: Task 11F-1, Task 11F-2, Task 11F-3, Task 15B-16
+- **Blocks**: Task 15B-12
+- **Related**: docs/specs/omega-tui-document-memory-supervision.md, docs/specs/omega-context-management.md, docs/specs/omega-tui-runtime-experience.md
+- **Summary**: `omega-context` 已补 `ContextSupervisionSnapshot`、`turn_archive_size_bytes` 与 typed document/memory hit summaries；`omega-session` 已把 selected summary preview 与 `ContextSupervision` state message 接入 runtime；`omega-tui` sidebar 现提供独立 `Document` / `Memory` 监管面板并支持 detail overlay；`omega-app` runtime policy 已转发该状态。验证已通过 `cargo test -p omega-tui --color never` 与 `cargo test -p omega-app --color never`。
 
 ### ── M7: 任务系统 (s07) ──
 

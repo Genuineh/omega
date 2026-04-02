@@ -44,6 +44,14 @@ pub(super) fn handle_mouse_event(mouse: MouseEvent, app: &Arc<Mutex<App>>) {
                     app_guard.focused_panel = Panel::Diagnostics;
                     app_guard.begin_mouse_selection(Panel::Diagnostics, mouse.column, mouse.row);
                 }
+                Panel::Document if app_guard.document_visible() => {
+                    app_guard.focused_panel = Panel::Document;
+                    app_guard.begin_mouse_selection(Panel::Document, mouse.column, mouse.row);
+                }
+                Panel::Memory if app_guard.memory_visible() => {
+                    app_guard.focused_panel = Panel::Memory;
+                    app_guard.begin_mouse_selection(Panel::Memory, mouse.column, mouse.row);
+                }
                 Panel::Todo if app_guard.todo_visible() => {
                     app_guard.focused_panel = Panel::Todo;
                     app_guard.begin_mouse_selection(Panel::Todo, mouse.column, mouse.row);

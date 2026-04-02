@@ -25,7 +25,7 @@ version: v1.0
 | Context assembly and session data | `docs/specs/omega-context-management.md`, `docs/specs/omega-step-session-asset-model.md`, `docs/specs/omega-step-lifecycle-hooks.md` |
 | Tools and workflow policy | `docs/specs/omega-tool-system-upgrade.md`, `docs/specs/omega-tool-prompt-optimization.md`, `docs/specs/omega-workflow-package.md`, `docs/specs/omega-scene-routing.md` |
 | Client/provider integration | `docs/specs/omega-client-anthropic-api-abstraction.md`, `docs/specs/omega-deterministic-test-seams.md` |
-| TUI shell and interaction model | `docs/specs/omega-tui-runtime-experience.md`, `docs/specs/omega-tui-collapsible-sidebar.md`, `docs/specs/omega-tui-modal-keymap.md`, `docs/specs/omega-tui-overlay-popups.md` |
+| TUI shell and interaction model | `docs/specs/omega-tui-runtime-experience.md`, `docs/specs/omega-tui-collapsible-sidebar.md`, `docs/specs/omega-tui-document-memory-supervision.md`, `docs/specs/omega-tui-modal-keymap.md`, `docs/specs/omega-tui-overlay-popups.md` |
 | TUI rendering and message presentation | `docs/specs/omega-tui-message-display-polish.md`, `docs/specs/omega-tui-response-thinking-experience.md`, `docs/specs/omega-tui-step-subflow-visibility.md`, `docs/specs/omega-tui-step-tool-thinking-refinement.md` |
 | TUI layout follow-ups | `docs/specs/omega-tui-input-status-layout.md`, `docs/specs/omega-tui-todo-sidebar-layout.md` |
 
