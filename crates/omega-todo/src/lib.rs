@@ -189,6 +189,48 @@ impl Default for TodoToolHandler {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct TodoWriteHandler {
+    manager: SharedTodoManager,
+}
+
+impl TodoWriteHandler {
+    pub fn new() -> Self {
+        Self::with_manager(Arc::new(Mutex::new(TodoManager::new())))
+    }
+
+    pub fn with_manager(manager: SharedTodoManager) -> Self {
+        Self { manager }
+    }
+}
+
+impl Default for TodoWriteHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TodoReadHandler {
+    manager: SharedTodoManager,
+}
+
+impl TodoReadHandler {
+    pub fn new() -> Self {
+        Self::with_manager(Arc::new(Mutex::new(TodoManager::new())))
+    }
+
+    pub fn with_manager(manager: SharedTodoManager) -> Self {
+        Self { manager }
+    }
+}
+
+impl Default for TodoReadHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ToolHandler for TodoToolHandler {
     fn name(&self) -> &str {
         "todo"
@@ -253,6 +295,50 @@ impl ToolHandler for TodoToolHandler {
             Ok(rendered) => Ok(rendered),
             Err(error) => Ok(format!("Error: {error}")),
         }
+    }
+}
+
+impl ToolHandler for TodoWriteHandler {
+    fn name(&self) -> &str {
+        "todo_write"
+    }
+
+    fn description(&self) -> &str {
+        "Update tracked todo state for the current task."
+    }
+
+    fn input_schema(&self) -> Value {
+        TodoToolHandler::new().input_schema()
+    }
+
+    fn execute(&self, input: Value) -> Result<String> {
+        TodoToolHandler::with_manager(Arc::clone(&self.manager)).execute(input)
+    }
+}
+
+impl ToolHandler for TodoReadHandler {
+    fn name(&self) -> &str {
+        "todo_read"
+    }
+
+    fn description(&self) -> &str {
+        "Read the current tracked todo state without mutating it."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false
+        })
+    }
+
+    fn execute(&self, _input: Value) -> Result<String> {
+        let manager = match self.manager.lock() {
+            Ok(manager) => manager,
+            Err(_) => return Ok("Error: Todo manager lock poisoned".to_string()),
+        };
+        Ok(manager.render())
     }
 }
 
@@ -440,5 +526,33 @@ mod tests {
         let output = handler.execute(json!({"items": [{}]})).unwrap();
 
         assert!(output.starts_with("Error:"));
+    }
+
+    #[test]
+    fn todo_read_returns_rendered_snapshot() {
+        let shared = Arc::new(Mutex::new(TodoManager::new()));
+        shared
+            .lock()
+            .unwrap()
+            .update(vec![pending("1", "Inspect code")])
+            .unwrap();
+
+        let output = TodoReadHandler::with_manager(shared).execute(json!({})).unwrap();
+        assert!(output.contains("#1: Inspect code"));
+    }
+
+    #[test]
+    fn todo_write_updates_shared_manager() {
+        let shared = Arc::new(Mutex::new(TodoManager::new()));
+        let output = TodoWriteHandler::with_manager(Arc::clone(&shared))
+            .execute(json!({
+                "items": [
+                    {"id": "1", "text": "Plan", "status": "completed"}
+                ]
+            }))
+            .unwrap();
+
+        assert!(output.contains("(1/1 completed)"));
+        assert_eq!(shared.lock().unwrap().items()[0].status, TodoStatus::Completed);
     }
 }

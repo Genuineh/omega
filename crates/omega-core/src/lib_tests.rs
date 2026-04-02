@@ -365,6 +365,82 @@ fn search_and_document_tools_surface_backend_disabled_error_by_default() {
 }
 
 #[test]
+fn successful_tool_results_are_reinjected_as_plain_text_for_model_consumption() {
+    let block = crate::helpers::tool_result_block(
+        "tool-1",
+        &omega_tools::ToolResult::success("Cargo.toml\ncrates/\ndocs/")
+            .with_preview("Cargo.toml")
+            .with_metadata(serde_json::json!({"entry_count": 3})),
+    );
+
+    assert!(matches!(
+        block,
+        ContentBlock::ToolResult {
+            tool_use_id,
+            content: serde_json::Value::String(content),
+            is_error: None,
+        } if tool_use_id == "tool-1" && content == "Cargo.toml\ncrates/\ndocs/"
+    ));
+}
+
+#[test]
+fn successful_tool_results_fall_back_to_preview_when_output_is_empty() {
+    let block = crate::helpers::tool_result_block(
+        "tool-1",
+        &omega_tools::ToolResult::success("")
+            .with_preview("3 entries")
+            .with_metadata(serde_json::json!({"entry_count": 3})),
+    );
+
+    assert!(matches!(
+        block,
+        ContentBlock::ToolResult {
+            tool_use_id,
+            content: serde_json::Value::String(content),
+            is_error: None,
+        } if tool_use_id == "tool-1" && content == "3 entries"
+    ));
+}
+
+#[test]
+fn successful_tool_results_fall_back_to_metadata_when_output_and_preview_are_empty() {
+    let block = crate::helpers::tool_result_block(
+        "tool-1",
+        &omega_tools::ToolResult::success("")
+            .with_metadata(serde_json::json!({"path": ".", "entry_count": 3})),
+    );
+
+    assert!(matches!(
+        block,
+        ContentBlock::ToolResult {
+            tool_use_id,
+            content: serde_json::Value::String(content),
+            is_error: None,
+        } if tool_use_id == "tool-1"
+            && content.contains("entry_count")
+            && content.contains("path")
+    ));
+}
+
+#[test]
+fn error_tool_results_remain_structured_for_recovery() {
+    let block = crate::helpers::tool_result_block(
+        "tool-1",
+        &omega_tools::ToolResult::error("Error: blocked", omega_tools::ToolErrorKind::Policy)
+            .with_metadata(serde_json::json!({"error_kind": "policy"})),
+    );
+
+    assert!(matches!(
+        block,
+        ContentBlock::ToolResult {
+            tool_use_id,
+            content: serde_json::Value::Object(_),
+            is_error: Some(true),
+        } if tool_use_id == "tool-1"
+    ));
+}
+
+#[test]
 fn tool_definitions_deserialize() {
     let dispatcher = create_default_tools(std::env::temp_dir());
     let schemas = dispatcher.to_schemas();
@@ -393,6 +469,92 @@ fn tool_definitions_deserialize() {
             "write_file"
         ]
     );
+}
+
+#[test]
+fn default_tools_expose_manifest_metadata() {
+    let dispatcher = create_default_tools(std::env::temp_dir());
+    let manifests = dispatcher.manifest_metadata();
+
+    assert_eq!(manifests.len(), 19);
+    let bash = manifests
+        .iter()
+        .find(|manifest| manifest.id == "bash")
+        .expect("bash manifest should exist");
+    assert_eq!(bash.display_name, "Bash");
+    assert_eq!(bash.family, omega_tools::ToolFamily::EscapeHatch);
+    assert!(bash.prompt.summary.contains("allowlisted shell command"));
+
+    let patch = manifests
+        .iter()
+        .find(|manifest| manifest.id == "apply_patch")
+        .expect("apply_patch manifest should exist");
+    assert_eq!(patch.family, omega_tools::ToolFamily::Editing);
+    assert!(patch.prompt.prefer_over.iter().any(|tool| tool == "edit_file"));
+    assert_eq!(
+        patch
+            .permissions
+            .as_ref()
+            .expect("file edit permission profile")
+            .permission_class,
+        "workspace_write"
+    );
+    assert!(patch
+        .permissions
+        .as_ref()
+        .expect("file edit permission profile")
+        .requires_approval);
+    assert!(patch
+        .storage
+        .as_ref()
+        .expect("file edit storage profile")
+        .produces_artifact);
+    assert!(patch
+        .ui
+        .as_ref()
+        .expect("file edit ui profile")
+        .action_affordances
+        .iter()
+        .any(|action| action == "open_diff_preview"));
+
+    let todo = manifests
+        .iter()
+        .find(|manifest| manifest.id == "todo_write")
+        .expect("todo_write manifest should exist");
+    assert!(todo
+        .storage
+        .as_ref()
+        .expect("todo storage profile")
+        .writes_todo);
+
+    let search = manifests
+        .iter()
+        .find(|manifest| manifest.id == "search_codebase")
+        .expect("search_codebase manifest should exist");
+    assert!(search.observability.is_some());
+    assert!(search
+        .prompt
+        .summary
+        .contains("ranked keyword, semantic, or hybrid retrieval"));
+    assert!(search
+        .prompt
+        .when_not_to_use
+        .iter()
+        .any(|line| line.contains("exact line matches")));
+
+    let grep = manifests
+        .iter()
+        .find(|manifest| manifest.id == "grep_search")
+        .expect("grep_search manifest should exist");
+    assert!(grep
+        .prompt
+        .summary
+        .contains("exact or regex content matching"));
+    assert!(grep
+        .prompt
+        .when_to_use
+        .iter()
+        .any(|line| line.contains("exact string or regex matches")));
 }
 
 #[tokio::test]
@@ -517,6 +679,42 @@ async fn completed_todos_do_not_trigger_reminders() {
 
     assert_eq!(blocks.len(), 1);
     assert!(matches!(&blocks[0], ContentBlock::ToolResult { .. }));
+}
+
+#[tokio::test]
+async fn hidden_todo_tool_does_not_inject_reminder() {
+    let mut agent = make_agent(vec![
+        tool_use_response(
+            "t1",
+            "todo",
+            serde_json::json!({
+                "items": [
+                    {"id": "1", "text": "Investigate routing", "status": "pending"}
+                ]
+            }),
+        ),
+        tool_use_response("t2", "read_file", serde_json::json!({"path": "Cargo.toml"})),
+        tool_use_response("t3", "read_file", serde_json::json!({"path": "Cargo.toml"})),
+        tool_use_response("t4", "read_file", serde_json::json!({"path": "Cargo.toml"})),
+        text_response("done"),
+    ]);
+    agent.set_visible_tools(Some(&["read_file"]));
+    agent.add_user_message("analyze project");
+    let _ = agent.run_loop().await.unwrap();
+
+    let reminder_in_hidden_phase = agent.messages().iter().any(|message| {
+        matches!(
+            &message.content,
+            MessageContent::Blocks(blocks)
+                if blocks.iter().any(|block| matches!(
+                    block,
+                    ContentBlock::Text { text }
+                        if text == "<reminder>Update your todos.</reminder>"
+                ))
+        )
+    });
+
+    assert!(!reminder_in_hidden_phase);
 }
 
 #[tokio::test]
@@ -671,7 +869,9 @@ async fn hidden_tool_calls_return_tool_result_error() {
         &blocks[0],
         ContentBlock::ToolResult { content, is_error, .. }
             if is_error == &Some(true)
-                && content.as_str() == Some("Error: Tool 'bash' is not available in this workflow step")
+                && content["output"] == "Error: Tool 'bash' is not available in this workflow step"
+                && content["error_kind"] == "policy"
+                && content["remediation"]["kind"] == "use_allowed_alternative"
     ));
 }
 

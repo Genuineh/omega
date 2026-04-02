@@ -1,5 +1,6 @@
 use omega_session::{
-    ConversationMessage, RuntimeContentKind, RuntimeMessage, RuntimeSource, StateMessage,
+    ConversationMessage, OverlayRequest, RuntimeContentKind, RuntimeMessage, RuntimeSource,
+    StateMessage,
     StepSubflowState, StepSubflowStatus,
 };
 use omega_tui::{RuntimeMessagePolicy, TuiSurface};
@@ -46,6 +47,24 @@ fn apply_state(surface: &mut dyn TuiSurface, message: StateMessage) {
         StateMessage::AgentStatus { label: None } => surface.clear_agent_status(),
         StateMessage::SessionRouting(routing) => surface.set_session_routing(routing),
         StateMessage::TodoSnapshot { rendered } => surface.set_todo_snapshot(&rendered),
+        StateMessage::OpenDiffPreview { diff } => surface.show_overlay(OverlayRequest {
+            target: omega_session::OverlayTarget::Detail,
+            content: omega_session::UiContent::Text(diff),
+        }),
+        StateMessage::RequestInput { prompt } => surface.show_overlay(OverlayRequest {
+            target: omega_session::OverlayTarget::InputPrompt,
+            content: omega_session::UiContent::Text(prompt),
+        }),
+        StateMessage::OpenWebResultView { title: _, content } => {
+            surface.show_overlay(OverlayRequest {
+                target: omega_session::OverlayTarget::Search,
+                content: omega_session::UiContent::Text(content),
+            })
+        }
+        StateMessage::RequestToolApproval { message } => surface.show_overlay(OverlayRequest {
+            target: omega_session::OverlayTarget::Confirm,
+            content: omega_session::UiContent::Text(message),
+        }),
         StateMessage::ShowOverlay { request } => surface.show_overlay(request),
         StateMessage::Diagnostics { diagnostics } => surface.upsert_diagnostics(*diagnostics),
         StateMessage::StepSubflow { subflow } => {
@@ -326,6 +345,7 @@ mod tests {
                 before_preview: None,
                 after_preview: Some("{\"tasks\":[]}".to_string()),
             }],
+            tool_capabilities: None,
         }
     }
 
@@ -580,6 +600,74 @@ mod tests {
                 OverlayTarget::Search,
                 "results".to_string(),
             )]
+        );
+    }
+
+    #[test]
+    fn policy_routes_tool_specific_ui_state_messages_to_surface() {
+        let policy = DefaultRuntimeMessagePolicy;
+        let mut surface = RecordingSurface::default();
+
+        let _ = apply_runtime_message_with_policy(
+            7,
+            RuntimeMessageEnvelope::state(
+                7,
+                StateMessage::OpenDiffPreview {
+                    diff: "--- a/file\n+++ b/file".to_string(),
+                },
+            ),
+            &policy,
+            &mut surface,
+        );
+        let _ = apply_runtime_message_with_policy(
+            7,
+            RuntimeMessageEnvelope::state(
+                7,
+                StateMessage::RequestToolApproval {
+                    message: "workspace_write approval required".to_string(),
+                },
+            ),
+            &policy,
+            &mut surface,
+        );
+        let _ = apply_runtime_message_with_policy(
+            7,
+            RuntimeMessageEnvelope::state(
+                7,
+                StateMessage::RequestInput {
+                    prompt: "Choose a branch".to_string(),
+                },
+            ),
+            &policy,
+            &mut surface,
+        );
+        let _ = apply_runtime_message_with_policy(
+            7,
+            RuntimeMessageEnvelope::state(
+                7,
+                StateMessage::OpenWebResultView {
+                    title: " Web Search: omega ".to_string(),
+                    content: "1. Example".to_string(),
+                },
+            ),
+            &policy,
+            &mut surface,
+        );
+
+        assert_eq!(
+            surface.ops,
+            vec![
+                SurfaceOp::ShowOverlay(
+                    OverlayTarget::Detail,
+                    "--- a/file\n+++ b/file".to_string(),
+                ),
+                SurfaceOp::ShowOverlay(
+                    OverlayTarget::Confirm,
+                    "workspace_write approval required".to_string(),
+                ),
+                SurfaceOp::ShowOverlay(OverlayTarget::InputPrompt, "Choose a branch".to_string()),
+                SurfaceOp::ShowOverlay(OverlayTarget::Search, "1. Example".to_string()),
+            ]
         );
     }
 }

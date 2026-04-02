@@ -6,7 +6,8 @@ use omega_session::{
     StepContextWrite, StepContextWriteKind, StepDiagnostics, StepInputDiagnostics, StepInputStatus,
     StepOutputAttemptKind, StepOutputContractMode, StepOutputDiagnostics,
     StepOutputRecoveryDecision, StepOutputStatus, StepSubflowRef, StepSubflowState,
-    StepSubflowStatus, StepSummarySource, TokenCountSource, ToolRunDetail, UiContent,
+    StepSubflowStatus, StepSummarySource, TokenCountSource, ToolCapabilityDiagnostics,
+    ToolRunDetail, UiContent,
     UiMessageKind, UiSource, UiTarget, WorkflowRunRole,
 };
 use ratatui::layout::Rect;
@@ -112,6 +113,24 @@ fn sample_step_diagnostics() -> StepDiagnostics {
             before_preview: None,
             after_preview: Some("{\"tasks\":[{\"id\":\"task-1\"}]}".to_string()),
         }],
+        tool_capabilities: Some(ToolCapabilityDiagnostics {
+            tool_invocations: std::collections::BTreeMap::from([
+                ("grep_search".to_string(), 1),
+                ("ask_user_question".to_string(), 1),
+            ]),
+            family_invocations: std::collections::BTreeMap::from([
+                ("workspace_inspection".to_string(), 1),
+                ("interaction".to_string(), 1),
+            ]),
+            tool_failure_count_by_kind: std::collections::BTreeMap::from([(
+                "policy".to_string(),
+                1,
+            )]),
+            bash_fallback_count: 0,
+            question_block_count: 1,
+            tool_switch_after_failure: 1,
+            same_intent_retry_count: 0,
+        }),
     }
 }
 
@@ -641,6 +660,75 @@ fn thinking_sections_stream_then_collapse_on_complete() {
 }
 
 #[test]
+fn thinking_sections_limit_streaming_body_to_recent_lines() {
+    let mut app = App::new();
+    let turn_id = app.begin_turn();
+
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::BeginResponseSection {
+            section: ResponseSection {
+                id: "turn-91:child:chat:chat".to_string(),
+                parent_id: None,
+                kind: ResponseSectionKind::FinalAnswer,
+                title: "Final Answer".to_string(),
+                state: ResponseSectionState::Streaming,
+                metadata: ResponseSectionMetadata {
+                    scene_id: Some("chat".to_string()),
+                    workflow_id: "chat".to_string(),
+                    workflow_role: WorkflowRunRole::Child,
+                    step_id: Some("chat".to_string()),
+                    step_label: Some("Chat".to_string()),
+                    subflow_ref: None,
+                },
+            },
+        },
+    ));
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::BeginResponseSection {
+            section: ResponseSection {
+                id: "turn-91:child:chat:chat:thinking".to_string(),
+                parent_id: Some("turn-91:child:chat:chat".to_string()),
+                kind: ResponseSectionKind::Thinking,
+                title: "Thinking".to_string(),
+                state: ResponseSectionState::Streaming,
+                metadata: ResponseSectionMetadata {
+                    scene_id: Some("chat".to_string()),
+                    workflow_id: "chat".to_string(),
+                    workflow_role: WorkflowRunRole::Child,
+                    step_id: Some("chat".to_string()),
+                    step_label: Some("Chat".to_string()),
+                    subflow_ref: None,
+                },
+            },
+        },
+    ));
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::AppendResponseSection {
+            id: "turn-91:child:chat:chat:thinking".to_string(),
+            delta: ResponseSectionDelta::Text(
+                "first thought\nsecond thought\nthird thought".to_string(),
+            ),
+        },
+    ));
+
+    assert_eq!(
+        app.response_lines(),
+        vec![
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".to_string(),
+            "final  child:chat  Final Answer  [streaming]".to_string(),
+            "  scene chat".to_string(),
+            "  │ …".to_string(),
+            "  reasoning  child:chat  Reasoning live  [streaming]".to_string(),
+            "    ⠋ second thought".to_string(),
+            "    ⠋ third thought".to_string(),
+        ]
+    );
+}
+
+#[test]
 fn failed_thinking_sections_surface_failure_summary() {
     let mut app = App::new();
     let turn_id = app.begin_turn();
@@ -687,6 +775,88 @@ fn failed_thinking_sections_surface_failure_summary() {
             "    ▸ reasoning failed · 1 line · tool result mismatched".to_string(),
         ]
     );
+}
+
+#[test]
+fn interrupt_turn_stops_streaming_reasoning_and_running_tool_styles() {
+    let mut app = App::new();
+    let turn_id = app.begin_turn();
+
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::BeginResponseSection {
+            section: ResponseSection {
+                id: "turn-50:child:feature:explore".to_string(),
+                parent_id: None,
+                kind: ResponseSectionKind::Step,
+                title: "Explore".to_string(),
+                state: ResponseSectionState::Streaming,
+                metadata: ResponseSectionMetadata {
+                    scene_id: Some("feature".to_string()),
+                    workflow_id: "feature".to_string(),
+                    workflow_role: WorkflowRunRole::Child,
+                    step_id: Some("explore".to_string()),
+                    step_label: Some("Explore".to_string()),
+                    subflow_ref: None,
+                },
+            },
+        },
+    ));
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::BeginResponseSection {
+            section: ResponseSection {
+                id: "turn-50:child:feature:explore:thinking".to_string(),
+                parent_id: Some("turn-50:child:feature:explore".to_string()),
+                kind: ResponseSectionKind::Thinking,
+                title: "Thinking".to_string(),
+                state: ResponseSectionState::Streaming,
+                metadata: ResponseSectionMetadata {
+                    scene_id: Some("feature".to_string()),
+                    workflow_id: "feature".to_string(),
+                    workflow_role: WorkflowRunRole::Child,
+                    step_id: Some("explore".to_string()),
+                    step_label: Some("Explore".to_string()),
+                    subflow_ref: None,
+                },
+            },
+        },
+    ));
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::AppendResponseSection {
+            id: "turn-50:child:feature:explore:thinking".to_string(),
+            delta: ResponseSectionDelta::Text("让我再确认一下是否有其他调用点。".to_string()),
+        },
+    ));
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::BeginToolRun {
+            tool_run: omega_session::ToolRun {
+                id: "tool-1".to_string(),
+                parent_section_id: "turn-50:child:feature:explore".to_string(),
+                tool_name: "read_file".to_string(),
+                status: omega_session::ToolRunStatus::Running,
+                invocation_preview: "read_file(Cargo.toml)".to_string(),
+                result_preview: None,
+                detail: ToolRunDetail {
+                    title: " Tool: Read File ".to_string(),
+                    lines: vec!["tool: read_file".to_string()],
+                },
+            },
+        },
+    ));
+
+    app.interrupt_turn();
+
+    assert!(app.response_lines().iter().any(|line| line.contains("Reasoning failed  [failed]")));
+    assert!(app.response_lines().iter().any(|line| line.contains("reasoning failed")));
+    assert!(!app.response_lines().iter().any(|line| line.contains("Reasoning live  [streaming]")));
+    assert!(app
+        .tool_runs
+        .iter()
+        .any(|tool_run| tool_run.id == "tool-1" && tool_run.status == ToolRunStatus::Failed));
+    assert!(!app.is_running);
 }
 
 #[test]
@@ -1379,6 +1549,91 @@ fn search_overlay_target_can_show_runtime_results_and_hide() {
     ));
 
     assert!(app.overlay.is_none());
+}
+
+#[test]
+fn diff_preview_effect_opens_detail_overlay() {
+    let mut app = App::new();
+    let turn_id = app.begin_turn();
+
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::OpenDiffPreview {
+            diff: "--- a/file\n+++ b/file\n@@ -1 +1 @@\n-old\n+new".to_string(),
+        },
+    ));
+
+    match app.overlay.as_ref() {
+        Some(OverlayState::Detail(detail)) => {
+            assert!(detail.title.contains("Diff Preview"));
+            assert!(detail.lines.iter().any(|line| line == "--- a/file"));
+        }
+        other => panic!("expected detail overlay, got {other:?}"),
+    }
+}
+
+#[test]
+fn request_tool_approval_effect_opens_confirm_overlay() {
+    let mut app = App::new();
+    let turn_id = app.begin_turn();
+
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::RequestToolApproval {
+            message: "workspace_write approval required".to_string(),
+        },
+    ));
+
+    match app.overlay.as_ref() {
+        Some(OverlayState::Confirm(confirm)) => {
+            assert!(confirm.title.contains("Approval Required"));
+            assert_eq!(confirm.message, "workspace_write approval required");
+        }
+        other => panic!("expected confirm overlay, got {other:?}"),
+    }
+}
+
+#[test]
+fn request_input_effect_opens_input_overlay() {
+    let mut app = App::new();
+    let turn_id = app.begin_turn();
+
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::RequestInput {
+            prompt: "question: Use the fast path?".to_string(),
+        },
+    ));
+
+    match app.overlay.as_ref() {
+        Some(OverlayState::InputPrompt(prompt)) => {
+            assert!(prompt.title.contains("Question"));
+            assert!(prompt.prompt.contains("Use the fast path?"));
+        }
+        other => panic!("expected input overlay, got {other:?}"),
+    }
+}
+
+#[test]
+fn open_web_result_view_effect_opens_search_overlay() {
+    let mut app = App::new();
+    let turn_id = app.begin_turn();
+
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::OpenWebResultView {
+            title: " Web Search: omega ".to_string(),
+            content: "1. Example".to_string(),
+        },
+    ));
+
+    match app.overlay.as_ref() {
+        Some(OverlayState::SearchResults(search)) => {
+            assert!(search.title.contains("Web Search: omega"));
+            assert!(search.lines.iter().any(|line| line == "1. Example"));
+        }
+        other => panic!("expected search overlay, got {other:?}"),
+    }
 }
 
 #[test]

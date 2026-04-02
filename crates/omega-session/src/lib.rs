@@ -33,9 +33,10 @@ mod tool_catalog;
 mod ui_emit;
 
 pub use omega_workflow::{
-    StepSkillRequest, StepToolRequest, EXECUTE_STEP_ID, EXPLORE_STEP_ID, FEATURE_SCENE_ID,
-    FEATURE_WORKFLOW_ID, PLAN_STEP_ID, REPORT_STEP_ID, RESEARCH_SCENE_ID, RESEARCH_WORKFLOW_ID,
-    SCENE_RECOGNITION_STEP_ID, SELECT_WORKFLOW_STEP_ID,
+    StepSkillRequest, StepToolRequest, DEEP_RESEARCH_SCENE_ID, DEEP_RESEARCH_WORKFLOW_ID,
+    EXECUTE_STEP_ID, EXPLORE_STEP_ID, FEATURE_SCENE_ID, FEATURE_WORKFLOW_ID, PLAN_STEP_ID,
+    REPORT_STEP_ID, RESEARCH_SCENE_ID, RESEARCH_WORKFLOW_ID, SCENE_RECOGNITION_STEP_ID,
+    SELECT_WORKFLOW_STEP_ID,
 };
 pub use runtime_message::{
     ConversationMessage, LegacyRuntimeUiBridge, RuntimeContentKind, RuntimeMessage,
@@ -50,7 +51,8 @@ pub use runtime_ui::{
     StepContextWriteKind, StepDiagnostics, StepInputDiagnostics, StepInputStatus,
     StepOutputAttemptKind, StepOutputContractMode, StepOutputDiagnostics,
     StepOutputRecoveryDecision, StepOutputStatus, StepSubflowRef, StepSubflowState,
-    StepSubflowStatus, StepSummarySource, TokenCountSource, ToolRun, ToolRunDetail, ToolRunStatus,
+    StepSubflowStatus, StepSummarySource, TokenCountSource, ToolCapabilityDiagnostics, ToolRun,
+    ToolRunDetail, ToolRunStatus,
     UiContent, UiMessageKind, UiPriority, UiSource, UiTarget, WorkflowRunRole,
 };
 pub use skill_catalog::{ResolvedSkillSet, SessionSkillCatalog};
@@ -128,12 +130,15 @@ impl AgentSession {
             config.bash_allowed_commands.clone(),
             config.batch_max_requests,
         );
-        let tool_catalog = Arc::new(SessionToolCatalog::new(
-            dispatcher
-                .to_schemas()
-                .into_iter()
-                .map(|value| serde_json::from_value(value))
-                .collect::<Result<Vec<_>, _>>()?,
+        let available_manifests = dispatcher.manifest_metadata();
+        let default_manifests = available_manifests
+            .iter()
+            .filter(|manifest| manifest.id != "ask_user_question")
+            .cloned()
+            .collect::<Vec<_>>();
+        let tool_catalog = Arc::new(SessionToolCatalog::with_available_manifests(
+            default_manifests,
+            available_manifests,
         ));
         let initial_system =
             skill_catalog.build_system_prompt(&config.system, "", &StepSkillRequest::MatchTask);

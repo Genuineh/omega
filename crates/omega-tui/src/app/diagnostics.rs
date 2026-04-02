@@ -2,7 +2,7 @@ use omega_observability::strip_ansi;
 use omega_session::{
     CacheDiagnostics, ContextDiagnostics, HealthScore, StepContextWrite, StepContextWriteKind,
     StepDiagnostics, StepInputStatus, StepOutputAttemptKind, StepOutputRecoveryDecision,
-    StepOutputStatus,
+    StepOutputStatus, ToolCapabilityDiagnostics,
 };
 
 use super::{App, DiagnosticsLine, Panel};
@@ -226,6 +226,24 @@ fn build_diagnostics_lines(diagnostics: &StepDiagnostics) -> Vec<DiagnosticsLine
             diagnostic_id: Some(diagnostics.id.clone()),
         },
     ];
+    if let Some(tool_capabilities) = diagnostics.tool_capabilities.as_ref() {
+        lines.push(DiagnosticsLine {
+            text: format!(
+                "  tools invocations={} failures={} bash_fallback={} questions={} switch_after_failure={} retry_same_tool={}",
+                tool_capabilities.tool_invocations.values().copied().sum::<u32>(),
+                tool_capabilities
+                    .tool_failure_count_by_kind
+                    .values()
+                    .copied()
+                    .sum::<u32>(),
+                tool_capabilities.bash_fallback_count,
+                tool_capabilities.question_block_count,
+                tool_capabilities.tool_switch_after_failure,
+                tool_capabilities.same_intent_retry_count,
+            ),
+            diagnostic_id: Some(diagnostics.id.clone()),
+        });
+    }
     if let Some(cache) = diagnostics.cache.as_ref() {
         let mut cache_line = format!(
             "  cache {} · budget={}{} · anchors={}",
@@ -475,6 +493,22 @@ fn build_step_diagnostics_detail_lines(diagnostics: &StepDiagnostics) -> Vec<Str
         }
     }
 
+    if let Some(tool_capabilities) = diagnostics.tool_capabilities.as_ref() {
+        lines.push(tool_capability_summary_line(tool_capabilities));
+        lines.push(format!(
+            "tool_invocations: {}",
+            format_counter_map(&tool_capabilities.tool_invocations)
+        ));
+        lines.push(format!(
+            "tool_families: {}",
+            format_counter_map(&tool_capabilities.family_invocations)
+        ));
+        lines.push(format!(
+            "tool_failures: {}",
+            format_counter_map(&tool_capabilities.tool_failure_count_by_kind)
+        ));
+    }
+
     lines.push(format!(
         "output: {}",
         diagnostics_output_status_label(diagnostics.output.status)
@@ -576,6 +610,28 @@ fn diagnostics_output_attempt_kind_label(kind: StepOutputAttemptKind) -> &'stati
         StepOutputAttemptKind::Repair => "repair",
         StepOutputAttemptKind::Regenerate => "regenerate",
     }
+}
+
+fn tool_capability_summary_line(tool_capabilities: &ToolCapabilityDiagnostics) -> String {
+    format!(
+        "tool_capabilities: bash_fallback_count={} question_block_count={} tool_switch_after_failure={} same_intent_retry_count={}",
+        tool_capabilities.bash_fallback_count,
+        tool_capabilities.question_block_count,
+        tool_capabilities.tool_switch_after_failure,
+        tool_capabilities.same_intent_retry_count,
+    )
+}
+
+fn format_counter_map(counters: &std::collections::BTreeMap<String, u32>) -> String {
+    if counters.is_empty() {
+        return "none".to_string();
+    }
+
+    counters
+        .iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn diagnostics_output_recovery_decision_label(

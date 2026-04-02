@@ -140,6 +140,63 @@ pub(crate) fn latest_user_turn_prefers_research_scene(text: &str) -> bool {
         "tradeoffs",
         "survey",
     ];
+    const CJK_EXPLICIT_HINTS: &[&str] = &["研究", "调研", "探索", "调查", "排查"];
+    const CJK_ANALYSIS_HINTS: &[&str] = &["分析", "评审", "架构", "对比", "比较", "梳理"];
+
+    let normalized = trimmed.to_ascii_lowercase();
+    let ascii_tokens = normalized
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+
+    if ascii_tokens
+        .iter()
+        .any(|token| ASCII_EXPLICIT_HINTS.iter().any(|hint| token == hint))
+    {
+        return true;
+    }
+
+    if CJK_EXPLICIT_HINTS.iter().any(|hint| trimmed.contains(hint)) {
+        return true;
+    }
+
+    ASCII_ANALYSIS_HINTS
+        .iter()
+        .any(|hint| ascii_tokens.iter().any(|token| token == hint))
+        || CJK_ANALYSIS_HINTS.iter().any(|hint| trimmed.contains(hint))
+}
+
+pub(crate) fn latest_user_turn_prefers_deep_research_scene(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    const ASCII_EXPLICIT_HINTS: &[&str] = &[
+        "deep-research",
+        "deepresearch",
+        "deep-dive",
+        "deepdive",
+        "systematic",
+        "holistic",
+        "global",
+        "comprehensive",
+        "systemwide",
+    ];
+    const ASCII_ANALYSIS_HINTS: &[&str] = &[
+        "analyze",
+        "analysis",
+        "investigate",
+        "investigation",
+        "explore",
+        "exploration",
+        "research",
+        "architecture",
+        "tradeoff",
+        "tradeoffs",
+        "survey",
+        "review",
+    ];
     const ASCII_INTENSIFIERS: &[&str] = &[
         "deep",
         "complex",
@@ -148,10 +205,33 @@ pub(crate) fn latest_user_turn_prefers_research_scene(text: &str) -> bool {
         "thorough",
         "holistic",
         "detailed",
+        "global",
+        "broad",
+        "repo",
+        "wide",
+        "endtoend",
     ];
-    const CJK_EXPLICIT_HINTS: &[&str] = &["研究", "调研", "探索", "调查", "排查"];
-    const CJK_ANALYSIS_HINTS: &[&str] = &["分析", "评审", "架构", "对比", "比较", "梳理"];
-    const CJK_INTENSIFIERS: &[&str] = &["深度", "深入", "复杂", "综合", "系统性", "全面", "详细"];
+    const CJK_EXPLICIT_HINTS: &[&str] = &[
+        "深度研究",
+        "深度调研",
+        "深入研究",
+        "系统性",
+        "全局性",
+        "全局",
+        "全面",
+        "综合性",
+    ];
+    const CJK_ANALYSIS_HINTS: &[&str] = &["分析", "研究", "调研", "探索", "调查", "梳理", "架构"];
+    const CJK_INTENSIFIERS: &[&str] = &[
+        "深度",
+        "深入",
+        "系统性",
+        "全局性",
+        "全局",
+        "全面",
+        "综合",
+        "整体",
+    ];
 
     let normalized = trimmed.to_ascii_lowercase();
     let ascii_tokens = normalized

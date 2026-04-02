@@ -345,6 +345,9 @@ pub struct AnthropicProviderConfig {
     pub default_betas: Vec<String>,
     pub connect_timeout: Duration,
     pub timeout: Duration,
+    pub request_throttle_interval: Duration,
+    pub max_concurrent_requests: usize,
+    pub rate_limit_retry_delay: Duration,
 }
 
 impl AnthropicProviderConfig {
@@ -362,7 +365,25 @@ impl AnthropicProviderConfig {
             default_betas: Vec::new(),
             connect_timeout: Duration::from_secs(10),
             timeout: Duration::from_secs(60),
+            request_throttle_interval: Duration::from_millis(100),
+            max_concurrent_requests: 1,
+            rate_limit_retry_delay: Duration::from_secs(10),
         }
+    }
+
+    pub fn with_request_throttle_interval(mut self, request_throttle_interval: Duration) -> Self {
+        self.request_throttle_interval = request_throttle_interval;
+        self
+    }
+
+    pub fn with_max_concurrent_requests(mut self, max_concurrent_requests: usize) -> Self {
+        self.max_concurrent_requests = max_concurrent_requests.max(1);
+        self
+    }
+
+    pub fn with_rate_limit_retry_delay(mut self, rate_limit_retry_delay: Duration) -> Self {
+        self.rate_limit_retry_delay = rate_limit_retry_delay;
+        self
     }
 }
 

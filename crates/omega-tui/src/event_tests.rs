@@ -2,10 +2,11 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use omega_client::test_support::IdleLlmClient;
 use omega_core::DynLlmClient;
 use omega_keymap::{InteractionMode, KeymapManager};
+use omega_session::{ResponseSectionState, WorkflowRunRole};
 use omega_test_support::persistent_test_root;
 use omega_workflow::LoadedWorkflowCatalog;
 
-use crate::app::Panel;
+use crate::app::{Msg, Panel};
 
 use super::*;
 
@@ -85,6 +86,24 @@ impl EventReplayHarness {
 
 fn event_test_root(name: &str) -> std::path::PathBuf {
     persistent_test_root(&format!("tui-{name}"))
+}
+
+fn seed_collapsed_reasoning(app: &mut App) {
+    app.response_rect = ratatui::layout::Rect::new(0, 0, 80, 8);
+    app.output_msgs.push(Msg {
+        kind: MsgKind::Thinking,
+        text: "outline answer\nline 2".to_string(),
+        id: Some("thinking-1".to_string()),
+        parent_id: Some("step-1".to_string()),
+        title: Some("Reasoning".to_string()),
+        state: Some(ResponseSectionState::Complete),
+        workflow_id: Some("research".to_string()),
+        workflow_role: Some(WorkflowRunRole::Child),
+        scene_id: None,
+        subflow_ref: None,
+        collapsed: true,
+        tool_lane_collapsed: true,
+    });
 }
 
 fn test_session(
@@ -218,6 +237,68 @@ fn mouse_selection_only_marks_text_ready_for_copy() {
         app_guard.status_notice.as_deref(),
         Some("Selected 6 chars. Press y or Ctrl+C to copy.")
     );
+}
+
+#[test]
+fn mouse_click_on_collapsed_reasoning_toggles_expand() {
+    let app = Arc::new(Mutex::new(App::new()));
+    {
+        let mut app_guard = app.lock().unwrap();
+        seed_collapsed_reasoning(&mut app_guard);
+    }
+
+    handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 4,
+            row: 2,
+            modifiers: KeyModifiers::NONE,
+        },
+        &app,
+    );
+    handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 4,
+            row: 2,
+            modifiers: KeyModifiers::NONE,
+        },
+        &app,
+    );
+
+    let app_guard = app.lock().unwrap();
+    let thinking = app_guard
+        .output_msgs
+        .iter()
+        .find(|message| message.id.as_deref() == Some("thinking-1"))
+        .unwrap();
+    assert!(!thinking.collapsed);
+    assert_eq!(app_guard.status_notice.as_deref(), Some("Thinking expanded."));
+}
+
+#[test]
+fn response_panel_jk_and_enter_expand_selected_reasoning() {
+    let harness = EventReplayHarness::new();
+    {
+        let mut app_guard = harness.app.lock().unwrap();
+        seed_collapsed_reasoning(&mut app_guard);
+        app_guard.focused_panel = Panel::Response;
+        app_guard.interaction_mode = InteractionMode::Normal;
+    }
+
+    harness.replay_keys(&[
+        (KeyCode::Char('j'), KeyModifiers::NONE),
+        (KeyCode::Enter, KeyModifiers::NONE),
+    ]);
+
+    let app_guard = harness.app.lock().unwrap();
+    let thinking = app_guard
+        .output_msgs
+        .iter()
+        .find(|message| message.id.as_deref() == Some("thinking-1"))
+        .unwrap();
+    assert!(!thinking.collapsed);
+    assert_eq!(app_guard.status_notice.as_deref(), Some("Thinking expanded."));
 }
 
 #[test]

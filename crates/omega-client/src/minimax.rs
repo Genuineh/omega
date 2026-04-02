@@ -1,4 +1,5 @@
 use std::env;
+use std::time::Duration;
 
 use async_trait::async_trait;
 #[cfg(test)]
@@ -23,6 +24,9 @@ pub struct MinimaxConfig {
     pub model: String,
     pub base_url: String,
     pub anthropic_version: String,
+    pub request_throttle_interval: Duration,
+    pub max_concurrent_requests: usize,
+    pub rate_limit_retry_delay: Duration,
 }
 
 impl MinimaxConfig {
@@ -51,6 +55,9 @@ impl MinimaxConfig {
             model: model.into(),
             base_url: base_url.into(),
             anthropic_version: ANTHROPIC_VERSION.to_string(),
+            request_throttle_interval: Duration::from_millis(100),
+            max_concurrent_requests: 1,
+            rate_limit_retry_delay: Duration::from_secs(10),
         }
     }
 
@@ -69,8 +76,32 @@ impl MinimaxConfig {
         let base_url = env::var("OMEGA_BASE_URL")
             .or_else(|_| env::var("ANTHROPIC_BASE_URL"))
             .unwrap_or_else(|_| MINIMAX_GLOBAL_BASE_URL.to_string());
+        let request_throttle_interval = env_duration_millis(
+            &[
+                "OMEGA_PROVIDER_REQUEST_THROTTLE_MS",
+                "ANTHROPIC_PROVIDER_REQUEST_THROTTLE_MS",
+            ],
+            Duration::from_millis(100),
+        )?;
+        let max_concurrent_requests = env_usize(
+            &[
+                "OMEGA_PROVIDER_MAX_CONCURRENT_REQUESTS",
+                "ANTHROPIC_PROVIDER_MAX_CONCURRENT_REQUESTS",
+            ],
+            1,
+        )?;
+        let rate_limit_retry_delay = env_duration_millis(
+            &[
+                "OMEGA_PROVIDER_RATE_LIMIT_RETRY_DELAY_MS",
+                "ANTHROPIC_PROVIDER_RATE_LIMIT_RETRY_DELAY_MS",
+            ],
+            Duration::from_secs(10),
+        )?;
 
-        Ok(Self::with_base_url(api_key, model, base_url))
+        Ok(Self::with_base_url(api_key, model, base_url)
+            .with_request_throttle_interval(request_throttle_interval)
+            .with_max_concurrent_requests(max_concurrent_requests)
+            .with_rate_limit_retry_delay(rate_limit_retry_delay))
     }
 
     pub fn anthropic_provider_config(&self) -> AnthropicProviderConfig {
@@ -80,11 +111,72 @@ impl MinimaxConfig {
             self.base_url.clone(),
             self.anthropic_version.clone(),
         )
+        .with_request_throttle_interval(self.request_throttle_interval)
+        .with_max_concurrent_requests(self.max_concurrent_requests)
+        .with_rate_limit_retry_delay(self.rate_limit_retry_delay)
     }
 
     pub fn provider_capabilities(&self) -> AnthropicProviderCapabilities {
         AnthropicProviderCapabilities::minimax()
     }
+}
+
+impl MinimaxConfig {
+    pub fn with_request_throttle_interval(mut self, request_throttle_interval: Duration) -> Self {
+        self.request_throttle_interval = request_throttle_interval;
+        self
+    }
+
+    pub fn with_max_concurrent_requests(mut self, max_concurrent_requests: usize) -> Self {
+        self.max_concurrent_requests = max_concurrent_requests.max(1);
+        self
+    }
+
+    pub fn with_rate_limit_retry_delay(mut self, rate_limit_retry_delay: Duration) -> Self {
+        self.rate_limit_retry_delay = rate_limit_retry_delay;
+        self
+    }
+}
+
+fn env_duration_millis(names: &[&str], default: Duration) -> Result<Duration, ClientError> {
+    for name in names {
+        match env::var(name) {
+            Ok(value) => {
+                let millis = value.parse::<u64>().map_err(|_| {
+                    ClientError::Config(format!("{name} must be an integer number of milliseconds"))
+                })?;
+                return Ok(Duration::from_millis(millis));
+            }
+            Err(env::VarError::NotPresent) => continue,
+            Err(error) => {
+                return Err(ClientError::Config(format!("failed to read {name}: {error}")));
+            }
+        }
+    }
+
+    Ok(default)
+}
+
+fn env_usize(names: &[&str], default: usize) -> Result<usize, ClientError> {
+    for name in names {
+        match env::var(name) {
+            Ok(value) => {
+                let parsed = value
+                    .parse::<usize>()
+                    .map_err(|_| ClientError::Config(format!("{name} must be a positive integer")))?;
+                if parsed == 0 {
+                    return Err(ClientError::Config(format!("{name} must be greater than 0")));
+                }
+                return Ok(parsed);
+            }
+            Err(env::VarError::NotPresent) => continue,
+            Err(error) => {
+                return Err(ClientError::Config(format!("failed to read {name}: {error}")));
+            }
+        }
+    }
+
+    Ok(default)
 }
 
 #[derive(Debug, Clone)]

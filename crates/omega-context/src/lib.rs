@@ -1,5 +1,6 @@
 mod document_model;
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -22,7 +23,9 @@ pub use document_model::{
 };
 pub use omega_memory::StepSummary as ContextStepSummary;
 use omega_memory::{rank_summary_candidates, should_trigger_context_compaction, StepContextHint};
-use omega_tools::{ToolErrorKind, ToolHandler, ToolResult};
+use omega_tools::{
+    ToolErrorKind, ToolFamily, ToolHandler, ToolManifestMetadata, ToolResult,
+};
 use omega_workflow::{DataFormat, StepOutputContract};
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "document-backend")]
@@ -87,6 +90,7 @@ pub struct StepContextRequest {
     pub todo_snapshot: Option<String>,
     pub current_execute_item: Option<ContextExecuteItem>,
     pub visible_tool_names: Vec<String>,
+    pub tool_manifests: Vec<ToolManifestMetadata>,
     pub tool_definitions: Vec<ToolDefinition>,
     pub messages: Vec<Message>,
     pub context_window: u32,
@@ -1193,7 +1197,7 @@ fn build_step_system_blocks(
     let stable_sections = [
         request.skill_system_prompt.clone(),
         format!("Workflow phase: {}", request.step.label),
-        render_visible_tools(&request.visible_tool_names),
+        render_visible_tools(&request.step, &request.tool_manifests),
         stable_context,
     ]
     .into_iter()
@@ -1388,11 +1392,166 @@ pub fn render_routing_context(routing: &ContextRouting) -> String {
     lines.join("\n")
 }
 
-pub fn render_visible_tools(tool_names: &[String]) -> String {
-    if tool_names.is_empty() {
-        "Visible tools: none".to_string()
-    } else {
-        format!("Visible tools: {}", tool_names.join(", "))
+pub fn render_visible_tools(step: &ContextStep, tool_manifests: &[ToolManifestMetadata]) -> String {
+    if tool_manifests.is_empty() {
+        return [
+            "Visible tools: none".to_string(),
+            "Tool strategy: no tool calls are available in this step; respond directly from the existing workflow context and user input.".to_string(),
+        ]
+        .join("\n");
+    }
+
+    let tool_names = tool_manifests
+        .iter()
+        .map(|manifest| manifest.id.as_str())
+        .collect::<Vec<_>>();
+
+    let mut lines = vec![format!("Visible tools: {}", tool_names.join(", ")), "Tool strategy:".to_string()];
+    lines.push("Global:".to_string());
+    lines.push("- Prefer the narrowest structured tool that fits the task and step goal.".to_string());
+    lines.push("- Prefer read-only inspection or knowledge tools for exploration; switch to editing tools only when the step explicitly needs workspace changes.".to_string());
+    lines.push("- Use escape-hatch tools only after the structured tools and their guidance have been ruled out.".to_string());
+
+    let family_sections = render_family_tool_strategy(tool_manifests);
+    if !family_sections.is_empty() {
+        lines.push("Families:".to_string());
+        lines.extend(family_sections);
+    }
+
+    let step_hints = render_step_tool_hints(step, tool_manifests);
+    if !step_hints.is_empty() {
+        lines.push("Step hints:".to_string());
+        lines.extend(step_hints.into_iter().map(|hint| format!("- {hint}")));
+    }
+
+    lines.push("Tools:".to_string());
+    lines.extend(tool_manifests.iter().flat_map(render_tool_prompt_section));
+
+    lines.join("\n")
+}
+
+fn render_family_tool_strategy(tool_manifests: &[ToolManifestMetadata]) -> Vec<String> {
+    ordered_tool_families()
+        .into_iter()
+        .filter_map(|family| {
+            let family_tools = tool_manifests
+                .iter()
+                .filter(|manifest| manifest.family == family)
+                .map(|manifest| manifest.id.as_str())
+                .collect::<Vec<_>>();
+            if family_tools.is_empty() {
+                return None;
+            }
+
+            let (label, summary) = family_strategy_copy(family);
+            Some(format!("- {} [{}]: {}", label, family_tools.join(", "), summary))
+        })
+        .collect()
+}
+
+fn render_step_tool_hints(step: &ContextStep, tool_manifests: &[ToolManifestMetadata]) -> Vec<String> {
+    let families = tool_manifests
+        .iter()
+        .map(|manifest| manifest.family.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut hints = Vec::new();
+
+    match step.id.as_str() {
+        "scene-recognition" | "select-workflow" => {
+            hints.push("This is a routing step; decide from the conversation state first and avoid workspace exploration unless the step prompt explicitly asks for evidence.".to_string());
+        }
+        "plan" => {
+            hints.push("Prefer synthesizing a credible next-step plan from existing context; only call tools to close specific evidence gaps.".to_string());
+        }
+        "execute" => {
+            hints.push("Use tools to make concrete progress on the current execution slice, then verify the touched behavior before moving on.".to_string());
+            if !families.contains(ToolFamily::Editing.as_str()) {
+                hints.push("This execute slice is read-only at the tool layer; inspect and reason from existing evidence instead of attempting file mutation.".to_string());
+            }
+        }
+        "report" => {
+            hints.push("Prefer summarizing from completed work and existing evidence; only call tools for a last narrow verification pass.".to_string());
+        }
+        _ => {}
+    }
+
+    if families.contains(ToolFamily::EscapeHatch.as_str()) {
+        hints.push("If bash is visible, keep it as a fallback after structured tools or tool-specific guidance stop fitting the task.".to_string());
+    }
+
+    hints
+}
+
+fn render_tool_prompt_section(manifest: &ToolManifestMetadata) -> Vec<String> {
+    let mut lines = vec![format!(
+        "- {} [{} | {}]: {}",
+        manifest.id,
+        family_strategy_copy(manifest.family).0,
+        manifest.stability.as_str(),
+        manifest.prompt.summary
+    )];
+    if let Some(rule) = manifest.prompt.when_to_use.first() {
+        lines.push(format!("  use when: {rule}"));
+    }
+    if let Some(rule) = manifest.prompt.when_not_to_use.first() {
+        lines.push(format!("  avoid when: {rule}"));
+    }
+    if !manifest.prompt.prefer_over.is_empty() {
+        lines.push(format!("  prefer over: {}", manifest.prompt.prefer_over.join(", ")));
+    }
+    if !manifest.prompt.fallback_to.is_empty() {
+        lines.push(format!("  fallback to: {}", manifest.prompt.fallback_to.join(", ")));
+    }
+    lines
+}
+
+fn ordered_tool_families() -> [ToolFamily; 8] {
+    [
+        ToolFamily::WorkspaceInspection,
+        ToolFamily::KnowledgeAndGovernance,
+        ToolFamily::Editing,
+        ToolFamily::Planning,
+        ToolFamily::Interaction,
+        ToolFamily::WebResearch,
+        ToolFamily::EscapeHatch,
+        ToolFamily::Other,
+    ]
+}
+
+fn family_strategy_copy(family: ToolFamily) -> (&'static str, &'static str) {
+    match family {
+        ToolFamily::WorkspaceInspection => (
+            "Workspace inspection",
+            "Use these for deterministic local inspection before reaching for shell commands.",
+        ),
+        ToolFamily::KnowledgeAndGovernance => (
+            "Knowledge and governance",
+            "Use these when ranked retrieval, repository guidance, or document-governance actions fit better than raw file reads.",
+        ),
+        ToolFamily::Editing => (
+            "Editing",
+            "Use these only when the step needs a real workspace change and a structured edit surface can express it safely.",
+        ),
+        ToolFamily::Planning => (
+            "Planning",
+            "Use these to externalize task state that the runtime should preserve across steps.",
+        ),
+        ToolFamily::Interaction => (
+            "Interaction",
+            "Use these when the workflow needs a structured exchange rather than direct workspace mutation.",
+        ),
+        ToolFamily::WebResearch => (
+            "Web research",
+            "Use these for network-backed lookup only when local workspace evidence is insufficient.",
+        ),
+        ToolFamily::EscapeHatch => (
+            "Escape hatch",
+            "Use these only after the structured tools and their guidance stop fitting the operation.",
+        ),
+        ToolFamily::Other => (
+            "Other",
+            "Use these only when their description clearly matches the task better than the named families above.",
+        ),
     }
 }
 
@@ -1611,11 +1770,12 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use omega_client::{ChatRequest, ContentBlock, Message, ToolDefinition};
+    use omega_tools::{ToolFamily, ToolManifestMetadata, ToolPromptProfile};
     use omega_workflow::{DataFormat, OutputRecoveryMode};
 
     use super::{
-        render_output_contract, ContextAssembler, ContextExecuteItem, ContextRouting,
-        ContextSession, ContextStep, ContextTokenCounter, ContextWorkflowRole,
+        render_output_contract, render_visible_tools, ContextAssembler, ContextExecuteItem,
+        ContextRouting, ContextSession, ContextStep, ContextTokenCounter, ContextWorkflowRole,
         DefaultContextAssembler, DocumentHealthReport, HealthScore, OmegaContextFacade,
         OutputRepairContextRequest, OutputRepairFailure, ScanResult, StepContextRequest,
     };
@@ -1707,6 +1867,21 @@ mod tests {
                 item_label: Some("Inspect".to_string()),
             }),
             visible_tool_names: vec!["bash".to_string()],
+            tool_manifests: vec![ToolManifestMetadata::legacy(
+                "bash",
+                "Run commands",
+                serde_json::json!({"type": "object"}),
+            )
+            .with_family(ToolFamily::EscapeHatch)
+            .with_prompt_profile(ToolPromptProfile {
+                summary: "Run a shell command when structured tools do not fit.".to_string(),
+                when_to_use: vec!["the exact shell command or its output is the artifact you need".to_string()],
+                when_not_to_use: vec!["a structured read or edit tool already covers the task".to_string()],
+                prefer_over: vec![],
+                fallback_to: vec!["read_file".to_string()],
+                examples: vec![],
+                anti_patterns: vec![],
+            })],
             tool_definitions: vec![ToolDefinition {
                 name: "bash".to_string(),
                 description: "Run commands".to_string(),
@@ -1723,6 +1898,118 @@ mod tests {
             select_workflow_step_id: "select-workflow".to_string(),
             root_workflow_id: "root".to_string(),
         }
+    }
+
+    fn tool_manifest(
+        name: &str,
+        family: ToolFamily,
+        summary: &str,
+        when_to_use: &[&str],
+        when_not_to_use: &[&str],
+        fallback_to: &[&str],
+    ) -> ToolManifestMetadata {
+        ToolManifestMetadata::legacy(name, format!("{name} description"), serde_json::json!({"type": "object"}))
+            .with_family(family)
+            .with_prompt_profile(ToolPromptProfile {
+                summary: summary.to_string(),
+                when_to_use: when_to_use.iter().map(|value| (*value).to_string()).collect(),
+                when_not_to_use: when_not_to_use.iter().map(|value| (*value).to_string()).collect(),
+                prefer_over: Vec::new(),
+                fallback_to: fallback_to.iter().map(|value| (*value).to_string()).collect(),
+                examples: Vec::new(),
+                anti_patterns: Vec::new(),
+            })
+    }
+
+    #[test]
+    fn render_visible_tools_reports_when_no_tools_are_available() {
+        let rendered = render_visible_tools(&step_request().step, &[]);
+
+        assert!(rendered.contains("Visible tools: none"));
+        assert!(rendered.contains("no tool calls are available in this step"));
+    }
+
+    #[test]
+    fn render_visible_tools_uses_manifest_families_and_step_hints() {
+        let request = step_request();
+        let rendered = render_visible_tools(
+            &request.step,
+            &[
+                tool_manifest(
+                    "bash",
+                    ToolFamily::EscapeHatch,
+                    "Run shell commands as a fallback.",
+                    &["the shell output itself is the artifact you need"],
+                    &["structured tools already cover the operation"],
+                    &["read_file"],
+                ),
+                tool_manifest(
+                    "batch",
+                    ToolFamily::WorkspaceInspection,
+                    "Bundle read-only inspection calls.",
+                    &["you already know several inspection calls to run in parallel"],
+                    &["a single targeted inspection tool will answer the question"],
+                    &[],
+                ),
+                tool_manifest(
+                    "grep_search",
+                    ToolFamily::WorkspaceInspection,
+                    "Search file contents quickly.",
+                    &["you need exact text matches in the workspace"],
+                    &["you need ranked semantic retrieval"],
+                    &["search_codebase"],
+                ),
+            ],
+        );
+
+        assert!(rendered.contains("Visible tools: bash, batch, grep_search"));
+        assert!(rendered.contains("Families:"));
+        assert!(rendered.contains("Workspace inspection [batch, grep_search]"));
+        assert!(rendered.contains("Step hints:"));
+        assert!(rendered.contains("This execute slice is read-only at the tool layer"));
+        assert!(rendered.contains("- bash [Escape hatch | stable]: Run shell commands as a fallback."));
+        assert!(rendered.contains("  fallback to: read_file"));
+    }
+
+    #[test]
+    fn render_visible_tools_renders_tool_specific_manifest_guidance() {
+        let request = step_request();
+        let rendered = render_visible_tools(
+            &request.step,
+            &[
+                tool_manifest(
+                    "apply_patch",
+                    ToolFamily::Editing,
+                    "Apply a targeted patch to an existing file.",
+                    &["you already know the local edit slice"],
+                    &["the file does not exist yet"],
+                    &["create_file"],
+                ),
+                tool_manifest(
+                    "search_codebase",
+                    ToolFamily::KnowledgeAndGovernance,
+                    "Run ranked repository search.",
+                    &["semantic or ranked retrieval matters more than exact grep"],
+                    &["you already know the exact file and line to read"],
+                    &["read_file"],
+                ),
+                tool_manifest(
+                    "todo",
+                    ToolFamily::Planning,
+                    "Persist task state for the runtime.",
+                    &["you need visible task-state changes across steps"],
+                    &["you only need scratch notes"],
+                    &[],
+                ),
+            ],
+        );
+
+        assert!(rendered.contains("Knowledge and governance [search_codebase]"));
+        assert!(rendered.contains("Editing [apply_patch]"));
+        assert!(rendered.contains("Planning [todo]"));
+        assert!(rendered.contains("- apply_patch [Editing | stable]: Apply a targeted patch to an existing file."));
+        assert!(rendered.contains("  avoid when: the file does not exist yet"));
+        assert!(rendered.contains("- search_codebase [Knowledge and governance | stable]: Run ranked repository search."));
     }
 
     #[test]

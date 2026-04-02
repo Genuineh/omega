@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use omega_core::default_bash_allowed_commands;
@@ -28,6 +29,13 @@ max_tokens = 32000
 [tools.bash]
 allowed_commands = ["cat", "echo", "false", "find", "grep", "head", "ls", "printf", "pwd", "rg", "sleep", "tail", "touch", "tr", "true", "wait", "wc", "yes"]
 
+# Provider pacing overrides apply after env bootstrap. Leave these commented to
+# keep the transport defaults or env-derived values.
+[provider]
+# request_throttle_ms = 100
+# max_concurrent_requests = 1
+# rate_limit_retry_delay_ms = 10000
+
 [tools.batch]
 max_requests = 8
 
@@ -42,6 +50,14 @@ pub struct AgentModelConfig {
     pub context_window: u32,
     pub max_output_tokens: u32,
     pub bash_allowed_commands: Vec<String>,
+    pub provider: ProviderPacingConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ProviderPacingConfig {
+    pub request_throttle_interval: Option<Duration>,
+    pub max_concurrent_requests: Option<usize>,
+    pub rate_limit_retry_delay: Option<Duration>,
 }
 
 impl Default for AgentModelConfig {
@@ -50,6 +66,7 @@ impl Default for AgentModelConfig {
             context_window: DEFAULT_CONTEXT_WINDOW,
             max_output_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
             bash_allowed_commands: default_bash_allowed_commands(),
+            provider: ProviderPacingConfig::default(),
         }
     }
 }
@@ -162,6 +179,22 @@ impl AgentModelConfig {
                 }
             }
         }
+        if let Some(provider) = file.provider {
+            if let Some(request_throttle_ms) = provider.request_throttle_ms {
+                config.provider.request_throttle_interval =
+                    Some(Duration::from_millis(request_throttle_ms));
+            }
+            if let Some(max_concurrent_requests) = provider.max_concurrent_requests {
+                if max_concurrent_requests == 0 {
+                    anyhow::bail!("provider.max_concurrent_requests must be >= 1");
+                }
+                config.provider.max_concurrent_requests = Some(max_concurrent_requests);
+            }
+            if let Some(rate_limit_retry_delay_ms) = provider.rate_limit_retry_delay_ms {
+                config.provider.rate_limit_retry_delay =
+                    Some(Duration::from_millis(rate_limit_retry_delay_ms));
+            }
+        }
 
         if config.max_output_tokens >= config.context_window {
             warnings.push(format!(
@@ -212,6 +245,8 @@ struct AgentModelConfigFile {
     #[serde(default)]
     request: Option<RequestConfigFile>,
     #[serde(default)]
+    provider: Option<ProviderConfigFile>,
+    #[serde(default)]
     tools: Option<ToolsConfigFile>,
 }
 
@@ -228,6 +263,16 @@ struct RequestConfigFile {
 }
 
 #[derive(Debug, Deserialize)]
+struct ProviderConfigFile {
+    #[serde(default)]
+    request_throttle_ms: Option<u64>,
+    #[serde(default)]
+    max_concurrent_requests: Option<usize>,
+    #[serde(default)]
+    rate_limit_retry_delay_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
 struct ToolsConfigFile {
     #[serde(default)]
     bash: Option<BashToolConfigFile>,
@@ -241,6 +286,8 @@ struct BashToolConfigFile {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::{AgentModelConfig, DEFAULT_MODEL_CONFIG_PATH};
 
     fn temp_root(name: &str) -> PathBuf {
@@ -279,6 +326,10 @@ mod tests {
         assert!(written.contains("max_tokens = 32000"));
         assert!(written.contains("context_window = 200000"));
         assert!(written.contains("allowed_commands"));
+        assert!(written.contains("request_throttle_ms = 100"));
+        assert!(loaded.config.provider.request_throttle_interval.is_none());
+        assert!(loaded.config.provider.max_concurrent_requests.is_none());
+        assert!(loaded.config.provider.rate_limit_retry_delay.is_none());
     }
 
     #[test]
@@ -297,6 +348,31 @@ mod tests {
         assert!(loaded.warnings.is_empty());
         assert_eq!(loaded.config.max_output_tokens, 64_000);
         assert_eq!(loaded.config.context_window, 128_000);
+    }
+
+    #[test]
+    fn file_override_updates_provider_pacing() {
+        let root = temp_root("provider-pacing");
+        let omega_dir = root.join(".omega");
+        std::fs::create_dir_all(&omega_dir).unwrap();
+        std::fs::write(
+            omega_dir.join("model.toml"),
+            "[provider]\nrequest_throttle_ms = 250\nmax_concurrent_requests = 3\nrate_limit_retry_delay_ms = 12000\n",
+        )
+        .unwrap();
+
+        let loaded = AgentModelConfig::load(&root);
+
+        assert!(loaded.warnings.is_empty());
+        assert_eq!(
+            loaded.config.provider.request_throttle_interval,
+            Some(Duration::from_millis(250))
+        );
+        assert_eq!(loaded.config.provider.max_concurrent_requests, Some(3));
+        assert_eq!(
+            loaded.config.provider.rate_limit_retry_delay,
+            Some(Duration::from_millis(12_000))
+        );
     }
 
     #[test]
@@ -337,6 +413,26 @@ mod tests {
             super::AgentModelConfigSource::FileWithFallback(_)
         ));
         assert!(loaded.warnings[0].contains("empty entries"));
+    }
+
+    #[test]
+    fn file_override_rejects_zero_provider_concurrency() {
+        let root = temp_root("provider-pacing-invalid");
+        let omega_dir = root.join(".omega");
+        std::fs::create_dir_all(&omega_dir).unwrap();
+        std::fs::write(
+            omega_dir.join("model.toml"),
+            "[provider]\nmax_concurrent_requests = 0\n",
+        )
+        .unwrap();
+
+        let loaded = AgentModelConfig::load(&root);
+
+        assert!(matches!(
+            loaded.source,
+            super::AgentModelConfigSource::FileWithFallback(_)
+        ));
+        assert!(loaded.warnings[0].contains("provider.max_concurrent_requests must be >= 1"));
     }
 
     #[test]

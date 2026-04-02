@@ -189,6 +189,12 @@ fn confirm_overlay_intent(
     session: &AgentSession,
 ) -> anyhow::Result<bool> {
     match intent {
+        ConfirmIntent::Dismiss => {
+            let mut app_guard = app.lock().unwrap();
+            app_guard.close_overlay();
+            app_guard.set_status_notice("Approval overlay dismissed.");
+            Ok(false)
+        }
         ConfirmIntent::InterruptTurn { turn_id } => {
             let mut app_guard = app.lock().unwrap();
             if app_guard.is_running && app_guard.is_current_turn(turn_id) {

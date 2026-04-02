@@ -17,6 +17,7 @@ pub enum ConfirmChoice {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfirmIntent {
+    Dismiss,
     InterruptTurn { turn_id: u64 },
 }
 

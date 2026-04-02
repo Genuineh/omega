@@ -1,23 +1,73 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use omega_core::ToolDefinition;
+use omega_core::{CoreToolManifestMetadata, ToolDefinition};
 use omega_workflow::StepToolRequest;
+
+#[derive(Debug, Clone, PartialEq)]
+struct ToolCatalogEntry {
+    definition: ToolDefinition,
+    manifest: CoreToolManifestMetadata,
+}
+
+impl ToolCatalogEntry {
+    fn from_definition(definition: ToolDefinition) -> Self {
+        let manifest = CoreToolManifestMetadata::legacy(
+            definition.name.clone(),
+            definition.description.clone(),
+            definition.input_schema.clone(),
+        );
+        Self {
+            definition,
+            manifest,
+        }
+    }
+
+    fn from_manifest(manifest: CoreToolManifestMetadata) -> Self {
+        let definition = ToolDefinition {
+            name: manifest.id.clone(),
+            description: manifest.description.clone(),
+            input_schema: manifest.input_schema.clone(),
+        };
+        Self {
+            definition,
+            manifest,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedToolSet {
     tool_names: Vec<String>,
     tool_definitions: Vec<ToolDefinition>,
+    tool_manifests: Vec<CoreToolManifestMetadata>,
 }
 
 impl ResolvedToolSet {
     pub fn new(tool_definitions: Vec<ToolDefinition>) -> Self {
-        let tool_names = tool_definitions
+        let entries = tool_definitions
+            .into_iter()
+            .map(ToolCatalogEntry::from_definition)
+            .collect();
+        Self::from_entries(entries)
+    }
+
+    fn from_entries(entries: Vec<ToolCatalogEntry>) -> Self {
+        let tool_names = entries
             .iter()
-            .map(|definition| definition.name.clone())
+            .map(|entry| entry.definition.name.clone())
+            .collect();
+        let tool_definitions = entries
+            .iter()
+            .map(|entry| entry.definition.clone())
+            .collect();
+        let tool_manifests = entries
+            .into_iter()
+            .map(|entry| entry.manifest)
             .collect();
         Self {
             tool_names,
             tool_definitions,
+            tool_manifests,
         }
     }
 
@@ -36,6 +86,10 @@ impl ResolvedToolSet {
         &self.tool_definitions
     }
 
+    pub fn tool_manifests(&self) -> &[CoreToolManifestMetadata] {
+        &self.tool_manifests
+    }
+
     pub fn is_empty(&self) -> bool {
         self.tool_definitions.is_empty()
     }
@@ -44,18 +98,37 @@ impl ResolvedToolSet {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionToolCatalog {
     default_tool_names: BTreeSet<String>,
-    available_tools: BTreeMap<String, ToolDefinition>,
+    available_tools: BTreeMap<String, ToolCatalogEntry>,
 }
 
 impl SessionToolCatalog {
     pub fn new(default_tools: Vec<ToolDefinition>) -> Self {
+        let default_entries = default_tools
+            .into_iter()
+            .map(ToolCatalogEntry::from_definition)
+            .collect::<Vec<_>>();
+        Self::from_entries(default_entries.clone(), default_entries)
+    }
+
+    pub fn from_manifests(default_tools: Vec<CoreToolManifestMetadata>) -> Self {
+        let default_entries = default_tools
+            .into_iter()
+            .map(ToolCatalogEntry::from_manifest)
+            .collect::<Vec<_>>();
+        Self::from_entries(default_entries.clone(), default_entries)
+    }
+
+    fn from_entries(
+        default_tools: Vec<ToolCatalogEntry>,
+        available_tools: Vec<ToolCatalogEntry>,
+    ) -> Self {
         let default_tool_names = default_tools
             .iter()
-            .map(|definition| definition.name.clone())
+            .map(|entry| entry.definition.name.clone())
             .collect::<BTreeSet<_>>();
-        let available_tools = default_tools
+        let available_tools = available_tools
             .into_iter()
-            .map(|definition| (definition.name.clone(), definition))
+            .map(|entry| (entry.definition.name.clone(), entry))
             .collect::<BTreeMap<_, _>>();
         Self {
             default_tool_names,
@@ -67,16 +140,46 @@ impl SessionToolCatalog {
         default_tools: Vec<ToolDefinition>,
         available_tools: Vec<ToolDefinition>,
     ) -> Self {
+        let default_entries = default_tools
+            .into_iter()
+            .map(ToolCatalogEntry::from_definition)
+            .collect::<Vec<_>>();
+        let available_entries = available_tools
+            .into_iter()
+            .map(ToolCatalogEntry::from_definition)
+            .collect::<Vec<_>>();
+        Self::with_available_entries(default_entries, available_entries)
+    }
+
+    pub fn with_available_manifests(
+        default_tools: Vec<CoreToolManifestMetadata>,
+        available_tools: Vec<CoreToolManifestMetadata>,
+    ) -> Self {
+        let default_entries = default_tools
+            .into_iter()
+            .map(ToolCatalogEntry::from_manifest)
+            .collect::<Vec<_>>();
+        let available_entries = available_tools
+            .into_iter()
+            .map(ToolCatalogEntry::from_manifest)
+            .collect::<Vec<_>>();
+        Self::with_available_entries(default_entries, available_entries)
+    }
+
+    fn with_available_entries(
+        default_tools: Vec<ToolCatalogEntry>,
+        available_tools: Vec<ToolCatalogEntry>,
+    ) -> Self {
         let default_tool_names = default_tools
             .iter()
-            .map(|definition| definition.name.clone())
+            .map(|entry| entry.definition.name.clone())
             .collect::<BTreeSet<_>>();
         let mut all_available = available_tools
             .into_iter()
-            .map(|definition| (definition.name.clone(), definition))
+            .map(|entry| (entry.definition.name.clone(), entry))
             .collect::<BTreeMap<_, _>>();
-        for definition in default_tools {
-            all_available.insert(definition.name.clone(), definition);
+        for entry in default_tools {
+            all_available.insert(entry.definition.name.clone(), entry);
         }
         Self {
             default_tool_names,
@@ -111,7 +214,7 @@ impl SessionToolCatalog {
             }
         };
 
-        ResolvedToolSet::new(
+        ResolvedToolSet::from_entries(
             tool_names
                 .into_iter()
                 .filter_map(|name| self.available_tools.get(&name).cloned())
@@ -123,7 +226,7 @@ impl SessionToolCatalog {
 #[cfg(test)]
 mod tests {
     use super::SessionToolCatalog;
-    use omega_core::ToolDefinition;
+    use omega_core::{CoreToolFamily, CoreToolManifestMetadata, ToolDefinition};
     use omega_workflow::StepToolRequest;
 
     fn tool(name: &str) -> ToolDefinition {
@@ -165,5 +268,40 @@ mod tests {
         ]));
 
         assert_eq!(resolved.tool_names(), ["read_file"]);
+    }
+
+    #[test]
+    fn manifest_catalog_preserves_prompt_metadata() {
+        let catalog = SessionToolCatalog::from_manifests(vec![CoreToolManifestMetadata {
+            id: "search_codebase".to_string(),
+            display_name: "Search Codebase".to_string(),
+            description: "Search the indexed codebase".to_string(),
+            input_schema: serde_json::json!({"type": "object"}),
+            family: CoreToolFamily::KnowledgeAndGovernance,
+            stability: omega_core::CoreToolStability::Preview,
+            prompt: omega_core::CoreToolPromptProfile {
+                summary: "Ranked search over project knowledge".to_string(),
+                when_to_use: vec!["semantic retrieval matters".to_string()],
+                when_not_to_use: vec!["exact file contents are needed".to_string()],
+                prefer_over: vec!["grep_search".to_string()],
+                fallback_to: vec!["read_file".to_string()],
+                examples: vec!["search the codebase semantically".to_string()],
+                anti_patterns: vec!["using search without reading the result".to_string()],
+            },
+            io: None,
+            ui: None,
+            context: None,
+            permissions: None,
+            storage: None,
+            observability: None,
+        }]);
+
+        let resolved = catalog.resolve_for_step(&StepToolRequest::Inherit);
+        assert_eq!(resolved.tool_names(), ["search_codebase"]);
+        assert_eq!(resolved.tool_manifests()[0].family, CoreToolFamily::KnowledgeAndGovernance);
+        assert_eq!(
+            resolved.tool_manifests()[0].prompt.summary,
+            "Ranked search over project knowledge"
+        );
     }
 }

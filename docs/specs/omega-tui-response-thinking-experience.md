@@ -50,7 +50,7 @@ related_prds: []
 `Response` 应从“消息行列表”演进为“当前 turn 的结构化 timeline”。推荐最小结构：
 
 - `Turn header`: 当前 turn 的 scene / selected workflow 摘要。
-- `Routing summary`: root workflow 的 `scene-recognition -> select-workflow`，默认可折叠。
+- `Routing summary`: root workflow 的 `select-workflow`，默认可折叠，并同时展示 recognized scene 与 selected workflow。
 - `Step blocks`: child workflow 中每个 step 一个稳定 block。
 - `Nested subflow lane`: 当某个 step 拥有 itemized subflow 时，在该 step block 内展示稳定的二级子流程轨迹，而不是把它提升为新的顶层 step。详细规则见 `docs/specs/omega-tui-step-subflow-visibility.md`。
 - `Thinking block`: 当 provider 返回 reasoning/thinking 时，挂在当前活跃 step 或 final answer 之下。

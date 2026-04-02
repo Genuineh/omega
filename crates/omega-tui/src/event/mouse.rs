@@ -62,11 +62,32 @@ pub(super) fn handle_mouse_event(mouse: MouseEvent, app: &Arc<Mutex<App>>) {
             app_guard.update_mouse_selection(mouse.column, mouse.row);
         }
         MouseEventKind::Up(MouseButton::Left) => {
+            let click_response_line = app_guard
+                .text_selection
+                .as_ref()
+                .and_then(|selection| {
+                    if selection.panel != Panel::Response {
+                        return None;
+                    }
+                    let point =
+                        app_guard.panel_text_point_at(Panel::Response, mouse.column, mouse.row)?;
+                    (point == selection.anchor).then_some(point.line_index)
+                });
+
             if let Some(text) = app_guard.finish_mouse_selection(mouse.column, mouse.row) {
                 app_guard.set_status_notice(format!(
                     "Selected {} chars. Press y or Ctrl+C to copy.",
                     text.chars().count()
                 ));
+            } else if let Some(line_index) = click_response_line {
+                app_guard.focused_panel = Panel::Response;
+                app_guard.select_response_line(line_index);
+
+                if let Some(notice) =
+                    response_activation_notice(app_guard.activate_response_item_at_line(line_index))
+                {
+                    app_guard.set_status_notice(notice);
+                }
             }
         }
         MouseEventKind::ScrollUp => {
@@ -78,5 +99,21 @@ pub(super) fn handle_mouse_event(mouse: MouseEvent, app: &Arc<Mutex<App>>) {
             app_guard.scroll_panel_down(panel, 3);
         }
         _ => {}
+    }
+}
+
+fn response_activation_notice(activation: Option<ResponseActivation>) -> Option<String> {
+    match activation {
+        Some(ResponseActivation::ThinkingCollapsed) => Some("Thinking collapsed.".to_string()),
+        Some(ResponseActivation::ThinkingExpanded) => Some("Thinking expanded.".to_string()),
+        Some(ResponseActivation::ToolLaneCollapsed) => Some("Tool lane collapsed.".to_string()),
+        Some(ResponseActivation::ToolLaneExpanded) => Some("Tool lane expanded.".to_string()),
+        Some(ResponseActivation::ToolDetailOpened(tool_name)) => {
+            Some(format!("Opened {tool_name} detail overlay."))
+        }
+        Some(ResponseActivation::StepSubflowDetailOpened(label)) => {
+            Some(format!("Opened subflow detail overlay for {label}."))
+        }
+        None => None,
     }
 }

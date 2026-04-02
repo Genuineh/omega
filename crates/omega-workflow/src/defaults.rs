@@ -4,13 +4,14 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::constants::{
-    CHAT_BLOCKED_GROUP, CHAT_STEP_ID, CHAT_WORKFLOW_ID, DEFAULT_CHAT_PROMPT_PATH,
-    DEFAULT_EXECUTE_PROMPT_PATH, DEFAULT_EXECUTE_SCHEMA_PATH, DEFAULT_EXPLORE_PROMPT_PATH,
-    DEFAULT_EXPLORE_SCHEMA_PATH, DEFAULT_PLAN_PROMPT_PATH, DEFAULT_PLAN_SCHEMA_PATH,
-    DEFAULT_REPORT_PROMPT_PATH, DEFAULT_SCENE_RECOGNITION_PROMPT_PATH,
-    DEFAULT_SELECT_WORKFLOW_PROMPT_PATH, EXECUTE_STEP_ID, EXPLORE_STEP_ID,
-    FEATURE_NON_EXECUTE_BLOCKED_GROUP, FEATURE_WORKFLOW_ID, PLAN_STEP_ID, REPORT_STEP_ID,
-    RESEARCH_WORKFLOW_ID, ROOT_ROUTING_BLOCKED_GROUP, ROOT_WORKFLOW_ID, SCENE_RECOGNITION_STEP_ID,
+    CHAT_BLOCKED_GROUP, CHAT_STEP_ID, CHAT_WORKFLOW_ID, DEEP_RESEARCH_WORKFLOW_ID,
+    DEFAULT_CHAT_PROMPT_PATH, DEFAULT_EXECUTE_PROMPT_PATH, DEFAULT_EXECUTE_SCHEMA_PATH,
+    DEFAULT_EXPLORE_PROMPT_PATH, DEFAULT_EXPLORE_SCHEMA_PATH, DEFAULT_PLAN_PROMPT_PATH,
+    DEFAULT_PLAN_SCHEMA_PATH, DEFAULT_REPORT_PROMPT_PATH,
+    DEFAULT_SCENE_RECOGNITION_PROMPT_PATH, DEFAULT_SELECT_WORKFLOW_PROMPT_PATH,
+    EXECUTE_STEP_ID, EXPLORE_STEP_ID, FEATURE_NON_EXECUTE_BLOCKED_GROUP,
+    FEATURE_WORKFLOW_ID, PLAN_STEP_ID, REPORT_STEP_ID, RESEARCH_WORKFLOW_ID,
+    ROOT_ROUTING_BLOCKED_GROUP, ROOT_WORKFLOW_ID, SCENE_RECOGNITION_STEP_ID,
     SELECT_WORKFLOW_STEP_ID,
 };
 use crate::model::{
@@ -34,6 +35,11 @@ label = "Research"
 workflow = "research"
 
 [[scenes]]
+id = "deep-research"
+label = "Deep Research"
+workflow = "deep-research"
+
+[[scenes]]
 id = "feature"
 label = "Feature"
 workflow = "feature"
@@ -43,22 +49,11 @@ const DEFAULT_ROOT_WORKFLOW_TOML: &str = r#"# Default root workflow
 name = "root"
 
 [[steps]]
-id = "scene-recognition"
-label = "Scene Recognition"
-prompt = ".omega/prompt/step/scene-recognition.md"
-loop_mode = "agent_loop"
-max_iterations = 2
-tool_request = { mode = "block", groups = ["root_routing_blocked"] }
-skill_request = { mode = "match_task" }
-output_contract = { mode = "required", format = "json", max_retries = 1, recovery_mode = "repair_then_regenerate" }
-enabled = true
-
-[[steps]]
 id = "select-workflow"
 label = "Select Workflow"
 prompt = ".omega/prompt/step/select-workflow.md"
 loop_mode = "agent_loop"
-max_iterations = 2
+max_iterations = 4
 tool_request = { mode = "block", groups = ["root_routing_blocked"] }
 skill_request = { mode = "match_task" }
 output_contract = { mode = "required", format = "json", max_retries = 1, recovery_mode = "repair_then_regenerate" }
@@ -81,6 +76,32 @@ enabled = true
 
 const DEFAULT_RESEARCH_WORKFLOW_TOML: &str = r#"# Default research workflow
 name = "research"
+
+[[steps]]
+id = "explore"
+label = "Explore"
+prompt = ".omega/prompt/step/explore.md"
+loop_mode = "agent_loop"
+max_iterations = 200
+tool_request = { mode = "block", groups = ["feature_non_execute_blocked"] }
+skill_request = { mode = "match_task" }
+output_contract = { mode = "required", format = "json", schema_path = ".omega/schema/step/explore.json", max_retries = 2, recovery_mode = "repair_then_regenerate" }
+enabled = true
+
+[[steps]]
+id = "report"
+label = "Report"
+prompt = ".omega/prompt/step/report.md"
+loop_mode = "agent_loop"
+max_iterations = 200
+tool_request = { mode = "block", groups = ["feature_non_execute_blocked"] }
+skill_request = { mode = "match_task" }
+input_contract = { mode = "required", sources = ["explore"] }
+enabled = true
+"#;
+
+const DEFAULT_DEEP_RESEARCH_WORKFLOW_TOML: &str = r#"# Default deep-research workflow
+name = "deep-research"
 
 [[steps]]
 id = "explore"
@@ -269,14 +290,19 @@ Do not produce the final user-facing answer.
 
 const DEFAULT_SELECT_WORKFLOW_PROMPT: &str = r#"You are in the workflow selection phase.
 
-Based on the recognized scene, choose the workflow that should run next.
-Prefer `chat` for the `chat` scene, `research` for the `research` scene, and `feature` for the `feature` scene unless explicit configuration says otherwise.
-Choose from the recognized scene and existing routing context only.
+Identify the most appropriate scene and choose the workflow that should run next.
+Choose `chat` only for lightweight read-only conversation, clarification, explanation, or simple direct answers with no requested repository changes.
+Choose `research` for focused read-only investigation, targeted analysis, or narrower exploratory work that does not require a system-wide or deeply comprehensive study.
+Choose `deep-research` for systematic, global, holistic, or deeply investigative analysis, such as comprehensive architecture studies, broad tradeoff evaluation, repo-wide discovery, or requests that explicitly ask for in-depth research.
+Choose `feature` for any request that asks you to implement, fix, update, edit, refactor, rename, add, remove, or otherwise change repository files.
+When the request is ambiguous between `research` and `deep-research`, prefer `deep-research` if it asks for system-level, comprehensive, global, or deeply detailed investigation; otherwise prefer `research`.
+When the request is ambiguous overall, default to `feature`, not `chat`.
+Choose from the user's request and existing routing context only.
 Do not inspect repository files, list directories, or probe the workspace for this decision.
 Produce only a JSON object for the execution handoff.
 Return exactly this shape:
-{"selected_workflow_id":"chat"}
-Replace `chat` with the configured workflow id you want to start.
+{"recognized_scene_id":"chat","selected_workflow_id":"chat"}
+Replace the ids with the configured scene and workflow you want to start.
 Do not wrap the JSON in markdown fences.
 Do not add any extra prose.
 Use tools only when they materially improve workflow selection.
@@ -302,6 +328,8 @@ Inspect the relevant code, configs, prompts, docs, and tests to understand scope
 Extract the key findings that should shape the plan instead of jumping straight into task decomposition.
 Use tools when they materially improve the exploration.
 Prefer structured read-only tools for repository inspection. Avoid `bash` unless the structured tool surface is insufficient for the exact read-only check you need.
+Do not conclude that the workspace is empty from a single glob result, a partial truncated listing, or one failed read.
+Before claiming the workspace or project is empty, verify the top-level workspace contents directly with `list_dir` on `.` or an equivalent direct root inspection.
 Do not produce the final user-facing answer.
 Produce only the internal exploration result needed for the next phase.
 Capture the work in structured form: objective, key_findings, constraints, risks, and affected_paths.
@@ -333,6 +361,7 @@ Do not produce the final user-facing wrap-up yet.
 Leave the final summary for the report phase.
 Treat the todo list as the execution anchor.
 Focus first on the current in-progress item, keep todo state aligned as work advances, and use validation_targets from the plan when verifying changes.
+If no todo list is present, use the structured explore findings as the execution anchor and keep completed_tasks/open_tasks empty unless the workflow explicitly supplied task ids.
 In itemized execute loops, only mark the current todo item as newly completed in completed_tasks; never mark future items complete before their own execute slice runs.
 If this workflow is read-only, gather evidence instead of editing files and leave changed_paths empty when no workspace files changed.
 In a read-only workflow, mark the current todo item as completed once you have gathered the requested evidence or finished the read-only validation for that item.
@@ -531,7 +560,7 @@ impl BuiltinWorkflowStepId {
 
     pub(crate) fn default_max_iterations(self) -> u32 {
         match self {
-            Self::SceneRecognition | Self::SelectWorkflow => 2,
+            Self::SceneRecognition | Self::SelectWorkflow => 4,
             Self::Chat | Self::Explore | Self::Plan | Self::Execute | Self::Report => 200,
         }
     }
@@ -681,6 +710,7 @@ pub(crate) fn default_workflow_toml_for_id(workflow_id: &str) -> Option<&'static
         ROOT_WORKFLOW_ID => Some(DEFAULT_ROOT_WORKFLOW_TOML),
         CHAT_WORKFLOW_ID => Some(DEFAULT_CHAT_WORKFLOW_TOML),
         RESEARCH_WORKFLOW_ID => Some(DEFAULT_RESEARCH_WORKFLOW_TOML),
+        DEEP_RESEARCH_WORKFLOW_ID => Some(DEFAULT_DEEP_RESEARCH_WORKFLOW_TOML),
         FEATURE_WORKFLOW_ID => Some(DEFAULT_FEATURE_WORKFLOW_TOML),
         _ => None,
     }
@@ -701,6 +731,10 @@ pub(crate) fn builtin_workflow_sources() -> BTreeMap<String, WorkflowSource> {
     sources.insert(CHAT_WORKFLOW_ID.to_string(), WorkflowSource::BuiltinDefault);
     sources.insert(
         RESEARCH_WORKFLOW_ID.to_string(),
+        WorkflowSource::BuiltinDefault,
+    );
+    sources.insert(
+        DEEP_RESEARCH_WORKFLOW_ID.to_string(),
         WorkflowSource::BuiltinDefault,
     );
     sources.insert(

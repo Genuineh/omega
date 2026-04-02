@@ -4,7 +4,8 @@ use std::path::Path;
 #[cfg(test)]
 use omega_workflow::StepOutputContract;
 use omega_workflow::{
-    DataFormat, WorkflowStep, EXECUTE_STEP_ID, EXPLORE_STEP_ID, PLAN_STEP_ID, RESEARCH_WORKFLOW_ID,
+    DataFormat, WorkflowStep, DEEP_RESEARCH_WORKFLOW_ID, EXECUTE_STEP_ID, EXPLORE_STEP_ID,
+    PLAN_STEP_ID, RESEARCH_WORKFLOW_ID,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -198,6 +199,7 @@ fn validate_schema_value(
 }
 
 pub(crate) fn validate_workflow_step_output(
+    _root: &Path,
     workflow_id: &str,
     step: &WorkflowStep,
     value: &Value,
@@ -209,14 +211,16 @@ pub(crate) fn validate_workflow_step_output(
         }
         PLAN_STEP_ID => {
             let output = parse_feature_plan_output(value.clone())?;
-            if workflow_id == RESEARCH_WORKFLOW_ID {
+            if workflow_id == DEEP_RESEARCH_WORKFLOW_ID {
                 validate_research_plan_output(&output)?;
             }
             Ok(())
         }
         EXECUTE_STEP_ID => {
             let output = parse_feature_execute_output(value.clone())?;
-            if workflow_id == RESEARCH_WORKFLOW_ID && !output.changed_paths.is_empty() {
+            if matches!(workflow_id, RESEARCH_WORKFLOW_ID | DEEP_RESEARCH_WORKFLOW_ID)
+                && !output.changed_paths.is_empty()
+            {
                 anyhow::bail!(
                     "research execute output must keep changed_paths empty because the workflow is read-only"
                 );

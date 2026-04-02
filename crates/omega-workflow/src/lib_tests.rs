@@ -5,11 +5,11 @@ use super::{
     LoadedWorkflow, LoadedWorkflowCatalog, OutputRecoveryMode, SceneCatalog, StepInputContract,
     StepLoopContract, StepLoopMode, StepOutputContract, StepSkillRequest, StepToolRequest,
     WorkflowDefinition, WorkflowPrompts, WorkflowSource, CHAT_WORKFLOW_ID,
+    DEEP_RESEARCH_SCENE_ID, DEEP_RESEARCH_WORKFLOW_ID,
     DEFAULT_EXECUTE_SCHEMA_PATH, DEFAULT_EXPLORE_SCHEMA_PATH, DEFAULT_HOOKS_DIR,
     DEFAULT_HOOK_MANIFEST_FILE, DEFAULT_PLAN_SCHEMA_PATH, DEFAULT_SCENES_PATH,
     DEFAULT_WORKFLOW_PATH, EXECUTE_STEP_ID, EXPLORE_STEP_ID, FEATURE_SCENE_ID, FEATURE_WORKFLOW_ID,
     PLAN_STEP_ID, REPORT_STEP_ID, RESEARCH_SCENE_ID, RESEARCH_WORKFLOW_ID, ROOT_WORKFLOW_ID,
-    SCENE_RECOGNITION_STEP_ID,
 };
 
 #[test]
@@ -28,22 +28,17 @@ fn default_linear_workflow_has_four_enabled_steps() {
 }
 
 #[test]
-fn default_research_workflow_has_four_enabled_steps_with_read_only_execute() {
+fn default_research_workflow_has_two_enabled_steps_and_reports_from_explore() {
     let workflow = WorkflowDefinition::default_research();
 
     assert_eq!(workflow.name, RESEARCH_WORKFLOW_ID);
-    assert_eq!(workflow.enabled_step_count(), 4);
+    assert_eq!(workflow.enabled_step_count(), 2);
     assert_eq!(
         workflow
             .enabled_steps()
             .map(|step| step.id.as_str())
             .collect::<Vec<_>>(),
-        vec![
-            EXPLORE_STEP_ID,
-            PLAN_STEP_ID,
-            EXECUTE_STEP_ID,
-            REPORT_STEP_ID
-        ]
+        vec![EXPLORE_STEP_ID, REPORT_STEP_ID]
     );
 
     let research_steps = workflow.enabled_steps().collect::<Vec<_>>();
@@ -61,27 +56,36 @@ fn default_research_workflow_has_four_enabled_steps_with_read_only_execute() {
         if sources == &vec![EXPLORE_STEP_ID.to_string()]
     ));
     assert!(matches!(
-        &research_steps[1].output_contract,
-        StepOutputContract::Required {
-            schema_path: Some(schema_path),
-            recovery_mode: OutputRecoveryMode::RepairThenRegenerate,
-            ..
-        } if schema_path == &PathBuf::from(DEFAULT_PLAN_SCHEMA_PATH)
-    ));
-    assert!(matches!(
-        &research_steps[2].input_contract,
-        StepInputContract::Required { sources }
-        if sources == &vec![PLAN_STEP_ID.to_string()]
-    ));
-    assert!(matches!(
-        &research_steps[2].tool_request,
+        &research_steps[1].tool_request,
         StepToolRequest::Block(blocked)
         if blocked.iter().any(|item| item == "bash")
             && blocked.iter().any(|item| item == "apply_patch")
             && blocked.iter().any(|item| item == "write_file")
     ));
+}
+
+#[test]
+fn default_deep_research_workflow_keeps_four_stage_read_only_flow() {
+    let workflow = WorkflowDefinition::default_deep_research();
+
+    assert_eq!(workflow.name, DEEP_RESEARCH_WORKFLOW_ID);
+    assert_eq!(workflow.enabled_step_count(), 4);
+    assert_eq!(
+        workflow
+            .enabled_steps()
+            .map(|step| step.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![EXPLORE_STEP_ID, PLAN_STEP_ID, EXECUTE_STEP_ID, REPORT_STEP_ID]
+    );
+
+    let steps = workflow.enabled_steps().collect::<Vec<_>>();
     assert!(matches!(
-        &research_steps[2].output_contract,
+        &steps[2].input_contract,
+        StepInputContract::Required { sources }
+        if sources == &vec![PLAN_STEP_ID.to_string()]
+    ));
+    assert!(matches!(
+        &steps[2].output_contract,
         StepOutputContract::Optional {
             schema_path: Some(schema_path),
             max_retries: 2,
@@ -89,27 +93,15 @@ fn default_research_workflow_has_four_enabled_steps_with_read_only_execute() {
             ..
         } if schema_path == &PathBuf::from(DEFAULT_EXECUTE_SCHEMA_PATH)
     ));
-    assert_eq!(research_steps[2].max_step_repeats, 8);
-    assert_eq!(
-        research_steps[2].hooks,
-        vec!["todo_managed_execute".to_string()]
-    );
+    assert_eq!(steps[2].max_step_repeats, 8);
+    assert_eq!(steps[2].hooks, vec!["todo_managed_execute".to_string()]);
     assert!(matches!(
-        &research_steps[2].loop_contract,
+        &steps[2].loop_contract,
         Some(StepLoopContract::TodoItems {
             source,
             child_step_prefix,
             max_item_repeats,
         }) if source == "plan.tasks" && child_step_prefix == EXECUTE_STEP_ID && *max_item_repeats == 3
-    ));
-    assert!(matches!(
-        &research_steps[3].input_contract,
-        StepInputContract::Optional { sources }
-        if sources == &vec![
-            EXPLORE_STEP_ID.to_string(),
-            PLAN_STEP_ID.to_string(),
-            EXECUTE_STEP_ID.to_string(),
-        ]
     ));
 }
 
@@ -121,6 +113,9 @@ fn builtin_explore_and_plan_prompts_include_structured_field_guidance() {
         .prompt_for(EXPLORE_STEP_ID)
         .is_some_and(|prompt| prompt
             .contains("objective, key_findings, constraints, risks, and affected_paths")));
+    assert!(prompts
+        .prompt_for(EXPLORE_STEP_ID)
+        .is_some_and(|prompt| prompt.contains("Do not conclude that the workspace is empty from a single glob result")));
     assert!(prompts
         .prompt_for(PLAN_STEP_ID)
         .is_some_and(|prompt| prompt.contains("Set `goal` to the overall outcome")));
@@ -141,10 +136,8 @@ fn missing_scene_and_workflow_catalog_is_created_and_loaded() {
     assert!(root.join(".omega/workflows/root.toml").exists());
     assert!(root.join(".omega/workflows/chat.toml").exists());
     assert!(root.join(".omega/workflows/research.toml").exists());
+    assert!(root.join(".omega/workflows/deep-research.toml").exists());
     assert!(root.join(".omega/workflows/feature.toml").exists());
-    assert!(root
-        .join(".omega/prompt/step/scene-recognition.md")
-        .exists());
     assert!(root.join(".omega/prompt/step/select-workflow.md").exists());
     assert!(root.join(".omega/prompt/step/chat.md").exists());
     assert!(root.join(".omega/prompt/step/explore.md").exists());
@@ -155,6 +148,7 @@ fn missing_scene_and_workflow_catalog_is_created_and_loaded() {
     assert_eq!(loaded.scene_catalog.default_scene_id, FEATURE_SCENE_ID);
     assert_eq!(loaded.scene_catalog.root_workflow_id, ROOT_WORKFLOW_ID);
     assert!(loaded.scene_catalog.scene(RESEARCH_SCENE_ID).is_some());
+    assert!(loaded.scene_catalog.scene(DEEP_RESEARCH_SCENE_ID).is_some());
     assert!(loaded.workflow_catalog.workflow(ROOT_WORKFLOW_ID).is_some());
     assert!(loaded.workflow_catalog.workflow(CHAT_WORKFLOW_ID).is_some());
     assert!(loaded
@@ -163,13 +157,17 @@ fn missing_scene_and_workflow_catalog_is_created_and_loaded() {
         .is_some());
     assert!(loaded
         .workflow_catalog
+        .workflow(DEEP_RESEARCH_WORKFLOW_ID)
+        .is_some());
+    assert!(loaded
+        .workflow_catalog
         .workflow(FEATURE_WORKFLOW_ID)
         .is_some());
     assert!(loaded
         .prompt_catalog
         .prompts_for_workflow(ROOT_WORKFLOW_ID)
-        .and_then(|prompts| prompts.prompt_for(SCENE_RECOGNITION_STEP_ID))
-        .is_some_and(|prompt| prompt.contains("scene recognition phase")));
+        .and_then(|prompts| prompts.prompt_for("select-workflow"))
+        .is_some_and(|prompt| prompt.contains("recognized_scene_id")));
 }
 
 #[test]
@@ -238,7 +236,7 @@ fn builtin_workflows_default_to_agent_loop_with_step_budgets() {
         .all(|step| step.loop_mode == StepLoopMode::AgentLoop));
 
     let root_steps = root.enabled_steps().collect::<Vec<_>>();
-    assert_eq!(root_steps[0].max_iterations, 2);
+    assert_eq!(root_steps[0].max_iterations, 4);
     assert_eq!(
         root_steps[0].tool_request,
         StepToolRequest::Block(vec![
@@ -248,36 +246,23 @@ fn builtin_workflows_default_to_agent_loop_with_step_budgets() {
             "list_dir".to_string(),
             "glob_search".to_string(),
             "grep_search".to_string(),
+            "web_search".to_string(),
+            "web_fetch".to_string(),
             "apply_patch".to_string(),
             "create_file".to_string(),
             "edit_file".to_string(),
             "todo".to_string(),
+            "todo_read".to_string(),
+            "todo_write".to_string(),
+            "ask_user_question".to_string(),
+            "task".to_string(),
             "write_file".to_string(),
             "load_skill".to_string(),
             "manage_document".to_string(),
             "search_codebase".to_string(),
         ])
     );
-    assert_eq!(root_steps[1].max_iterations, 2);
-    assert_eq!(
-        root_steps[1].tool_request,
-        StepToolRequest::Block(vec![
-            "bash".to_string(),
-            "batch".to_string(),
-            "read_file".to_string(),
-            "list_dir".to_string(),
-            "glob_search".to_string(),
-            "grep_search".to_string(),
-            "apply_patch".to_string(),
-            "create_file".to_string(),
-            "edit_file".to_string(),
-            "todo".to_string(),
-            "write_file".to_string(),
-            "load_skill".to_string(),
-            "manage_document".to_string(),
-            "search_codebase".to_string(),
-        ])
-    );
+    assert_eq!(root_steps.len(), 1);
 
     let feature_steps = feature.enabled_steps().collect::<Vec<_>>();
     assert_eq!(
@@ -288,6 +273,9 @@ fn builtin_workflows_default_to_agent_loop_with_step_budgets() {
             "create_file".to_string(),
             "edit_file".to_string(),
             "todo".to_string(),
+            "todo_read".to_string(),
+            "todo_write".to_string(),
+            "ask_user_question".to_string(),
             "write_file".to_string(),
             "manage_document".to_string(),
         ])

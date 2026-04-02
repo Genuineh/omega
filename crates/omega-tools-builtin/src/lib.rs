@@ -1,6 +1,7 @@
 mod apply_patch;
 mod bash;
 mod batch;
+mod coordination_tools;
 mod create_file;
 mod edit_file;
 mod glob_search;
@@ -9,15 +10,18 @@ mod list_dir;
 mod path_safety;
 mod read_file;
 mod shared;
+mod web_tools;
 mod write_file;
 
 pub use apply_patch::ApplyPatchHandler;
 pub use bash::{default_bash_allowed_commands, BashHandler};
 pub use batch::{default_batch_max_requests, BatchHandler};
+pub use coordination_tools::{AskUserQuestionHandler, TaskHandler};
 pub use create_file::CreateFileHandler;
 pub use edit_file::EditHandler;
 pub use glob_search::GlobSearchHandler;
 pub use grep_search::GrepSearchHandler;
 pub use list_dir::ListDirHandler;
 pub use read_file::ReadHandler;
+pub use web_tools::{WebFetchHandler, WebSearchHandler};
 pub use write_file::WriteHandler;

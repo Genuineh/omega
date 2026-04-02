@@ -28,6 +28,10 @@ _任务编号以 `docs/specs/omega-agent-impl-plan.md` 为准；为支持可运�
 
 ### Medium
 
+- **2026-04-02 workflow routing maintenance**: 默认只读分析现已拆分为两条 child workflow：`research = explore -> report`，`deep-research = explore -> plan -> execute -> report`；root workflow 也已收敛为单步 `select-workflow`，在一次结构化输出中同时写入 `recognized_scene_id` 与 `selected_workflow_id`。runtime promotion 规则现把系统性、全局性、深入式分析优先提升到 `deep-research`，而实现类请求仍提升到 `feature`。
+- **2026-04-02 TUI interrupt maintenance**: 手动中断运行中 turn 时，`omega-tui` 现在会立即把仍处于 `streaming` 的 response/thinking section 收口为 failed，并把仍在 running 的 tool run 标记为 failed，避免 UI 在已中断状态下继续显示 reasoning spinner 或运行中工具样式。
+- **2026-04-02 maintenance**: `omega-client` provider transport now applies configurable provider pacing defaults (`100ms` global request throttle, max concurrency `1`, `10s` 429 retry delay floor) and retries `429 Too Many Requests` with `Retry-After` support, reducing bursty hook-step failures on interactive-token-plan providers. `omega-app` also exposes these pacing overrides in `.omega/model.toml` under `[provider]`.
+- **Tool + Prompt optimization follow-up**: 该计划现已落成 `Task 8J.0 ~ 8U` 的实际任务链。新增 Task 8J.0（Lightweight Tool Strategy Prompt）作为不依赖 manifest 的 quick-win，可与 8J 并行推进。v0.3 修正后推荐顺序为：quick-win track `8J.0` 可立即开始 | manifest track `8J -> 8K -> 8L -> 8M/8N/8O -> 8R -> 8S -> 8T -> 8U | deferred: 8P`（等存储 API 稳定）。关键设计决策：Manifest-wraps-Handler、ToolHandler 签名不变、remediation 结构化、UI effects 复用 RuntimeUiEffect、profiles 大部分 Optional。2026-04-01 follow-up：root routing 的仓库级覆盖配置 `.omega/workflows/root.toml` 也必须与内建默认同步到 `max_iterations = 4`，否则单步 `select-workflow` 会在一次非 JSON 偏航后直接耗尽预算。
 - **Task 15F-30 ~ 15F-35**: deterministic test foundation 现应作为 `Task 10 / 12 / 13` 的配套安全网推进，优先把 LLM / runtime event / process / fs 这类真实外部边界收敛成稳定 mock seam，同时保持 workflow/session/core 逻辑尽量 real-tested。
 - **Task 4**: `omega-tasks` 作为持久化任务层，价值明确，但不应先于 context management。
 - **Task 12**: `omega-background` 排在任务系统附近，但它的 runtime-visible 状态在当前前端上如何投射，应建立在新的 app-owned runtime message policy 之上。
@@ -189,6 +193,7 @@ _将 M11 中基础级体验优化前移，确保在开发后续功能时有可�
 - **Description**: 在保留现有 `LlmClient` 兼容面的前提下，为 `omega-client` 抽出 provider-neutral 的 Anthropic API 层，并把 Minimax 下沉为 Anthropic-compatible provider 适配器。
 - **Summary**: `omega-client` 已新增 provider-neutral 的 `anthropic` 服务层与 `AnthropicMessagesCompatClient`，保留现有 `LlmClient` / `ChatRequest` / `ChatResponse` 兼容面不变；`MinimaxClient` 现通过该兼容层运行，并补齐 `AnthropicProviderConfig` / capability matrix、Messages create/create_stream、SSE 解析与消息累积、prompt caching typed fields、`count_tokens` / `models` / `message_batches` service、`OMEGA_*` / `ANTHROPIC_*` env fallback，以及独立的 request/stream/provider/capability/live-ignored 测试矩阵。验证已通过 `cargo fmt --all`、`cargo test -p omega-client`、`cargo clippy -p omega-client --all-targets -- -D warnings` 与 `cargo test -p omega-core -p omega-session -p omega-subagent -p omega-app`。
 	2026-03-24 补充修正：当 Anthropic-compatible streaming SSE 缺失 `message_start` 或起始事件序列非法时，`omega-client` 现在会附带 frame/event preview 诊断并在 `MinimaxClient::chat_stream()` 中自动回退到非流式 `chat()`，避免上层 workflow 因 provider 坏流直接失败。
+	2026-04-01 补充修正：Anthropic-compatible transport 现在会对 provider `5xx` 响应做有限自动重试，避免 root routing / workflow step 因短暂上游错误直接失败。
 - **Related**: docs/specs/omega-client-anthropic-api-abstraction.md
 
 ### ── M2B: Tool System Follow-up ──
@@ -263,6 +268,151 @@ _将 M11 中基础级体验优化前移，确保在开发后续功能时有可�
 - **Complexity**: M
 - **Summary**: `omega-tools-builtin` 已把原先集中在 `src/lib.rs` 中的 builtin tool 实现拆分为 `bash`、`read_file`、`list_dir`、`glob_search`、`grep_search`、`batch`、`create_file`、`write_file`、`edit_file`、`apply_patch` 等独立模块，并额外抽出 `shared` 与 `path_safety` 复用层；crate 根现仅保留模块声明和公共 re-export，外部 API 保持不变。同时新增 `tests/` 下按工具拆分的集成测试，覆盖各 handler 的核心行为与结构化 metadata。验证已通过 `cargo test -p omega-tools-builtin` 与 `cargo clippy -p omega-tools-builtin --tests`。
 - **Related**: crates/omega-tools-builtin/src/lib.rs, crates/omega-tools-builtin/tests/
+
+### ── M2B.1: Tool Capability System Upgrade ──
+
+> 验证方式：工具定义不再只包含 handler + schema，而是统一具备 prompt、UI、context、permission、storage、monitoring 能力；`omega-session` / `omega-app` / `omega-tui` 对工具结果的消费不再依赖自由文本猜测；高价值工具族（FileEdit、WebResearch、Todo/Interaction）都能沿同一 contract 扩展
+> 对标：`docs/specs/omega-tool-prompt-optimization.md` 中的 tool manifest、tool strategy、tool outcome、tool bridges 与 observability 设计
+
+### Task 8J.0: omega-session — Lightweight Tool Strategy Prompt (Quick Win)
+- **Status**: Completed
+- **Completed**: 2026-04-01
+- **Priority**: High
+- **Description**: 基于现有 `ToolDefinition` 和 `SessionToolCatalog`，把 prompt 中的 `"Visible tools: x, y, z"` 升级为包含 family-level guidance 和 when_to_use/when_not_to_use 的简洁 prompt block。不依赖 manifest，直接硬编码现有 11 个工具的策略。可与 Task 8J 并行推进，立即改善工具选择质量。
+- **Complexity**: S
+- **Summary**: live prompt path 现已在 `omega-context::render_visible_tools()` 输出 `Visible tools` + `Tool strategy` 组合块，为当前默认可见工具集补齐 family-level guidance 和 `when_to_use` / `when_not_to_use` 提示。首版覆盖 `Workspace inspection`、`Knowledge and governance`、`Editing`、`Planning`、`Escape hatch` 五类，并对 `none` 情况显式提示本 step 不可调用工具、应直接作答。由于 `omega-session` 当前通过 `omega-context` 组装 step system blocks，这个 quick win 实际落在 live assembler path，而不依赖 manifest 迁移。
+- **Validation**: `cargo test -p omega-context --lib render_visible_tools`
+- **Related**: docs/specs/omega-tool-prompt-optimization.md (Workstream B, Task B0)
+
+### Task 8J: omega-tools / omega-session / omega-app — Tool Manifest Layer
+- **Status**: Completed
+- **Completed**: 2026-04-01
+- **Priority**: High
+- **Description**: 为工具定义增加统一 `ToolManifest` 层，采用 Manifest-wraps-Handler 方案：`ToolDispatcher` 持有 manifest map，manifest 内含 `handler: Box<dyn ToolHandler>`，现有 `ToolHandler` trait 签名不变。只有 Tool Core + Prompt Strategy 两类 profile 必填，其余七类为 `Option<T>`。
+- **Complexity**: L
+- **Blocks**: Task 8K, Task 8L, Task 8M, Task 8N, Task 8O, Task 8R, Task 8S, Task 8T, Task 8U
+- **Summary**: `omega-tools` 已引入正式 `ToolManifest` / `ToolManifestMetadata` 层与 `ToolFamily`、`ToolStability`、`ToolPromptProfile` 等 capability profile；`ToolDispatcher` 现改为持有 manifest map，但保留 `register(Box<dyn ToolHandler>)` 兼容包装，旧 handler trait 签名未变。`omega-core` 默认 built-in tools 已迁移为 manifest 注册，并为当前默认工具集补齐第一版硬编码 prompt profiles；`omega-session` 的 `SessionToolCatalog` / `ResolvedToolSet` 也已开始保留 manifest metadata，而不再只剩 `ToolDefinition`，为后续 `8K` 的 manifest-based prompt builder 提供直接输入。`omega-app` 本轮无需额外接线，因为 app 侧当前不直接消费 tool catalog internals；下游兼容通过 `omega-core` re-export 和包级测试覆盖确认。
+- **Validation**: `cargo test -p omega-tools manifest`; `cargo test -p omega-core tests::default_tools_expose_manifest_metadata -- --exact`; `cargo test -p omega-session tests::session_tool_catalog_matches_current_default_tool_set -- --exact`; `cargo test -p omega-session tool_catalog::tests::manifest_catalog_preserves_prompt_metadata -- --exact`
+- **Related**: docs/specs/omega-tool-prompt-optimization.md, docs/specs/omega-tool-system-upgrade.md
+
+### Task 8K: omega-session / omega-app / omega-workflow — Tool Prompt Strategy Builder
+- **Status**: Completed
+- **Completed**: 2026-04-01
+- **Priority**: High
+- **Description**: 基于 manifest 的 `ToolPromptProfile`，在现有 prompt assembly 上新增四层结构（Global/Family/Step/Tool），替代 Task 8J.0 的硬编码版。
+- **Complexity**: M
+- **Blocked by**: Task 8J
+- **Blocks**: Task 8S, Task 8T
+- **Summary**: `omega-context` 的 live step system block 现已从 `StepContextRequest.tool_manifests` 直接消费 manifest metadata，并用 `ToolPromptProfile` 输出四层 `Tool strategy` 结构：Global 基线规则、Family 聚合 guidance、Step hints、Tool-specific guidance。`omega-session::runner` 已把 `ResolvedToolSet::tool_manifests()` 接入 context request，旧的硬编码 family 表不再驱动 live prompt；当前 step-specific guidance 会根据 `plan / execute / report / routing` 等 step id 调整 tool-selection 提示，工具级 guidance 则直接读取 manifest 的 `summary / when_to_use / when_not_to_use / fallback_to`。
+- **Validation**: `cargo test -p omega-context render_visible_tools --color never`
+- **Related**: docs/specs/omega-tool-prompt-optimization.md, docs/specs/omega-workflow-package.md
+
+### Task 8L: omega-tools / omega-core / omega-session — Tool Outcome Remediation Contract
+- **Status**: Completed
+- **Completed**: 2026-04-01
+- **Priority**: High
+- **Description**: 在保留 `ToolResult` 基础上补齐结构化 `ToolRemediation` 类型（kind + suggestion + alternative_tools + recoverable），使 `validation/policy/timeout/execution` 失败能稳定输出“主流程下一步该怎么做”。初版可基于 `ToolErrorKind` match 硬编码，后续基于 manifest 的 `fallback_to` 泛化。
+- **Complexity**: M
+- **Blocked by**: Task 8J
+- **Blocks**: Task 8M, Task 8O, Task 8R, Task 8S, Task 8T, Task 8U
+- **Summary**: `omega-tools` 现已新增 `ToolRemediation` / `ToolRemediationKind`，并由 `ToolDispatcher` 在 error result 上统一补齐 remediation；manifest 已注册工具会优先使用 `ToolPromptProfile.fallback_to` 生成 `alternative_tools`，未知工具则退回已注册工具列表。`ToolResult` 现在支持结构化 `remediation` 字段与 `as_content_value()` 序列化，`omega-core` 的 agent/tool-result block 已向模型返回带 `output + error_kind + remediation` 的 JSON object 错误结果，`omega-session` 的 tool run detail 也已显式展示 remediation fields，避免 UI/loop 再依赖自由文本猜测下一步动作。
+- **Validation**: `cargo test -p omega-tools dispatch_adds_manifest_based_remediation_to_error_results --color never`; `cargo test -p omega-core hidden_tool_calls_return_tool_result_error --color never`; `cargo test -p omega-session tool_run_detail_lines_include_structured_remediation --color never`
+- **Related**: docs/specs/omega-tool-prompt-optimization.md, docs/specs/omega-runtime-message-pipeline.md
+
+### Task 8M: omega-app / omega-session / omega-tui — Declarative Tool UI Effects
+- **Status**: Completed
+- **Completed**: 2026-04-01
+- **Priority**: Medium
+- **Description**: 为工具结果增加显式 UI effects，作为现有 `RuntimeUiEffect` enum 的新 variant（`RequestInput`、`OpenDiffPreview`、`OpenWebResultView`），不另建独立 effect 体系，让 TUI 只需消费一套来源。
+- **Complexity**: M
+- **Blocked by**: Task 8J, Task 8L
+- **Blocks**: Task 8R, Task 8S, Task 8T, Task 8U
+- **Summary**: `omega-session` / `omega-app` / `omega-tui` 现已把工具特定 UI 行为收口到现有 runtime UI contract：新增 `RuntimeUiEffect::OpenDiffPreview` 与 `RuntimeUiEffect::RequestToolApproval`，并通过对应 `StateMessage` 走通 runtime-message policy、legacy UI compatibility 与 TUI reducer。FileEdit family 成功返回 diff 时会声明式打开 diff detail overlay；带 approval requirement 的 policy failure 会打开确认型 approval overlay，而不是继续依赖自由文本或 ad-hoc log parsing。
+- **Validation**: `cargo test -p omega-session 'runtime_message::tests' --color never`; `cargo test -p omega-app policy_routes_tool_specific_ui_state_messages_to_surface --color never`; `cargo test -p omega-tui diff_preview_effect_opens_detail_overlay --color never`; `cargo test -p omega-tui request_tool_approval_effect_opens_confirm_overlay --color never`
+- **Related**: docs/specs/omega-tool-prompt-optimization.md, docs/specs/omega-runtime-message-pipeline.md
+
+### Task 8N: omega-session / omega-context / omega-tools — Scoped ToolExecutionContext
+- **Status**: Completed
+- **Completed**: 2026-04-01
+- **Priority**: High
+- **Description**: 为工具执行提供显式 `ToolExecutionContext`。**不改变 `ToolHandler` trait 签名**，通过构造注入（`Arc<dyn ContextProvider>`）和 dispatcher 层提供上下文。`ToolContextProfile` 为声明式 request descriptor，实际交付由 `OmegaContextFacade` 统一履行。
+- **Complexity**: M
+- **Blocked by**: Task 8J
+- **Blocks**: Task 8P, Task 8S, Task 8T
+- **Summary**: `omega-tools` 现已正式引入 `ToolExecutionContext` 运行时快照，`omega-session::runner` 会按 `workspace_root / workflow / step / current execute item / turn_id` 组装该上下文并传给 `ToolRunTracker`，使 tool lifecycle、UI detail 与 follow-up effects 不再只知道 tool name 和自由文本输出。默认 manifest 也已补齐 `ToolContextProfile`，把 `workspace_root`、`step metadata`、`memory_scope` 与 `network_context` 需求变成显式声明；现有 `OmegaContextFacade` 构造注入路径继续保留，handler trait 签名未改。
+- **Validation**: `cargo test -p omega-session tool_run_detail_lines_include_structured_remediation --color never`; `cargo test -p omega-core default_tools_expose_manifest_metadata --color never`
+- **Related**: docs/specs/omega-tool-prompt-optimization.md, docs/specs/omega-context-management.md
+
+### Task 8O: omega-workflow / omega-session / omega-tui — Tool Permission Profiles And Approval Surface
+- **Status**: Completed
+- **Completed**: 2026-04-01
+- **Priority**: High
+- **Description**: 为每个工具引入 permission profile，三层模型：`StepToolRequest`(visibility) > `ToolPolicyConfig`(enablement) > `RuntimeApproval`(approval)。`ask_user_question` 应成为权限确认与用户澄清的结构化工具入口。
+- **Complexity**: L
+- **Blocked by**: Task 8J, Task 8L
+- **Blocks**: Task 8T
+- **Summary**: 默认 built-in manifest 现已补齐 `ToolPermissionProfile`，把 `permission_class`、`default_policy_mode`、`requires_approval` 与 `denial_remediation` 变成结构化 contract；FileEdit / bash / manage_document 等写或高风险工具统一声明 approval requirement。`ToolDispatcher` 的 policy remediation 现会优先采用 manifest 的 denial guidance，`omega-session` 会在带 approval requirement 的 policy failure 上发出声明式 approval request，`omega-tui` 则把它渲染为确认型 overlay，形成 step visibility -> permission guidance -> approval surface 的一条稳定路径。
+- **Validation**: `cargo test -p omega-core default_tools_expose_manifest_metadata --color never`; `cargo test -p omega-session capability_effects_emit_diff_preview_and_approval_surface --color never`; `cargo test -p omega-tui request_tool_approval_effect_opens_confirm_overlay --color never`
+- **Related**: docs/specs/omega-tool-prompt-optimization.md, docs/specs/omega-workflow-package.md
+
+### Task 8P: omega-session / omega-memory / omega-todo / omega-tools — Tool Storage Effects
+- **Status**: Completed
+- **Completed**: 2026-04-01
+- **Priority**: Low
+- **Description**: 为工具副作用建立统一 effect 模型。**延迟落地**：应等 `omega-memory` 和 `omega-document` 的 `OmegaContextFacade` API 稳定后再实现，当前只需在 manifest 中预留 `storage: Option<ToolStorageProfile>` 占位。工具通过 `OmegaContextFacade` 执行存储副作用，不直接访问 omega-memory 或 omega-document。
+- **Complexity**: M
+- **Blocked by**: Task 8J, Task 8N
+- **Blocks**: Task 8R, Task 8S, Task 8T, Task 8U
+- **Summary**: 当前范围内的 `storage effect` contract 已完成为声明式层：默认 manifest 现已补齐 `ToolStorageProfile`，把 `session_journal / artifact / memory / todo / replayable` 副作用显式挂到能力面；`omega-session` 在 tool completion 后会把这些 storage effects 投影到 ToolRun detail 与 `tool.storage ...` runtime activity，避免 UI 和 diagnostics 再从工具输出文本猜测副作用。真实的 facade-owned 存储写入仍沿现有 handler/manager 路径执行，但后续扩展已不需要重新定义 storage contract。
+- **Validation**: `cargo test -p omega-core default_tools_expose_manifest_metadata --color never`; `cargo test -p omega-session capability_effects_emit_diff_preview_and_approval_surface --color never`
+- **Related**: docs/specs/omega-tool-prompt-optimization.md, docs/specs/omega-context-management.md
+
+### Task 8R: omega-tools-builtin / omega-session / omega-app — FileEdit Family Consolidation
+- **Status**: Completed
+- **Completed**: 2026-04-01
+- **Priority**: High
+- **Description**: 收口 `apply_patch`、`create_file`、`edit_file`、`write_file` 的 capability profile、diff preview、write permission、storage effects 与 prompt guidance，使其对模型与 UI 呈现为统一 FileEdit 家族，而不是一组彼此割裂的写工具。
+- **Complexity**: M
+- **Blocked by**: Task 8J, Task 8L, Task 8M, Task 8P
+- **Blocks**: Task 8U
+- **Summary**: `apply_patch`、`create_file`、`edit_file` 与 `write_file` 现已统一挂接 FileEdit family capability profiles：共享 `ToolUiProfile`（含 `open_diff_preview` affordance）、`ToolContextProfile`、`ToolPermissionProfile`、`ToolStorageProfile` 与 `ToolObservabilityProfile`，默认 policy 也统一为 `workspace_write` + approval-aware write surface。`omega-session` 的 ToolRun detail 现会显式展示这些 family-level capability，成功的 file edit tool result 会自动触发 diff preview overlay，policy failure 则会走统一 approval/remediation surface，使这四个写工具对模型与 UI 不再是彼此割裂的孤立入口。
+- **Validation**: `cargo test -p omega-core default_tools_expose_manifest_metadata --color never`; `cargo test -p omega-session capability_effects_emit_diff_preview_and_approval_surface --color never`; `cargo test -p omega-tui diff_preview_effect_opens_detail_overlay --color never`
+- **Related**: docs/specs/omega-tool-prompt-optimization.md, docs/specs/omega-tool-system-upgrade.md
+
+### Task 8S: omega-tools-builtin / omega-session / omega-app — Web Research Tools
+- **Status**: Completed
+- **Completed**: 2026-04-01
+- **Priority**: Medium
+- **Description**: 新增 `web_search` 与 `web_fetch`，补齐 network policy、tool guidance、structured metadata、UI 展示、cache/storage effect 与 observability，使外部资料检索不再只能退回 `bash` 或靠用户手工贴链接。
+- **Complexity**: L
+- **Blocked by**: Task 8J, Task 8K, Task 8L, Task 8M, Task 8N, Task 8P
+- **Blocks**: Task 8U
+- **Summary**: `omega-tools-builtin` 已新增真实的 `web_search` 与 `web_fetch` handler：前者抓取公开 HTML 搜索结果并返回结构化候选结果，后者用 blocking HTTP client 拉取已知 URL 并生成结构化摘要；两者都通过 manifest 暴露 `WebResearch` family、network-aware capability profiles 与 `open_web_result_view` affordance。`omega-session` 对成功的 web tool result 现会投影为显式 `OpenWebResultView` runtime state，`omega-app` / `omega-tui` 会统一在 search-results overlay 中展示结果，不再把外部资料检索压回 `bash`。本轮 storage/cache 仍停留在 declarative capability contract 层，尚未接入独立 fetch cache 后端。
+- **Validation**: `cargo test -p omega-tools-builtin --color never`; `cargo test -p omega-session capability_effects_emit_input_prompt_and_web_overlay --color never`; `cargo test -p omega-app policy_routes_tool_specific_ui_state_messages_to_surface --color never`
+- **Related**: docs/specs/omega-tool-prompt-optimization.md
+
+### Task 8T: omega-tools-builtin / omega-session / omega-tui — Todo And Interaction Tools Formalization
+- **Status**: Completed
+- **Completed**: 2026-04-01
+- **Priority**: Medium
+- **Description**: 正式化 `todo_write`、`todo_read`、`ask_user_question` 与 `task` 工具的 capability contract，明确它们在 prompt、UI、approval、storage 和 replay 中的统一行为，避免 todo 更新、用户确认和子任务委托继续依赖上游特例分支。
+- **Complexity**: L
+- **Blocked by**: Task 8J, Task 8K, Task 8L, Task 8M, Task 8N, Task 8O, Task 8P
+- **Blocks**: Task 8U
+- **Summary**: `omega-todo` 现已正式拆出 `todo_write` 与 `todo_read`，同时保留兼容别名 `todo`；`omega-tools-builtin` 新增 `ask_user_question` 与 `task`，统一落在 `Interaction` family manifest/profile 下。`omega-session` 对 `todo_write` 成功结果会沿用已有 todo snapshot 刷新路径，对 `ask_user_question` 成功结果则投影为显式 `RequestInput` runtime state，`omega-tui` 会打开 `InputPrompt` overlay 而不是把这类交互埋在普通 assistant 文本里。`task` 当前按本阶段边界只做结构化 delegation request formalization，返回 `recorded_only` 元数据，尚未把 fresh-context child execution 真正接进 runtime loop。
+- **Validation**: `cargo test -p omega-todo --color never`; `cargo test -p omega-session tool_run_tracker_accumulates_capability_metrics --color never`; `cargo test -p omega-tui request_input_effect_opens_input_overlay --color never`
+- **Related**: docs/specs/omega-tool-prompt-optimization.md, docs/specs/omega-workflow-package.md
+
+### Task 8U: omega-observability / omega-session / omega-tui — Tool Capability Metrics And Stability Matrix
+- **Status**: Completed
+- **Completed**: 2026-04-01
+- **Priority**: Medium
+- **Description**: 为工具系统补齐 per-tool / per-family metrics 与回归矩阵，重点跟踪 `bash_fallback_count`、`tool_failure_count_by_kind`、`tool_switch_after_failure`、`same_intent_retry_count`、`question_block_count` 等稳定性指标，验证新工具体系是否真的帮助主流程更稳定推进。
+- **Complexity**: M
+- **Blocked by**: Task 8L, Task 8M, Task 8P, Task 8R, Task 8S, Task 8T
+- **Summary**: `omega-session::ToolRunTracker` 现会累积 `tool_invocations`、`family_invocations`、`tool_failure_count_by_kind`、`bash_fallback_count`、`tool_switch_after_failure`、`same_intent_retry_count` 与 `question_block_count`，并把 snapshot 挂进 `StepDiagnostics.tool_capabilities`。`omega-tui` 的 diagnostics panel 与 detail overlay 已能直接展示这些计数，使新工具体系的稳定性不再只存在于 tracing 文本中，而能作为 step 级 runtime diagnostics 被消费和回归验证。
+- **Validation**: `cargo test -p omega-session tool_run_tracker_accumulates_capability_metrics --color never`; `cargo test -p omega-tui open_web_result_view_effect_opens_search_overlay --color never`; `cargo test -p omega-app policy_routes_tool_specific_ui_state_messages_to_surface --color never`
+- **Related**: docs/specs/omega-tool-prompt-optimization.md, docs/specs/omega-runtime-message-pipeline.md
 
 ### ── M2C: Large File Maintainability Follow-up ──
 

@@ -137,12 +137,11 @@ output_contract = { mode = "required", format = "json", max_retries = 2 }
 
 | Step | Input | Output |
 |------|-------|--------|
-| scene-recognition | None | Required(Json) |
 | select-workflow | None | Required(Json) |
 | chat | None | None |
 | analysis | None | Required(Json) |
 | plan | Required(["analysis"]) | Required(Json) |
-| execute | Required(["plan"]) | Optional(Json) |
+| execute | Required(["plan"]) for `feature` / `deep-research`; Required(["analysis"]) for lightweight `research` | Optional(Json) |
 | report | Required(["analysis","plan","execute"]) | None |
 
 ## Validation And Prompt Injection
@@ -174,6 +173,11 @@ feature workflow 的目标链路是：
 3. `plan` 输出映射到 `TodoManager`
 4. `execute` 围绕 todo items 推进
 5. `report` 消费 explore/plan/execute 的结构化结果组织结论
+
+当前默认只读分析 workflow 已拆成两条：
+
+- `research`: `explore -> execute -> report`，适合聚焦型、较轻量的只读分析；`execute` 直接消费 `explore` 产物，不建立 plan/todo loop。
+- `deep-research`: `explore -> plan -> execute -> report`，适合系统性、全局性、深入式的只读分析；保留只读 plan/todo loop，并要求 `changed_paths` 始终为空。
 
 ## Execute Loop Diagnostics Follow-up
 

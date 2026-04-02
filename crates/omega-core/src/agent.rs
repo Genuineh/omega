@@ -127,7 +127,6 @@ impl Agent {
         E: FnMut(&ChatEvent),
     {
         let session_id = Uuid::new_v4().to_string();
-        let todo_enabled = self.dispatcher.has_tool("todo");
         let mut rounds_since_todo = 0usize;
         let mut todo_has_open_items = false;
         tracing::Span::current().record("agent_loop.session_id", &session_id);
@@ -189,8 +188,11 @@ impl Agent {
             for block in &response.content {
                 if let ContentBlock::ToolUse { id, name, input } = block {
                     let result = if !self.is_tool_visible(name) {
-                        let err_result =
-                            ToolResult::error(tool_not_visible_error(name), ToolErrorKind::Policy);
+                        let err_result = self.dispatcher.error_result(
+                            name,
+                            tool_not_visible_error(name),
+                            ToolErrorKind::Policy,
+                        );
                         on_tool_call(id, name, input, &err_result);
                         tool_result_block(id, &err_result)
                     } else {
@@ -206,8 +208,11 @@ impl Agent {
                                 tool_result_block(id, &result)
                             }
                             Err(error) => {
-                                let err_result =
-                                    ToolResult::error(error.to_string(), ToolErrorKind::Execution);
+                                let err_result = self.dispatcher.error_result(
+                                    name,
+                                    error.to_string(),
+                                    ToolErrorKind::Execution,
+                                );
                                 on_tool_call(id, name, input, &err_result);
                                 tool_result_block(id, &err_result)
                             }
@@ -217,7 +222,8 @@ impl Agent {
                 }
             }
 
-            if todo_enabled && todo_has_open_items {
+            let todo_visible = self.is_tool_visible("todo") || self.is_tool_visible("todo_write");
+            if todo_visible && todo_has_open_items {
                 rounds_since_todo = if updated_todo {
                     0
                 } else {
@@ -230,7 +236,7 @@ impl Agent {
                         ContentBlock::text("<reminder>Update your todos.</reminder>"),
                     );
                 }
-            } else if updated_todo {
+            } else if updated_todo || !todo_visible {
                 rounds_since_todo = 0;
             }
 
@@ -365,8 +371,20 @@ impl Agent {
     }
 
     fn is_tool_visible(&self, name: &str) -> bool {
-        self.tool_definitions
+        if self
+            .tool_definitions
             .iter()
             .any(|definition| definition.name == name)
+        {
+            return true;
+        }
+
+        self.dispatcher
+            .manifest_for(name)
+            .is_some_and(|manifest| {
+                self.tool_definitions
+                    .iter()
+                    .any(|definition| definition.name == manifest.id)
+            })
     }
 }

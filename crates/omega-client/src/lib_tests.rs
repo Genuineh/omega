@@ -20,6 +20,9 @@ fn minimax_config_with_custom_base_url() {
     assert_eq!(cfg.base_url, "https://example.com/api");
     assert_eq!(cfg.model, "model-x");
     assert_eq!(cfg.anthropic_version, ANTHROPIC_VERSION);
+    assert_eq!(cfg.request_throttle_interval, std::time::Duration::from_millis(100));
+    assert_eq!(cfg.max_concurrent_requests, 1);
+    assert_eq!(cfg.rate_limit_retry_delay, std::time::Duration::from_secs(10));
 }
 
 #[test]
@@ -84,16 +87,40 @@ fn from_env_accepts_anthropic_fallbacks() {
     env::set_var("ANTHROPIC_API_KEY", "anthropic-key");
     env::set_var("ANTHROPIC_MODEL", "claude-compatible");
     env::set_var("ANTHROPIC_BASE_URL", "https://anthropic.example.com");
+    env::set_var("ANTHROPIC_PROVIDER_REQUEST_THROTTLE_MS", "250");
+    env::set_var("ANTHROPIC_PROVIDER_MAX_CONCURRENT_REQUESTS", "3");
+    env::set_var("ANTHROPIC_PROVIDER_RATE_LIMIT_RETRY_DELAY_MS", "15000");
 
     let config = MinimaxConfig::from_env().expect("env fallback should load config");
 
     assert_eq!(config.api_key, "anthropic-key");
     assert_eq!(config.model, "claude-compatible");
     assert_eq!(config.base_url, "https://anthropic.example.com");
+    assert_eq!(config.request_throttle_interval, std::time::Duration::from_millis(250));
+    assert_eq!(config.max_concurrent_requests, 3);
+    assert_eq!(config.rate_limit_retry_delay, std::time::Duration::from_secs(15));
 
     env::remove_var("ANTHROPIC_API_KEY");
     env::remove_var("ANTHROPIC_MODEL");
     env::remove_var("ANTHROPIC_BASE_URL");
+    env::remove_var("ANTHROPIC_PROVIDER_REQUEST_THROTTLE_MS");
+    env::remove_var("ANTHROPIC_PROVIDER_MAX_CONCURRENT_REQUESTS");
+    env::remove_var("ANTHROPIC_PROVIDER_RATE_LIMIT_RETRY_DELAY_MS");
+}
+
+#[test]
+fn from_env_rejects_zero_max_concurrent_requests() {
+    env::set_var("OMEGA_API_KEY", "omega-key");
+    env::set_var("OMEGA_PROVIDER_MAX_CONCURRENT_REQUESTS", "0");
+
+    let error = MinimaxConfig::from_env().expect_err("zero concurrency must be rejected");
+
+    assert!(error
+        .to_string()
+        .contains("OMEGA_PROVIDER_MAX_CONCURRENT_REQUESTS must be greater than 0"));
+
+    env::remove_var("OMEGA_API_KEY");
+    env::remove_var("OMEGA_PROVIDER_MAX_CONCURRENT_REQUESTS");
 }
 
 #[test]

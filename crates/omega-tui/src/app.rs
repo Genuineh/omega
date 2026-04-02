@@ -331,6 +331,8 @@ impl App {
     }
 
     pub fn interrupt_turn(&mut self) {
+        self.fail_streaming_response_sections();
+        self.fail_running_tool_runs();
         self.active_turn_id = self.active_turn_id.wrapping_add(1);
         self.is_running = false;
         self.workflow_summary = None;
@@ -951,6 +953,21 @@ impl App {
         self.clear_leader_pending();
         self.status_notice =
             Some("Confirm interrupt in the overlay before stopping the turn.".to_string());
+    }
+
+    pub fn open_runtime_confirm_overlay(&mut self, message: impl Into<String>) {
+        self.overlay = Some(OverlayState::Confirm(ConfirmOverlay {
+            origin_panel: self.focused_panel,
+            title: " Approval Required ".to_string(),
+            message: message.into(),
+            confirm_label: "Acknowledge".to_string(),
+            cancel_label: "Close".to_string(),
+            selected: ConfirmChoice::Confirm,
+            intent: ConfirmIntent::Dismiss,
+            dismiss_on_backdrop: true,
+        }));
+        self.clear_leader_pending();
+        self.status_notice = Some("Approval overlay opened for the current tool action.".to_string());
     }
 
     #[allow(dead_code)]

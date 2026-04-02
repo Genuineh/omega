@@ -6,6 +6,7 @@ pub const DEFAULT_HOOK_MANIFEST_FILE: &str = "Hook.toml";
 pub const DEFAULT_ROOT_WORKFLOW_PATH: &str = ".omega/workflows/root.toml";
 pub const DEFAULT_CHAT_WORKFLOW_PATH: &str = ".omega/workflows/chat.toml";
 pub const DEFAULT_RESEARCH_WORKFLOW_PATH: &str = ".omega/workflows/research.toml";
+pub const DEFAULT_DEEP_RESEARCH_WORKFLOW_PATH: &str = ".omega/workflows/deep-research.toml";
 pub const DEFAULT_FEATURE_WORKFLOW_PATH: &str = ".omega/workflows/feature.toml";
 pub const DEFAULT_STEP_PROMPT_DIR: &str = ".omega/prompt/step";
 pub const DEFAULT_STEP_SCHEMA_DIR: &str = ".omega/schema/step";
@@ -14,10 +15,12 @@ pub const DEFAULT_MODEL_CONFIG_PATH: &str = ".omega/model.toml";
 pub const ROOT_WORKFLOW_ID: &str = "root";
 pub const CHAT_WORKFLOW_ID: &str = "chat";
 pub const RESEARCH_WORKFLOW_ID: &str = "research";
+pub const DEEP_RESEARCH_WORKFLOW_ID: &str = "deep-research";
 pub const FEATURE_WORKFLOW_ID: &str = "feature";
 
 pub const CHAT_SCENE_ID: &str = "chat";
 pub const RESEARCH_SCENE_ID: &str = "research";
+pub const DEEP_RESEARCH_SCENE_ID: &str = "deep-research";
 pub const FEATURE_SCENE_ID: &str = "feature";
 
 pub const SCENE_RECOGNITION_STEP_ID: &str = "scene-recognition";

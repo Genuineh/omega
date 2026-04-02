@@ -80,6 +80,19 @@ pub enum StateMessage {
     TodoSnapshot {
         rendered: String,
     },
+    OpenDiffPreview {
+        diff: String,
+    },
+    RequestInput {
+        prompt: String,
+    },
+    OpenWebResultView {
+        title: String,
+        content: String,
+    },
+    RequestToolApproval {
+        message: String,
+    },
     ShowOverlay {
         request: OverlayRequest,
     },
@@ -323,6 +336,22 @@ fn legacy_ui_envelopes_from_state(turn_id: u64, message: StateMessage) -> Vec<Ru
                 content: UiContent::Text(rendered),
             },
         )],
+        StateMessage::OpenDiffPreview { diff } => vec![RuntimeUiEnvelope::effect(
+            turn_id,
+            RuntimeUiEffect::OpenDiffPreview { diff },
+        )],
+        StateMessage::RequestInput { prompt } => vec![RuntimeUiEnvelope::effect(
+            turn_id,
+            RuntimeUiEffect::RequestInput { prompt },
+        )],
+        StateMessage::OpenWebResultView { title, content } => vec![RuntimeUiEnvelope::effect(
+            turn_id,
+            RuntimeUiEffect::OpenWebResultView { title, content },
+        )],
+        StateMessage::RequestToolApproval { message } => vec![RuntimeUiEnvelope::effect(
+            turn_id,
+            RuntimeUiEffect::RequestToolApproval { message },
+        )],
         StateMessage::ShowOverlay { request } => vec![RuntimeUiEnvelope::effect(
             turn_id,
             RuntimeUiEffect::ShowOverlay(request),
@@ -438,6 +467,88 @@ mod tests {
             vec![RuntimeUiEnvelope::effect(
                 9,
                 RuntimeUiEffect::ShowOverlay(request)
+            )]
+        );
+    }
+
+    #[test]
+    fn open_diff_preview_state_message_maps_to_runtime_ui_effect() {
+        let envelopes = legacy_runtime_ui_envelopes(RuntimeMessageEnvelope::state(
+            11,
+            StateMessage::OpenDiffPreview {
+                diff: "--- a/file\n+++ b/file".to_string(),
+            },
+        ));
+
+        assert_eq!(
+            envelopes,
+            vec![RuntimeUiEnvelope::effect(
+                11,
+                RuntimeUiEffect::OpenDiffPreview {
+                    diff: "--- a/file\n+++ b/file".to_string(),
+                }
+            )]
+        );
+    }
+
+    #[test]
+    fn request_tool_approval_state_message_maps_to_runtime_ui_effect() {
+        let envelopes = legacy_runtime_ui_envelopes(RuntimeMessageEnvelope::state(
+            12,
+            StateMessage::RequestToolApproval {
+                message: "workspace_write approval required".to_string(),
+            },
+        ));
+
+        assert_eq!(
+            envelopes,
+            vec![RuntimeUiEnvelope::effect(
+                12,
+                RuntimeUiEffect::RequestToolApproval {
+                    message: "workspace_write approval required".to_string(),
+                }
+            )]
+        );
+    }
+
+    #[test]
+    fn request_input_state_message_maps_to_runtime_ui_effect() {
+        let envelopes = legacy_runtime_ui_envelopes(RuntimeMessageEnvelope::state(
+            13,
+            StateMessage::RequestInput {
+                prompt: "Choose a branch".to_string(),
+            },
+        ));
+
+        assert_eq!(
+            envelopes,
+            vec![RuntimeUiEnvelope::effect(
+                13,
+                RuntimeUiEffect::RequestInput {
+                    prompt: "Choose a branch".to_string(),
+                }
+            )]
+        );
+    }
+
+    #[test]
+    fn open_web_result_view_state_message_maps_to_runtime_ui_effect() {
+        let envelopes = legacy_runtime_ui_envelopes(RuntimeMessageEnvelope::state(
+            14,
+            StateMessage::OpenWebResultView {
+                title: " Web Results ".to_string(),
+                content: "example".to_string(),
+            },
+        ));
+
+        assert_eq!(
+            envelopes,
+            vec![RuntimeUiEnvelope::effect(
+                14,
+                RuntimeUiEffect::OpenWebResultView {
+                    title: " Web Results ".to_string(),
+                    content: "example".to_string(),
+                }
             )]
         );
     }

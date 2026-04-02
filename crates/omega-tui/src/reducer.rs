@@ -90,6 +90,18 @@ impl TuiUpdateReducer {
             RuntimeUiEffect::ReplacePanel { target, content } => {
                 Self::replace_panel(app, turn_id, target, content)
             }
+            RuntimeUiEffect::OpenDiffPreview { diff } => {
+                app.open_detail_overlay(" Diff Preview ", diff.lines().map(str::to_string).collect())
+            }
+            RuntimeUiEffect::RequestInput { prompt } => {
+                app.open_input_prompt_overlay(" Question ", prompt)
+            }
+            RuntimeUiEffect::OpenWebResultView { title, content } => {
+                app.open_search_results_overlay(&title, content.lines().map(str::to_string).collect())
+            }
+            RuntimeUiEffect::RequestToolApproval { message } => {
+                app.open_runtime_confirm_overlay(message)
+            }
             RuntimeUiEffect::ShowOverlay(request) => Self::show_overlay_request(app, request),
             RuntimeUiEffect::HideOverlay { target } => app.hide_overlay_target(target),
             RuntimeUiEffect::FocusHint { target } => Self::apply_focus_hint(app, target),
@@ -174,8 +186,8 @@ impl TuiUpdateReducer {
             } => app.open_input_prompt_overlay(" Runtime Input ", text),
             OverlayRequest {
                 target: OverlayTarget::Confirm,
-                ..
-            } => {}
+                content: UiContent::Text(text),
+            } => app.open_runtime_confirm_overlay(text),
         }
     }
 

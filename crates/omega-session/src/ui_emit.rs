@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 
 use omega_context::{ContextDiagnostics, HealthScore};
-use omega_core::{ChatEvent, CoreToolResult};
+use omega_core::{
+    ChatEvent, CoreToolExecutionContext, CoreToolManifestMetadata, CoreToolResult,
+};
 use omega_workflow::{WorkflowStep, WorkflowStepState};
 use serde_json::Value;
 
@@ -11,8 +13,9 @@ use crate::runtime_message::{
 };
 use crate::runtime_ui::{
     OverlayRequest, OverlayTarget, ResponseSection, ResponseSectionDelta, ResponseSectionKind,
-    ResponseSectionMetadata, ResponseSectionState, StepSubflowRef, StepSubflowStatus, ToolRun,
-    ToolRunDetail, ToolRunStatus, UiContent, WorkflowRunRole,
+    ResponseSectionMetadata, ResponseSectionState, StepSubflowRef, StepSubflowStatus,
+    ToolCapabilityDiagnostics, ToolRun, ToolRunDetail, ToolRunStatus, UiContent,
+    WorkflowRunRole,
 };
 use crate::session_state::SessionContext;
 use crate::{preview_json_value, preview_text};
@@ -80,15 +83,88 @@ fn build_tool_run_detail_lines(
     tool_name: &str,
     input: &serde_json::Value,
     tool_result: Option<&CoreToolResult>,
+    manifest: Option<&CoreToolManifestMetadata>,
+    execution_context: Option<&CoreToolExecutionContext>,
 ) -> Vec<String> {
     let mut lines = vec![
         format!("tool: {}", tool_name),
         format!("invoke: {}", preview_tool_invocation(tool_name, input)),
     ];
 
+    if let Some(manifest) = manifest {
+        lines.push(format!("family: {}", manifest.family.as_str()));
+        lines.push(format!("stability: {}", manifest.stability.as_str()));
+        lines.push(format!("summary: {}", manifest.prompt.summary));
+        if let Some(permissions) = manifest.permissions.as_ref() {
+            lines.push(format!(
+                "permission: {} [{}{}]",
+                permissions.permission_class,
+                permissions.default_policy_mode,
+                if permissions.requires_approval {
+                    ", approval required"
+                } else {
+                    ""
+                }
+            ));
+        }
+        if let Some(storage) = manifest.storage.as_ref() {
+            let effects = storage_effect_labels(storage);
+            if !effects.is_empty() {
+                lines.push(format!("storage: {}", effects.join(", ")));
+            }
+        }
+        if let Some(context) = manifest.context.as_ref() {
+            lines.push(format!(
+                "context: workspace_root={} step_metadata={} memory_scope={} network={}",
+                context.needs_workspace_root,
+                context.needs_step_metadata,
+                context.memory_scope.as_str(),
+                context.network_context,
+            ));
+        }
+        if let Some(observability) = manifest.observability.as_ref() {
+            lines.push(format!(
+                "metrics: {}, {}, {}",
+                observability.invocation_metric,
+                observability.success_metric,
+                observability.failure_metric
+            ));
+        }
+    }
+
+    if let Some(execution_context) = execution_context {
+        lines.push(format!(
+            "execution: {}:{}:{} turn={} workspace={}",
+            execution_context.workflow_role,
+            execution_context.workflow_id,
+            execution_context.step_id,
+            execution_context.turn_id,
+            execution_context.workspace_root,
+        ));
+        if let Some(item_id) = execution_context.current_item_id.as_deref() {
+            lines.push(format!(
+                "item: {} ({}/{})",
+                item_id,
+                execution_context.current_item_index.unwrap_or_default(),
+                execution_context.current_item_total.unwrap_or_default(),
+            ));
+        }
+    }
+
     if let Some(tool_result) = tool_result {
         if let Some(error_kind) = tool_result.error_kind {
             lines.push(format!("error_kind: {}", error_kind.as_str()));
+        }
+        if let Some(remediation) = tool_result.remediation.as_ref() {
+            lines.push(format!("remediation.kind: {}", remediation.kind.as_str()));
+            lines.push(format!("remediation.suggestion: {}", remediation.suggestion));
+            if !remediation.alternative_tools.is_empty() {
+                lines.push(format!(
+                    "remediation.alternatives: {}",
+                    remediation.alternative_tools.join(", ")
+                ));
+            }
+            lines.push(format!("remediation.recoverable: {}", remediation.recoverable));
         }
         if tool_result.truncated {
             lines.push("truncated: true".to_string());
@@ -107,6 +183,214 @@ fn build_tool_run_detail_lines(
     }
 
     lines
+}
+
+fn storage_effect_labels(storage: &omega_core::CoreToolStorageProfile) -> Vec<&'static str> {
+    let mut labels = Vec::new();
+    if storage.writes_session_journal {
+        labels.push("session_journal");
+    }
+    if storage.produces_artifact {
+        labels.push("artifact");
+    }
+    if storage.writes_memory {
+        labels.push("memory");
+    }
+    if storage.writes_todo {
+        labels.push("todo");
+    }
+    if storage.replayable {
+        labels.push("replayable");
+    }
+    labels
+}
+
+fn maybe_emit_tool_capability_effects(
+    tx: &dyn RuntimeMessageBridge,
+    turn_id: u64,
+    manifest: Option<&CoreToolManifestMetadata>,
+    execution_context: &CoreToolExecutionContext,
+    tool_result: &CoreToolResult,
+) {
+    let Some(manifest) = manifest else {
+        return;
+    };
+
+    if !tool_result.is_error() {
+        if let Some(storage) = manifest.storage.as_ref() {
+            let effects = storage_effect_labels(storage);
+            if !effects.is_empty() {
+                send_system_log_text(
+                    tx,
+                    turn_id,
+                    &format!(
+                        "tool.storage tool={} step={}:{} effects={}",
+                        manifest.id,
+                        execution_context.workflow_id,
+                        execution_context.step_id,
+                        effects.join(","),
+                    ),
+                );
+            }
+        }
+
+        if manifest.family == omega_core::CoreToolFamily::Editing {
+            if let Some(diff) = extract_diff_preview(tool_result) {
+                tx.send(RuntimeMessageEnvelope::state(
+                    turn_id,
+                    StateMessage::OpenDiffPreview { diff },
+                ));
+            }
+        }
+
+        if manifest.id == "ask_user_question" {
+            if let Some(prompt) = build_input_prompt(tool_result) {
+                tx.send(RuntimeMessageEnvelope::state(
+                    turn_id,
+                    StateMessage::RequestInput { prompt },
+                ));
+            }
+        }
+
+        if manifest.family == omega_core::CoreToolFamily::WebResearch {
+            if let Some((title, content)) = build_web_result_view(manifest, tool_result) {
+                tx.send(RuntimeMessageEnvelope::state(
+                    turn_id,
+                    StateMessage::OpenWebResultView { title, content },
+                ));
+            }
+        }
+    }
+
+    if tool_result.error_kind == Some(omega_core::CoreToolErrorKind::Policy)
+        && manifest
+            .permissions
+            .as_ref()
+            .is_some_and(|permissions| permissions.requires_approval)
+    {
+        tx.send(RuntimeMessageEnvelope::state(
+            turn_id,
+            StateMessage::RequestToolApproval {
+                message: build_tool_approval_message(manifest, execution_context, tool_result),
+            },
+        ));
+    }
+}
+
+fn build_input_prompt(tool_result: &CoreToolResult) -> Option<String> {
+    let question = tool_result.metadata.get("question")?.as_str()?.trim();
+    if question.is_empty() {
+        return None;
+    }
+
+    let mut lines = vec![format!("question: {question}")];
+    if let Some(context) = tool_result.metadata.get("context").and_then(|value| value.as_str()) {
+        let context = context.trim();
+        if !context.is_empty() {
+            lines.push(format!("context: {context}"));
+        }
+    }
+    if let Some(options) = tool_result.metadata.get("options").and_then(|value| value.as_array()) {
+        let options = options
+            .iter()
+            .filter_map(|value| value.as_str())
+            .collect::<Vec<_>>();
+        if !options.is_empty() {
+            lines.push(format!("options: {}", options.join(", ")));
+        }
+    }
+    lines.push(format!(
+        "allow_freeform: {}",
+        tool_result
+            .metadata
+            .get("allow_freeform")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(true)
+    ));
+    Some(lines.join("\n"))
+}
+
+fn build_web_result_view(
+    manifest: &CoreToolManifestMetadata,
+    tool_result: &CoreToolResult,
+) -> Option<(String, String)> {
+    let content = tool_result.output.trim();
+    if content.is_empty() {
+        return None;
+    }
+
+    let title = match manifest.id.as_str() {
+        "web_search" => {
+            let query = tool_result
+                .metadata
+                .get("query")
+                .and_then(|value| value.as_str())
+                .unwrap_or("web search");
+            format!(" Web Search: {query} ")
+        }
+        "web_fetch" => {
+            let url = tool_result
+                .metadata
+                .get("url")
+                .and_then(|value| value.as_str())
+                .unwrap_or("web fetch");
+            format!(" Web Fetch: {url} ")
+        }
+        _ => " Web Result ".to_string(),
+    };
+
+    Some((title, content.to_string()))
+}
+
+fn extract_diff_preview(tool_result: &CoreToolResult) -> Option<String> {
+    if tool_result
+        .metadata
+        .get("diff_available")
+        .and_then(|value| value.as_bool())
+        != Some(true)
+    {
+        return None;
+    }
+
+    if let Some((_, diff)) = tool_result.output.split_once("\n\n") {
+        let diff = diff.trim();
+        if !diff.is_empty() {
+            return Some(diff.to_string());
+        }
+    }
+
+    let output = tool_result.output.trim();
+    (!output.is_empty()).then(|| output.to_string())
+}
+
+fn build_tool_approval_message(
+    manifest: &CoreToolManifestMetadata,
+    execution_context: &CoreToolExecutionContext,
+    tool_result: &CoreToolResult,
+) -> String {
+    let mut lines = vec![format!(
+        "Tool '{}' requires approval in {}:{}.",
+        manifest.display_name, execution_context.workflow_id, execution_context.step_id
+    )];
+    if let Some(permissions) = manifest.permissions.as_ref() {
+        lines.push(format!(
+            "permission_class: {} ({})",
+            permissions.permission_class, permissions.default_policy_mode
+        ));
+        if let Some(remediation) = permissions.denial_remediation.as_deref() {
+            lines.push(format!("guidance: {remediation}"));
+        }
+    }
+    if let Some(remediation) = tool_result.remediation.as_ref() {
+        lines.push(format!("next_step: {}", remediation.suggestion));
+        if !remediation.alternative_tools.is_empty() {
+            lines.push(format!(
+                "alternatives: {}",
+                remediation.alternative_tools.join(", ")
+            ));
+        }
+    }
+    lines.join("\n")
 }
 
 pub(crate) fn send_begin_tool_run(tx: &dyn RuntimeMessageBridge, turn_id: u64, tool_run: ToolRun) {
@@ -862,7 +1146,11 @@ pub(crate) struct ToolRunTracker<'a> {
     tx: &'a dyn RuntimeMessageBridge,
     turn_id: u64,
     parent_section_id: String,
+    manifests: BTreeMap<String, CoreToolManifestMetadata>,
+    execution_context: CoreToolExecutionContext,
     tool_runs: BTreeMap<String, ToolRun>,
+    tool_metrics: ToolCapabilityDiagnostics,
+    last_failed_tool_name: Option<String>,
 }
 
 impl<'a> ToolRunTracker<'a> {
@@ -870,19 +1158,30 @@ impl<'a> ToolRunTracker<'a> {
         tx: &'a dyn RuntimeMessageBridge,
         turn_id: u64,
         parent_section_id: String,
+        manifests: BTreeMap<String, CoreToolManifestMetadata>,
+        execution_context: CoreToolExecutionContext,
     ) -> Self {
         Self {
             tx,
             turn_id,
             parent_section_id,
+            manifests,
+            execution_context,
             tool_runs: BTreeMap::new(),
+            tool_metrics: ToolCapabilityDiagnostics::default(),
+            last_failed_tool_name: None,
         }
+    }
+
+    pub(crate) fn tool_metrics(&self) -> ToolCapabilityDiagnostics {
+        self.tool_metrics.clone()
     }
 
     pub(crate) fn observe_chat_event(&mut self, event: &ChatEvent) {
         let ChatEvent::ToolUse { id, name, input } = event else {
             return;
         };
+        let manifest = self.manifests.get(name);
 
         let tool_run = ToolRun {
             id: id.clone(),
@@ -892,8 +1191,19 @@ impl<'a> ToolRunTracker<'a> {
             invocation_preview: preview_tool_invocation(name, input),
             result_preview: None,
             detail: ToolRunDetail {
-                title: format!(" Tool: {} ", name),
-                lines: build_tool_run_detail_lines(name, input, None),
+                title: format!(
+                    " Tool: {} ",
+                    manifest
+                        .map(|manifest| manifest.display_name.as_str())
+                        .unwrap_or(name)
+                ),
+                lines: build_tool_run_detail_lines(
+                    name,
+                    input,
+                    None,
+                    manifest,
+                    Some(&self.execution_context),
+                ),
             },
         };
         self.tool_runs.insert(id.clone(), tool_run.clone());
@@ -907,6 +1217,7 @@ impl<'a> ToolRunTracker<'a> {
         tool_input: &serde_json::Value,
         tool_result: &CoreToolResult,
     ) {
+        let manifest = self.manifests.get(tool_name).cloned();
         let status = if tool_result.is_error() {
             ToolRunStatus::Failed
         } else {
@@ -924,22 +1235,98 @@ impl<'a> ToolRunTracker<'a> {
                 invocation_preview: preview_tool_invocation(tool_name, tool_input),
                 result_preview: None,
                 detail: ToolRunDetail {
-                    title: format!(" Tool: {} ", tool_name),
-                    lines: build_tool_run_detail_lines(tool_name, tool_input, None),
+                    title: format!(
+                        " Tool: {} ",
+                        manifest
+                            .as_ref()
+                            .map(|manifest| manifest.display_name.as_str())
+                            .unwrap_or(tool_name)
+                    ),
+                    lines: build_tool_run_detail_lines(
+                        tool_name,
+                        tool_input,
+                        None,
+                        manifest.as_ref(),
+                        Some(&self.execution_context),
+                    ),
                 },
             });
 
         tool_run.status = status;
         tool_run.result_preview = tool_result_preview(tool_result, 100);
         tool_run.detail = ToolRunDetail {
-            title: format!(" Tool: {} ", tool_name),
-            lines: build_tool_run_detail_lines(tool_name, tool_input, Some(tool_result)),
+            title: format!(
+                " Tool: {} ",
+                manifest
+                    .as_ref()
+                    .map(|manifest| manifest.display_name.as_str())
+                    .unwrap_or(tool_name)
+            ),
+            lines: build_tool_run_detail_lines(
+                tool_name,
+                tool_input,
+                Some(tool_result),
+                manifest.as_ref(),
+                Some(&self.execution_context),
+            ),
         };
+
+        self.record_tool_capability_metrics(tool_name, manifest.as_ref(), tool_result);
 
         send_update_tool_run(self.tx, self.turn_id, tool_run.clone());
         send_complete_tool_run(self.tx, self.turn_id, &tool_run.id, status);
+        maybe_emit_tool_capability_effects(
+            self.tx,
+            self.turn_id,
+            manifest.as_ref(),
+            &self.execution_context,
+            tool_result,
+        );
         self.tool_runs.insert(tool_run.id.clone(), tool_run);
     }
+
+    fn record_tool_capability_metrics(
+        &mut self,
+        tool_name: &str,
+        manifest: Option<&CoreToolManifestMetadata>,
+        tool_result: &CoreToolResult,
+    ) {
+        increment_metric(&mut self.tool_metrics.tool_invocations, tool_name);
+
+        if let Some(manifest) = manifest {
+            increment_metric(
+                &mut self.tool_metrics.family_invocations,
+                manifest.family.as_str(),
+            );
+            if manifest.family == omega_core::CoreToolFamily::EscapeHatch {
+                self.tool_metrics.bash_fallback_count += 1;
+            }
+        }
+
+        if tool_name == "ask_user_question" {
+            self.tool_metrics.question_block_count += 1;
+        }
+
+        if let Some(previous_failed_tool) = self.last_failed_tool_name.take() {
+            if previous_failed_tool == tool_name {
+                self.tool_metrics.same_intent_retry_count += 1;
+            } else {
+                self.tool_metrics.tool_switch_after_failure += 1;
+            }
+        }
+
+        if let Some(error_kind) = tool_result.error_kind {
+            increment_metric(
+                &mut self.tool_metrics.tool_failure_count_by_kind,
+                error_kind.as_str(),
+            );
+            self.last_failed_tool_name = Some(tool_name.to_string());
+        }
+    }
+}
+
+fn increment_metric(metrics: &mut BTreeMap<String, u32>, key: &str) {
+    *metrics.entry(key.to_string()).or_insert(0) += 1;
 }
 
 #[derive(Default)]
@@ -1005,16 +1392,26 @@ impl ProviderMarkupSanitizer {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::sync::mpsc;
 
     use omega_context::{
         ContextBudgetDiagnostics, ContextDiagnostics, ContextDocumentDiagnostics,
         ContextMemoryDiagnostics, ContextStoreDiagnostics,
     };
-    use omega_core::CoreToolResult;
+    use omega_core::{
+        CoreMemoryScopeLevel, CoreToolContextProfile, CoreToolExecutionContext, CoreToolFamily,
+        CoreToolManifestMetadata,
+        CoreToolObservabilityProfile, CoreToolPermissionProfile, CoreToolRemediation,
+        CoreToolRemediationKind, CoreToolResult, CoreToolStorageProfile, CoreToolUiProfile,
+        CoreToolPromptProfile, CoreToolStability,
+    };
     use serde_json::json;
 
-    use super::maybe_emit_context_observability;
+    use super::{
+        build_tool_run_detail_lines, maybe_emit_context_observability,
+        maybe_emit_tool_capability_effects,
+    };
     use crate::runtime_message::{RuntimeMessage, RuntimeMessageEnvelope, StateMessage};
     use crate::{OverlayTarget, UiContent};
 
@@ -1060,6 +1457,70 @@ mod tests {
                 turn_archive_count: 2,
             },
         }
+    }
+
+    fn sample_execution_context() -> CoreToolExecutionContext {
+        CoreToolExecutionContext {
+            workspace_root: "/tmp/project".to_string(),
+            workflow_id: "feature".to_string(),
+            workflow_role: "child".to_string(),
+            step_id: "execute".to_string(),
+            step_label: "Execute".to_string(),
+            turn_id: 7,
+            current_item_id: Some("task-1".to_string()),
+            current_item_index: Some(1),
+            current_item_total: Some(3),
+        }
+    }
+
+    fn file_edit_manifest() -> CoreToolManifestMetadata {
+        CoreToolManifestMetadata::legacy(
+            "apply_patch",
+            "Apply a targeted text patch to an existing file.",
+            json!({"type": "object"}),
+        )
+        .with_family(CoreToolFamily::Editing)
+        .with_stability(CoreToolStability::Stable)
+        .with_prompt_profile(CoreToolPromptProfile {
+            summary: "Apply a targeted text patch to an existing file.".to_string(),
+            when_to_use: vec!["you know the exact edit window".to_string()],
+            when_not_to_use: vec!["the file does not exist yet".to_string()],
+            prefer_over: vec!["edit_file".to_string()],
+            fallback_to: vec!["edit_file".to_string()],
+            examples: vec![],
+            anti_patterns: vec![],
+        })
+        .with_ui(CoreToolUiProfile {
+            invocation_preview: true,
+            result_preview: true,
+            detail_overlay: true,
+            action_affordances: vec!["open_diff_preview".to_string()],
+        })
+        .with_context(CoreToolContextProfile {
+            needs_workspace_root: true,
+            needs_step_metadata: true,
+            needs_selection: false,
+            memory_scope: CoreMemoryScopeLevel::Project,
+            network_context: false,
+        })
+        .with_permissions(CoreToolPermissionProfile {
+            permission_class: "workspace_write".to_string(),
+            default_policy_mode: "step_visible_then_runtime_approval".to_string(),
+            requires_approval: true,
+            denial_remediation: Some("ask for confirmation before retrying".to_string()),
+        })
+        .with_storage(CoreToolStorageProfile {
+            writes_session_journal: true,
+            produces_artifact: true,
+            writes_memory: false,
+            writes_todo: false,
+            replayable: false,
+        })
+        .with_observability(CoreToolObservabilityProfile {
+            invocation_metric: "tool.file_edit.apply_patch.invoke".to_string(),
+            success_metric: "tool.file_edit.apply_patch.success".to_string(),
+            failure_metric: "tool.file_edit.apply_patch.failure".to_string(),
+        })
     }
 
     #[test]
@@ -1164,5 +1625,192 @@ mod tests {
                 if request.target == OverlayTarget::Detail
                     && matches!(&request.content, UiContent::Text(text) if text.contains("Document health") && text.contains("broken_crossrefs: 1") && text.contains("score: needs_attention") && text.contains("todo_items_count: 3"))
         )));
+    }
+
+    #[test]
+    fn tool_run_detail_lines_include_structured_remediation() {
+        let lines = build_tool_run_detail_lines(
+            "bash",
+            &json!({"command": "exit 1"}),
+            Some(
+                &CoreToolResult::error("command failed", omega_core::CoreToolErrorKind::Execution)
+                    .with_remediation(CoreToolRemediation {
+                        kind: CoreToolRemediationKind::RetryOrFallback,
+                        suggestion: "Retry with a narrower command or switch tools.".to_string(),
+                        alternative_tools: vec!["read_file".to_string()],
+                        recoverable: true,
+                    }),
+            ),
+            Some(&file_edit_manifest()),
+            Some(&sample_execution_context()),
+        );
+
+        assert!(lines.iter().any(|line| line == "family: editing"));
+        assert!(lines.iter().any(|line| line.contains("permission: workspace_write")));
+        assert!(lines.iter().any(|line| line == "storage: session_journal, artifact"));
+        assert!(lines.iter().any(|line| line.contains("execution: child:feature:execute")));
+        assert!(lines.iter().any(|line| line == "error_kind: execution"));
+        assert!(lines.iter().any(|line| line == "remediation.kind: retry_or_fallback"));
+        assert!(lines.iter().any(|line| line.contains("Retry with a narrower command")));
+        assert!(lines.iter().any(|line| line == "remediation.alternatives: read_file"));
+        assert!(lines.iter().any(|line| line == "remediation.recoverable: true"));
+    }
+
+    #[test]
+    fn capability_effects_emit_diff_preview_and_approval_surface() {
+        let (tx, rx) = mpsc::channel();
+        maybe_emit_tool_capability_effects(
+            &tx,
+            7,
+            Some(&file_edit_manifest()),
+            &sample_execution_context(),
+            &CoreToolResult::success(
+                "Applied patch to src/lib.rs\n\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new",
+            )
+            .with_metadata(json!({"diff_available": true})),
+        );
+        maybe_emit_tool_capability_effects(
+            &tx,
+            8,
+            Some(&file_edit_manifest()),
+            &sample_execution_context(),
+            &CoreToolResult::error("not allowed", omega_core::CoreToolErrorKind::Policy)
+                .with_remediation(CoreToolRemediation {
+                    kind: CoreToolRemediationKind::UseAllowedAlternative,
+                    suggestion: "Switch to a visible read-only tool.".to_string(),
+                    alternative_tools: vec!["read_file".to_string()],
+                    recoverable: true,
+                }),
+        );
+
+        let envelopes = drain_envelopes(&rx);
+        assert!(envelopes.iter().any(|envelope| matches!(
+            &envelope.message,
+            RuntimeMessage::State(StateMessage::OpenDiffPreview { diff })
+                if diff.contains("--- a/src/lib.rs")
+        )));
+        assert!(envelopes.iter().any(|envelope| matches!(
+            &envelope.message,
+            RuntimeMessage::State(StateMessage::RequestToolApproval { message })
+                if message.contains("requires approval")
+                    && message.contains("workspace_write")
+                    && message.contains("read_file")
+        )));
+        assert!(envelopes.iter().any(|envelope| matches!(
+            &envelope.message,
+            RuntimeMessage::State(StateMessage::Activity { text, .. })
+                if text.contains("tool.storage tool=apply_patch")
+        )));
+    }
+
+    #[test]
+    fn capability_effects_emit_input_prompt_and_web_overlay() {
+        let (tx, rx) = mpsc::channel();
+        let interaction_manifest = CoreToolManifestMetadata::legacy(
+            "ask_user_question",
+            "Request structured user input.",
+            json!({"type": "object"}),
+        )
+        .with_family(CoreToolFamily::Interaction)
+        .with_stability(CoreToolStability::Preview);
+        let web_manifest = CoreToolManifestMetadata::legacy(
+            "web_search",
+            "Search the public web.",
+            json!({"type": "object"}),
+        )
+        .with_family(CoreToolFamily::WebResearch)
+        .with_stability(CoreToolStability::Preview);
+
+        maybe_emit_tool_capability_effects(
+            &tx,
+            10,
+            Some(&interaction_manifest),
+            &sample_execution_context(),
+            &CoreToolResult::success("Question requested").with_metadata(json!({
+                "question": "Use the fast path?",
+                "options": ["yes", "no"],
+                "allow_freeform": false,
+            })),
+        );
+        maybe_emit_tool_capability_effects(
+            &tx,
+            11,
+            Some(&web_manifest),
+            &sample_execution_context(),
+            &CoreToolResult::success("Web results for 'omega':\n1. Example")
+                .with_metadata(json!({"query": "omega", "result_count": 1})),
+        );
+
+        let envelopes = drain_envelopes(&rx);
+        assert!(envelopes.iter().any(|envelope| matches!(
+            &envelope.message,
+            RuntimeMessage::State(StateMessage::RequestInput { prompt })
+                if prompt.contains("question: Use the fast path?") && prompt.contains("options: yes, no")
+        )));
+        assert!(envelopes.iter().any(|envelope| matches!(
+            &envelope.message,
+            RuntimeMessage::State(StateMessage::OpenWebResultView { title, content })
+                if title.contains("Web Search") && content.contains("1. Example")
+        )));
+    }
+
+    #[test]
+    fn tool_run_tracker_accumulates_capability_metrics() {
+        let manifests = BTreeMap::from([
+            (
+                "bash".to_string(),
+                CoreToolManifestMetadata::legacy("bash", "Run shell commands.", json!({}))
+                    .with_family(CoreToolFamily::EscapeHatch)
+                    .with_stability(CoreToolStability::Stable),
+            ),
+            (
+                "ask_user_question".to_string(),
+                CoreToolManifestMetadata::legacy(
+                    "ask_user_question",
+                    "Request structured user input.",
+                    json!({}),
+                )
+                .with_family(CoreToolFamily::Interaction)
+                .with_stability(CoreToolStability::Preview),
+            ),
+        ]);
+        let (tx, _rx) = mpsc::channel();
+        let mut tracker = super::ToolRunTracker::new(
+            &tx,
+            7,
+            "section-1".to_string(),
+            manifests,
+            sample_execution_context(),
+        );
+
+        tracker.complete_tool_run(
+            "tool-1",
+            "bash",
+            &json!({"command": "false"}),
+            &CoreToolResult::error("command failed", omega_core::CoreToolErrorKind::Execution),
+        );
+        tracker.complete_tool_run(
+            "tool-2",
+            "bash",
+            &json!({"command": "pwd"}),
+            &CoreToolResult::success("/tmp/project"),
+        );
+        tracker.complete_tool_run(
+            "tool-3",
+            "ask_user_question",
+            &json!({"question": "Proceed?"}),
+            &CoreToolResult::success("Question requested").with_metadata(json!({
+                "question": "Proceed?",
+                "allow_freeform": true,
+            })),
+        );
+
+        let metrics = tracker.tool_metrics();
+        assert_eq!(metrics.tool_invocations.get("bash"), Some(&2));
+        assert_eq!(metrics.family_invocations.get("escape_hatch"), Some(&2));
+        assert_eq!(metrics.tool_failure_count_by_kind.get("execution"), Some(&1));
+        assert_eq!(metrics.bash_fallback_count, 2);
+        assert_eq!(metrics.same_intent_retry_count, 1);
+        assert_eq!(metrics.question_block_count, 1);
     }
 }

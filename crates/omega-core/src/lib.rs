@@ -14,7 +14,19 @@ pub use omega_todo::{
     SharedTodoManager as CoreSharedTodoManager, TodoItem, TodoManager, TodoStatus,
     TodoToolHandler as CoreTodoToolHandler,
 };
-pub use omega_tools::{ToolErrorKind as CoreToolErrorKind, ToolResult as CoreToolResult};
+pub use omega_tools::{
+    MemoryScopeLevel as CoreMemoryScopeLevel,
+    ToolContextProfile as CoreToolContextProfile,
+    ToolErrorKind as CoreToolErrorKind, ToolFamily as CoreToolFamily,
+    ToolExecutionContext as CoreToolExecutionContext,
+    ToolManifestMetadata as CoreToolManifestMetadata,
+    ToolObservabilityProfile as CoreToolObservabilityProfile,
+    ToolPermissionProfile as CoreToolPermissionProfile,
+    ToolPromptProfile as CoreToolPromptProfile, ToolResult as CoreToolResult,
+    ToolRemediation as CoreToolRemediation,
+    ToolRemediationKind as CoreToolRemediationKind, ToolStability as CoreToolStability,
+    ToolStorageProfile as CoreToolStorageProfile, ToolUiProfile as CoreToolUiProfile,
+};
 pub use tool_factory::{
     create_default_tools, create_default_tools_with_todo_manager,
     create_default_tools_with_todo_manager_and_bash_allowlist,

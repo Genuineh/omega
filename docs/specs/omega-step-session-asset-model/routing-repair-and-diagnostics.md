@@ -81,7 +81,7 @@ required_contract: return exactly one valid JSON object
 
 scene-aware routing 的长期要求是：workflow selection 本身也被表达为 step，而不是平行预处理逻辑。
 
-- `scene-recognition` 与 `select-workflow` 仍由通用 step runner 执行
+- `select-workflow` 仍由通用 step runner 执行，并同时承担 scene recognition 与 workflow selection
 - step completion 可表达 `StartWorkflow { workflow_id }`
 - workflow stack / active workflow state 继续归 session 拥有
 

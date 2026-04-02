@@ -42,6 +42,7 @@ This directory contains the working documentation set for the Omega Rust project
 | `docs/specs/omega-step-session-asset-model/routing-repair-and-diagnostics.md` | Specification | Routing convergence, structured output repair, diagnostics, migration phases, and testing guidance |
 | `docs/specs/omega-step-lifecycle-hooks.md` | Specification | Planned Rust hook lifecycle, advance gate, and deterministic workflow test-harness design for hook-aware steps |
 | `docs/specs/omega-tool-system-upgrade.md` | Specification | Tool system follow-up plan for structured inspection, patch-centric editing, batch orchestration, and bash demotion |
+| `docs/specs/omega-tool-prompt-optimization.md` | Specification | Full tool-system blueprint for tool manifests, prompt strategy, UI/context/permission/storage bridges, and monitoring |
 | `docs/specs/omega-workflow-package.md` | Specification | Configurable four-step workflow package and TUI phase visibility plan |
 | `docs/specs/omega-client-anthropic-api-abstraction.md` | Specification | Planned Anthropic API abstraction layer for `omega-client`, with Minimax as an Anthropic-compatible provider |
 | `docs/guide/omega-dev-guide.md` | Guide | Developer onboarding and local workflow guide |

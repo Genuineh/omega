@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::{mpsc, Arc};
 
 use omega_context::ContextDiagnostics;
@@ -45,6 +46,19 @@ pub enum RuntimeUiEffect {
     ReplacePanel {
         target: UiTarget,
         content: UiContent,
+    },
+    OpenDiffPreview {
+        diff: String,
+    },
+    RequestInput {
+        prompt: String,
+    },
+    OpenWebResultView {
+        title: String,
+        content: String,
+    },
+    RequestToolApproval {
+        message: String,
     },
     ShowOverlay(OverlayRequest),
     HideOverlay {
@@ -255,6 +269,18 @@ pub struct StepDiagnostics {
     pub input: StepInputDiagnostics,
     pub output: StepOutputDiagnostics,
     pub session_writes: Vec<StepContextWrite>,
+    pub tool_capabilities: Option<ToolCapabilityDiagnostics>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ToolCapabilityDiagnostics {
+    pub tool_invocations: BTreeMap<String, u32>,
+    pub family_invocations: BTreeMap<String, u32>,
+    pub tool_failure_count_by_kind: BTreeMap<String, u32>,
+    pub bash_fallback_count: u32,
+    pub question_block_count: u32,
+    pub tool_switch_after_failure: u32,
+    pub same_intent_retry_count: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

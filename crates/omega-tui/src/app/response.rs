@@ -12,6 +12,27 @@ use super::{
 };
 
 impl App {
+    pub fn move_response_selection_up(&mut self) -> bool {
+        self.move_response_selection_by(-1)
+    }
+
+    pub fn move_response_selection_down(&mut self) -> bool {
+        self.move_response_selection_by(1)
+    }
+
+    pub fn select_response_line(&mut self, line_index: usize) -> bool {
+        let total = self.response_display_lines().len();
+        if total == 0 {
+            self.response_state.select(None);
+            return false;
+        }
+
+        let selected = line_index.min(total.saturating_sub(1));
+        self.response_pinned = true;
+        self.response_state.select(Some(selected));
+        true
+    }
+
     pub fn push_msg(&mut self, kind: MsgKind, text: &str) {
         let clean = strip_ansi(text);
         self.output_msgs.push(Msg::plain(kind, clean));
@@ -44,6 +65,14 @@ impl App {
         }
     }
 
+    pub fn fail_running_tool_runs(&mut self) {
+        for tool_run in &mut self.tool_runs {
+            if tool_run.status == ToolRunStatus::Running {
+                tool_run.status = ToolRunStatus::Failed;
+            }
+        }
+    }
+
     pub fn append_response_section(&mut self, id: &str, delta: &str) {
         if let Some(message) = self
             .output_msgs
@@ -67,6 +96,17 @@ impl App {
         }
     }
 
+    pub fn fail_streaming_response_sections(&mut self) {
+        for message in &mut self.output_msgs {
+            if message.state == Some(ResponseSectionState::Streaming) {
+                message.state = Some(ResponseSectionState::Failed);
+                if message.kind == MsgKind::Thinking {
+                    message.collapsed = true;
+                }
+            }
+        }
+    }
+
     pub fn set_show_thinking(&mut self, show_thinking: bool) {
         self.show_thinking = show_thinking;
     }
@@ -82,9 +122,20 @@ impl App {
 
     pub fn activate_selected_response_item(&mut self) -> Option<ResponseActivation> {
         let selected = self.response_state.selected()?;
-        let lines = self.response_display_lines();
-        let action = lines.get(selected)?.action.clone()?;
+        self.activate_response_item_at_line(selected)
+    }
 
+    pub fn activate_response_item_at_line(
+        &mut self,
+        line_index: usize,
+    ) -> Option<ResponseActivation> {
+        let lines = self.response_display_lines();
+        let action = lines.get(line_index)?.action.clone()?;
+
+        self.activate_response_action(action)
+    }
+
+    fn activate_response_action(&mut self, action: ResponseLineAction) -> Option<ResponseActivation> {
         match action {
             ResponseLineAction::ToggleThinkingSection(id) => {
                 let collapsed = self.toggle_thinking_section(&id)?;
@@ -109,6 +160,26 @@ impl App {
                 .open_step_subflow_detail(&id)
                 .map(ResponseActivation::StepSubflowDetailOpened),
         }
+    }
+
+    fn move_response_selection_by(&mut self, delta: isize) -> bool {
+        let total = self.response_display_lines().len();
+        if total == 0 {
+            self.response_state.select(None);
+            return false;
+        }
+
+        let last = total.saturating_sub(1);
+        let current = self.response_state.selected().unwrap_or(0);
+        let next = if delta < 0 {
+            current.saturating_sub(delta.unsigned_abs())
+        } else {
+            current.saturating_add(delta as usize).min(last)
+        };
+
+        self.response_pinned = true;
+        self.response_state.select(Some(next));
+        true
     }
 
     pub fn response_lines(&self) -> Vec<String> {
@@ -401,7 +472,7 @@ impl App {
                                 spans: Vec::new(),
                             });
                         } else {
-                            let body_lines = split_or_empty(&message.text);
+                            let body_lines = visible_thinking_body_lines(&message.text, message_state);
                             let thinking_prefix = thinking_body_prefix(message_state, self.spinner_tick);
                             if body_lines.len() == 1 && body_lines[0].is_empty() {
                                 lines.push(ResponseDisplayLine {
@@ -1083,6 +1154,15 @@ fn summarize_thinking_text(text: &str, state: ResponseSectionState) -> String {
     } else {
         format!("{label} · {line_count} lines · {preview}")
     }
+}
+
+fn visible_thinking_body_lines(text: &str, state: ResponseSectionState) -> Vec<String> {
+    let lines = split_or_empty(text);
+    if state != ResponseSectionState::Streaming || lines.len() <= 2 {
+        return lines;
+    }
+
+    lines[lines.len().saturating_sub(2)..].to_vec()
 }
 
 fn thinking_header_title(state: ResponseSectionState) -> &'static str {

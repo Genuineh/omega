@@ -8,12 +8,16 @@ use omega_context::{
     ContextWorkflowRole, OmegaContextFacade, OutputRepairContextRequest, OutputRepairFailure,
     StepContextRequest,
 };
-use omega_core::{Agent, ChatRequest, CoreSharedTodoManager, DynLlmClient, TodoItem, TodoStatus};
+use omega_core::{
+    Agent, ChatRequest, CoreSharedTodoManager, CoreToolExecutionContext, DynLlmClient,
+    TodoItem, TodoStatus,
+};
 use omega_hooks::{HookAdvanceOutcome, HookHost};
 use omega_workflow::{
     DataFormat, OutputRecoveryMode, SceneCatalog, StepInputContract, StepLoopContract,
     StepOutputContract, WorkflowCatalog, WorkflowPromptCatalog, WorkflowPrompts, WorkflowStep,
-    EXECUTE_STEP_ID, FEATURE_SCENE_ID, FEATURE_WORKFLOW_ID, PLAN_STEP_ID, RESEARCH_WORKFLOW_ID,
+    DEEP_RESEARCH_SCENE_ID, DEEP_RESEARCH_WORKFLOW_ID, EXECUTE_STEP_ID, FEATURE_SCENE_ID,
+    FEATURE_WORKFLOW_ID, PLAN_STEP_ID, RESEARCH_SCENE_ID, RESEARCH_WORKFLOW_ID,
     ROOT_WORKFLOW_ID, SCENE_RECOGNITION_STEP_ID, SELECT_WORKFLOW_STEP_ID,
 };
 use serde_json::Value;
@@ -27,7 +31,8 @@ use crate::output::{
     parse_structured_output_candidates, validate_schema_file, validate_workflow_step_output,
 };
 use crate::routing::{
-    find_catalog_match, latest_user_turn_prefers_research_scene,
+    find_catalog_match, latest_user_turn_prefers_deep_research_scene,
+    latest_user_turn_prefers_research_scene,
     latest_user_turn_requires_feature_scene, parse_structured_id, parse_structured_id_from_value,
 };
 use crate::session_state::{SessionContext, StepSummary};
@@ -42,7 +47,8 @@ use crate::{
     StepContextWrite, StepContextWriteKind, StepDiagnostics, StepInputDiagnostics, StepInputStatus,
     StepOutputAttemptKind, StepOutputContractMode, StepOutputDiagnostics,
     StepOutputRecoveryDecision, StepOutputStatus, StepSubflowState, StepSubflowStatus,
-    StepSummarySource, TokenCountSource, WorkflowRunRole, CONTEXT_SAFETY_MARGIN_TOKENS,
+    StepSummarySource, TokenCountSource, ToolCapabilityDiagnostics, WorkflowRunRole,
+    CONTEXT_SAFETY_MARGIN_TOKENS,
     REPAIR_PASS_MAX_ITERATIONS, SUMMARY_CHAR_LIMIT, TOKEN_ESTIMATE_DIVISOR,
 };
 
@@ -76,6 +82,7 @@ struct StepExecutionResult {
 struct StepRunOutput {
     stage_text: String,
     usage: Option<omega_core::Usage>,
+    tool_capabilities: Option<ToolCapabilityDiagnostics>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -429,11 +436,16 @@ impl<'a> WorkflowTurnRunner<'a> {
             let mut attempt_tools = step_input.resolved_tools.clone();
             let mut attempt_max_iterations = step.max_iterations;
             let mut last_usage: Option<omega_core::Usage>;
+            let mut last_tool_capabilities = None;
             let (stage_text, structured_output, validation_attempts) = loop {
                 let step_run = match self.execute_step(
                     agent,
                     &attempt_tools,
                     attempt_max_iterations,
+                    workflow_id,
+                    role,
+                    &step,
+                    current_execute_item.as_ref(),
                     &mut response_streamer,
                     Some(hook_runtime.clone()),
                 ) {
@@ -456,6 +468,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                     }
                 };
                 last_usage = step_run.usage.clone();
+                last_tool_capabilities = step_run.tool_capabilities.clone();
                 let stage_text = step_run.stage_text;
 
                 match self.validate_step_output(
@@ -515,6 +528,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                                 repeat_count: current_item_repeat_count,
                                 completion_source: None,
                             },
+                            last_tool_capabilities.clone(),
                         );
                         last_validation_error = Some(validation_error_text.clone());
                         last_validation_failure = Some(validation_failure.clone());
@@ -698,6 +712,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                             repeat_count: current_item_repeat_count,
                             completion_source: progress_completion_source.clone(),
                         },
+                        last_tool_capabilities.clone(),
                     );
                     if let Some(current_item) = current_execute_item.as_ref() {
                         self.emit_step_subflow_status(
@@ -756,6 +771,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                     repeat_count: emitted_repeat_count,
                     completion_source: progress_completion_source.clone(),
                 },
+                last_tool_capabilities.clone(),
             );
 
             if let Some(current_item) = current_execute_item.as_ref() {
@@ -878,6 +894,10 @@ impl<'a> WorkflowTurnRunner<'a> {
         agent: &mut Agent,
         resolved_tools: &ResolvedToolSet,
         max_iterations: u32,
+        workflow_id: &str,
+        role: WorkflowRunRole,
+        step: &WorkflowStep,
+        current_execute_item: Option<&ExecuteLoopItemContext>,
         response_streamer: &mut StepResponseStreamer<'_>,
         hook_runtime: Option<StepHookRuntime>,
     ) -> anyhow::Result<StepRunOutput> {
@@ -885,10 +905,30 @@ impl<'a> WorkflowTurnRunner<'a> {
         agent.set_visible_tools(Some(&tool_name_refs));
         agent.set_max_iterations(max_iterations);
 
+        let tool_manifests = resolved_tools
+            .tool_manifests()
+            .iter()
+            .cloned()
+            .map(|manifest| (manifest.id.clone(), manifest))
+            .collect::<BTreeMap<_, _>>();
+        let execution_context = CoreToolExecutionContext {
+            workspace_root: self.cwd.display().to_string(),
+            workflow_id: workflow_id.to_string(),
+            workflow_role: role.as_str().to_string(),
+            step_id: step.id.clone(),
+            step_label: step.label.clone(),
+            turn_id: self.turn_id,
+            current_item_id: current_execute_item.map(|item| item.item_id.clone()),
+            current_item_index: current_execute_item.map(|item| item.item_index),
+            current_item_total: current_execute_item.map(|item| item.item_total),
+        };
+
         let tool_runs = Arc::new(Mutex::new(ToolRunTracker::new(
             &*self.tx_callback,
             self.turn_id,
             response_streamer.primary_section_id().to_string(),
+            tool_manifests,
+            execution_context,
         )));
         let hook_error = Arc::new(Mutex::new(None::<String>));
         let usage = Arc::new(Mutex::new(None::<omega_core::Usage>));
@@ -936,7 +976,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                             tool_result,
                         );
 
-                        if name == "todo" && !tool_result.is_error() {
+                        if (name == "todo" || name == "todo_write") && !tool_result.is_error() {
                             send_todo_snapshot(&tx_callback, turn_id, &tool_result.output);
                         }
 
@@ -986,7 +1026,12 @@ impl<'a> WorkflowTurnRunner<'a> {
         }
 
         let usage = usage.lock().unwrap().clone();
-        Ok(StepRunOutput { stage_text, usage })
+        let tool_capabilities = Some(tool_runs.lock().unwrap().tool_metrics());
+        Ok(StepRunOutput {
+            stage_text,
+            usage,
+            tool_capabilities,
+        })
     }
 
     fn ensure_turn_active(&self) -> anyhow::Result<()> {
@@ -1124,6 +1169,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                 .cloned()
                 .map(context_execute_item_from_session),
             visible_tool_names: resolved_tools.tool_names().to_vec(),
+            tool_manifests: resolved_tools.tool_manifests().to_vec(),
             tool_definitions: resolved_tools.tool_definitions().to_vec(),
             messages: agent_messages.to_vec(),
             context_window: self.context_window,
@@ -1176,6 +1222,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                     .cloned()
                     .map(context_execute_item_from_session),
                 visible_tool_names: step_input.resolved_tools.tool_names().to_vec(),
+                tool_manifests: step_input.resolved_tools.tool_manifests().to_vec(),
                 tool_definitions: step_input.resolved_tools.tool_definitions().to_vec(),
                 messages: Vec::new(),
                 context_window: self.context_window,
@@ -1281,6 +1328,7 @@ impl<'a> WorkflowTurnRunner<'a> {
             build_step_input_diagnostics(step_input),
             output,
             Vec::new(),
+            None,
         ));
     }
 
@@ -1321,6 +1369,7 @@ impl<'a> WorkflowTurnRunner<'a> {
             build_failed_step_input_diagnostics(session_context, context.step, error),
             output,
             Vec::new(),
+            None,
         ));
         error!(
             workflow_id = %context.workflow_id,
@@ -1337,6 +1386,7 @@ impl<'a> WorkflowTurnRunner<'a> {
         step_input: &StepExecutionInput,
         output_state: OutputDiagnosticState<'_>,
         progress_state: ExecuteLoopProgressState,
+        tool_capabilities: Option<ToolCapabilityDiagnostics>,
     ) {
         let diagnostics = build_step_diagnostics(
             context,
@@ -1349,6 +1399,7 @@ impl<'a> WorkflowTurnRunner<'a> {
             build_step_input_diagnostics(step_input),
             build_step_output_diagnostics(&context.step.output_contract, &output_state),
             output_state.session_writes,
+            tool_capabilities,
         );
         self.send_step_diagnostics_effect(diagnostics);
     }
@@ -1615,11 +1666,12 @@ impl<'a> WorkflowTurnRunner<'a> {
                 format!("Recognized scene: {scene_id}.")
             }
             (WorkflowRunRole::Root, SELECT_WORKFLOW_STEP_ID) => {
-                let scene_id = session_context
-                    .routing
-                    .recognized_scene_id
-                    .clone()
-                    .unwrap_or_else(|| self.scene_catalog.default_scene_id.clone());
+                let scene_id = self.resolve_scene_from_output(
+                    structured_output.as_ref(),
+                    &final_text,
+                    &session_context.latest_user_turn,
+                );
+                session_context.routing.recognized_scene_id = Some(scene_id.clone());
                 let selected_workflow_id = self.resolve_workflow_from_output(
                     structured_output.as_ref(),
                     &final_text,
@@ -1629,13 +1681,13 @@ impl<'a> WorkflowTurnRunner<'a> {
                 session_context.routing.selected_workflow_id = Some(selected_workflow_id.clone());
                 self.send_session_status(session_context);
                 self.send_routing_log(format!(
-                    "Selected workflow '{}' for scene '{}'.",
-                    selected_workflow_id, scene_id
+                    "Recognized scene '{}' and selected workflow '{}'.",
+                    scene_id, selected_workflow_id
                 ));
                 transition = StepTransition::StartWorkflow {
                     workflow_id: selected_workflow_id.clone(),
                 };
-                format!("Selected workflow: {selected_workflow_id}.")
+                format!("Recognized scene: {scene_id}. Selected workflow: {selected_workflow_id}.")
             }
             _ => canonical_step_summary_text(step, &final_text, structured_output.as_ref()),
         };
@@ -1746,11 +1798,15 @@ impl<'a> WorkflowTurnRunner<'a> {
         structured_output: &Value,
     ) -> anyhow::Result<Vec<StepContextWrite>> {
         match step.id.as_str() {
-            PLAN_STEP_ID if matches!(workflow_id, FEATURE_WORKFLOW_ID | RESEARCH_WORKFLOW_ID) => {
+            PLAN_STEP_ID
+                if matches!(workflow_id, FEATURE_WORKFLOW_ID | DEEP_RESEARCH_WORKFLOW_ID) => {
                 self.sync_todo_manager_from_plan_output(structured_output)
             }
             EXECUTE_STEP_ID
-                if matches!(workflow_id, FEATURE_WORKFLOW_ID | RESEARCH_WORKFLOW_ID) =>
+                if matches!(
+                    workflow_id,
+                    FEATURE_WORKFLOW_ID | RESEARCH_WORKFLOW_ID | DEEP_RESEARCH_WORKFLOW_ID
+                ) =>
             {
                 self.sync_todo_manager_from_execute_output(structured_output)
             }
@@ -1812,16 +1868,24 @@ impl<'a> WorkflowTurnRunner<'a> {
         let had_items = !manager.items().is_empty();
         let before_rendered = manager.render();
 
-        let completed = execute
-            .completed_tasks
-            .iter()
-            .map(String::as_str)
+        let completed = normalize_execute_task_refs(
+            manager.items(),
+            &execute.completed_tasks,
+            "completed_tasks",
+        )?
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+        let open = normalize_execute_task_refs(manager.items(), &execute.open_tasks, "open_tasks")?
+            .into_iter()
             .collect::<std::collections::BTreeSet<_>>();
-        let open = execute
-            .open_tasks
+        let current_in_progress_id = manager
+            .items()
             .iter()
-            .map(String::as_str)
-            .collect::<std::collections::BTreeSet<_>>();
+            .find(|item| item.status == TodoStatus::InProgress)
+            .and_then(|item| item.id.clone());
+        let preserve_current_in_progress = current_in_progress_id
+            .as_deref()
+            .is_some_and(|item_id| !completed.contains(item_id));
         let mut promoted_open = false;
         let updated_items = manager
             .items()
@@ -1832,8 +1896,13 @@ impl<'a> WorkflowTurnRunner<'a> {
                 if completed.contains(item_id) {
                     item.status = TodoStatus::Completed;
                     item.active_form = None;
+                } else if preserve_current_in_progress
+                    && current_in_progress_id.as_deref() == Some(item_id)
+                {
+                    item.status = TodoStatus::InProgress;
+                    item.active_form = Some(format!("working on {}", item.text));
                 } else if open.contains(item_id) {
-                    item.status = if !promoted_open {
+                    item.status = if !preserve_current_in_progress && !promoted_open {
                         promoted_open = true;
                         TodoStatus::InProgress
                     } else {
@@ -1900,6 +1969,15 @@ impl<'a> WorkflowTurnRunner<'a> {
                             candidates.first().cloned(),
                         )
                     })?;
+                } else if step.id == EXECUTE_STEP_ID {
+                    validate_execute_step_output(final_text, &candidates).map_err(|error| {
+                        OutputValidationFailure::new(
+                            OutputValidationErrorKind::SemanticInvalid,
+                            error.to_string(),
+                            final_text,
+                            candidates.first().cloned(),
+                        )
+                    })?;
                 }
                 if candidates.is_empty() {
                     return Err(OutputValidationFailure::new(
@@ -1930,7 +2008,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                         }
                     }
 
-                    if let Err(error) = validate_workflow_step_output(workflow_id, step, &value) {
+                    if let Err(error) = validate_workflow_step_output(self.cwd, workflow_id, step, &value) {
                         if first_failure.is_none() {
                             first_failure = Some(OutputValidationFailure::new(
                                 OutputValidationErrorKind::SemanticInvalid,
@@ -2014,7 +2092,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                         }
                     }
 
-                    if let Err(error) = validate_workflow_step_output(workflow_id, step, &value) {
+                    if let Err(error) = validate_workflow_step_output(self.cwd, workflow_id, step, &value) {
                         if first_failure.is_none() {
                             first_failure = Some(OutputValidationFailure::new(
                                 OutputValidationErrorKind::SemanticInvalid,
@@ -2129,7 +2207,10 @@ impl<'a> WorkflowTurnRunner<'a> {
         current_item: Option<&ExecuteLoopItemContext>,
         value: &Value,
     ) -> anyhow::Result<()> {
-        if !matches!(workflow_id, FEATURE_WORKFLOW_ID | RESEARCH_WORKFLOW_ID)
+        if !matches!(
+            workflow_id,
+            FEATURE_WORKFLOW_ID | RESEARCH_WORKFLOW_ID | DEEP_RESEARCH_WORKFLOW_ID
+        )
             || step.id != EXECUTE_STEP_ID
             || !matches!(step.loop_contract, Some(StepLoopContract::TodoItems { .. }))
         {
@@ -2145,10 +2226,15 @@ impl<'a> WorkflowTurnRunner<'a> {
             .todo_manager
             .lock()
             .map_err(|_| anyhow::anyhow!("todo manager lock poisoned"))?;
-        let known_ids = manager
-            .items()
-            .iter()
-            .filter_map(|item| item.id.as_deref())
+        let completed = normalize_execute_task_refs(
+            manager.items(),
+            &execute.completed_tasks,
+            "completed_tasks",
+        )?
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+        let open = normalize_execute_task_refs(manager.items(), &execute.open_tasks, "open_tasks")?
+            .into_iter()
             .collect::<std::collections::BTreeSet<_>>();
         let already_completed = manager
             .items()
@@ -2164,13 +2250,7 @@ impl<'a> WorkflowTurnRunner<'a> {
             .chain(std::iter::once(current_item.item_id.as_str()))
             .collect::<std::collections::BTreeSet<_>>();
 
-        for task_id in execute.completed_tasks.iter().map(|task_id| task_id.trim()) {
-            if !known_ids.contains(task_id) {
-                anyhow::bail!(
-                    "execute output completed_tasks contains unknown todo item '{}'",
-                    task_id
-                );
-            }
+        for task_id in completed.iter().map(String::as_str) {
             if !allowed_completed.contains(task_id) {
                 anyhow::bail!(
                     "itemized execute output cannot complete future todo item '{}' while current item is '{}'",
@@ -2180,31 +2260,25 @@ impl<'a> WorkflowTurnRunner<'a> {
             }
         }
 
-        let current_item_completed = execute
-            .completed_tasks
-            .iter()
-            .map(|task_id| task_id.trim())
-            .any(|task_id| task_id == current_item.item_id);
+        let current_item_completed = completed.contains(current_item.item_id.as_str());
         if !current_item_completed {
-            if let Some(repeated_completed_id) = execute
-                .completed_tasks
+            let current_item_open = open.contains(current_item.item_id.as_str());
+            if !current_item_open {
+                anyhow::bail!(
+                    "itemized execute output must keep current todo item '{}' in open_tasks until it is completed",
+                    current_item.item_id
+                );
+            }
+
+            if let Some(repeated_completed_id) = completed
                 .iter()
-                .map(|task_id| task_id.trim())
+                .map(String::as_str)
                 .find(|task_id| already_completed.contains(task_id))
             {
                 anyhow::bail!(
                     "itemized execute output repeated previously completed todo item '{}' while current todo item '{}' remains open",
                     repeated_completed_id,
                     current_item.item_id
-                );
-            }
-        }
-
-        for task_id in execute.open_tasks.iter().map(|task_id| task_id.trim()) {
-            if !known_ids.contains(task_id) {
-                anyhow::bail!(
-                    "execute output open_tasks contains unknown todo item '{}'",
-                    task_id
                 );
             }
         }
@@ -2223,7 +2297,10 @@ impl<'a> WorkflowTurnRunner<'a> {
         current_item: Option<&ExecuteLoopItemContext>,
         value: &Value,
     ) -> Option<Value> {
-        if !matches!(workflow_id, FEATURE_WORKFLOW_ID | RESEARCH_WORKFLOW_ID)
+        if !matches!(
+            workflow_id,
+            FEATURE_WORKFLOW_ID | RESEARCH_WORKFLOW_ID | DEEP_RESEARCH_WORKFLOW_ID
+        )
             || step.id != EXECUTE_STEP_ID
             || !matches!(step.loop_contract, Some(StepLoopContract::TodoItems { .. }))
         {
@@ -2299,6 +2376,23 @@ impl<'a> WorkflowTurnRunner<'a> {
                 .or_else(|| parse_structured_id(stage_text, &["recognized_scene_id", "scene_id"]))
         {
             if self.scene_catalog.scene(&scene_id).is_some() {
+                return self.maybe_align_scene_for_request_intent(scene_id, latest_user_turn);
+            }
+        }
+
+        if let Some(workflow_id) = parse_structured_id_from_value(
+            structured_output,
+            &["selected_workflow_id", "workflow_id"],
+        )
+        .or_else(|| parse_structured_id(stage_text, &["selected_workflow_id", "workflow_id"]))
+        {
+            if let Some(scene_id) = self
+                .scene_catalog
+                .scenes
+                .iter()
+                .find(|scene| scene.workflow_id == workflow_id)
+                .map(|scene| scene.id.clone())
+            {
                 return self.maybe_align_scene_for_request_intent(scene_id, latest_user_turn);
             }
         }
@@ -2399,10 +2493,32 @@ impl<'a> WorkflowTurnRunner<'a> {
             }
         }
 
-        if latest_user_turn_prefers_research_scene(latest_user_turn) {
+        if latest_user_turn_prefers_deep_research_scene(latest_user_turn) {
             if let Some(promoted_scene_id) = self
                 .scene_catalog
-                .scene(crate::RESEARCH_SCENE_ID)
+                .scene(DEEP_RESEARCH_SCENE_ID)
+                .map(|scene| scene.id.clone())
+            {
+                if promoted_scene_id != scene_id {
+                    send_warning_text(
+                        &*self.tx_result,
+                        self.turn_id,
+                        &format!(
+                            "Scene recognition returned '{}' for a deep-research-oriented request; promoting to '{}'.",
+                            scene_id, promoted_scene_id
+                        ),
+                    );
+                    return promoted_scene_id;
+                }
+            }
+        }
+
+        if scene_id != DEEP_RESEARCH_SCENE_ID
+            && latest_user_turn_prefers_research_scene(latest_user_turn)
+        {
+            if let Some(promoted_scene_id) = self
+                .scene_catalog
+                .scene(RESEARCH_SCENE_ID)
                 .map(|scene| scene.id.clone())
             {
                 if promoted_scene_id != scene_id {
@@ -2436,6 +2552,21 @@ impl<'a> WorkflowTurnRunner<'a> {
                 self.turn_id,
                 &format!(
                     "Workflow selection returned '{}' for an implementation-oriented request; promoting to '{}'.",
+                    workflow_id, mapped_workflow
+                ),
+            );
+            return mapped_workflow.to_string();
+        }
+
+        if workflow_id != mapped_workflow
+            && mapped_workflow == DEEP_RESEARCH_WORKFLOW_ID
+            && latest_user_turn_prefers_deep_research_scene(latest_user_turn)
+        {
+            send_warning_text(
+                &*self.tx_result,
+                self.turn_id,
+                &format!(
+                    "Workflow selection returned '{}' for a deep-research-oriented request; promoting to '{}'.",
                     workflow_id, mapped_workflow
                 ),
             );
@@ -2787,6 +2918,29 @@ fn validate_plan_step_output(final_text: &str, candidates: &[Value]) -> anyhow::
     }
 }
 
+fn validate_execute_step_output(final_text: &str, candidates: &[Value]) -> anyhow::Result<()> {
+    let trimmed = final_text.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!(
+            "execute step must return only a single JSON object with completed_tasks, open_tasks, validation_results, and changed_paths"
+        );
+    }
+
+    match serde_json::from_str::<Value>(trimmed) {
+        Ok(Value::Object(_)) => Ok(()),
+        Ok(_) => anyhow::bail!(
+            "execute step must return only a single JSON object with completed_tasks, open_tasks, validation_results, and changed_paths"
+        ),
+        Err(_) if has_single_execute_shaped_candidate(candidates) => Ok(()),
+        Err(_) if candidates.is_empty() => anyhow::bail!(
+            "execute step must return only a single JSON object with completed_tasks, open_tasks, validation_results, and changed_paths; do not include headings, markdown, code fences, or report prose"
+        ),
+        Err(_) => anyhow::bail!(
+            "execute step must resolve to a single JSON object with completed_tasks, open_tasks, validation_results, and changed_paths; avoid multiple JSON blocks or non-execute wrappers"
+        ),
+    }
+}
+
 /// Returns true when exactly one candidate is a plan-shaped JSON object
 /// (has `goal`, `tasks`, and `validation_targets` keys).  This handles
 /// two scenarios: (1) a single JSON object wrapped in prose, and
@@ -2800,6 +2954,14 @@ fn has_single_plan_shaped_candidate(candidates: &[Value]) -> bool {
     plan_count == 1
 }
 
+fn has_single_execute_shaped_candidate(candidates: &[Value]) -> bool {
+    let execute_count = candidates
+        .iter()
+        .filter(|value| is_execute_shaped(value))
+        .count();
+    execute_count == 1
+}
+
 fn is_plan_shaped(value: &Value) -> bool {
     if let Value::Object(map) = value {
         map.contains_key("goal")
@@ -2808,6 +2970,82 @@ fn is_plan_shaped(value: &Value) -> bool {
     } else {
         false
     }
+}
+
+fn is_execute_shaped(value: &Value) -> bool {
+    if let Value::Object(map) = value {
+        map.contains_key("completed_tasks")
+            && map.contains_key("open_tasks")
+            && map.contains_key("validation_results")
+            && map.contains_key("changed_paths")
+    } else {
+        false
+    }
+}
+
+fn normalize_execute_task_refs(
+    items: &[TodoItem],
+    task_refs: &[String],
+    field_name: &str,
+) -> anyhow::Result<Vec<String>> {
+    task_refs
+        .iter()
+        .map(|task_ref| {
+            resolve_todo_reference(items, task_ref).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "execute output {field_name} contains unknown todo item '{}'",
+                    task_ref.trim()
+                )
+            })
+        })
+        .collect()
+}
+
+fn resolve_todo_reference(items: &[TodoItem], task_ref: &str) -> Option<String> {
+    let task_ref = task_ref.trim();
+    if task_ref.is_empty() {
+        return None;
+    }
+
+    if let Some(item_id) = items.iter().find_map(|item| {
+        let item_id = item.id.as_deref()?;
+        (item_id == task_ref).then_some(item_id)
+    }) {
+        return Some(item_id.to_string());
+    }
+
+    if let Some(item_id) = items.iter().find_map(|item| {
+        let item_id = item.id.as_deref()?;
+        let active_form = item.active_form.as_deref().map(str::trim);
+        (item.text.trim() == task_ref || active_form == Some(task_ref)).then_some(item_id)
+    }) {
+        return Some(item_id.to_string());
+    }
+
+    let title_matches = items
+        .iter()
+        .filter_map(|item| {
+            let item_id = item.id.as_deref()?;
+            let title = todo_item_title(item.text.as_str());
+            let active_title = item
+                .active_form
+                .as_deref()
+                .and_then(|active_form| active_form.strip_prefix("working on "))
+                .map(str::trim);
+            (title == task_ref || active_title == Some(task_ref)).then_some(item_id.to_string())
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+
+    (title_matches.len() == 1)
+        .then(|| title_matches.into_iter().next())
+        .flatten()
+}
+
+fn todo_item_title(item_text: &str) -> &str {
+    item_text
+        .split_once(':')
+        .map(|(title, _)| title.trim())
+        .unwrap_or_else(|| item_text.trim())
 }
 
 fn recovery_decision_for_failure(
@@ -2920,6 +3158,7 @@ fn build_step_diagnostics(
     input: StepInputDiagnostics,
     output: StepOutputDiagnostics,
     session_writes: Vec<StepContextWrite>,
+    tool_capabilities: Option<ToolCapabilityDiagnostics>,
 ) -> StepDiagnostics {
     let diagnostic_id = match (
         &context.step.loop_contract,
@@ -2961,6 +3200,7 @@ fn build_step_diagnostics(
         input,
         output,
         session_writes,
+        tool_capabilities,
     }
 }
 
@@ -3389,7 +3629,10 @@ fn step_requires_structured_execute_output(
     step: &WorkflowStep,
     current_item: Option<&ExecuteLoopItemContext>,
 ) -> bool {
-    matches!(workflow_id, FEATURE_WORKFLOW_ID | RESEARCH_WORKFLOW_ID)
+    matches!(
+        workflow_id,
+        FEATURE_WORKFLOW_ID | RESEARCH_WORKFLOW_ID | DEEP_RESEARCH_WORKFLOW_ID
+    )
         && step.id == EXECUTE_STEP_ID
         && current_item.is_some()
         && matches!(step.loop_contract, Some(StepLoopContract::TodoItems { .. }))
@@ -3481,9 +3724,10 @@ mod tests {
     use super::{
         build_context_compaction_log, classify_summary_priority, compact_summary_text,
         maybe_compact_summary, rank_summary_candidates, should_trigger_context_compaction,
-        step_summary_to_context, SlotPriority, WorkflowTurnRunner,
+        step_summary_to_context, validate_execute_step_output, SlotPriority, WorkflowTurnRunner,
     };
     use crate::{
+        output::parse_structured_output_candidates,
         session_state::{SessionContext, StepSummary}, RuntimeContentKind,
         RuntimeEnvelopeRecorder, RuntimeMessage, RuntimeSource, SessionSkillCatalog,
         SessionToolCatalog, StateMessage, EXECUTE_STEP_ID, PLAN_STEP_ID,
@@ -3586,7 +3830,6 @@ mod tests {
         assert!(compacted.summary.len() < low.summary.len());
         assert!(compacted.summary.contains("Recognized scene"));
         assert!(compacted.summary.contains("tail-marker"));
-
         let medium = summary(
             omega_workflow::FEATURE_WORKFLOW_ID,
             PLAN_STEP_ID,
@@ -3594,6 +3837,33 @@ mod tests {
         );
         let preserved = maybe_compact_summary(&medium, SlotPriority::Medium, false, 0, 8);
         assert_eq!(preserved.summary, medium.summary);
+    }
+
+
+    #[test]
+    fn validate_execute_step_output_accepts_single_execute_object_wrapped_in_prose() {
+        let response = concat!(
+            "修复完成，结果如下：\n",
+            "{\"completed_tasks\":[\"task-1\"],\"open_tasks\":[\"task-2\"],\"validation_results\":[{\"target\":\"cargo test -p omega-session\",\"status\":\"passed\"}],\"changed_paths\":[\"crates/omega-session/src/runner.rs\"]}\n",
+            "后续继续观察。"
+        );
+        let candidates = parse_structured_output_candidates(DataFormat::Json, response);
+
+        let result = validate_execute_step_output(response, &candidates);
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_execute_step_output_rejects_non_object_wrappers_without_execute_candidate() {
+        let response = "执行摘要\n[\"task-1\", \"task-2\"]";
+        let candidates = parse_structured_output_candidates(DataFormat::Json, response);
+
+        let error = validate_execute_step_output(response, &candidates).unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("execute step must resolve to a single JSON object"));
     }
 
     #[test]

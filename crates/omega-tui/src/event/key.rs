@@ -54,9 +54,18 @@ pub(super) fn handle_key_event(
         let mut app_guard = app.lock().unwrap();
         if app_guard.interaction_mode == InteractionMode::Normal
             && app_guard.focused_panel == Panel::Response
+            && !app_guard.is_leader_pending()
         {
             match key.code {
-                KeyCode::Enter | KeyCode::Char('x') => {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    app_guard.move_response_selection_up();
+                    return Ok(false);
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    app_guard.move_response_selection_down();
+                    return Ok(false);
+                }
+                KeyCode::Enter | KeyCode::Char('x') | KeyCode::Right => {
                     let notice = match app_guard.activate_selected_response_item() {
                         Some(ResponseActivation::ThinkingCollapsed) => "Thinking collapsed.",
                         Some(ResponseActivation::ThinkingExpanded) => "Thinking expanded.",

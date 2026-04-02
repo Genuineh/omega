@@ -15,7 +15,7 @@ use omega_workflow::LoadedWorkflowCatalog;
 use tracing::{info, warn};
 
 use crate::env_config::AppEnvConfig;
-use crate::model_config::AgentModelConfig;
+use crate::model_config::{AgentModelConfig, ProviderPacingConfig};
 use crate::runtime_message_policy::DefaultRuntimeMessagePolicy;
 
 pub fn default_system_prompt(cwd: &Path) -> String {
@@ -23,6 +23,23 @@ pub fn default_system_prompt(cwd: &Path) -> String {
         "You are a coding agent at {}. Prefer structured workspace tools for inspection and editing, and use bash only as a fallback for simple allowlisted commands. Act, don't explain.",
         cwd.display()
     )
+}
+
+fn apply_provider_pacing_overrides(
+    mut config: MinimaxConfig,
+    provider: &ProviderPacingConfig,
+) -> MinimaxConfig {
+    if let Some(request_throttle_interval) = provider.request_throttle_interval {
+        config = config.with_request_throttle_interval(request_throttle_interval);
+    }
+    if let Some(max_concurrent_requests) = provider.max_concurrent_requests {
+        config = config.with_max_concurrent_requests(max_concurrent_requests);
+    }
+    if let Some(rate_limit_retry_delay) = provider.rate_limit_retry_delay {
+        config = config.with_rate_limit_retry_delay(rate_limit_retry_delay);
+    }
+
+    config
 }
 
 pub async fn run() -> anyhow::Result<()> {
@@ -47,7 +64,18 @@ pub async fn run() -> anyhow::Result<()> {
         );
     }
 
-    let config = MinimaxConfig::from_env().map_err(|e| anyhow::anyhow!("{e}"))?;
+    let loaded_model_config = AgentModelConfig::load(&cwd);
+    for warning in &loaded_model_config.warnings {
+        warn!(%warning, source = %loaded_model_config.source_label(), "model config fallback activated");
+    }
+
+    let config = apply_provider_pacing_overrides(
+        MinimaxConfig::from_env().map_err(|e| anyhow::anyhow!("{e}"))?,
+        &loaded_model_config.config.provider,
+    );
+    let provider_request_throttle_ms = config.request_throttle_interval.as_millis() as u64;
+    let provider_max_concurrent_requests = config.max_concurrent_requests;
+    let provider_rate_limit_retry_delay_ms = config.rate_limit_retry_delay.as_millis() as u64;
     let model_name = config.model.clone();
     let client: DynLlmClient =
         Arc::new(MinimaxClient::new(config).map_err(|e| anyhow::anyhow!("{e}"))?);
@@ -70,11 +98,6 @@ pub async fn run() -> anyhow::Result<()> {
         warn!(%warning, source = %loaded_tui_config.source_label(), "tui config fallback activated");
     }
 
-    let loaded_model_config = AgentModelConfig::load(&cwd);
-    for warning in &loaded_model_config.warnings {
-        warn!(%warning, source = %loaded_model_config.source_label(), "model config fallback activated");
-    }
-
     let loaded_workflow_catalog = LoadedWorkflowCatalog::load(&cwd);
     for warning in &loaded_workflow_catalog.warnings {
         warn!(%warning, source = "workflow-catalog", "workflow config fallback activated");
@@ -82,6 +105,9 @@ pub async fn run() -> anyhow::Result<()> {
     info!(
         context_window = loaded_model_config.config.context_window,
         max_output_tokens = loaded_model_config.config.max_output_tokens,
+        provider_request_throttle_ms,
+        provider_max_concurrent_requests,
+        provider_rate_limit_retry_delay_ms,
         bash_allowed_commands = loaded_workflow_catalog
             .tool_policy
             .bash_allowed_commands
@@ -134,9 +160,12 @@ pub async fn run() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+    use std::time::Duration;
 
-    use super::default_system_prompt;
-    use crate::model_config::AgentModelConfig;
+    use omega_core::MinimaxConfig;
+
+    use super::{apply_provider_pacing_overrides, default_system_prompt};
+    use crate::model_config::{AgentModelConfig, ProviderPacingConfig};
 
     #[test]
     fn system_prompt_includes_workspace_path() {
@@ -159,5 +188,34 @@ mod tests {
             .bash_allowed_commands
             .iter()
             .any(|command| command == "grep"));
+        assert_eq!(config.provider, ProviderPacingConfig::default());
+    }
+
+    #[test]
+    fn provider_pacing_overrides_apply_only_when_present() {
+        let config = MinimaxConfig::international("key", "model-a");
+        let overrides = ProviderPacingConfig {
+            request_throttle_interval: Some(Duration::from_millis(250)),
+            max_concurrent_requests: Some(3),
+            rate_limit_retry_delay: Some(Duration::from_secs(12)),
+        };
+
+        let updated = apply_provider_pacing_overrides(config, &overrides);
+
+        assert_eq!(updated.request_throttle_interval, Duration::from_millis(250));
+        assert_eq!(updated.max_concurrent_requests, 3);
+        assert_eq!(updated.rate_limit_retry_delay, Duration::from_secs(12));
+    }
+
+    #[test]
+    fn provider_pacing_overrides_preserve_env_bootstrap_when_absent() {
+        let config = MinimaxConfig::international("key", "model-a")
+            .with_request_throttle_interval(Duration::from_millis(175))
+            .with_max_concurrent_requests(2)
+            .with_rate_limit_retry_delay(Duration::from_secs(9));
+
+        let updated = apply_provider_pacing_overrides(config.clone(), &ProviderPacingConfig::default());
+
+        assert_eq!(updated, config);
     }
 }

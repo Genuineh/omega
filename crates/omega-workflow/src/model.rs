@@ -2,8 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use crate::constants::{
-    CHAT_SCENE_ID, CHAT_WORKFLOW_ID, FEATURE_NON_EXECUTE_BLOCKED_GROUP, FEATURE_SCENE_ID,
-    FEATURE_WORKFLOW_ID, RESEARCH_SCENE_ID, RESEARCH_WORKFLOW_ID, ROOT_WORKFLOW_ID,
+    CHAT_SCENE_ID, CHAT_WORKFLOW_ID, DEEP_RESEARCH_SCENE_ID, DEEP_RESEARCH_WORKFLOW_ID,
+    FEATURE_NON_EXECUTE_BLOCKED_GROUP, FEATURE_SCENE_ID, FEATURE_WORKFLOW_ID,
+    RESEARCH_SCENE_ID, RESEARCH_WORKFLOW_ID, ROOT_WORKFLOW_ID,
 };
 use crate::defaults::{default_scenes_toml, default_workflow_toml, BuiltinWorkflowStepId};
 use crate::policy::ToolPolicyConfig;
@@ -130,6 +131,11 @@ impl SceneCatalog {
                     workflow_id: RESEARCH_WORKFLOW_ID.to_string(),
                 },
                 SceneDefinition {
+                    id: DEEP_RESEARCH_SCENE_ID.to_string(),
+                    label: "Deep Research".to_string(),
+                    workflow_id: DEEP_RESEARCH_WORKFLOW_ID.to_string(),
+                },
+                SceneDefinition {
                     id: FEATURE_SCENE_ID.to_string(),
                     label: "Feature".to_string(),
                     workflow_id: FEATURE_WORKFLOW_ID.to_string(),
@@ -217,10 +223,7 @@ impl WorkflowDefinition {
     pub fn default_root_with_tool_policy(tool_policy: &ToolPolicyConfig) -> Self {
         Self {
             name: ROOT_WORKFLOW_ID.to_string(),
-            steps: [
-                BuiltinWorkflowStepId::SceneRecognition,
-                BuiltinWorkflowStepId::SelectWorkflow,
-            ]
+            steps: [BuiltinWorkflowStepId::SelectWorkflow]
             .into_iter()
             .map(|step| WorkflowStep::from_builtin_with_tool_policy(step, tool_policy))
             .collect(),
@@ -252,6 +255,34 @@ impl WorkflowDefinition {
     pub fn default_research_with_tool_policy(tool_policy: &ToolPolicyConfig) -> Self {
         let mut steps = [
             BuiltinWorkflowStepId::Explore,
+            BuiltinWorkflowStepId::Report,
+        ]
+        .into_iter()
+        .map(|step| WorkflowStep::from_builtin_with_tool_policy(step, tool_policy))
+        .collect::<Vec<_>>();
+
+        if let Some(report_step) = steps
+            .iter_mut()
+            .find(|step| step.id == crate::REPORT_STEP_ID)
+        {
+            report_step.input_contract = StepInputContract::Required {
+                sources: vec![crate::EXPLORE_STEP_ID.to_string()],
+            };
+        }
+
+        Self {
+            name: RESEARCH_WORKFLOW_ID.to_string(),
+            steps,
+        }
+    }
+
+    pub fn default_deep_research() -> Self {
+        Self::default_deep_research_with_tool_policy(&ToolPolicyConfig::builtin_default())
+    }
+
+    pub fn default_deep_research_with_tool_policy(tool_policy: &ToolPolicyConfig) -> Self {
+        let mut steps = [
+            BuiltinWorkflowStepId::Explore,
             BuiltinWorkflowStepId::Plan,
             BuiltinWorkflowStepId::Execute,
             BuiltinWorkflowStepId::Report,
@@ -273,7 +304,7 @@ impl WorkflowDefinition {
         }
 
         Self {
-            name: RESEARCH_WORKFLOW_ID.to_string(),
+            name: DEEP_RESEARCH_WORKFLOW_ID.to_string(),
             steps,
         }
     }
@@ -333,6 +364,10 @@ impl WorkflowCatalog {
         workflows.insert(
             RESEARCH_WORKFLOW_ID.to_string(),
             WorkflowDefinition::default_research_with_tool_policy(tool_policy),
+        );
+        workflows.insert(
+            DEEP_RESEARCH_WORKFLOW_ID.to_string(),
+            WorkflowDefinition::default_deep_research_with_tool_policy(tool_policy),
         );
         workflows.insert(
             FEATURE_WORKFLOW_ID.to_string(),
