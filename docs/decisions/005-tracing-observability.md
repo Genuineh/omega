@@ -4,7 +4,7 @@ date: 2026-03-18
 status: accepted
 author: omega-team
 reviewed_by: []
-related_prd: docs/prds/observability-logging.md
+related_prd: docs/archive/observability-logging.md
 ---
 
 # 005: 使用 tracing 生态构建可观察性基础设施
@@ -75,5 +75,5 @@ M1 里程碑完成后，Omega Agent 已可端到端运行（REPL → LLM 调用 
 
 ## Notes
 
-- 详细设计见 [docs/prds/observability-logging.md](../prds/observability-logging.md)
+- 历史设计与 rollout 任务见 [docs/archive/observability-logging.md](../archive/observability-logging.md)
 - workspace 根 `Cargo.toml` 已声明 `tracing = "0.1"` 和 `tracing-subscriber = "0.3"`，各 crate 仅需在自身 Cargo.toml 引用

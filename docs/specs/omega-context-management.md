@@ -1,8 +1,8 @@
 ---
-status: draft
+status: active
 owner: omega-team
 created: 2026-03-27
-updated: 2026-03-27
+updated: 2026-04-02
 version: 0.2
 supersedes: []
 related_prds: []
@@ -11,6 +11,8 @@ related_prds: []
 # Omega Context Management Specification
 
 ## Overview
+
+Status note (2026-04-02): `Task 11A ~ 11F-3` 已完成并进入当前主路径。本规格现作为上下文管理基线与后续迭代入口使用，而不再只是前置草案。
 
 当前 omega 在持续多轮对话中面临三个系统性问题：
 

@@ -4,7 +4,7 @@ date: 2026-03-19
 status: accepted
 author: omega-team
 reviewed_by: []
-related_spec: docs/specs/omega-tui-non-ui-extraction.md
+related_spec: docs/specs/omega-app-package.md
 ---
 
 # 006: `omega-tui` 只拥有 UI 职责
@@ -60,5 +60,6 @@ Accepted
 
 ## Notes
 
-- 详细设计见 [docs/specs/omega-tui-non-ui-extraction.md](../specs/omega-tui-non-ui-extraction.md)
-- 本决策的历史来源见 `docs/archive/omega-interaction-layer-refactor.md`；当前活跃边界以 `docs/specs/omega-tui-non-ui-extraction.md`、`docs/specs/omega-runtime-ui-message-contract.md` 与 `docs/specs/omega-app-package.md` 为准
+- 当前活跃边界见 [docs/specs/omega-app-package.md](../specs/omega-app-package.md) 与 [docs/specs/omega-runtime-ui-message-contract.md](../specs/omega-runtime-ui-message-contract.md)
+- Task 15D 的历史设计基线见 [docs/archive/omega-tui-non-ui-extraction.md](../archive/omega-tui-non-ui-extraction.md)
+- 本决策的更早历史来源见 [docs/archive/omega-interaction-layer-refactor.md](../archive/omega-interaction-layer-refactor.md)

@@ -1,8 +1,8 @@
 ---
-status: draft
+status: implemented
 owner: omega-team
 created: 2026-03-23
-updated: 2026-03-23
+updated: 2026-04-02
 version: 1.0
 supersedes: []
 related_prds: []
@@ -11,6 +11,8 @@ related_prds: []
 # Omega Client Anthropic API Abstraction Specification
 
 ## Overview
+
+Status note (2026-04-02): 该抽象层和对应测试矩阵已经落地，当前文档保留为已实现基线与后续 provider 扩展入口。
 
 `omega-client` 当前已经能以 Minimax 的 Anthropic-compatible endpoint 驱动主路径，但内部仍以 `MinimaxClient` 直接承载协议、传输、类型模型和 provider 细节。下一阶段应把 Anthropic Messages API 及其相关服务抽象为 `omega-client` 的稳定接口层，再让 Minimax 作为一个 Anthropic-compatible provider 挂接在该层之下。
 

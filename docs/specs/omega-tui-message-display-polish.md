@@ -1,8 +1,8 @@
 ---
-status: active
+status: implemented
 owner: omega-team
 created: 2026-03-31
-updated: 2026-03-31
+updated: 2026-04-02
 version: 0.1
 supersedes: []
 related_prds: []
@@ -11,6 +11,8 @@ related_prds: []
 # Omega TUI Message Display Polish Specification
 
 ## Overview
+
+Status note (2026-04-02): `Task 15B-40 ~ 15B-46` 已完成。本文档现作为已实现的 message-display 基线保留，用于后续 polish 和回归检查。
 
 当前 `Agent Response` 的内容呈现能力停留在纯文本 + 结构化 section header 阶段：Markdown 原样输出、消息间缺少视觉分隔、长回复不便扫读、代码块与正文在同一颜色/字体下混排。本规格定义一组面向"美观、有序、阅读容易"的渐进优化任务，涵盖 Markdown 渲染、消息分隔与角色标识、代码块视觉区分、step/tool/thinking 信息密度优化、以及 Final Answer 阅读体验强化。
 

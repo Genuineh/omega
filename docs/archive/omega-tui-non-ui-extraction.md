@@ -1,13 +1,20 @@
 ---
-status: draft
+status: archived
 owner: omega-team
 created: 2026-03-19
-updated: 2026-03-20
+updated: 2026-04-02
+archived: 2026-04-02
 version: 1.1
 supersedes: []
+superseded_by:
+  - docs/specs/omega-app-package.md
+  - docs/specs/omega-runtime-ui-message-contract.md
+  - docs/specs/omega-agent-impl-plan/task-15-interaction-foundation.md
 related_prds:
-  - docs/prds/observability-logging.md
+  - docs/archive/observability-logging.md
 ---
+
+> **Archived 2026-04-02**: This spec captured the first non-UI extraction pass for `Task 15D`. The design has already been implemented and the active boundary now lives across `docs/specs/omega-app-package.md`, `docs/specs/omega-runtime-ui-message-contract.md`, and `docs/specs/omega-agent-impl-plan/task-15-interaction-foundation.md`. Keep this file only for historical rationale.
 
 # Omega TUI 非 UI 职责剥离规格
 

@@ -1,11 +1,18 @@
 ---
-status: active
+status: archived
 owner: omega-team
 created: 2026-03-18
+updated: 2026-04-02
+archived: 2026-04-02
 version: 1.0
-related_decisions:
-  - 005-tracing-observability
+supersedes: []
+superseded_by:
+  - docs/decisions/005-tracing-observability.md
+  - docs/guide/omega-dev-guide.md
+related_prds: []
 ---
+
+> **Archived 2026-04-02**: This PRD was completed and no longer drives active work. Keep it for the original rollout rationale and task breakdown. Use `docs/decisions/005-tracing-observability.md` for the durable decision and `docs/guide/omega-dev-guide.md` for the current operator-facing logging workflow.
 
 # 可观察性与日志系统
 
@@ -127,8 +134,8 @@ tracing.workspace = true
 [dependencies]
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
-chrono = "0.4"   # 日志文件名日期
-dirs = "6"       # ~/.omega/logs 路径解析
+chrono = "0.4"
+dirs = "6"
 ```
 
 ## Implementation Tasks

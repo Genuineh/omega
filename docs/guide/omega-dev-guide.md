@@ -2,7 +2,7 @@
 status: active
 owner: omega-team
 created: 2026-03-18
-updated: 2026-03-20
+updated: 2026-04-02
 audience: developers
 level: intermediate
 ---
@@ -11,104 +11,164 @@ level: intermediate
 
 ## Overview
 
-本指南帮助开发者快速上手 Omega 项目的开发。Omega 是一个用 Rust + ratatui 实现的 AI Agent，完整复刻了 learn-claude-code 的 12 阶段教程。
+本指南用于快速进入当前可运行的 Omega 工作区。它聚焦当前真实主路径、常用命令、配置入口和文档导航，不重复展开已经迁入规格文档的设计细节。
 
-阅读完本指南后，你将能够：
-- 理解 Omega 项目的架构设计
-- 搭建本地开发环境
-- 编译和运行项目
-- 理解各个 crate 的职责
+阅读完本指南后，你应能完成四件事：
+- 找到当前应阅读的文档入口
+- 构建、测试并运行当前应用
+- 理解主路径上的 crate 分层
+- 知道配置、日志和排障入口在哪里
 
 ## Prerequisites
 
-- Rust 1.70+ 已安装
+- Rust toolchain 已安装并可运行 `cargo`
 - 了解 Rust 基础语法
 - 熟悉命令行操作
-- 了解 AI Agent 基本概念
+- 若需连真实 provider，准备好对应 API key
 
 ## Getting Started
 
-### Step 1: 克隆项目
-
-```bash
-git clone https://github.com/your-repo/omega.git
-cd omega
-```
-
-### Step 2: 验证 Rust 环境
-
-```bash
-rustc --version
-cargo --version
-```
-
-### Step 3: 编译项目
+### Step 1: 构建工作区
 
 ```bash
 cargo build
 ```
 
-### Step 4: 运行示例
+### Step 2: 运行测试
 
 ```bash
-# Ratatui TUI
+cargo test
+```
+
+### Step 3: 启动当前应用入口
+
+```bash
 cargo run -p omega-app
 ```
 
-## 项目结构
+### Step 4: 进入文档入口
 
-Omega 采用独立 crate workspace。当前工作区已有 19 个 crate，其中 `omega-app`、`omega-client`、`omega-tools`、`omega-tools-builtin`、`omega-todo`、`omega-core`、`omega-session`、`omega-workflow` 与 `omega-tui` 已具备可运行基础，其余 crate 按实现计划继续推进。
+先读以下文档，再进入具体模块：
+- `docs/TODO.md`
+- `docs/README.md`
+- `docs/specs/omega-agent-spec.md`
+- `docs/specs/omega-agent-impl-plan.md`
 
-| Crate | 功能 |
-|-------|------|
-| omega-client | LLM 抽象接口与厂商适配器 |
-| omega-message | 消息系统 |
-| omega-tasks | 任务系统 |
-| omega-skills | Skill 加载 |
-| omega-worktree | Worktree 隔离 |
-| omega-tools | 工具抽象 |
-| omega-tools-builtin | 内置工具 |
-| omega-todo | Todo 管理 |
-| omega-subagent | 子智能体 |
-| omega-compression | 上下文压缩 |
-| omega-background | 后台任务 |
-| omega-team | 团队协作 |
-| omega-core | 核心 Agent |
-| omega-app | 应用装配入口 |
-| omega-tui | TUI 界面 |
+## 当前工作区结构
+
+当前 workspace 有 25 个 crate。日常开发不需要记住所有 crate 的细枝末节，先按主路径和支撑层理解即可。
+
+### 主运行路径
+
+| Crate | 当前职责 |
+|-------|----------|
+| `omega-app` | 唯一应用入口，负责 bootstrap、config、provider wiring 和 runtime policy |
+| `omega-session` | 会话运行态编排、workflow turn 驱动、runtime-visible 更新归一 |
+| `omega-core` | agent loop、工具分发和底层执行模型 |
+| `omega-workflow` | workflow 定义、step 配置与运行策略 |
+| `omega-tui` | 纯 UI shell、输入/渲染/事件循环 |
+| `omega-observability` | tracing bootstrap、日志 sink 和文件日志策略 |
+| `omega-client` | provider transport、Anthropic-compatible 抽象与 streaming |
+
+### 上下文与内容层
+
+| Crate | 当前职责 |
+|-------|----------|
+| `omega-context` | 对外统一上下文 facade |
+| `omega-memory` | 会话记忆、summary ranking 与 compaction |
+| `omega-document` | 文件治理、索引、检索与文档工具后端 |
+| `omega-todo` | todo 工具与快照模型 |
+| `omega-tasks` | 持久化任务层预留 |
+
+### 工具与扩展层
+
+| Crate | 当前职责 |
+|-------|----------|
+| `omega-tools` | 工具 contract 与 dispatch 边界 |
+| `omega-tools-builtin` | 内置 repo inspection / edit / batch / bash 工具 |
+| `omega-skills` | skill 目录加载与 prompt 注入 |
+| `omega-subagent` | subagent 基础设施 |
+| `omega-background` | 后台任务能力预留 |
+| `omega-message` | runtime-visible message 能力预留 |
+| `omega-team` | team / delegation 能力预留 |
+| `omega-worktree` | 隔离执行与 worktree 能力预留 |
+
+### 支撑与 UI 配套层
+
+| Crate | 当前职责 |
+|-------|----------|
+| `omega-theme` | TUI 主题与视觉令牌 |
+| `omega-keymap` | keymap 与 `.omega` 键位配置 |
+| `omega-hooks` | step lifecycle hook 相关能力 |
+| `omega-compression` | 历史压缩相关能力预留 |
+| `omega-test-support` | 脚本化测试支撑 |
 
 ## 常见任务
 
-### 当前可执行任务
+### 运行当前入口
 
-1. 运行 `cargo run -p omega-app` 验证当前用户交互入口
-2. 按 `docs/TODO.md` 优先推进 `omega-skills` 与 `omega-subagent`
-3. 为新增行为补充测试并保持 `cargo test` 全工作区通过
+```bash
+cargo run -p omega-app
+```
 
-### 添加新工具
-
-1. 在 `omega-tools-builtin` 中实现 `ToolHandler` trait
-2. 在 `omega-core` 中注册工具
-
-### 添加新 Crate
-
-1. 在 `crates/` 下创建新目录
-2. 创建 `Cargo.toml`
-3. 在根 `Cargo.toml` 中添加成员
-4. 定义公共接口
-
-### 运行单个测试
+### 运行定向测试
 
 ```bash
 cargo test -p omega-client
+cargo test -p omega-session
+cargo test -p omega-tui
 ```
 
-### 检查代码格式
+### 格式化与静态检查
 
 ```bash
-cargo fmt
-cargo clippy
+cargo fmt --all
+cargo clippy --all-targets -- -D warnings
 ```
+
+### 查看当前优先级与文档入口
+
+```bash
+sed -n '1,120p' docs/TODO.md
+sed -n '1,160p' docs/README.md
+```
+
+## 配置入口
+
+| 文件 | 用途 |
+|------|------|
+| `.omega/model.toml` | provider、节流与模型相关配置 |
+| `.omega/env.toml` | 仓库级环境变量注入 |
+| `.omega/workflows/root.toml` | root workflow 路由配置 |
+| `.omega/workflows/*.toml` | child workflow 定义 |
+| `.omega/theme.toml` | TUI 主题覆盖 |
+
+## 当前架构约束
+
+- `omega-app` 拥有应用 bootstrap 与 runtime message policy。
+- `omega-session` 是 TUI shell 与 agent runtime 之间的编排边界。
+- `omega-tui` 只负责 UI，不承载会话编排或 observability bootstrap。
+- 上下文主路径通过 `omega-context` 暴露；上层不应直接绕过它去依赖 `omega-memory` 或 `omega-document`。
+- 当前 runtime 主链路以 `docs/specs/omega-runtime-message-pipeline.md` 为准；`RuntimeUiEnvelope` 只保留 compat baseline。
+
+## 日志与排障
+
+Omega 使用 `tracing` 输出两类日志：
+- TUI 内的 `Activity & Logs` 面板
+- `~/.omega/logs/omega-YYYY-MM-DD.jsonl` 下的 JSONL 文件
+
+常用环境变量：
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `OMEGA_LOG` | 日志级别 (`trace/debug/info/warn/error`) | `info` |
+| `OMEGA_LOG_DIR` | JSONL 日志目录 | `~/.omega/logs` |
+| `OMEGA_LOG_FILE` | 是否启用文件日志 | `true` |
+
+常见排障动作：
+- provider 交互异常时先用 `OMEGA_LOG=debug cargo run -p omega-app`
+- 如果怀疑节流或 429，检查 `.omega/model.toml` 的 `[provider]` 覆盖项
+- 如果 TUI 视图异常，先确认当前文档基线是否与 `docs/TODO.md` 和相关 spec 一致
 
 ## Troubleshooting
 
@@ -117,15 +177,8 @@ cargo clippy
 **Problem**: 编译失败
 **Solution**:
 ```bash
-# 清理并重新编译
-cargo clean
 cargo build
 ```
-
-### 依赖冲突
-
-**Problem**: 依赖版本冲突
-**Solution**: 检查根 `Cargo.toml` 中的版本定义
 
 ### 运行时错误
 
@@ -137,120 +190,17 @@ export OMEGA_API_KEY="your-api-key"
 export OMEGA_MINIMAX_API_KEY="your-api-key"
 ```
 
+### 文档入口看起来互相冲突
+
+**Problem**: 同一主题出现多份文档，不知道该信哪一份
+**Solution**: 先看 `docs/README.md` 的分组导航；如果文档位于 `docs/archive/`，默认视为历史材料，不作为 active source of truth
+
 ## Best Practices
 
-- 保持 crate 职责单一
-- 遵循 Rust 命名规范
-- 添加必要的注释
-- 编写单元测试
-- 使用 `cargo clippy` 检查代码
-
-## 日志系统
-
-Omega 使用 `tracing` 框架实现结构化日志。日志路由到两个输出：
-
-- **TUI Logs 面板**：compact 人类可读格式，实时显示在界面右侧面板
-- **JSONL 文件**：完整结构化数据，持久化到 `~/.omega/logs/omega-YYYY-MM-DD.jsonl`
-
-日志不再输出到终端控制台（避免干扰 TUI 渲染）。
-
-### 环境变量
-
-| 变量 | 说明 | 默认值 |
-|------|------|--------|
-| `OMEGA_LOG` | 日志级别过滤 (trace, debug, info, warn, error) | `info` |
-| `OMEGA_LOG_DIR` | JSONL 日志文件目录 | `~/.omega/logs` |
-| `OMEGA_LOG_FILE` | 是否启用文件日志 (`true`/`false`) | `true` |
-
-### 日志级别
-
-```bash
-# 查看所有日志（最详细）
-OMEGA_LOG=trace cargo run -p omega-tui
-
-# 查看调试信息（包括工具输入输出）
-OMEGA_LOG=debug cargo run -p omega-tui
-
-# 仅查看关键信息
-OMEGA_LOG=info cargo run -p omega-tui
-
-# 仅查看错误
-OMEGA_LOG=error cargo run -p omega-tui
-```
-
-### 日志位置
-
-JSONL 文件存储在 `~/.omega/logs/`，按日期轮转：
-```
-~/.omega/logs/omega-2026-03-18.jsonl
-```
-
-### Span 结构
-
-Omega 定义了四种 span 类型：
-
-| Span | 位置 | 字段 |
-|------|------|------|
-| `session` | agent_loop 外层 | session_id |
-| `agent_loop` | 每次迭代 | iteration, message_count |
-| `llm_call` | LLM 调用 | model, max_tokens, duration_ms, input_tokens, output_tokens, stop_reason |
-| `tool_exec` | 工具执行 | tool_name, duration_ms, success |
-
-### TUI 多面板布局
-
-```
-┌──────────────────────────────────────────────────────────┐
-│  Omega Agent │ model-name │ ● Idle │ Focus: Response │
-├───────────────────────────────┬──────────────────────────┤
-│  Agent Response               │  Activity & Logs        │
-│                               │                          │
-│  > hello                      │  llm_call.model=...     │
-│  I will help you...           │  tool_exec.tool_name=...│
-│                               │  [flow 3/4] Execute ... │
-│                               │  [tool] $ cat AGENTS.md │
-│                               │  [tool] # Repository... │
-│                               │                          │
-├───────────────────────────────┴──────────────────────────┤
-│  Input: > _                                            │
-└──────────────────────────────────────────────────────────┘
-```
-
-- **Agent Response 面板**：用户输入、各 workflow step 的文本结果与最终 assistant 回复
-- **Activity & Logs 面板**：workflow phase、tool preview、todo 刷新与 tracing 日志行，不承载 step 的正文结果
-- **Input 区域**：用户输入，回车发送
-
-### TUI 快捷键
-
-| 按键 | 行为 |
-|------|------|
-| `Enter` | 发送输入 |
-| `↑` / `↓` | 滚动当前焦点面板（3 行/次） |
-| `Tab` | 切换 Response ↔ Logs 面板焦点 |
-| 鼠标滚轮 | 滚动对应面板（根据光标列位置判断） |
-| `Ctrl+C` | 中断当前正在运行的 agent turn |
-| `Ctrl+Q` | 退出程序 |
-| `q` / `exit` | 回车后退出 |
-
-### 在代码中使用日志
-
-```rust
-use tracing::{info, instrument};
-
-// 在函数上添加 span
-#[instrument(skip(self, request), fields(llm_call.model = %model))]
-async fn chat(&self, request: Request) -> Result<Response> {
-    // 记录事件
-    info!(llm_call.started = true);
-
-    // 记录动态字段
-    tracing::Span::current().record("llm_call.duration_ms", duration_ms);
-}
-```
-
-### 禁止事项
-
-- 禁止使用 `println!` / `eprintln!`（调试输出除外）
-- 禁止使用 `log` crate，应使用 `tracing`
+- 保持 crate 边界清晰，优先修正文档入口和 contract 再扩功能
+- 修改实现时同步更新 `docs/TODO.md` 与相关 spec
+- 默认把 `docs/specs/` 当作 source of truth，把 `docs/archive/` 当作历史背景
+- 新行为要补测试，至少覆盖当前改动所经过的主路径
 
 ## Related Topics
 

@@ -2,51 +2,29 @@
 
 ## Current Priorities
 
-_按当前仓库真实主路径重排。判断依据：`cargo test` 全工作区通过；`Task 15F-26 ~ 15F-28` 及 `Task 15F-29 / 15B-28 / 15B-29` 已完成。execute 已收敛到 itemized loop 并具备 subflow visibility。上下文主线 `Task 11A ~ 11F-3` 已完成：prompt/context 组装路径已稳定并抽离出独立上下文层，长期知识与 keyword + vector 双索引基线也已落地，`ContextDiagnostics` 统一聚合快照已贯通 `omega-context -> omega-session -> omega-tui / omega-app`，budget/search/document/index/memory/store observability 已接入 runtime/TUI。主线优先级回到 `Task 10`。_
+_当前主线已按真实实现状态收口。判断依据：`cargo test` 全工作区通过；`Task 15F-26 ~ 15F-29` 与 `Task 15B-28 ~ 15B-29` 已完成，execute 已收敛到 itemized loop 并具备 subflow visibility；`Task 11A ~ 11F-3` 已完成，上下文装配、长期知识索引与 `ContextDiagnostics` 聚合快照均已成为现行基线。主优先级已回到 `Task 10`。_
 
-_任务编号以 `docs/specs/omega-agent-impl-plan.md` 为准；为支持可运行里程碑拆分，`TODO` 中允许使用 `8A/8B`、`15A/15B/15C/15D` 这类子任务后缀。_
+_任务编号以 `docs/specs/omega-agent-impl-plan.md` 为准；`8A/8B`、`15A/15B/15C/15D` 等后缀仅用于里程碑拆分。详细历史与完成记录保留在后文。_
 
-### High — Context Management (新增主线)
+### High
 
-- **Task 11A**: Cache Control + Token Estimation — 已完成：Anthropic cache anchors、provider `count_tokens` 优先估算、`CacheDiagnostics` 已接入 `omega-session` / `omega-client` / TUI。
-- **Task 11B**: Prompt Path Stabilization — 已完成：slot-budget MVP、priority-weighted summary selection 与 compaction trigger 已在现行 `omega-context` / `omega-memory` 组装路径上补齐高层回归验证。
-- **Task 11C**: `omega-memory` + `omega-context` facade — 已完成：summary ranking/compaction 已抽离到 `omega-memory`，step/repair context assembly 已通过 `OmegaContextFacade` 下沉到 `omega-context`，`omega-session` 只保留 orchestration。
-- **Task 11D**: `omega-document` — 已完成：`FileStore` manifest、persistent TODO、tantivy keyword 检索、document governance engine（check/plan/apply staged 模式）以及 `search_codebase` / `manage_document` 已通过 `omega-context` 接入默认工具注册；2026-03-31 补充：`omega-context` 已把 document model 本地化，并将 `omega-document` backend 改为可选 feature，默认轻量构建不再把 LanceDB/DataFusion/Tantivy/ORT 栈拉进 `omega-app` / `omega-session` / `omega-core`，需要全文档检索时再显式启用 `document-backend`。
-- **Task 11E**: LanceDB 向量数据库 + 多维复合查询 — 已完成：`omega-document` 已接入 LanceDB 派生向量索引、revision-aware commit log、semantic/hybrid 检索与 keyword 自动降级，`search_codebase` 默认改为 hybrid。
-
-### Medium — Context Observability
-
-- **Task 11F**: Observability + TUI Integration — 已完成：context budget/caching 调试视图、runtime search results overlay、document health popup 与 compaction/index event feed 已接入 `omega-session` / `omega-tui`。
-- **Task 11F-1**: Unified `ContextDiagnostics` Snapshot — 已完成：`omega-context` 已输出真实 budget/cache/memory/document/store 聚合快照。
-- **Task 11F-2**: Diagnostics Producer Refactor — 已完成：`omega-session` / `omega-app` 已优先消费统一 diagnostics snapshot，overlay/log 不再只靠 metadata 片段拼装。
-- **Task 11F-3**: Context Dashboard Follow-up — 已完成：TUI diagnostics 现已消费完整 snapshot，补齐 memory/store 维度与统一 dashboard 视图。
-
-### High — 原有主线
-
-- **Task 10**: `omega-subagent` 仍重要，但应建立在上下文管理体系之上推进，避免 subagent 调度因上下文膨胀而失效。
-- **Task 11 (original)**: 原 Task 11 的上下文压缩需求已被 Task 11A ~ 11F 替代和拆解。
+- **Task 10**: `omega-subagent` 是当前主线，但要建立在已完成的上下文管理基线之上，避免调度再次被上下文膨胀拖垮。
+- **Task 11A ~ 11F-3**: 已完成并转入基线能力，不再作为独立主线推进；原 Task 11 的上下文压缩需求已被这条子任务链替代。
 
 ### Medium
 
-- **2026-04-02 workflow routing maintenance**: 默认只读分析现已拆分为两条 child workflow：`research = explore -> report`，`deep-research = explore -> plan -> execute -> report`；root workflow 也已收敛为单步 `select-workflow`，在一次结构化输出中同时写入 `recognized_scene_id` 与 `selected_workflow_id`。runtime promotion 规则现把系统性、全局性、深入式分析优先提升到 `deep-research`，而实现类请求仍提升到 `feature`。
-- **2026-04-02 TUI interrupt maintenance**: 手动中断运行中 turn 时，`omega-tui` 现在会立即把仍处于 `streaming` 的 response/thinking section 收口为 failed，并把仍在 running 的 tool run 标记为 failed，避免 UI 在已中断状态下继续显示 reasoning spinner 或运行中工具样式。
-- **2026-04-02 maintenance**: `omega-client` provider transport now applies configurable provider pacing defaults (`100ms` global request throttle, max concurrency `1`, `10s` 429 retry delay floor) and retries `429 Too Many Requests` with `Retry-After` support, reducing bursty hook-step failures on interactive-token-plan providers. `omega-app` also exposes these pacing overrides in `.omega/model.toml` under `[provider]`.
-- **Tool + Prompt optimization follow-up**: 该计划现已落成 `Task 8J.0 ~ 8U` 的实际任务链。新增 Task 8J.0（Lightweight Tool Strategy Prompt）作为不依赖 manifest 的 quick-win，可与 8J 并行推进。v0.3 修正后推荐顺序为：quick-win track `8J.0` 可立即开始 | manifest track `8J -> 8K -> 8L -> 8M/8N/8O -> 8R -> 8S -> 8T -> 8U | deferred: 8P`（等存储 API 稳定）。关键设计决策：Manifest-wraps-Handler、ToolHandler 签名不变、remediation 结构化、UI effects 复用 RuntimeUiEffect、profiles 大部分 Optional。2026-04-01 follow-up：root routing 的仓库级覆盖配置 `.omega/workflows/root.toml` 也必须与内建默认同步到 `max_iterations = 4`，否则单步 `select-workflow` 会在一次非 JSON 偏航后直接耗尽预算。
-- **Task 15F-30 ~ 15F-35**: deterministic test foundation 现应作为 `Task 10 / 12 / 13` 的配套安全网推进，优先把 LLM / runtime event / process / fs 这类真实外部边界收敛成稳定 mock seam，同时保持 workflow/session/core 逻辑尽量 real-tested。
-- **Task 4**: `omega-tasks` 作为持久化任务层，价值明确，但不应先于 context management。
-- **Task 12**: `omega-background` 排在任务系统附近，但它的 runtime-visible 状态在当前前端上如何投射，应建立在新的 app-owned runtime message policy 之上。
-- **Task 3**: `omega-message` 仍重要，但它真正释放价值要等到 subagent、team 与 runtime message boundary 都接通，因此不再放在最前。
-- **Task 13**: `omega-team` 保持中优先级，但应建立在 `omega-subagent`、`omega-message` 与新的 runtime message boundary 之上推进。
-
-### Medium — TUI Message Display Polish (新增)
-
-- **Task 15B-40 ~ 15B-46**: 已完成：`omega-tui` response panel 现已支持 lightweight Markdown spans、代码块容器、消息角色标识、Final Answer 强化、Tool Lane 折叠与 Thinking 摘要增强，并补齐窄终端 wrapping / spacing 回归。详见 `docs/specs/omega-tui-message-display-polish.md`。
-- **Task 15B-8**: 原 Markdown 渲染任务由 15B-40 替代并细化，15B-8 标记为 Replaced。
+- **2026-04-02 runtime maintenance**: 默认只读分析已拆为两条 child workflow：`research = explore -> report` 与 `deep-research = explore -> plan -> execute -> report`；root workflow 也已收敛为单步 `select-workflow`，并在一次结构化输出中同时写入 `recognized_scene_id` 与 `selected_workflow_id`。对系统性、全局性、深入式分析优先提升到 `deep-research`，实现类请求仍优先提升到 `feature`。
+- **2026-04-02 interrupt + provider maintenance**: `omega-tui` 手动中断时会立即把仍在 `streaming` 的 response/thinking section 与运行中的 tool run 收口为 failed；`omega-client` provider transport 现默认启用 pacing（`100ms` 全局节流、并发 `1`、`10s` 的 `429` retry floor）并支持 `Retry-After`，`.omega/model.toml` 的 `[provider]` 也已暴露这些覆盖项。
+- **2026-04-02 documentation hygiene**: `docs/README.md` 与本文件的首屏摘要已改为分组入口和精简状态说明；同时将已完成的 `observability-logging` PRD 与 `omega-tui-non-ui-extraction` 设计基线迁入 `docs/archive/`，避免历史材料继续混入 active spec 路径。
+- **Tool + Prompt optimization follow-up**: 当前任务链为 `Task 8J.0 ~ 8U`。推荐顺序：`8J.0` 先行；manifest track 为 `8J -> 8K -> 8L -> 8M/8N/8O -> 8R -> 8S -> 8T -> 8U`；`8P` 继续等待存储 API 稳定。关键决策保持不变：Manifest-wraps-Handler、`ToolHandler` 签名不变、remediation 结构化、UI effects 复用 `RuntimeUiEffect`、profiles 大多 optional。另：`.omega/workflows/root.toml` 必须与内建默认同步为 `max_iterations = 4`，否则单步 `select-workflow` 会在一次非 JSON 偏航后直接耗尽预算。
+- **Task 15F-30 ~ 15F-35**: deterministic test foundation 仍应作为 `Task 10 / 12 / 13` 的安全网推进，优先把 LLM、runtime event、process、fs 等外部边界收敛成稳定 mock seam，同时保持 workflow/session/core 尽量 real-tested。
+- **Task 4 / Task 12 / Task 3 / Task 13**: 这些能力仍保持中优先级，但都应建立在 `Task 10`、runtime message boundary 与当前 app-owned policy 路径之上，而不是前置插队。
+- **Task 15B-40 ~ 15B-46**: 已完成，`omega-tui` response panel 已支持 lightweight Markdown spans、代码块容器、消息角色标识、Final Answer 强化、Tool Lane 折叠与 Thinking 摘要增强。`Task 15B-8` 已被替代并标记为 Replaced。详见 `docs/specs/omega-tui-message-display-polish.md`。
 
 ### Low
 
-- **Task 6**: `omega-worktree` 对后期自治执行很重要，但当前尚未到隔离执行成为主瓶颈的阶段。
-- **Task 15B-9 ~ 15B-12**: 高级 TUI 能力（代码语法高亮、输入历史、面板搜索、可调宽度）继续保持后移。
+- **Task 6**: `omega-worktree` 对后期自治执行很重要，但当前还不是主瓶颈。
+- **Task 15B-9 ~ 15B-12**: 高级 TUI 能力（代码语法高亮、输入历史、面板搜索、可调宽度）继续后移。
 - **Task 16**: 最终整合测试保留为收尾任务，不应提前占用主线优先级。
 
 ---
@@ -981,7 +959,7 @@ _基础体验已在 M1.7 完成，此处保留高级特性。_
 - **Completed**: 2026-03-19
 - **Priority**: High
 - **Description**: 将 `omega-tui` 中不属于 UI 的 turn orchestration 与 observability 逻辑拆为独立 crate；该任务先于剩余主线执行，Phase 1 先实现 `omega-session` 与 `omega-observability`，Phase 2 再按需要评估 `omega-interaction`
-- **Related**: docs/specs/omega-tui-non-ui-extraction.md, docs/decisions/006-omega-tui-ui-boundary.md
+- **Related**: docs/specs/omega-app-package.md, docs/specs/omega-runtime-ui-message-contract.md, docs/decisions/006-omega-tui-ui-boundary.md
 - **Summary**: 新增 `omega-session` 承接 Agent turn orchestration 与 checkpoint/interrupt/update 协议，新增 `omega-observability` 承接 tracing 初始化、UI sink、JSONL 文件日志与 ANSI 清洗；`omega-tui` 已收敛为 UI 运行时并消费外部 `SessionUpdate`/trace channel，应用入口与顶层装配已迁到 `omega-app`；当前验证基线仍以 `cargo test -p omega-app -p omega-session -p omega-observability -p omega-tui` 为准
 
 ### Task 15E-1: omega-theme — 主题与样式令牌包
