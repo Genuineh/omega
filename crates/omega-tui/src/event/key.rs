@@ -84,6 +84,17 @@ pub(super) fn handle_key_event(
                             ));
                             return Ok(false);
                         }
+                        Some(ResponseActivation::DocumentKnowledgeDetailOpened) => {
+                            app_guard.set_status_notice(
+                                "Opened document knowledge detail overlay.",
+                            );
+                            return Ok(false);
+                        }
+                        Some(ResponseActivation::MemoryKnowledgeDetailOpened) => {
+                            app_guard
+                                .set_status_notice("Opened memory knowledge detail overlay.");
+                            return Ok(false);
+                        }
                         None if app_guard.show_thinking => {
                             "Select a command, thinking block, or tool summary before activating it."
                         }

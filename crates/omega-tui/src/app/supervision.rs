@@ -85,6 +85,11 @@ impl App {
 
 fn build_document_lines(snapshot: &ContextSupervisionSnapshot) -> Vec<String> {
     let document = &snapshot.document;
+    let governance_status = governance_label(document.health_status, document.totals.governance_health);
+    let has_document_query_activity = document
+        .operator_usage
+        .iter()
+        .any(|usage| matches!(usage.operator.as_str(), "context_recall_planner" | "search_codebase"));
     let mut lines = vec![
         format!(
             "status: {} ({})",
@@ -106,7 +111,7 @@ fn build_document_lines(snapshot: &ContextSupervisionSnapshot) -> Vec<String> {
             "freshness: staleness={}s health={} governance={}",
             document.totals.index_staleness_seconds,
             document.health_status.as_str(),
-            health_label(document.totals.governance_health)
+            governance_status
         ),
     ];
 
@@ -124,6 +129,12 @@ fn build_document_lines(snapshot: &ContextSupervisionSnapshot) -> Vec<String> {
         ));
     } else {
         lines.push("active: no promoted store version yet".to_string());
+        if document.totals.lance_db_size_bytes > 0 || document.totals.tantivy_index_size_bytes > 0 {
+            lines.push(
+                "store note: disk bytes exist, but no promoted store version is active yet"
+                    .to_string(),
+            );
+        }
     }
 
     if let Some(version) = document.pending_version.as_ref() {
@@ -195,7 +206,23 @@ fn build_document_lines(snapshot: &ContextSupervisionSnapshot) -> Vec<String> {
                 }
             }
         }
-        None => lines.push("hits: no document query has populated supervision yet".to_string()),
+        None => {
+            if has_document_query_activity {
+                if document.active_version.is_none() {
+                    lines.push(
+                        "hits: recent document recall attempts ran before any promoted store version was available"
+                            .to_string(),
+                    );
+                } else {
+                    lines.push(
+                        "hits: recent document queries returned no captured result snapshot"
+                            .to_string(),
+                    );
+                }
+            } else {
+                lines.push("hits: no document query has populated supervision yet".to_string());
+            }
+        }
     }
 
     lines
@@ -224,7 +251,33 @@ fn build_memory_lines(snapshot: &ContextSupervisionSnapshot) -> Vec<String> {
             memory.totals.turn_archive_count,
             format_bytes(memory.totals.turn_archive_size_bytes)
         ),
+        format!(
+            "retention: accepted={} dropped={}",
+            memory.totals.retention_candidates_accepted,
+            memory.totals.retention_candidates_dropped
+        ),
+        format!(
+            "queries: count={} mix={}",
+            memory.totals.memory_query_count,
+            format_kv_counts(&memory.totals.memory_query_hit_mix)
+        ),
+        format!(
+            "observations: total={} fresh={} stale={} superseded={} corrected={} corrections={}",
+            memory.totals.observation_count,
+            memory.totals.observation_fresh_count,
+            memory.totals.observation_stale_count,
+            memory.totals.observation_superseded_count,
+            memory.totals.observation_corrected_count,
+            memory.totals.observation_correction_activity
+        ),
     ];
+
+    if !memory.totals.dropped_candidates_by_profile.is_empty() {
+        lines.push(format!(
+            "dropped by profile: {}",
+            format_kv_counts(&memory.totals.dropped_candidates_by_profile)
+        ));
+    }
 
     match memory.current_hits.as_ref() {
         Some(hits) => {
@@ -244,7 +297,66 @@ fn build_memory_lines(snapshot: &ContextSupervisionSnapshot) -> Vec<String> {
         None => lines.push("selected summaries: none for the current step".to_string()),
     }
 
+    match memory.current_query.as_ref() {
+        Some(query) => {
+            lines.push(String::new());
+            lines.push(format!(
+                "memory query: {}",
+                if query.query.is_empty() {
+                    "(empty query)"
+                } else {
+                    query.query.as_str()
+                }
+            ));
+            lines.push(format!(
+                "memory query results: {} ({})",
+                query.result_count,
+                format_kv_counts(&query.hit_mix)
+            ));
+            for hit in &query.top_hits {
+                lines.push(format!("- [{}] {}", hit.profile, hit.title));
+                lines.push(format!("  {}", hit.preview));
+            }
+        }
+        None => lines.push("memory query: no archived recall has populated supervision yet".to_string()),
+    }
+
+    match memory.current_observations.as_ref() {
+        Some(observations) => {
+            lines.push(String::new());
+            lines.push(format!(
+                "observations query: {}",
+                if observations.query.is_empty() {
+                    "(empty query)"
+                } else {
+                    observations.query.as_str()
+                }
+            ));
+            lines.push(format!(
+                "observation hits: {} ({})",
+                observations.result_count,
+                format_kv_counts(&observations.freshness_mix)
+            ));
+            for hit in &observations.top_hits {
+                lines.push(format!("- [{}] {}", hit.freshness.as_str(), hit.title));
+                lines.push(format!("  {}", hit.summary));
+            }
+        }
+        None => lines.push("observations: no project observation recall has populated supervision yet".to_string()),
+    }
+
     lines
+}
+
+fn format_kv_counts(counts: &std::collections::BTreeMap<String, impl std::fmt::Display>) -> String {
+    if counts.is_empty() {
+        return "none".to_string();
+    }
+    counts
+        .iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn health_label(health: Option<HealthScore>) -> &'static str {
@@ -253,6 +365,17 @@ fn health_label(health: Option<HealthScore>) -> &'static str {
         Some(HealthScore::NeedsAttention) => "needs_attention",
         Some(HealthScore::Critical) => "critical",
         None => "unknown",
+    }
+}
+
+fn governance_label(
+    health_status: DocumentHealthStatus,
+    governance_health: Option<HealthScore>,
+) -> &'static str {
+    if governance_health.is_none() && matches!(health_status, DocumentHealthStatus::NeverChecked) {
+        "pending_health_check"
+    } else {
+        health_label(governance_health)
     }
 }
 
@@ -269,5 +392,61 @@ fn format_bytes(bytes: u64) -> String {
         format!("{:.1} KiB", bytes as f64 / KB as f64)
     } else {
         format!("{} B", bytes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use omega_session::{
+        ContextSupervisionSnapshot, DocumentHealthStatus, DocumentOperatorUsage,
+        DocumentSupervisionSnapshot, DocumentSupervisionTotals, MemorySupervisionSnapshot,
+        SupervisionReadiness,
+    };
+
+    use super::build_document_lines;
+
+    #[test]
+    fn document_lines_explain_uninitialized_store_and_pending_health_check() {
+        let lines = build_document_lines(&ContextSupervisionSnapshot {
+            document: DocumentSupervisionSnapshot {
+                enabled: true,
+                readiness: SupervisionReadiness::Uninitialized,
+                health_status: DocumentHealthStatus::NeverChecked,
+                totals: DocumentSupervisionTotals {
+                    lance_db_size_bytes: 5 * 1024 * 1024,
+                    tantivy_index_size_bytes: 640 * 1024,
+                    ..DocumentSupervisionTotals::default()
+                },
+                ..DocumentSupervisionSnapshot::default()
+            },
+            memory: MemorySupervisionSnapshot::default(),
+        });
+
+        assert!(lines.iter().any(|line| line.contains("status: enabled (uninitialized)")));
+        assert!(lines.iter().any(|line| line.contains("governance=pending_health_check")));
+        assert!(lines.iter().any(|line| line.contains("store note: disk bytes exist")));
+    }
+
+    #[test]
+    fn document_lines_distinguish_query_attempts_without_hits() {
+        let lines = build_document_lines(&ContextSupervisionSnapshot {
+            document: DocumentSupervisionSnapshot {
+                enabled: true,
+                readiness: SupervisionReadiness::Uninitialized,
+                health_status: DocumentHealthStatus::NeverChecked,
+                operator_usage: vec![DocumentOperatorUsage {
+                    operator: "context_recall_planner".to_string(),
+                    source: "planner".to_string(),
+                    count: 3,
+                    last_used_at: Some(42),
+                }],
+                ..DocumentSupervisionSnapshot::default()
+            },
+            memory: MemorySupervisionSnapshot::default(),
+        });
+
+        assert!(lines.iter().any(|line| {
+            line.contains("recent document recall attempts ran before any promoted store version was available")
+        }));
     }
 }

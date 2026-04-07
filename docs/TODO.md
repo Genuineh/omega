@@ -14,8 +14,11 @@ _任务编号以 `docs/specs/omega-agent-impl-plan.md` 为准；`8A/8B`、`15A/1
 
 ### Medium
 - **2026-04-03 `.storeignore` vector-index follow-up**: 为知识库扫描新增 `.omega/.storeignore` 仓库级规则文件，只控制“哪些文件不进入 embedding/LanceDB 派生向量索引”，而不是跳过整个 `FileStore`/tantivy/治理管线；后续实现必须保证 keyword 检索与文档治理仍可见这些文件，semantic/hybrid 仅对未忽略文件建立向量结果。
-- **2026-04-07 knowledge evolution follow-up**: Hindsight 调研已经收敛为 `docs/specs/omega-knowledge-evolution.md`。当前 document health / operator attribution / store versioning / supervision baseline 已完成，下一轮应按 `retention profiles -> memory query -> project observations -> unified recall planner` 的顺序推进，避免在 `MemoryService` 仍无 query surface 时提前引入跨层 recall API。
-- **2026-04-02 document backend default enablement**: `omega-app` 默认 feature 现已包含 `document-backend`，因此默认 `cargo run -p omega-app` 会直接接通 `omega-document` / LanceDB / Tantivy 后端；`.omega/store/` 仍按需惰性生成，但不再需要额外 `--features document-backend` 才能使用 `search_codebase` 与 `manage_document`。
+- **2026-04-07 memory knowledge follow-up**: `omega-context` 已把 recall hit budget 从硬编码切到 `.omega/model.toml` 的 `[context.recall]` 覆盖项，`omega-session` / `omega-memory` 已补齐 `GovernanceEvent` retention evidence，并让 `/document` command turn 真正归档到 memory；`LocalMemoryService::compact_context()` 也已从 stub 变为真实 archived-turn summary compaction。当前剩余 follow-up 主要是 memory query 仍以 lexical scoring 为主，暂未引入更强的 retrieval/rerank 语义层。
+- **2026-04-07 recall quality follow-up**: 最新排查确认 recall planner 现在仍直接把 `latest_user_turn` 原句送去 memory/document recall，而 `omega-memory` 的 query scorer 仍以 whitespace lexical `contains` 为主；这会让中文、长自然语言和弱锚点请求稳定出现空命中。下一轮应按 `11G-7 ~ 11G-10` 的顺序补 deterministic query planning、memory/document retrieval quality 和 bounded LLM rewrite fallback，同时用 `11F-8` 把 `selected summaries` 与真实 memory/observation hits 的 UI 语义拆开。
+- **2026-04-07 document backend test isolation**: `omega-app` 默认 feature 已收回到轻量路径，避免日常 `cargo test` / `cargo test -p omega-app` 无意拉起 `omega-document` / LanceDB / Tantivy / fastembed 编译链；需要文档与检索能力时显式使用 `cargo run -p omega-app --features document-backend`。存储/检索后端回归走 `cargo test-document-backend`，session slash-command 集成走 `cargo test-document-commands`；feature-enabled session 文档测试默认强制 mock embedding backend，避免真实模型下载与 `.fastembed_cache` 污染工作树。
+- **2026-04-07 document supervision semantics follow-up**: document supervision 现会把“backend 已启用但尚无 promoted store version / 尚未跑过 health check”的状态显式标记为 `uninitialized` 和 `pending_health_check`，不再把这类半初始化状态误报成 `idle` 或泛化成治理异常；当 planner/search 已尝试 document recall 但尚无活跃索引或结果快照时，TUI 也会给出区分性提示，而不是统一显示“no document query has populated supervision yet”。
+- **2026-04-07 knowledge UI follow-up**: `Task 11F-5 ~ 11F-7` 已完成。`omega-session` 现会为 step 与 `/document query` command 发出 `StepKnowledgeSummary`，`omega-tui` Response panel 已新增可点击的 document/memory knowledge lane，并把 overlay 文案收敛为按 query、reason、top hits、selected summaries、observations 分组的可浏览视图。验证已通过 `cargo test -p omega-tui --lib --color never`、`cargo test -p omega-session --lib --color never` 与 `cargo test -p omega-session --features document-backend spawn_command_document_query_emits_step_knowledge_summary --color never`。
 - **2026-04-02 context supervision follow-up**: 下一轮 TUI/context 工作应为 document system 与 memory system 规划专门监管面板，统一回答“是否启用、总量/大小、当前命中摘要”三类问题；详细方案见 `docs/specs/omega-tui-document-memory-supervision.md`。
 - **2026-04-02 runtime maintenance**: 默认只读分析已拆为两条 child workflow：`research = explore -> report` 与 `deep-research = explore -> plan -> execute -> report`；root workflow 也已收敛为单步 `select-workflow`，并在一次结构化输出中同时写入 `recognized_scene_id` 与 `selected_workflow_id`。对系统性、全局性、深入式分析优先提升到 `deep-research`，实现类请求仍优先提升到 `feature`。
 - **2026-04-02 interrupt + provider maintenance**: `omega-tui` 手动中断时会立即把仍在 `streaming` 的 response/thinking section 与运行中的 tool run 收口为 failed；`omega-client` provider transport 现默认启用 pacing（`100ms` 全局节流、并发 `1`、`10s` 的 `429` retry floor）并支持 `Retry-After`，`.omega/model.toml` 的 `[provider]` 也已暴露这些覆盖项。
@@ -201,6 +204,7 @@ _将 M11 中基础级体验优化前移，确保在开发后续功能时有可�
 - **Complexity**: L
 - **Planning Note**: 不依赖 Task 8C——用现有 `Result<String>` 即可工作，8C 落地后再回补结构化返回值。这是当前稳定性收益最高、应第一个落地的任务。
 - **Summary**: `omega-tools-builtin` 已新增 `list_dir`、`glob_search`、`grep_search` 三个结构化只读工具，并为 `read_file` 增加 `start_line` / `end_line` 的 inclusive range 读取与更严格的参数校验；builtin 路径安全辅助函数已统一，`omega-core` 默认工具注册已接入新工具，`omega-session` / `omega-workflow` 也已同步收紧 root routing step 的 tool block 集，避免 scene/workflow selection 泄露 repo inspection 能力。验证已通过 `cargo test -p omega-tools-builtin -p omega-core -p omega-session -p omega-workflow` 与 `cargo clippy -p omega-tools-builtin -p omega-core -p omega-session -p omega-workflow --all-targets -- -D warnings`。
+	2026-04-07 follow-up: `read_file` 现在会在显式 `start_line` / `end_line` 存在时忽略遗留 `limit` 字段，而不是直接报 validation error，避免 child workflow 混用旧/新参数时无谓失败。
 - **Related**: docs/specs/omega-tool-system-upgrade.md
 
 ### Task 8E: omega-tools-builtin — Patch-Centric Editing Toolset
@@ -221,6 +225,7 @@ _将 M11 中基础级体验优化前移，确保在开发后续功能时有可�
 - **Complexity**: M
 - **Blocked by**: Task 8D
 - **Summary**: `omega-tools-builtin` 已新增受限的 `batch` 只读工具，允许在单次调用中并行聚合 `list_dir`、`glob_search`、`grep_search` 与 `read_file` 请求，并以稳定输入顺序返回结构化 preview / metadata / per-item output；非法子请求会在 batch 内按项报告 validation/policy 失败而不放大为整批崩溃。`omega-core` 默认工具集已注册 `batch`，`omega-session` 复用现有 `ToolRun` detail 渲染显示 batch summary 与嵌套 metadata，`omega-workflow` 也已继续在 root routing 默认 block 集中显式屏蔽 `batch`，避免 scene/workflow selection 泄露 repo inspection 能力。验证已通过 `cargo test -p omega-tools-builtin -p omega-core -p omega-session -p omega-workflow` 与 `cargo clippy -p omega-tools-builtin -p omega-core -p omega-session -p omega-workflow --all-targets -- -D warnings`。
+	2026-04-07 follow-up: `batch` 现在会接受常见的 JSON-stringified `requests` payload，并在解析后继续按原有只读限制执行，避免 child workflow 在模型把数组包成字符串时整批 validation fail。
 - **Related**: docs/specs/omega-tool-system-upgrade.md
 
 ### Task 8G: omega-tools-builtin — Bash V2
@@ -947,64 +952,149 @@ _2026-03-31 规划补充：当前仓库已经具备 `omega-client::test_support:
 - **Related**: docs/specs/omega-tui-document-memory-supervision.md, docs/specs/omega-context-management.md, docs/specs/omega-tui-runtime-experience.md
 - **Summary**: `omega-context` 已补 `ContextSupervisionSnapshot`、`turn_archive_size_bytes` 与 typed document/memory hit summaries；`omega-session` 已把 selected summary preview 与 `ContextSupervision` state message 接入 runtime；`omega-tui` sidebar 现提供独立 `Document` / `Memory` 监管面板并支持 detail overlay；`omega-app` runtime policy 已转发该状态。验证已通过 `cargo test -p omega-tui --color never` 与 `cargo test -p omega-app --color never`。
 
+### Task 11F-5: omega-context / omega-session / omega-app / omega-tui — Response-Facing Knowledge Summary Lane
+- **Status**: Completed
+- **Priority**: High
+- **Complexity**: L
+- **Description**: 为当前 step / command 增加 `StepKnowledgeSummary` typed projection，并在 Response panel 中渲染轻量 document/memory knowledge lane。目标是让用户在主阅读区直接看见“用了哪些 knowledge source、命中了什么、没命中时为什么”，同时保留 Sidebar 作为长期监管面板。
+- **Blocked by**: Task 11F-4, Task 11G-4, Task 15B-22
+- **Blocks**: Task 11F-6, Task 11F-7
+- **Related**: docs/specs/omega-tui-document-memory-supervision.md, docs/specs/omega-tui-step-tool-thinking-refinement.md, docs/specs/omega-tui-runtime-experience.md
+- **Summary**: `omega-context` 已补 `StepKnowledgeSummary` / `ResponseDocumentKnowledge` / `ResponseMemoryKnowledge` projection；`omega-session` 现会把当前 step 的 document/memory recall 以及 `/document query` command 的文档命中按 `section_id` 发到 runtime；`omega-tui` Response panel 已在正文旁渲染 knowledge lane，并支持从 lane 直接打开 detail overlay。
+
+### Task 11F-6: omega-tui / omega-context — Knowledge Detail Overlay And Browse Interaction
+- **Status**: Completed
+- **Priority**: Medium
+- **Complexity**: M
+- **Description**: 把现有 document/memory detail 从长文本 dump 收敛成更可浏览的 overlay：按 query、状态、原因、top hits、selected summaries 分块展示，并支持从 Response 与 Sidebar 双向进入同一详情视图。
+- **Blocked by**: Task 11F-5, Task 15B-29
+- **Blocks**: Task 11F-7
+- **Related**: docs/specs/omega-tui-document-memory-supervision.md, docs/specs/omega-tui-overlay-popups.md
+- **Summary**: Response knowledge lane 现已支持 `Enter`/点击打开 document 或 memory detail overlay；overlay 内容按 `readiness/query/reason/result count/top hits` 与 `selected summaries/query/observations` 分块展示，不再把知识视图退化成原始 diagnostics dump。
+
+### Task 11F-7: omega-tui / omega-session — Knowledge View Content Curation
+- **Status**: Completed
+- **Priority**: Medium
+- **Complexity**: M
+- **Description**: 重写 document/memory supervision 的内容顺序和文案模板，把当前 diagnostics 风格输出调整成更直观的阅读布局，并确保 Response / Sidebar / Overlay 三处对 `uninitialized`、`pending_health_check`、`no promoted store version`、`attempted but empty` 等状态使用同一套语义。
+- **Blocked by**: Task 11F-5
+- **Related**: docs/specs/omega-tui-document-memory-supervision.md, crates/omega-tui/src/app/supervision.rs
+- **Summary**: Response lane 与 overlay 现统一使用 `uninitialized`、`no promoted store version`、`no matches returned` 等知识系统语义；document card 会在无 promoted store 或空命中时给出原因，memory card 会把 selected summaries、memory hits 与 observations 拆开呈现，并保留最小摘要与 drill-down 的边界。
+
 ### Task 11G: omega-memory / omega-context — Knowledge Evolution Follow-up
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-04-07
 - **Priority**: Medium
 - **Complexity**: High
 - **Description**: 在已完成的 `11E` / `11F` document + supervision 基线上，补齐长期项目知识能力，但必须遵守修正后的依赖顺序：先提升 retention 质量，再补 memory query，再做 observation 层，最后才考虑跨 memory/document 的 unified recall planner。
 - **Related**: docs/specs/omega-knowledge-evolution.md, docs/specs/omega-context-management.md, docs/specs/omega-tui-document-memory-supervision.md
+- **Summary**: `omega-memory` 已从纯 compaction/ranking helper 扩展为 repo-local store，提供 `.omega/memory/turns/*.json` turn archive、retention candidates、archived memory query、`observations.jsonl` 项目观察层与 observation freshness/correction metadata；`omega-context` 已用真实 memory store 替换旧 stub，并在 assemble path 中接入 document + memory + observation unified recall planner；`omega-session` turn 结束时会把 execute/plan 产物提炼为 retention signals 归档；`omega-tui` supervision 面板现展示 retention/query/observation 统计与当前 recall 命中。
 
 ### Task 11G-1: omega-memory / omega-session — Retention Profiles And Noise Gate
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-04-07
 - **Priority**: Medium
 - **Complexity**: M
 - **Description**: 为 `archive_turn()` 增加 `project_facts / developer_preferences / open_threads / ephemeral_debug` 四类 retention profile，并在长期保留前显式丢弃低价值调试噪音。需要把 accepted/dropped counters 接入 diagnostics，但不得影响当前 `rank_summary_candidates()` 的 context assembly 语义。
 - **Blocks**: Task 11G-2, Task 11G-3
 - **Related**: docs/specs/omega-knowledge-evolution.md §Phase 1
+- **Summary**: session 现在会从 `plan` / `execute` structured output 与用户 turn 中提炼 changed paths、validation targets、open/completed tasks 与 developer preference hints；`omega-memory` archive-time 会把这些信号分类为 retention candidates，并对 debug/log-only summary 走 noise gate；accepted/dropped counters 及 dropped-by-profile 已进入 diagnostics/supervision。
 
 ### Task 11G-2: omega-memory / omega-context — Memory Query Surface For Archived Knowledge
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-04-07
 - **Priority**: Medium
 - **Complexity**: M
 - **Description**: 在 retention gate 落地后，为 `MemoryService` 增加最小 query surface，覆盖 archived summaries 与 accepted retention candidates。该能力是后续 recall planner 的前置条件；在此之前不要新增 facade 顶层 unified recall request。
 - **Blocked by**: Task 11G-1
 - **Blocks**: Task 11G-4, Task 11G-5
 - **Related**: docs/specs/omega-knowledge-evolution.md §Phase 2
+- **Summary**: `MemoryService` 现已支持 archived knowledge query，覆盖 accepted retention candidates；query 会累计 hit mix / query count 并把 top hits 反馈到 diagnostics 与 TUI supervision。
 
 ### Task 11G-3: omega-context — Evidence-Backed Project Observations
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-04-07
 - **Priority**: Medium
 - **Complexity**: L
 - **Description**: 在 raw turn summaries、document/store events 与 accepted retention candidates 之上增加 `project observations` 派生层。每条 observation 必须带 evidence refs、freshness state 与 supersession/correction metadata，并保持 repo-local 存储；它只能作为派生知识，不能覆盖 `files.jsonl` 或 store version ledger。
 - **Blocked by**: Task 11G-1
 - **Blocks**: Task 11G-4, Task 11G-5
 - **Related**: docs/specs/omega-knowledge-evolution.md §Phase 3
+- **Summary**: `omega-memory` 现在会把 accepted retention candidates 合成为 repo-local `observations.jsonl`；每条 observation 均保留 evidence refs、freshness、supersedes/corrected_by metadata，并在 open thread 完成时自动标记 superseded，在事实修正时标记 corrected。
 
 ### Task 11G-4: omega-context / omega-session / omega-tui — Observation And Memory Knowledge Supervision
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-04-07
 - **Priority**: Medium
 - **Complexity**: M
 - **Description**: 将 retention / memory query / observation 的阶段化状态补进 diagnostics 与 supervision：至少包括 accepted/dropped retention candidates、memory query count、observation freshness 和 correction activity。UI 先复用现有 supervision 容器，不额外发明新的常驻面板。
 - **Blocked by**: Task 11G-2, Task 11G-3
 - **Blocks**: Task 11G-5
 - **Related**: docs/specs/omega-knowledge-evolution.md §Commands And Supervision, docs/specs/omega-tui-document-memory-supervision.md
+- **Summary**: `ContextMemoryDiagnostics` / `MemorySupervisionTotals` 已增加 retention accepted/dropped、query count/hit mix、observation freshness/correction activity 与当前 memory/observation recall 命中；`omega-tui` Memory Supervision 面板现直接展示这些状态，不再只停留在 archived turn count。
 
 ### Task 11G-5: omega-context — Unified Recall Planner After Memory Query Baseline
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-04-07
 - **Priority**: Medium
 - **Complexity**: L
 - **Description**: 在 `MemoryService::query()` 与 observation layer 都成立之后，再在 `omega-context` 内部建立 unified recall planner，统一调度 document query、memory query、observation recall 与现有 summary selection，并继续受 token budget 约束。此阶段优先做内部 planner，不预设 facade 顶层 public API。
 - **Blocked by**: Task 11G-2, Task 11G-3, Task 11G-4
 - **Blocks**: Task 11G-6
 - **Related**: docs/specs/omega-knowledge-evolution.md §Phase 4
+- **Summary**: `OmegaContextFacade::assemble_step_context()` 现在会在内部先做 unified recall enrichment，再委托原有 assembler；planner 会统一拉取 document hits、archived memory hits 与 project observations，并在受限 token budget 下把结果注入 step system blocks，同时保留既有 `rank_summary_candidates()` 语义不变。
 
 ### Task 11G-6: omega-document / omega-context — Advanced Retrieval Follow-Up
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-04-07
 - **Priority**: Low
 - **Complexity**: L
 - **Description**: 在 unified recall planner 稳定后，再推进 strategy-specific chunking、lightweight relation-aware retrieval 与 temporal-aware retrieval。它们不属于低风险首轮范围，必须建立在 observation lifecycle 与 memory query 已稳定的前提上。
 - **Blocked by**: Task 11G-5
 - **Related**: docs/specs/omega-knowledge-evolution.md §Phase 5
+- **Summary**: 本轮先落低风险 advanced retrieval 基线：planner document recall 现已支持 recent-window temporal bias，并基于 archived changed-path evidence 对 document hits 做 lightweight relation-aware rerank；strategy-specific chunking 保持 heuristic-first 的轻量实现，没有提前引入 AST/graph 级重维护路径。
+
+### Task 11F-8: omega-session / omega-tui — Recall Source Semantics Split
+- **Status**: Pending
+- **Priority**: Medium
+- **Complexity**: M
+- **Description**: 把 `selected summaries`、`archived memory hits` 与 `observation hits` 从同一张 Memory Knowledge 卡片中拆开，避免把 step summary selection 误读成真实 memory 命中。需要同步调整 Response / Sidebar / Overlay 三处文案与 diagnostics 来源。
+- **Blocked by**: Task 11F-7
+- **Related**: docs/specs/omega-tui-document-memory-supervision.md, docs/specs/omega-knowledge-evolution.md
+
+### Task 11G-7: omega-context — Deterministic Recall Query Planning
+- **Status**: Pending
+- **Priority**: High
+- **Complexity**: M
+- **Description**: 在 `omega-context` 内部新增 `RecallQueryBundle`，从 `latest_user_turn`、`step.label`、`current_execute_item`、`structured_input`、`todo_snapshot` 与近期高信号 summaries 中生成 2-5 条 step-aware recall queries，替代当前单条原句 recall。首版必须保持 facade boundary 不变，不新增顶层 public recall request type。
+- **Blocks**: Task 11G-8, Task 11G-9, Task 11G-10
+- **Related**: docs/specs/omega-knowledge-evolution.md §Phase 6, docs/specs/omega-context-management.md
+
+### Task 11G-8: omega-memory / omega-context — Memory Retrieval Scoring Upgrade
+- **Status**: Pending
+- **Priority**: High
+- **Complexity**: L
+- **Description**: 把 memory / observation query 从 whitespace split + `contains` 升级为更稳健的 lexical retrieval：至少支持 CJK-friendly tokenization、field-weighted scoring（`title > summary > user_intent`）与多 query merge。目标是让中文、长自然语言与同义表达不再稳定空命中。
+- **Blocked by**: Task 11G-7
+- **Blocks**: Task 11G-10
+- **Related**: docs/specs/omega-knowledge-evolution.md §Phase 6
+
+### Task 11G-9: omega-context / omega-document — Multi-Query Document Recall And Merge/Rerank
+- **Status**: Pending
+- **Priority**: High
+- **Complexity**: L
+- **Description**: 让 document recall 消费 `RecallQueryBundle` 而不是单 query：执行 multi-query search、按 path 去重、保留 recent-window temporal bias，并继续结合 memory/observation path hints 做 lightweight rerank。首版不引入 cross-encoder 或重 relation graph。
+- **Blocked by**: Task 11G-7
+- **Blocks**: Task 11G-10
+- **Related**: docs/specs/omega-knowledge-evolution.md §Phase 6
+
+### Task 11G-10: omega-context / omega-session — Bounded LLM Recall Rewrite Fallback
+- **Status**: Pending
+- **Priority**: Medium
+- **Complexity**: L
+- **Description**: 在 deterministic bundle recall 全空、query 过长或缺少锚点时，增加受控的 LLM-assisted rewrite fallback。fallback 只能补充 query bundle，不能覆盖 deterministic queries；同时必须把触发原因、rewrite 结果与 empty-hit recovery 路径写入 diagnostics / supervision。
+- **Blocked by**: Task 11G-8, Task 11G-9
+- **Related**: docs/specs/omega-knowledge-evolution.md §Phase 6, docs/specs/omega-context-management.md
 
 ### ── M7: 任务系统 (s07) ──
 

@@ -15,6 +15,8 @@ related_prds: []
 
 本规格把 `learn/` 下基于 Hindsight 的调研结论收敛成 Omega 可执行的实现方案。
 
+Status note (2026-04-07): `Phase 1 ~ Phase 5` 的 retention / memory query / observation / unified recall planner 基线已经落地，但当前 recall quality 仍明显不足。最新排查显示，`omega-context::plan_recall()` 仍直接把 `latest_user_turn` 原句送入 memory/document recall，而 `omega-memory` 仍以 whitespace lexical `contains` 为主；因此长自然语言、中文请求和弱锚点问题会稳定产生空命中或低质量命中。下一轮工作应聚焦 query planning、retrieval scoring 和 empty-hit recovery，而不是重复扩大 planner 表面积。
+
 目标不是把 Omega 改造成通用 memory engine，而是在保留当前 `repo-local source of truth + omega-context facade + workflow-first assembly + supervision` 基线的前提下，补齐长期项目知识的保留、整理与召回能力。
 
 本规格同时修正调研阶段的几个过度设计点：
@@ -300,6 +302,121 @@ pub struct ProjectObservation {
 
 这些能力应建立在 observation lifecycle 和 memory query 已稳定后再推进。
 
+## Phase 6: Recall Query Quality And Empty-Hit Recovery
+
+### Goal
+
+让已落地的 unified recall planner 真正具备稳定命中质量，特别是面向长自然语言、中文请求、弱文件锚点和首次空命中的场景。
+
+### Problems Confirmed In Current Baseline
+
+1. `plan_recall()` 当前直接复用 `latest_user_turn` 作为 memory query、observation query 与 document query，缺少 step-aware query planning。
+2. `omega-memory` 当前以 whitespace split + `contains` 计分为主，对中文、长句和同义表达非常脆弱。
+3. document recall 仍主要是单 query hybrid search，缺少 multi-query merge / dedupe / rerank。
+4. 当前 `MemoryHitSummary` 和 `ResponseMemoryKnowledge` 仍会把 selected step summaries 与真实 archived memory hits / observation hits 并列展示，容易把“summary selection”误读成“memory hit”。
+5. LLM 目前没有 bounded recall rewrite/fallback path；首次 recall 全空时，系统只能继续依赖原 query 或等待模型自己调用工具补查。
+
+### Scope
+
+- 在 `omega-context` 内部引入 deterministic `RecallQueryBundle`，不新增 facade 顶层 public request type。
+- 升级 `omega-memory` 的 lexical retrieval，使其至少对中文与长自然语言查询更稳健。
+- 把 document recall 升级为 multi-query recall + merge/rerank。
+- 只在必要时引入 LLM-assisted rewrite fallback，而不是让每次 recall 都先走模型改写。
+- 收敛 diagnostics / TUI 语义，明确区分 selected summaries、memory hits 与 observation hits。
+
+### Non-Goals
+
+- 不把 recall query planning 变成新的对外 workflow 或 slash command。
+- 不在本阶段把 recall rewrite 变成 always-on LLM pass。
+- 不引入 cross-encoder rerank、重量级 relation graph 或 AST-grade chunking。
+- 不允许 `omega-session` / `omega-tui` 越过 `omega-context` 直接操作 memory/document internals。
+
+### Proposed Internal Contract
+
+```rust
+pub struct RecallQueryBundle {
+        pub raw_query: String,
+        pub keyword_queries: Vec<String>,
+        pub concept_queries: Vec<String>,
+        pub path_hints: Vec<String>,
+        pub doc_type_hints: Vec<DocType>,
+        pub rewrite_reason: Option<String>,
+}
+```
+
+说明：
+
+- `raw_query` 保留原始用户意图，不被 rewrite 覆盖。
+- `keyword_queries` 来自 deterministic 提炼，例如 step label、execute item label、structured input anchors、todo labels。
+- `concept_queries` 用于长自然语言压缩后的短语检索。
+- `path_hints` / `doc_type_hints` 只作为 rerank/filter hint，不要求首版全部强绑定到 query API。
+- LLM fallback 若触发，只能补充 bundle，不得替换掉 deterministic queries。
+
+### Deterministic Query Planning Rules
+
+优先从以下信号构建 recall bundle：
+
+1. `latest_user_turn`
+2. `step.label`
+3. `current_execute_item.item_label`
+4. `structured_input` 中的标题、路径、任务名、schema key
+5. `todo_snapshot` 中当前 open item 的文本
+6. 最近 selected summaries 中重复出现的高频实体
+
+首版规则：
+
+- 生成 2-5 条 candidate queries，而不是单 query。
+- 对长 query 做 deterministic 压缩，优先保留名词短语、路径、crate 名、step 名和 task label。
+- 若请求明显是中文或混合语言，memory lexical path 需要产出 CJK-friendly query terms，而不是仅按空格切分。
+
+### Retrieval Quality Strategy
+
+#### Memory / Observation
+
+- lexical scoring 改为 field-weighted：`title > summary > user_intent`
+- 支持 CJK-friendly tokenization（如 bigram/trigram 或等价轻量策略）
+- 继续保留 profile filter / freshness gating
+- 对完全空 query 或弱 query，允许 bundle 中多 query 并行评分再合并
+
+#### Document
+
+- 对 `RecallQueryBundle` 中的 queries 执行 multi-query search
+- 合并结果时按 path 去重
+- rerank 继续结合 changed-path evidence、observation path hints、recent window bias
+- 首版仍保留 lightweight heuristic，不强制引入重 reranker
+
+### LLM-Assisted Rewrite Fallback
+
+只在以下条件满足时触发：
+
+- deterministic bundle 首轮 recall 全空或极弱
+- 原 query 过长、过口语化、缺少可检索锚点
+- 当前 step 明显依赖 recall（如 research/report/document-heavy steps）
+
+fallback 要求：
+
+- 输出必须是 bounded query bundle，而不是自由文本分析
+- 保留 deterministic bundle 作为基线，不允许覆盖
+- 记录 `rewrite_reason` 和 fallback 是否触发到 diagnostics/supervision
+
+### Diagnostics And UI Semantics
+
+- `selected summaries` 必须从 `archived memory hits` 与 `observation hits` 中分离展示
+- empty-hit case 必须区分：
+    - `no query planned`
+    - `query planned but memory returned 0`
+    - `query planned but document store unavailable`
+    - `query rewritten after initial empty hit`
+- TUI Response / Sidebar / Overlay 使用同一套 recall semantics，避免把 selected summary 误读成 memory hit
+
+### Acceptance Criteria
+
+- recall planner 不再只依赖 `latest_user_turn` 单 query。
+- memory query 对中文和长自然语言请求的命中率有可验证提升。
+- document recall 能消费 multi-query bundle，并对空命中/弱命中给出更明确 diagnostics。
+- LLM rewrite fallback 只在受控条件下触发，并能被 supervision 观察到。
+- TUI 中 `selected summaries`、`memory hits` 与 `observation hits` 的语义清晰分离。
+
 ## Commands And Supervision
 
 ### Phase 1-2
@@ -334,6 +451,8 @@ pub struct ProjectObservation {
 | Retention profiles | Add at archive-time | Noise should be filtered before long-term storage |
 | Strategy-specific chunking | Later phase | Requires parser and maintenance cost not suitable for low-risk rollout |
 | Relation graph | Lightweight and deferred | Current codebase has no graph maintenance path |
+| Recall query planning | Deterministic bundle first, LLM fallback second | Keeps latency/cost bounded and preserves non-LLM baseline |
+| Rewrite triggering | Empty-hit / weak-hit / long-query only | Avoids always-on LLM overhead for every recall |
 
 ## Testing Strategy
 
@@ -350,9 +469,11 @@ pub struct ProjectObservation {
 3. Phase 3: project observations + freshness/correction lifecycle
 4. Phase 4: internal unified recall planner
 5. Phase 5: strategy-specific chunking, relation-aware retrieval, temporal retrieval
+6. Phase 6: recall query quality, empty-hit recovery, and UI semantics split
 
 ## Open Questions
 
 1. retention candidates 是否作为 turn archive schema 的 additive 字段存储，还是拆到单独 sidecar JSONL。
 2. observation synthesis 是否允许轻量模型参与，还是先用 heuristic + explicit signals 起步。
 3. Phase 4 planner 是否只作为 `omega-context` 内部 helper，还是最终升级为 facade public API。
+4. Recall rewrite fallback 是否需要按 step type 设单独 budget / trigger policy，还是统一由 `omega-context` 内部阈值控制。

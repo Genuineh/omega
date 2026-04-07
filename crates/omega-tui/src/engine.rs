@@ -1,8 +1,8 @@
 use omega_session::{
     ContextSupervisionSnapshot, OverlayRequest, ResponseSection, ResponseSectionDelta,
     ResponseSectionState, RuntimeUiEffect, RuntimeUiEnvelope, SessionRoutingStatus, StatusSlot,
-    StatusValue, StepDiagnostics, StepSubflowStatus, ToolRun, ToolRunStatus,
-    WorkflowStepStatus,
+    StatusValue, StepDiagnostics, StepKnowledgeSummary, StepSubflowStatus, ToolRun,
+    ToolRunStatus, WorkflowStepStatus,
 };
 
 use crate::app::{App, MsgKind};
@@ -24,6 +24,11 @@ pub trait TuiSurface {
     fn set_todo_snapshot(&mut self, text: &str);
     fn upsert_diagnostics(&mut self, diagnostics: StepDiagnostics);
     fn set_context_supervision(&mut self, snapshot: ContextSupervisionSnapshot);
+    fn upsert_step_knowledge_summary(
+        &mut self,
+        section_id: String,
+        summary: StepKnowledgeSummary,
+    );
     fn upsert_step_subflow(&mut self, subflow: StepSubflowStatus);
     fn add_activity_line(&mut self, line: String);
     fn show_overlay(&mut self, request: OverlayRequest);
@@ -123,6 +128,14 @@ impl TuiSurface for TuiEngine<'_> {
 
     fn set_context_supervision(&mut self, snapshot: ContextSupervisionSnapshot) {
         self.app.set_context_supervision(snapshot);
+    }
+
+    fn upsert_step_knowledge_summary(
+        &mut self,
+        section_id: String,
+        summary: StepKnowledgeSummary,
+    ) {
+        self.app.upsert_step_knowledge_summary(section_id, summary);
     }
 
     fn upsert_step_subflow(&mut self, subflow: StepSubflowStatus) {

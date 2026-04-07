@@ -54,3 +54,23 @@ fn batch_handler_rejects_too_many_requests() {
     assert_eq!(result.metadata["request_count"], 9);
     assert_eq!(result.metadata["max_request_count"], 8);
 }
+
+#[test]
+fn batch_handler_accepts_json_string_requests_payload() {
+    let root = temp_root();
+    fs::write(root.path().join("Cargo.toml"), "[package]\nname = \"demo\"\n")
+        .expect("file should be created");
+
+    let handler = BatchHandler::new(root_path(&root));
+    let result = handler
+        .execute_v2(json!({
+            "requests": "[{\"id\":\"root\",\"tool\":\"read_file\",\"input\":{\"path\":\"Cargo.toml\",\"start_line\":1,\"end_line\":1}}]"
+        }))
+        .expect("tool execution should succeed");
+
+    assert_eq!(result.error_kind, None);
+    assert_eq!(result.metadata["request_count"], 1);
+    assert_eq!(result.metadata["success_count"], 1);
+    assert_eq!(result.metadata["results"][0]["id"], "root");
+    assert_eq!(result.metadata["results"][0]["tool"], "read_file");
+}

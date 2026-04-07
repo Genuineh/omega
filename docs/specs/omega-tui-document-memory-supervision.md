@@ -2,8 +2,8 @@
 status: draft
 owner: omega-team
 created: 2026-04-02
-updated: 2026-04-02
-version: 0.1
+updated: 2026-04-07
+version: 0.2
 supersedes: []
 related_prds: []
 ---
@@ -50,6 +50,8 @@ related_prds: []
 - 没有单独的 document/memory 常驻监管 view；当前信息散落在 diagnostics 与临时 overlay。
 - 没有 typed “current hit summary” contract。document 命中仍主要依赖 search tool 输出文本；memory 命中只能看到 summary source title/count，缺少命中内容摘要。
 - `ContextStoreDiagnostics` 当前只有 `turn_archive_count`，没有 `turn_archive_size_bytes`，导致 memory 存储规模无法与 Lance/Tantivy 尺寸并列展示。
+- supervision 主要停留在 Sidebar / Overlay；Response 主阅读区仍缺少“本 step / 本 command 实际用了哪些 document/memory”的结构化可见性。
+- document / memory 当前展示更像 diagnostics dump，而不是可扫描的知识摘要与可点击 drill-down 入口。
 
 ## UX Model
 
@@ -65,6 +67,17 @@ related_prds: []
 - `Overlay`: detail drill-down 与 narrow-mode fallback
 
 这样既满足“单独面板”的可发现性，又不破坏 `omega-tui-runtime-experience.md` 已确定的“不要无上限增加固定常驻面板”规则。
+
+### Response Integration Rule
+
+尽管 Sidebar 仍是长期监管主入口，但当当前 step 或 command 实际使用了 document recall、memory recall 或 observation recall 时，`Response` 主阅读区也必须出现轻量 `Knowledge Summary Lane`。
+
+规则：
+
+- 只显示当前 step / command 实际命中的知识摘要，不显示完整 diagnostics dump。
+- 用户应能在阅读主回答时直接看出“用了 document 吗”“用了 memory 吗”“命中了什么”“没命中时为什么”。
+- 卡片必须支持 `Enter` 或同等级交互打开 detail overlay。
+- 完整 totals、health、recent activity 继续留在 Sidebar；Response 不退化为第二个 diagnostics 面板。
 
 ### Document Panel
 
@@ -118,6 +131,28 @@ related_prds: []
    - last archive event
    - most recent compression trigger reason
 
+### Response Knowledge Lane
+
+当 step/command 使用了知识系统时，在 Response 中增加紧邻正文的知识摘要 lane：
+
+1. `Document recall` 卡片
+    - readiness badge：`ready | degraded | uninitialized`
+    - query preview
+    - result count
+    - top hit path + 1 行 preview
+    - 无命中原因摘要，例如 `no promoted store version` / `no matches returned`
+2. `Memory recall` 卡片
+    - memory query / observation query preview
+    - selected summary count
+    - memory hit count / observation hit count
+    - top summary / observation preview
+3. `Inspect` affordance
+    - 卡片可点击或可选中
+    - `Enter` 打开 detail overlay
+    - 后续可扩展为“在 Sidebar 中定位到对应 Document/Memory view”
+
+该 lane 应复用 `omega-tui-step-tool-thinking-refinement.md` 的原则：Response 只承载“摘要 + drill-down”，完整详情继续留在 Overlay / Sidebar。
+
 ## Data Contract
 
 ### New Snapshot Layer
@@ -151,6 +186,40 @@ pub struct MemorySupervisionSnapshot {
 
 - 这不是替代 `ContextDiagnostics`，而是对其做 UI-facing projection。
 - `ContextDiagnostics` 继续负责长期稳定的聚合计数；`ContextSupervisionSnapshot` 负责监管面板真正需要的“状态 + totals + current hits + recent activity”。
+
+### Response-Facing Projection
+
+在 `ContextSupervisionSnapshot` 之外，新增 step/command 级别的 response-facing projection：
+
+```rust
+pub struct StepKnowledgeSummary {
+    pub document: Option<ResponseDocumentKnowledge>,
+    pub memory: Option<ResponseMemoryKnowledge>,
+}
+
+pub struct ResponseDocumentKnowledge {
+    pub readiness: SupervisionReadiness,
+    pub query: String,
+    pub reason: Option<String>,
+    pub result_count: u32,
+    pub top_hits: Vec<DocumentHitItem>,
+}
+
+pub struct ResponseMemoryKnowledge {
+    pub memory_query: Option<String>,
+    pub observation_query: Option<String>,
+    pub selected_summary_count: u32,
+    pub memory_hit_count: u32,
+    pub observation_hit_count: u32,
+    pub top_items: Vec<MemoryHitItem>,
+}
+```
+
+要求：
+
+- projection 必须绑定到具体 step section 或 command section，而不是只做全局 snapshot。
+- 若 planner/search 已尝试 document recall 但无 active store version，应写出 `reason = Some("no promoted store version")`，不能只投影成空列表。
+- 若当前 step 没有使用对应系统，则 Response 中不显示该 lane，避免噪音。
 
 ### Enablement Semantics
 
@@ -258,18 +327,26 @@ pub struct MemoryHitItem {
 StateMessage::ContextSupervision {
     snapshot: ContextSupervisionSnapshot,
 }
+
+StateMessage::StepKnowledgeSummary {
+    workflow_id: String,
+    step_id: String,
+    summary: StepKnowledgeSummary,
+}
 ```
 
 理由：
 
 - 当前 document health popup 与 search overlay 只覆盖工具触发路径，不覆盖“当前 step 实际命中了什么 memory summary”。
 - 使用 typed state message，避免 `omega-tui` 再从 diagnostics text lines 或 overlay body 文本做反向解析。
+- `ContextSupervision` 继续服务 Sidebar；`StepKnowledgeSummary` 专门服务 Response 内知识摘要 lane，两者不可互相替代。
 
 ### Reducer Behavior
 
 - 新 snapshot 到达时，更新 `Document` 与 `Memory` 面板的 header badge、totals 与 current-hit list。
 - `Current Hits` 默认只保留当前 active turn / active step 的最近一次快照。
 - 历史查询与历史 compaction/archive 进入 detail overlay，不在主面板无限累积。
+- `StepKnowledgeSummary` 到达时，只更新对应 step/command section 绑定的知识摘要 lane；不得回写成全局 Sidebar 状态。
 
 ## UI States
 
@@ -321,6 +398,40 @@ StateMessage::ContextSupervision {
 - 实现 header badge、totals block、current hits list、detail overlay。
 - 在窄终端下退化为底部状态徽章 + overlay。
 
+### Phase 4: Response And Drill-Down
+
+- 新增 `StepKnowledgeSummary` projection 与 runtime wiring。
+- 在 Response step/command section 中渲染 knowledge summary lane。
+- 统一 Sidebar / Response / Overlay 三处知识详情的跳转与文案语义。
+
+### Phase 5: Content Curation
+
+- 收敛 document/memory 文案顺序，优先展示状态、原因、命中与下一步，而不是裸 totals dump。
+- 把“未初始化 / 未 health check / 尝试过但无命中 / 有磁盘残留但无 active version”等状态做成稳定文案模板。
+
+### Follow-Up Tasks
+
+#### Task 11F-5: omega-context / omega-session / omega-app / omega-tui — Response-Facing Knowledge Summary Lane
+
+- **Priority**: High
+- **Complexity**: L
+- **Dependencies**: Task 11F-4, Task 11G-4, Task 15B-22
+- **Description**: 为当前 step / command 增加 `StepKnowledgeSummary` typed projection，并在 Response panel 渲染轻量 document/memory knowledge lane，让用户在主阅读区直接看见“用了哪些 knowledge source、命中了什么、没命中时为什么”。
+
+#### Task 11F-6: omega-tui / omega-context — Knowledge Detail Overlay And Browse Interaction
+
+- **Priority**: Medium
+- **Complexity**: M
+- **Dependencies**: Task 11F-5, Task 15B-29
+- **Description**: 把现有 document/memory detail 从长文本 dump 收敛成更可浏览的 overlay：按 query、状态、原因、top hits、selected summaries 分块展示，并支持从 Response 与 Sidebar 双向进入同一详情视图。
+
+#### Task 11F-7: omega-tui / omega-session — Knowledge View Content Curation
+
+- **Priority**: Medium
+- **Complexity**: M
+- **Dependencies**: Task 11F-5
+- **Description**: 重写 document/memory supervision 的内容顺序和文案模板，把当前 diagnostics 风格输出调整成更直观的阅读布局，并确保 Response / Sidebar / Overlay 的语义一致。
+
 ## Testing Strategy
 
 - `omega-context` 单测：验证 disabled / idle / degraded / ready 状态投影正确。
@@ -329,6 +440,9 @@ StateMessage::ContextSupervision {
 - `omega-app` 单测：验证 `ContextSupervision` state message 会被路由到 TUI surface。
 - `omega-tui` 单测：验证 `Document` / `Memory` 视图渲染 enabled badge、totals 与 current hits。
 - `omega-tui` replay 测试：验证侧边栏切换、detail overlay 打开与窄终端退化路径。
+- `omega-session` 单测：验证 `StepKnowledgeSummary` 会绑定到正确的 step/command section。
+- `omega-tui` 单测：验证 Response 内知识摘要 lane 的展开、选择与 overlay 打开路径。
+- 手动验证：运行 `cargo run -p omega-app --features document-backend`，确认 `/document query`、planner-driven document recall 与 memory recall 都会在 Response 中留下可点击的知识摘要。
 
 ## Open Questions
 
@@ -340,3 +454,4 @@ StateMessage::ContextSupervision {
 
 ### Change Log
 - 2026-04-02: 初版规格，定义 `Document Supervision` / `Memory Supervision` 专门监管面板、typed hit-summary contract 与 TODO 拆分方向。
+- 2026-04-07: v0.2 — 新增 Response integration rule、`StepKnowledgeSummary` projection、knowledge summary lane、detail overlay browse 规则，以及 `Task 11F-5 ~ 11F-7` 后续拆分。

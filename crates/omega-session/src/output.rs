@@ -45,10 +45,10 @@ pub(crate) struct FeatureExecuteOutput {
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub(crate) struct FeatureValidationResult {
-    target: String,
-    status: String,
+    pub(crate) target: String,
+    pub(crate) status: String,
     #[serde(default)]
-    details: Option<String>,
+    pub(crate) details: Option<String>,
 }
 
 #[cfg(test)]

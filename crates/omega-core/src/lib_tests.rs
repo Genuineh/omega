@@ -448,12 +448,13 @@ fn tool_definitions_deserialize() {
         .into_iter()
         .map(|v| serde_json::from_value(v).unwrap())
         .collect();
-    assert_eq!(defs.len(), 14);
+    assert_eq!(defs.len(), 19);
     let names: Vec<&str> = defs.iter().map(|def| def.name.as_str()).collect();
     assert_eq!(
         names,
         vec![
             "apply_patch",
+            "ask_user_question",
             "bash",
             "batch",
             "create_file",
@@ -465,7 +466,11 @@ fn tool_definitions_deserialize() {
             "manage_document",
             "read_file",
             "search_codebase",
-            "todo",
+            "task",
+            "todo_read",
+            "todo_write",
+            "web_fetch",
+            "web_search",
             "write_file"
         ]
     );
@@ -812,8 +817,8 @@ fn set_visible_tools_filters_model_visible_tool_subset() {
 
     let visible = agent.set_visible_tools(Some(&["todo", "bash", "missing"]));
 
-    assert_eq!(visible, vec!["bash".to_string(), "todo".to_string()]);
-    assert_eq!(agent.visible_tool_names(), vec!["bash", "todo"]);
+    assert_eq!(visible, vec!["bash".to_string(), "todo_write".to_string()]);
+    assert_eq!(agent.visible_tool_names(), vec!["bash", "todo_write"]);
 }
 
 #[test]
@@ -826,11 +831,12 @@ fn set_visible_tools_none_restores_all_tools() {
     assert!(agent.visible_tool_names().is_empty());
 
     let restored = agent.set_visible_tools(None);
-    assert_eq!(restored.len(), 14);
+    assert_eq!(restored.len(), 19);
     assert_eq!(
         agent.visible_tool_names(),
         vec![
             "apply_patch",
+            "ask_user_question",
             "bash",
             "batch",
             "create_file",
@@ -842,7 +848,11 @@ fn set_visible_tools_none_restores_all_tools() {
             "manage_document",
             "read_file",
             "search_codebase",
-            "todo",
+            "task",
+            "todo_read",
+            "todo_write",
+            "web_fetch",
+            "web_search",
             "write_file"
         ]
     );

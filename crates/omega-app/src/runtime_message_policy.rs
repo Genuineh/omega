@@ -70,6 +70,10 @@ fn apply_state(surface: &mut dyn TuiSurface, message: StateMessage) {
         StateMessage::ContextSupervision { snapshot } => {
             surface.set_context_supervision(*snapshot)
         }
+        StateMessage::StepKnowledgeSummary {
+            section_id,
+            summary,
+        } => surface.upsert_step_knowledge_summary(section_id, *summary),
         StateMessage::StepSubflow { subflow } => {
             surface.add_activity_line(format_step_subflow_line(&subflow));
             surface.upsert_step_subflow(subflow);
@@ -144,11 +148,13 @@ mod tests {
         ContextMemoryDiagnostics, ContextStoreDiagnostics, ConversationMessage, HealthScore,
         OverlayRequest, OverlayTarget, ResponseSection, ResponseSectionDelta, ResponseSectionKind,
         ResponseSectionMetadata, ResponseSectionState, RuntimeMessageEnvelope, RuntimeSource,
+        SectionOrigin,
         SessionRoutingStatus, StateMessage, StepContextWrite, StepContextWriteKind,
         StepDiagnostics, StepInputDiagnostics, StepInputStatus, StepOutputAttemptKind,
         StepOutputContractMode, StepOutputDiagnostics, StepOutputRecoveryDecision,
-        StepOutputStatus, StepSubflowState, StepSubflowStatus, StepSummarySource, ToolRun,
-        ToolRunDetail, ToolRunStatus, UiContent, WorkflowRunRole, WorkflowStepStatus,
+        StepOutputStatus, StepSubflowState, StepSubflowStatus, StepSummarySource,
+        SupervisionReadiness, ToolRun, ToolRunDetail, ToolRunStatus, UiContent,
+        WorkflowRunRole, WorkflowStepStatus,
     };
     use omega_tui::{apply_runtime_message_with_policy, TuiSurface};
 
@@ -169,6 +175,7 @@ mod tests {
         TodoSnapshot(String),
         Diagnostics(String),
         ContextSupervision,
+        StepKnowledgeSummary(String),
         StepSubflow(String, String),
         Activity(String),
         ShowOverlay(OverlayTarget, String),
@@ -248,6 +255,14 @@ mod tests {
             self.ops.push(SurfaceOp::ContextSupervision);
         }
 
+        fn upsert_step_knowledge_summary(
+            &mut self,
+            section_id: String,
+            _summary: omega_session::StepKnowledgeSummary,
+        ) {
+            self.ops.push(SurfaceOp::StepKnowledgeSummary(section_id));
+        }
+
         fn upsert_step_subflow(&mut self, subflow: StepSubflowStatus) {
             self.ops
                 .push(SurfaceOp::StepSubflow(subflow.step_id, subflow.subflow_id));
@@ -304,6 +319,25 @@ mod tests {
                     current_summary_tokens: 144,
                     current_summary_count: 1,
                     compression_ratio_avg_percent: 50,
+                    retention_candidates_accepted: 3,
+                    retention_candidates_dropped: 1,
+                    dropped_candidates_by_profile: std::collections::BTreeMap::from([(
+                        "ephemeral_debug".to_string(),
+                        1,
+                    )]),
+                    memory_query_count: 4,
+                    memory_query_hit_mix: std::collections::BTreeMap::from([
+                        ("project_facts".to_string(), 3),
+                        ("open_threads".to_string(), 1),
+                    ]),
+                    observation_count: 2,
+                    observation_fresh_count: 1,
+                    observation_stale_count: 0,
+                    observation_superseded_count: 1,
+                    observation_corrected_count: 0,
+                    observation_correction_activity: 1,
+                    current_query: None,
+                    current_observations: None,
                 },
                 document: ContextDocumentDiagnostics {
                     total_files_indexed: 12,
@@ -396,8 +430,10 @@ mod tests {
             state: ResponseSectionState::Streaming,
             metadata: ResponseSectionMetadata {
                 scene_id: Some("feature".to_string()),
-                workflow_id: "feature".to_string(),
-                workflow_role: WorkflowRunRole::Child,
+                origin: SectionOrigin::Workflow {
+                    workflow_id: "feature".to_string(),
+                    workflow_role: WorkflowRunRole::Child,
+                },
                 step_id: Some("plan".to_string()),
                 step_label: Some("Plan".to_string()),
                 subflow_ref: None,
@@ -482,6 +518,24 @@ mod tests {
             ),
             RuntimeMessageEnvelope::state(
                 42,
+                StateMessage::StepKnowledgeSummary {
+                    section_id: "turn-42:child:feature:plan".to_string(),
+                    summary: Box::new(omega_session::StepKnowledgeSummary {
+                        document: Some(omega_session::ResponseDocumentKnowledge {
+                            readiness: SupervisionReadiness::Ready,
+                            query: "roadmap".to_string(),
+                            mode: "hybrid".to_string(),
+                            degraded_from: None,
+                            reason: None,
+                            result_count: 1,
+                            top_hits: Vec::new(),
+                        }),
+                        memory: None,
+                    }),
+                },
+            ),
+            RuntimeMessageEnvelope::state(
+                42,
                 StateMessage::StepSubflow {
                     subflow: StepSubflowStatus {
                         workflow_id: "feature".to_string(),
@@ -530,6 +584,7 @@ mod tests {
                 SurfaceOp::CompleteToolRun("tool-1".to_string(), ToolRunStatus::Complete),
                 SurfaceOp::TodoSnapshot("[>] #1: Code".to_string()),
                 SurfaceOp::Diagnostics("child:feature:plan".to_string()),
+                SurfaceOp::StepKnowledgeSummary("turn-42:child:feature:plan".to_string()),
                 SurfaceOp::Activity(
                     "[item] child:feature execute-2 2/5 running #risk-2 r1".to_string()
                 ),

@@ -54,7 +54,7 @@ impl ReadHandler {
                 );
             }
         };
-        let line_limit = match parse_positive_integer_field(&input, "limit") {
+        let parsed_line_limit = match parse_positive_integer_field(&input, "limit") {
             Ok(value) => value,
             Err(message) => {
                 return build_tool_error(
@@ -64,14 +64,11 @@ impl ReadHandler {
                 );
             }
         };
-        if line_limit.is_some() && (start_line.is_some() || end_line.is_some()) {
-            return build_tool_error(
-                "Error: Field 'limit' cannot be combined with 'start_line' or 'end_line'"
-                    .to_string(),
-                json!({ "path": path_arg }),
-                ToolErrorKind::Validation,
-            );
-        }
+        let line_limit = if start_line.is_some() || end_line.is_some() {
+            None
+        } else {
+            parsed_line_limit
+        };
         if matches!((start_line, end_line), (Some(start), Some(end)) if end < start) {
             return build_tool_error(
                 "Error: Field 'end_line' must be greater than or equal to 'start_line'".to_string(),

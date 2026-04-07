@@ -1,6 +1,7 @@
 use omega_observability::strip_ansi;
 use omega_session::{
-    ResponseSection, ResponseSectionKind, ResponseSectionState, SectionOrigin, StepSubflowRef,
+    ResponseDocumentKnowledge, ResponseMemoryKnowledge, ResponseSection,
+    ResponseSectionKind, ResponseSectionState, SectionOrigin, StepSubflowRef,
     StepSubflowState, ToolRun, ToolRunStatus,
 };
 
@@ -167,6 +168,12 @@ impl App {
             ResponseLineAction::OpenStepSubflowDetail(id) => self
                 .open_step_subflow_detail(&id)
                 .map(ResponseActivation::StepSubflowDetailOpened),
+            ResponseLineAction::OpenDocumentKnowledgeDetail(id) => self
+                .open_document_knowledge_detail(&id)
+                .map(|()| ResponseActivation::DocumentKnowledgeDetailOpened),
+            ResponseLineAction::OpenMemoryKnowledgeDetail(id) => self
+                .open_memory_knowledge_detail(&id)
+                .map(|()| ResponseActivation::MemoryKnowledgeDetailOpened),
         }
     }
 
@@ -379,6 +386,10 @@ impl App {
                             .as_deref()
                             .map(|section_id| self.tool_runs_for_section(section_id))
                             .unwrap_or_default();
+                        let knowledge_summary = message
+                            .id
+                            .as_deref()
+                            .and_then(|section_id| self.knowledge_summary_for_section(section_id));
                         let body_lines = split_or_empty(&message.text);
                         let colors = self.theme_palette();
                         let base_style = ratatui::style::Style::default();
@@ -417,6 +428,7 @@ impl App {
                         } else if body_lines.len() == 1
                             && body_lines[0].is_empty()
                             && tool_runs.is_empty()
+                            && knowledge_summary.is_none()
                         {
                             lines.push(ResponseDisplayLine {
                                 kind: message.kind,
@@ -458,6 +470,14 @@ impl App {
                                     spans: prefixed_spans,
                                 });
                             }
+                        }
+                        if let Some(section_id) = message.id.as_deref() {
+                            lines.extend(self.render_knowledge_lane(
+                                section_id,
+                                knowledge_summary,
+                                message.kind,
+                                "  ",
+                            ));
                         }
                         // Tool lane with folding (15B-44)
                         if !tool_runs.is_empty() {
@@ -799,8 +819,15 @@ impl App {
         }
 
         if let Some(primary) = primary {
+            let knowledge_summary = primary
+                .id
+                .as_deref()
+                .and_then(|section_id| self.knowledge_summary_for_section(section_id));
             let body_lines = split_or_empty(&primary.text);
-            if body_lines.len() == 1 && body_lines[0].is_empty() {
+            if body_lines.len() == 1
+                && body_lines[0].is_empty()
+                && knowledge_summary.is_none()
+            {
                 lines.push(ResponseDisplayLine {
                     kind: MsgKind::Step,
                     text: "    …".to_string(),
@@ -857,6 +884,14 @@ impl App {
                 .as_deref()
                 .map(|section_id| self.tool_runs_for_section(section_id))
                 .unwrap_or_default();
+            if let Some(section_id) = primary.id.as_deref() {
+                lines.extend(self.render_knowledge_lane(
+                    section_id,
+                    knowledge_summary,
+                    MsgKind::Step,
+                    "    ",
+                ));
+            }
             if !tool_runs.is_empty() {
                 let can_toggle = tool_runs.len() >= 6;
                 let collapsed = can_toggle && primary.tool_lane_collapsed;
@@ -985,6 +1020,95 @@ impl App {
             .iter()
             .filter(|tool_run| tool_run.parent_section_id == section_id)
             .collect()
+    }
+
+    fn knowledge_summary_for_section(
+        &self,
+        section_id: &str,
+    ) -> Option<&omega_session::StepKnowledgeSummary> {
+        self.step_knowledge_summaries.get(section_id)
+    }
+
+    fn render_knowledge_lane(
+        &self,
+        section_id: &str,
+        summary: Option<&omega_session::StepKnowledgeSummary>,
+        kind: MsgKind,
+        indent: &str,
+    ) -> Vec<ResponseDisplayLine> {
+        let Some(summary) = summary else {
+            return Vec::new();
+        };
+
+        let mut lines = vec![ResponseDisplayLine {
+            kind,
+            text: format!("{indent}knowledge"),
+            is_header: false,
+            message_id: Some(section_id.to_string()),
+            action: None,
+            is_tool_line: true,
+            tool_status: None,
+            response_state: None,
+            thinking_line_kind: None,
+            spans: Vec::new(),
+        }];
+
+        if let Some(document) = summary.document.as_ref() {
+            lines.push(ResponseDisplayLine {
+                kind,
+                text: format!(
+                    "{indent}  {}",
+                    format_document_knowledge_summary(document)
+                ),
+                is_header: false,
+                message_id: Some(section_id.to_string()),
+                action: Some(ResponseLineAction::OpenDocumentKnowledgeDetail(
+                    section_id.to_string(),
+                )),
+                is_tool_line: true,
+                tool_status: None,
+                response_state: None,
+                thinking_line_kind: None,
+                spans: Vec::new(),
+            });
+        }
+
+        if let Some(memory) = summary.memory.as_ref() {
+            lines.push(ResponseDisplayLine {
+                kind,
+                text: format!("{indent}  {}", format_memory_knowledge_summary(memory)),
+                is_header: false,
+                message_id: Some(section_id.to_string()),
+                action: Some(ResponseLineAction::OpenMemoryKnowledgeDetail(
+                    section_id.to_string(),
+                )),
+                is_tool_line: true,
+                tool_status: None,
+                response_state: None,
+                thinking_line_kind: None,
+                spans: Vec::new(),
+            });
+        }
+
+        lines
+    }
+
+    fn open_document_knowledge_detail(&mut self, section_id: &str) -> Option<()> {
+        let summary = self.step_knowledge_summaries.get(section_id)?.document.as_ref()?;
+        self.open_detail_overlay(
+            " Document Knowledge ",
+            build_document_knowledge_detail_lines(summary),
+        );
+        Some(())
+    }
+
+    fn open_memory_knowledge_detail(&mut self, section_id: &str) -> Option<()> {
+        let summary = self.step_knowledge_summaries.get(section_id)?.memory.as_ref()?;
+        self.open_detail_overlay(
+            " Memory Knowledge ",
+            build_memory_knowledge_detail_lines(summary),
+        );
+        Some(())
     }
 }
 
@@ -1159,6 +1283,107 @@ fn format_tool_summary(tool_run: &ToolRun, name_width: usize) -> String {
         summary.push_str(result_preview);
     }
     summary
+}
+
+fn format_document_knowledge_summary(summary: &ResponseDocumentKnowledge) -> String {
+    let mut text = format!(
+        "document  [{}]  {} hits",
+        summary.readiness.as_str(),
+        summary.result_count,
+    );
+    if !summary.query.trim().is_empty() {
+        text.push_str(&format!("  ·  {}", truncate_preview(&summary.query, 28)));
+    }
+    if let Some(reason) = summary.reason.as_deref() {
+        text.push_str(&format!("  ·  {reason}"));
+    } else if let Some(hit) = summary.top_hits.first() {
+        text.push_str(&format!("  ·  {}", truncate_preview(&hit.path, 28)));
+    }
+    text
+}
+
+fn format_memory_knowledge_summary(summary: &ResponseMemoryKnowledge) -> String {
+    let mut text = format!(
+        "memory  {} summaries  ·  {} memory hits  ·  {} observations",
+        summary.selected_summary_count,
+        summary.memory_hit_count,
+        summary.observation_hit_count,
+    );
+    if let Some(query) = summary.memory_query.as_deref() {
+        text.push_str(&format!("  ·  {}", truncate_preview(query, 28)));
+    } else if let Some(query) = summary.observation_query.as_deref() {
+        text.push_str(&format!("  ·  {}", truncate_preview(query, 28)));
+    } else if let Some(item) = summary.top_items.first() {
+        text.push_str(&format!("  ·  {}", truncate_preview(&item.title, 28)));
+    }
+    text
+}
+
+fn build_document_knowledge_detail_lines(summary: &ResponseDocumentKnowledge) -> Vec<String> {
+    let mut lines = vec![format!("readiness: {}", summary.readiness.as_str())];
+    if !summary.query.trim().is_empty() {
+        lines.push(format!("query: {}", summary.query));
+    }
+    lines.push(format!("mode: {}", summary.mode));
+    if let Some(degraded_from) = summary.degraded_from.as_deref() {
+        lines.push(format!("degraded from: {degraded_from}"));
+    }
+    lines.push(format!("result count: {}", summary.result_count));
+    if let Some(reason) = summary.reason.as_deref() {
+        lines.push(format!("reason: {reason}"));
+    }
+
+    if !summary.top_hits.is_empty() {
+        lines.push(String::new());
+        lines.push("top hits:".to_string());
+        for hit in &summary.top_hits {
+            lines.push(format!("- {}", hit.path));
+            if !hit.preview.trim().is_empty() {
+                lines.push(format!("  {}", hit.preview));
+            }
+        }
+    }
+
+    lines
+}
+
+fn build_memory_knowledge_detail_lines(summary: &ResponseMemoryKnowledge) -> Vec<String> {
+    let mut lines = vec![format!("selected summaries: {}", summary.selected_summary_count)];
+    if let Some(query) = summary.memory_query.as_deref() {
+        lines.push(format!("memory query: {query}"));
+    }
+    if let Some(query) = summary.observation_query.as_deref() {
+        lines.push(format!("observation query: {query}"));
+    }
+    lines.push(format!("memory hit count: {}", summary.memory_hit_count));
+    lines.push(format!(
+        "observation hit count: {}",
+        summary.observation_hit_count
+    ));
+
+    if !summary.top_items.is_empty() {
+        lines.push(String::new());
+        lines.push("memory hits:".to_string());
+        for item in &summary.top_items {
+            lines.push(format!("- {}:{}  {}", item.workflow_id, item.step_id, item.title));
+            if !item.preview.trim().is_empty() {
+                lines.push(format!("  {}", item.preview));
+            }
+        }
+    }
+
+    if !summary.top_observations.is_empty() {
+        lines.push(String::new());
+        lines.push("observations:".to_string());
+        for item in &summary.top_observations {
+            lines.push(format!("- {} [{}]", item.title, item.freshness.as_str()));
+            if !item.summary.trim().is_empty() {
+                lines.push(format!("  {}", item.summary));
+            }
+        }
+    }
+
+    lines
 }
 
 fn tool_run_status_label(status: ToolRunStatus) -> &'static str {

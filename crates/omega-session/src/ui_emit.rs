@@ -1481,6 +1481,48 @@ mod tests {
                 current_summary_tokens: 144,
                 current_summary_count: 1,
                 compression_ratio_avg_percent: 50,
+                retention_candidates_accepted: 3,
+                retention_candidates_dropped: 1,
+                dropped_candidates_by_profile: std::collections::BTreeMap::from([
+                    ("ephemeral_debug".to_string(), 1),
+                ]),
+                memory_query_count: 4,
+                memory_query_hit_mix: std::collections::BTreeMap::from([
+                    ("project_facts".to_string(), 3),
+                    ("open_threads".to_string(), 1),
+                ]),
+                observation_count: 2,
+                observation_fresh_count: 1,
+                observation_stale_count: 0,
+                observation_superseded_count: 1,
+                observation_corrected_count: 0,
+                observation_correction_activity: 1,
+                current_query: Some(omega_context::MemoryQueryDiagnostics {
+                    query: "memory query".to_string(),
+                    result_count: 2,
+                    hit_mix: std::collections::BTreeMap::from([
+                        ("project_facts".to_string(), 1),
+                        ("open_threads".to_string(), 1),
+                    ]),
+                    top_hits: vec![omega_context::MemoryQueryHitItem {
+                        profile: "project_facts".to_string(),
+                        title: "Project fact: planner wired".to_string(),
+                        preview: "Planner now wires archived memory query.".to_string(),
+                    }],
+                }),
+                current_observations: Some(omega_context::ObservationRecallDiagnostics {
+                    query: "memory query".to_string(),
+                    result_count: 1,
+                    freshness_mix: std::collections::BTreeMap::from([
+                        ("fresh".to_string(), 1),
+                    ]),
+                    top_hits: vec![omega_context::ObservationRecallHitItem {
+                        id: "obs-1".to_string(),
+                        title: "Open thread: task-memory-query".to_string(),
+                        summary: "Query surface still needs planner wiring.".to_string(),
+                        freshness: omega_context::ObservationFreshness::Fresh,
+                    }],
+                }),
             },
             document: ContextDocumentDiagnostics {
                 total_files_indexed: 12,

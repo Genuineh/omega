@@ -1,6 +1,6 @@
 mod document_model;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -23,7 +23,14 @@ pub use document_model::{
     SortField, TodoOp, TodoOpResult,
 };
 pub use omega_memory::StepSummary as ContextStepSummary;
-use omega_memory::{rank_summary_candidates, should_trigger_context_compaction, StepContextHint};
+pub use omega_memory::{
+    GovernanceEventSignal, MemoryQuery, MemoryQueryHit, ObservationFreshness, ObservationQuery,
+    ProjectObservation, RetentionProfile, TurnRetentionSignals,
+};
+use omega_memory::{
+    rank_summary_candidates, should_trigger_context_compaction, ArchivedTurnInput,
+    LocalMemoryStore, MemoryStoreStats, StepContextHint,
+};
 use omega_tools::{
     ToolErrorKind, ToolFamily, ToolHandler, ToolManifestMetadata, ToolResult,
 };
@@ -87,6 +94,9 @@ pub struct StepContextRequest {
     pub session: ContextSession,
     pub step: ContextStep,
     pub step_prompt: String,
+    pub document_hits: Vec<SearchResult>,
+    pub memory_hits: Vec<MemoryQueryHit>,
+    pub observation_hits: Vec<ProjectObservation>,
     pub structured_input: Option<Value>,
     pub todo_snapshot: Option<String>,
     pub current_execute_item: Option<ContextExecuteItem>,
@@ -159,6 +169,7 @@ pub struct TurnData {
     pub workflow_id: String,
     pub user_intent: String,
     pub summaries: Vec<ContextStepSummary>,
+    pub signals: TurnRetentionSignals,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -207,6 +218,19 @@ pub struct ContextMemoryDiagnostics {
     pub current_summary_tokens: u32,
     pub current_summary_count: u32,
     pub compression_ratio_avg_percent: u8,
+    pub retention_candidates_accepted: u64,
+    pub retention_candidates_dropped: u64,
+    pub dropped_candidates_by_profile: BTreeMap<String, u64>,
+    pub memory_query_count: u64,
+    pub memory_query_hit_mix: BTreeMap<String, u64>,
+    pub observation_count: u64,
+    pub observation_fresh_count: u64,
+    pub observation_stale_count: u64,
+    pub observation_superseded_count: u64,
+    pub observation_corrected_count: u64,
+    pub observation_correction_activity: u64,
+    pub current_query: Option<MemoryQueryDiagnostics>,
+    pub current_observations: Option<ObservationRecallDiagnostics>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -240,6 +264,7 @@ pub enum SupervisionReadiness {
     Disabled,
     #[default]
     Idle,
+    Uninitialized,
     Ready,
     Degraded,
     Failed,
@@ -250,6 +275,7 @@ impl SupervisionReadiness {
         match self {
             Self::Disabled => "disabled",
             Self::Idle => "idle",
+            Self::Uninitialized => "uninitialized",
             Self::Ready => "ready",
             Self::Degraded => "degraded",
             Self::Failed => "failed",
@@ -261,6 +287,34 @@ impl SupervisionReadiness {
 pub struct ContextSupervisionSnapshot {
     pub document: DocumentSupervisionSnapshot,
     pub memory: MemorySupervisionSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct StepKnowledgeSummary {
+    pub document: Option<ResponseDocumentKnowledge>,
+    pub memory: Option<ResponseMemoryKnowledge>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ResponseDocumentKnowledge {
+    pub readiness: SupervisionReadiness,
+    pub query: String,
+    pub mode: String,
+    pub degraded_from: Option<String>,
+    pub reason: Option<String>,
+    pub result_count: u32,
+    pub top_hits: Vec<DocumentHitItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ResponseMemoryKnowledge {
+    pub memory_query: Option<String>,
+    pub observation_query: Option<String>,
+    pub selected_summary_count: u32,
+    pub memory_hit_count: u32,
+    pub observation_hit_count: u32,
+    pub top_items: Vec<MemoryHitItem>,
+    pub top_observations: Vec<ObservationRecallHitItem>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -310,6 +364,8 @@ pub struct MemorySupervisionSnapshot {
     pub readiness: SupervisionReadiness,
     pub totals: MemorySupervisionTotals,
     pub current_hits: Option<MemoryHitSummary>,
+    pub current_query: Option<MemoryQueryDiagnostics>,
+    pub current_observations: Option<ObservationRecallDiagnostics>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -320,6 +376,140 @@ pub struct MemorySupervisionTotals {
     pub current_summary_count: u32,
     pub turn_archive_count: u32,
     pub turn_archive_size_bytes: u64,
+    pub retention_candidates_accepted: u64,
+    pub retention_candidates_dropped: u64,
+    pub dropped_candidates_by_profile: BTreeMap<String, u64>,
+    pub memory_query_count: u64,
+    pub memory_query_hit_mix: BTreeMap<String, u64>,
+    pub observation_count: u64,
+    pub observation_fresh_count: u64,
+    pub observation_stale_count: u64,
+    pub observation_superseded_count: u64,
+    pub observation_corrected_count: u64,
+    pub observation_correction_activity: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct MemoryQueryDiagnostics {
+    pub query: String,
+    pub result_count: u32,
+    pub hit_mix: BTreeMap<String, u32>,
+    pub top_hits: Vec<MemoryQueryHitItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct MemoryQueryHitItem {
+    pub profile: String,
+    pub title: String,
+    pub preview: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ObservationRecallDiagnostics {
+    pub query: String,
+    pub result_count: u32,
+    pub freshness_mix: BTreeMap<String, u32>,
+    pub top_hits: Vec<ObservationRecallHitItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObservationRecallHitItem {
+    pub id: String,
+    pub title: String,
+    pub summary: String,
+    pub freshness: ObservationFreshness,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MemoryKnowledgeSnapshot {
+    pub total_turns_archived: u64,
+    pub retention_candidates_accepted: u64,
+    pub retention_candidates_dropped: u64,
+    pub dropped_candidates_by_profile: BTreeMap<String, u64>,
+    pub memory_query_count: u64,
+    pub memory_query_hit_mix: BTreeMap<String, u64>,
+    pub observation_count: u64,
+    pub observation_fresh_count: u64,
+    pub observation_stale_count: u64,
+    pub observation_superseded_count: u64,
+    pub observation_corrected_count: u64,
+    pub observation_correction_activity: u64,
+    pub current_query: Option<MemoryQueryDiagnostics>,
+    pub current_observations: Option<ObservationRecallDiagnostics>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct RecallPlan {
+    pub document_hits: Vec<SearchResult>,
+    pub memory_hits: Vec<MemoryQueryHit>,
+    pub observations: Vec<ProjectObservation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecallBudgetConfig {
+    pub memory_hits_tokens: u32,
+    pub observation_hits_tokens: u32,
+    pub document_hits_tokens: u32,
+}
+
+impl Default for RecallBudgetConfig {
+    fn default() -> Self {
+        Self {
+            memory_hits_tokens: 220,
+            observation_hits_tokens: 220,
+            document_hits_tokens: 240,
+        }
+    }
+}
+
+impl RecallBudgetConfig {
+    fn load(root: &Path) -> Self {
+        let path = root.join(".omega/model.toml");
+        let Ok(contents) = fs::read_to_string(path) else {
+            return Self::default();
+        };
+        let Ok(file) = toml::from_str::<RecallBudgetConfigFile>(&contents) else {
+            return Self::default();
+        };
+
+        let mut config = Self::default();
+        if let Some(context) = file.context {
+            if let Some(recall) = context.recall {
+                if let Some(value) = recall.memory_hits_tokens.filter(|value| *value > 0) {
+                    config.memory_hits_tokens = value;
+                }
+                if let Some(value) = recall.observation_hits_tokens.filter(|value| *value > 0) {
+                    config.observation_hits_tokens = value;
+                }
+                if let Some(value) = recall.document_hits_tokens.filter(|value| *value > 0) {
+                    config.document_hits_tokens = value;
+                }
+            }
+        }
+        config
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct RecallBudgetConfigFile {
+    #[serde(default)]
+    context: Option<RecallBudgetContextConfigFile>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RecallBudgetContextConfigFile {
+    #[serde(default)]
+    recall: Option<RecallBudgetValuesFile>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RecallBudgetValuesFile {
+    #[serde(default)]
+    memory_hits_tokens: Option<u32>,
+    #[serde(default)]
+    observation_hits_tokens: Option<u32>,
+    #[serde(default)]
+    document_hits_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -360,6 +550,9 @@ pub trait MemoryService: Send + Sync {
     fn archive_turn(&self, turn: &TurnData) -> Result<()>;
     fn compact_context(&self, policy: CompactionPolicy) -> Result<CompactionResult>;
     fn get_turn_history(&self, limit: usize) -> Result<Vec<TurnSummary>>;
+    fn query(&self, query: MemoryQuery) -> Result<Vec<MemoryQueryHit>>;
+    fn query_observations(&self, query: ObservationQuery) -> Result<Vec<ProjectObservation>>;
+    fn diagnostics_snapshot(&self) -> Result<MemoryKnowledgeSnapshot>;
 }
 
 pub trait KnowledgeQueryService: Send + Sync {
@@ -385,6 +578,7 @@ pub trait ContextDiagnosticsProvider: Send + Sync {
     fn record_document_scan(&self, scan: &ScanResult);
     fn record_document_health(&self, health: &DocumentHealthReport);
     fn record_document_usage(&self, operator: &str, source: &str, detail: &str);
+    fn record_memory_snapshot(&self, snapshot: &MemoryKnowledgeSnapshot);
 }
 
 pub struct OmegaContextFacade {
@@ -394,17 +588,23 @@ pub struct OmegaContextFacade {
     pub governance: Arc<dyn DocumentGovernanceService>,
     pub diagnostics: Arc<dyn ContextDiagnosticsProvider>,
     pub document_backend_enabled: bool,
+    recall_budget: RecallBudgetConfig,
 }
 
 impl OmegaContextFacade {
     pub fn local(root: PathBuf) -> Self {
         let diagnostics_root = root.clone();
         let diagnostics = Arc::new(LocalDiagnostics::new(diagnostics_root));
+        let memory = Arc::new(LocalMemoryService::new(root.clone()));
+        let recall_budget = RecallBudgetConfig::load(&root);
+        if let Ok(snapshot) = memory.diagnostics_snapshot() {
+            diagnostics.record_memory_snapshot(&snapshot);
+        }
         #[cfg(feature = "document-backend")]
         let documents = Arc::new(OmegaDocument::new(root.clone()));
         Self {
             assembler: Arc::new(DefaultContextAssembler),
-            memory: Arc::new(LocalMemoryService::default()),
+            memory,
             query: Arc::new(LocalKnowledgeQueryService::new(
                 root.clone(),
                 #[cfg(feature = "document-backend")]
@@ -417,6 +617,110 @@ impl OmegaContextFacade {
             )),
             diagnostics,
             document_backend_enabled: cfg!(feature = "document-backend"),
+            recall_budget,
+        }
+    }
+
+    pub fn assemble_step_context(
+        &self,
+        request: StepContextRequest,
+        token_counter: &dyn ContextTokenCounter,
+    ) -> Result<AssembledContext> {
+        let recall = self.plan_recall(&request)?;
+        let mut request = request;
+        request.document_hits = recall.document_hits;
+        request.memory_hits = recall.memory_hits;
+        request.observation_hits = recall.observations;
+        let assembled = self.assembler.assemble_step_context(request, token_counter)?;
+        self.sync_memory_snapshot();
+        Ok(assembled)
+    }
+
+    fn plan_recall(&self, request: &StepContextRequest) -> Result<RecallPlan> {
+        let query_text = request.session.latest_user_turn.trim();
+        if query_text.is_empty() {
+            self.sync_memory_snapshot();
+            return Ok(RecallPlan::default());
+        }
+
+        let memory_hits = self.memory.query(MemoryQuery {
+            text: Some(query_text.to_string()),
+            profiles: vec![
+                RetentionProfile::ProjectFacts,
+                RetentionProfile::DeveloperPreferences,
+                RetentionProfile::OpenThreads,
+            ],
+            max_results: 6,
+        })?;
+        let observations = self.memory.query_observations(ObservationQuery {
+            text: Some(query_text.to_string()),
+            max_results: 4,
+            include_stale: true,
+        })?;
+        let document_hits = self.plan_document_recall(query_text, &memory_hits, &observations);
+
+        Ok(RecallPlan {
+            document_hits,
+            memory_hits: trim_memory_hits_for_budget(
+                memory_hits,
+                self.recall_budget.memory_hits_tokens,
+            ),
+            observations: trim_observations_for_budget(
+                observations,
+                self.recall_budget.observation_hits_tokens,
+            ),
+        })
+    }
+
+    fn plan_document_recall(
+        &self,
+        query_text: &str,
+        memory_hits: &[MemoryQueryHit],
+        observations: &[ProjectObservation],
+    ) -> Vec<SearchResult> {
+        if !self.document_backend_enabled {
+            return Vec::new();
+        }
+
+        self.diagnostics.record_document_usage(
+            "context_recall_planner",
+            "planner",
+            &format!("query={}", preview_text(query_text, 80)),
+        );
+        let related_paths = collect_related_paths(memory_hits, observations);
+        let recent_window = query_requests_recent_window(query_text)
+            .then(|| current_unix_timestamp().saturating_sub(14 * 24 * 60 * 60));
+        let results = self
+            .query
+            .search(SearchQuery {
+                text: Some(query_text.to_string()),
+                mode: SearchMode::Hybrid,
+                filters: recent_window
+                    .map(|timestamp| vec![SearchFilter::ModifiedAfter(timestamp)])
+                    .unwrap_or_default(),
+                sort: None,
+                max_results: 6,
+            })
+            .or_else(|_| {
+                self.query.search(SearchQuery {
+                    text: Some(query_text.to_string()),
+                    mode: SearchMode::Hybrid,
+                    filters: Vec::new(),
+                    sort: None,
+                    max_results: 6,
+                })
+            })
+            .unwrap_or_default();
+
+        trim_document_hits_for_budget(
+            rerank_document_hits(results, &related_paths),
+            self.recall_budget.document_hits_tokens,
+        )
+    }
+
+    fn sync_memory_snapshot(&self) {
+        if let Ok(snapshot) = self.memory.diagnostics_snapshot() {
+            self.diagnostics.record_memory_snapshot(&snapshot);
         }
     }
 }
@@ -529,39 +833,141 @@ impl ContextAssembler for DefaultContextAssembler {
     }
 }
 
-#[derive(Default)]
 struct LocalMemoryService {
-    archived_turns: Mutex<Vec<TurnSummary>>,
+    store: LocalMemoryStore,
+    runtime: Mutex<MemoryRuntimeState>,
+}
+
+#[derive(Debug, Default)]
+struct MemoryRuntimeState {
+    query_count: u64,
+    query_hit_mix: BTreeMap<String, u64>,
+    current_query: Option<MemoryQueryDiagnostics>,
+    current_observations: Option<ObservationRecallDiagnostics>,
+}
+
+impl LocalMemoryService {
+    fn new(root: PathBuf) -> Self {
+        Self {
+            store: LocalMemoryStore::new(root),
+            runtime: Mutex::new(MemoryRuntimeState::default()),
+        }
+    }
+
+    fn build_snapshot(&self, store_stats: MemoryStoreStats) -> MemoryKnowledgeSnapshot {
+        let runtime = self.runtime.lock().unwrap();
+        MemoryKnowledgeSnapshot {
+            total_turns_archived: store_stats.total_turns_archived,
+            retention_candidates_accepted: store_stats.retained_candidates_accepted,
+            retention_candidates_dropped: store_stats.retained_candidates_dropped,
+            dropped_candidates_by_profile: store_stats.dropped_by_profile,
+            memory_query_count: runtime.query_count,
+            memory_query_hit_mix: runtime.query_hit_mix.clone(),
+            observation_count: store_stats.observation_totals.total,
+            observation_fresh_count: store_stats.observation_totals.fresh,
+            observation_stale_count: store_stats.observation_totals.stale,
+            observation_superseded_count: store_stats.observation_totals.superseded,
+            observation_corrected_count: store_stats.observation_totals.corrected,
+            observation_correction_activity: store_stats.observation_totals.correction_activity,
+            current_query: runtime.current_query.clone(),
+            current_observations: runtime.current_observations.clone(),
+        }
+    }
 }
 
 impl MemoryService for LocalMemoryService {
     fn archive_turn(&self, turn: &TurnData) -> Result<()> {
-        self.archived_turns.lock().unwrap().push(TurnSummary {
+        self.store.archive_turn(ArchivedTurnInput {
             turn_id: turn.turn_id,
             workflow_id: turn.workflow_id.clone(),
             user_intent: turn.user_intent.clone(),
-            summary_count: turn.summaries.len(),
-        });
+            summaries: turn.summaries.clone(),
+            signals: turn.signals.clone(),
+        })?;
         Ok(())
     }
 
     fn compact_context(&self, policy: CompactionPolicy) -> Result<CompactionResult> {
+        let changed = self
+            .store
+            .compact_archived_turns(omega_memory::MAX_UNCOMPACTED_SUMMARIES)?;
         Ok(CompactionResult {
             trigger: policy.trigger,
-            changed: false,
+            changed,
         })
     }
 
     fn get_turn_history(&self, limit: usize) -> Result<Vec<TurnSummary>> {
         Ok(self
-            .archived_turns
-            .lock()
-            .unwrap()
-            .iter()
-            .rev()
-            .take(limit)
-            .cloned()
+            .store
+            .get_turn_history(limit)?
+            .into_iter()
+            .map(|turn| TurnSummary {
+                turn_id: turn.turn_id,
+                workflow_id: turn.workflow_id,
+                user_intent: turn.user_intent,
+                summary_count: turn.summary_count,
+            })
             .collect())
+    }
+
+    fn query(&self, query: MemoryQuery) -> Result<Vec<MemoryQueryHit>> {
+        let hits = self.store.query(&query)?;
+        let query_text = query.text.unwrap_or_default();
+        let mut hit_mix = BTreeMap::new();
+        for hit in &hits {
+            *hit_mix.entry(hit.profile.as_str().to_string()).or_default() += 1;
+        }
+        let mut runtime = self.runtime.lock().unwrap();
+        runtime.query_count = runtime.query_count.saturating_add(1);
+        for (profile, count) in &hit_mix {
+            *runtime.query_hit_mix.entry(profile.clone()).or_default() += *count as u64;
+        }
+        runtime.current_query = Some(MemoryQueryDiagnostics {
+            query: query_text,
+            result_count: hits.len() as u32,
+            hit_mix,
+            top_hits: hits
+                .iter()
+                .take(5)
+                .map(|hit| MemoryQueryHitItem {
+                    profile: hit.profile.as_str().to_string(),
+                    title: hit.title.clone(),
+                    preview: hit.preview.clone(),
+                })
+                .collect(),
+        });
+        Ok(hits)
+    }
+
+    fn query_observations(&self, query: ObservationQuery) -> Result<Vec<ProjectObservation>> {
+        let observations = self.store.query_observations(&query)?;
+        let mut freshness_mix = BTreeMap::new();
+        for observation in &observations {
+            *freshness_mix
+                .entry(observation.freshness.as_str().to_string())
+                .or_default() += 1;
+        }
+        self.runtime.lock().unwrap().current_observations = Some(ObservationRecallDiagnostics {
+            query: query.text.unwrap_or_default(),
+            result_count: observations.len() as u32,
+            freshness_mix,
+            top_hits: observations
+                .iter()
+                .take(5)
+                .map(|observation| ObservationRecallHitItem {
+                    id: observation.id.clone(),
+                    title: observation.title.clone(),
+                    summary: preview_text(&observation.summary, 160),
+                    freshness: observation.freshness,
+                })
+                .collect(),
+        });
+        Ok(observations)
+    }
+
+    fn diagnostics_snapshot(&self) -> Result<MemoryKnowledgeSnapshot> {
+        Ok(self.build_snapshot(self.store.stats()?))
     }
 }
 
@@ -801,7 +1207,6 @@ impl ContextDiagnosticsProvider for LocalDiagnostics {
             available_summary_count,
         };
         state.cache = Some(cache.clone());
-        state.memory.total_turns_archived = available_summary_count as u64;
         state.memory.current_summary_tokens = selected_summary_tokens;
         state.memory.current_summary_count = selected_summary_count;
 
@@ -832,12 +1237,7 @@ impl ContextDiagnosticsProvider for LocalDiagnostics {
         state.document.total_embeddings = scan.chunks_indexed as u64;
         state.document.active_version = scan.active_version.clone();
         state.document.pending_version = scan.pending_version.clone();
-        state.document.last_promotion_error = scan.pending_version.as_ref().map(|version| {
-            format!(
-                "pending promotion for {} remains staged at {}",
-                version.version_id, version.storage_path
-            )
-        });
+        state.document.last_promotion_error = None;
         push_document_activity(
             &mut state.document.recent_activity,
             "scan workspace",
@@ -918,6 +1318,25 @@ impl ContextDiagnosticsProvider for LocalDiagnostics {
             format!("source={source} {detail}"),
         );
     }
+
+    fn record_memory_snapshot(&self, snapshot: &MemoryKnowledgeSnapshot) {
+        let mut state = self.state.lock().unwrap();
+        state.memory.total_turns_archived = snapshot.total_turns_archived;
+        state.memory.retention_candidates_accepted = snapshot.retention_candidates_accepted;
+        state.memory.retention_candidates_dropped = snapshot.retention_candidates_dropped;
+        state.memory.dropped_candidates_by_profile =
+            snapshot.dropped_candidates_by_profile.clone();
+        state.memory.memory_query_count = snapshot.memory_query_count;
+        state.memory.memory_query_hit_mix = snapshot.memory_query_hit_mix.clone();
+        state.memory.observation_count = snapshot.observation_count;
+        state.memory.observation_fresh_count = snapshot.observation_fresh_count;
+        state.memory.observation_stale_count = snapshot.observation_stale_count;
+        state.memory.observation_superseded_count = snapshot.observation_superseded_count;
+        state.memory.observation_corrected_count = snapshot.observation_corrected_count;
+        state.memory.observation_correction_activity = snapshot.observation_correction_activity;
+        state.memory.current_query = snapshot.current_query.clone();
+        state.memory.current_observations = snapshot.current_observations.clone();
+    }
 }
 
 fn push_document_activity(
@@ -934,6 +1353,112 @@ fn push_document_activity(
         },
     );
     activity.truncate(6);
+}
+
+fn trim_memory_hits_for_budget(hits: Vec<MemoryQueryHit>, max_tokens: u32) -> Vec<MemoryQueryHit> {
+    let mut selected = Vec::new();
+    let mut used_tokens = 0_u32;
+    for hit in hits {
+        let cost = estimate_tokens(&format!("{}\n{}", hit.title, hit.preview));
+        if !selected.is_empty() && used_tokens.saturating_add(cost) > max_tokens {
+            break;
+        }
+        used_tokens = used_tokens.saturating_add(cost);
+        selected.push(hit);
+    }
+    selected
+}
+
+fn trim_document_hits_for_budget(hits: Vec<SearchResult>, max_tokens: u32) -> Vec<SearchResult> {
+    let mut selected = Vec::new();
+    let mut used_tokens = 0_u32;
+    for hit in hits {
+        let cost = estimate_tokens(&format!("{}\n{}", hit.path, hit.preview));
+        if !selected.is_empty() && used_tokens.saturating_add(cost) > max_tokens {
+            break;
+        }
+        used_tokens = used_tokens.saturating_add(cost);
+        selected.push(hit);
+    }
+    selected
+}
+
+fn trim_observations_for_budget(
+    observations: Vec<ProjectObservation>,
+    max_tokens: u32,
+) -> Vec<ProjectObservation> {
+    let mut selected = Vec::new();
+    let mut used_tokens = 0_u32;
+    for observation in observations {
+        let cost = estimate_tokens(&format!(
+            "{}\n{}",
+            observation.title,
+            observation.summary
+        ));
+        if !selected.is_empty() && used_tokens.saturating_add(cost) > max_tokens {
+            break;
+        }
+        used_tokens = used_tokens.saturating_add(cost);
+        selected.push(observation);
+    }
+    selected
+}
+
+fn rerank_document_hits(
+    mut results: Vec<SearchResult>,
+    related_paths: &BTreeSet<String>,
+) -> Vec<SearchResult> {
+    results.sort_by(|left, right| {
+        document_relation_rank(right, related_paths)
+            .cmp(&document_relation_rank(left, related_paths))
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    results
+}
+
+fn document_relation_rank(result: &SearchResult, related_paths: &BTreeSet<String>) -> u8 {
+    related_paths
+        .iter()
+        .any(|path| result.path == *path || result.path.starts_with(path))
+        .then_some(1)
+        .unwrap_or(0)
+}
+
+fn collect_related_paths(
+    memory_hits: &[MemoryQueryHit],
+    observations: &[ProjectObservation],
+) -> BTreeSet<String> {
+    let mut paths = BTreeSet::new();
+    for hit in memory_hits {
+        for evidence in &hit.evidence_refs {
+            if let omega_memory::RetentionEvidenceRef::ChangedPath { path } = evidence {
+                paths.insert(path.clone());
+            }
+        }
+    }
+    for observation in observations {
+        for evidence in &observation.evidence_refs {
+            if evidence.kind == "changed_path" {
+                paths.insert(evidence.locator.clone());
+            }
+        }
+    }
+    paths
+}
+
+fn query_requests_recent_window(query_text: &str) -> bool {
+    let lowered = query_text.to_lowercase();
+    ["recent", "latest", "current", "today", "newest"]
+        .iter()
+        .any(|needle| lowered.contains(needle))
+}
+
+fn preview_text(text: &str, limit: usize) -> String {
+    let trimmed = text.trim();
+    if trimmed.chars().count() <= limit {
+        return trimmed.to_string();
+    }
+    format!("{}...", trimmed.chars().take(limit.saturating_sub(3)).collect::<String>())
 }
 
 fn current_unix_timestamp() -> u64 {
@@ -1437,6 +1962,28 @@ fn build_step_system_blocks(
         );
     }
 
+    let document_context = render_document_hits_context(&request.document_hits);
+    if !document_context.trim().is_empty() {
+        blocks.push(
+            SystemBlock::text(document_context).with_cache_control(PromptCacheControl::ephemeral()),
+        );
+    }
+
+    let memory_context = render_memory_hits_context(&request.memory_hits);
+    if !memory_context.trim().is_empty() {
+        blocks.push(
+            SystemBlock::text(memory_context).with_cache_control(PromptCacheControl::ephemeral()),
+        );
+    }
+
+    let observation_context = render_observation_hits_context(&request.observation_hits);
+    if !observation_context.trim().is_empty() {
+        blocks.push(
+            SystemBlock::text(observation_context)
+                .with_cache_control(PromptCacheControl::ephemeral()),
+        );
+    }
+
     let dynamic_sections = render_dynamic_step_sections(request);
     if !dynamic_sections.trim().is_empty() {
         blocks.push(SystemBlock::text(dynamic_sections));
@@ -1816,6 +2363,59 @@ fn render_step_summaries_context(step_summaries: &[ContextStepSummary]) -> Strin
     )
 }
 
+fn render_document_hits_context(document_hits: &[SearchResult]) -> String {
+    if document_hits.is_empty() {
+        return String::new();
+    }
+
+    let lines = document_hits
+        .iter()
+        .map(|hit| format!("- {}\n{}", hit.path, preview_text(&hit.preview, 220)))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    format!("<planner_document_hits>\n{}\n</planner_document_hits>", lines)
+}
+
+fn render_memory_hits_context(memory_hits: &[MemoryQueryHit]) -> String {
+    if memory_hits.is_empty() {
+        return String::new();
+    }
+
+    let lines = memory_hits
+        .iter()
+        .map(|hit| {
+            format!(
+                "- [{}] {}\n{}",
+                hit.profile.as_str(),
+                hit.title,
+                hit.preview.trim_end()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    format!("<archived_memory_hits>\n{}\n</archived_memory_hits>", lines)
+}
+
+fn render_observation_hits_context(observation_hits: &[ProjectObservation]) -> String {
+    if observation_hits.is_empty() {
+        return String::new();
+    }
+
+    let lines = observation_hits
+        .iter()
+        .map(|observation| {
+            format!(
+                "- [{}] {}\n{}",
+                observation.freshness.as_str(),
+                observation.title,
+                preview_text(&observation.summary, 220)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    format!("<project_observations>\n{}\n</project_observations>", lines)
+}
+
 pub fn render_structured_input(structured_input: &Value) -> String {
     serde_json::to_string_pretty(structured_input).unwrap_or_else(|_| structured_input.to_string())
 }
@@ -1994,10 +2594,12 @@ mod tests {
     use omega_workflow::{DataFormat, OutputRecoveryMode};
 
     use super::{
-        render_output_contract, render_visible_tools, ContextAssembler, ContextExecuteItem,
-        ContextRouting, ContextSession, ContextStep, ContextTokenCounter, ContextWorkflowRole,
-        DefaultContextAssembler, DocumentHealthReport, HealthScore, OmegaContextFacade,
-        OutputRepairContextRequest, OutputRepairFailure, ScanResult, StepContextRequest,
+        render_output_contract, render_visible_tools, CompactionPolicy, ContextAssembler,
+        ContextExecuteItem, ContextRouting, ContextSession, ContextStep, ContextTokenCounter,
+        ContextWorkflowRole, DefaultContextAssembler, DocumentHealthReport, HealthScore,
+        LocalMemoryService, MemoryService, OmegaContextFacade, OutputRepairContextRequest,
+        OutputRepairFailure, RecallBudgetConfig, ScanResult, StepContextRequest, TurnData,
+        TurnRetentionSignals,
     };
 
     struct FixedTokenCounter;
@@ -2078,6 +2680,9 @@ mod tests {
                 },
             },
             step_prompt: "Do the work".to_string(),
+            document_hits: Vec::new(),
+            memory_hits: Vec::new(),
+            observation_hits: Vec::new(),
             structured_input: Some(serde_json::json!({"goal": "fix"})),
             todo_snapshot: Some("[>] #task-1".to_string()),
             current_execute_item: Some(ContextExecuteItem {
@@ -2430,12 +3035,26 @@ mod tests {
                 missing_frontmatter: Vec::new(),
                 overall_health: HealthScore::NeedsAttention,
             });
+        facade
+            .memory
+            .archive_turn(&TurnData {
+                turn_id: 1,
+                workflow_id: "feature".to_string(),
+                user_intent: "archive one turn".to_string(),
+                summaries: vec![context_summary("feature", "plan", "Plan", "Plan summary")],
+                signals: TurnRetentionSignals {
+                    changed_paths: vec!["crates/omega-context/src/lib.rs".to_string()],
+                    ..TurnRetentionSignals::default()
+                },
+            })
+            .unwrap();
+        facade.sync_memory_snapshot();
 
         let diagnostics = facade.diagnostics.context_diagnostics();
         assert_eq!(diagnostics.budget.request_input_tokens, 320);
         assert_eq!(diagnostics.budget.selected_summary_count, 1);
         assert_eq!(diagnostics.budget.available_summary_count, 3);
-        assert_eq!(diagnostics.memory.total_turns_archived, 3);
+        assert_eq!(diagnostics.memory.total_turns_archived, 1);
         assert_eq!(diagnostics.memory.compactions_triggered, 1);
         assert_eq!(diagnostics.document.total_files_indexed, 12);
         assert_eq!(diagnostics.document.total_chunks, 48);
@@ -2444,5 +3063,90 @@ mod tests {
             Some(HealthScore::NeedsAttention)
         );
         assert_eq!(diagnostics.cache, Some(assembled.cache_diagnostics));
+    }
+
+    #[test]
+    fn recall_budget_config_defaults_when_file_missing() {
+        let root = PathBuf::from("/tmp/omega-context-recall-budget-missing");
+
+        let config = RecallBudgetConfig::load(&root);
+
+        assert_eq!(config, RecallBudgetConfig::default());
+    }
+
+    #[test]
+    fn recall_budget_config_loads_repo_override_from_model_toml() {
+        let root = std::env::temp_dir().join(format!(
+            "omega-context-recall-budget-{}",
+            std::process::id()
+        ));
+        let omega_dir = root.join(".omega");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&omega_dir).unwrap();
+        std::fs::write(
+            omega_dir.join("model.toml"),
+            "[context.recall]\nmemory_hits_tokens = 64\nobservation_hits_tokens = 48\ndocument_hits_tokens = 96\n",
+        )
+        .unwrap();
+
+        let config = RecallBudgetConfig::load(&root);
+
+        assert_eq!(
+            config,
+            RecallBudgetConfig {
+                memory_hits_tokens: 64,
+                observation_hits_tokens: 48,
+                document_hits_tokens: 96,
+            }
+        );
+    }
+
+    #[test]
+    fn compact_context_rewrites_old_archived_summaries() {
+        let root = std::env::temp_dir().join(format!(
+            "omega-context-compaction-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let memory = LocalMemoryService::new(root.clone());
+        let long_summary = format!(
+            "old-head {} old-tail",
+            "detail ".repeat(120)
+        );
+
+        for turn_id in 1..=6 {
+            memory
+                .archive_turn(&TurnData {
+                    turn_id,
+                    workflow_id: "feature".to_string(),
+                    user_intent: format!("archive turn {turn_id}"),
+                    summaries: vec![context_summary(
+                        "feature",
+                        "plan",
+                        "Plan",
+                        &long_summary,
+                    )],
+                    signals: TurnRetentionSignals::default(),
+                })
+                .unwrap();
+        }
+
+        let result = memory
+            .compact_context(CompactionPolicy {
+                trigger: "budget_threshold".to_string(),
+            })
+            .unwrap();
+        let turns = memory.store.get_turn_history(10).unwrap();
+        let oldest = turns.iter().find(|turn| turn.turn_id == 1).unwrap();
+        let newest = turns.iter().find(|turn| turn.turn_id == 6).unwrap();
+
+        assert!(result.changed);
+        assert!(oldest.summaries[0].summary.contains("..."));
+        assert!(oldest.summaries[0].summary.len() < long_summary.len());
+        assert_eq!(newest.summaries[0].summary, long_summary);
     }
 }

@@ -40,25 +40,32 @@ impl BatchHandler {
     }
 
     fn run(&self, input: Value) -> ToolResult {
-        let requests = match input.get("requests") {
-            Some(Value::Array(requests)) if !requests.is_empty() => requests,
-            Some(Value::Array(_)) => {
+        let requests = match parse_batch_requests(input.get("requests")) {
+            Ok(requests) if !requests.is_empty() => requests,
+            Ok(_) => {
                 return build_tool_error(
                     "Error: Field 'requests' must be a non-empty array".to_string(),
                     json!({}),
                     ToolErrorKind::Validation,
                 );
             }
-            Some(_) => {
+            Err(ParseBatchRequestsError::InvalidType) => {
                 return build_tool_error(
                     "Error: Field 'requests' must be a non-empty array".to_string(),
                     json!({}),
                     ToolErrorKind::Validation,
                 );
             }
-            None => {
+            Err(ParseBatchRequestsError::Missing) => {
                 return build_tool_error(
                     "Error: Missing required field 'requests'".to_string(),
+                    json!({}),
+                    ToolErrorKind::Validation,
+                );
+            }
+            Err(ParseBatchRequestsError::InvalidJson) => {
+                return build_tool_error(
+                    "Error: Field 'requests' must be a non-empty array".to_string(),
                     json!({}),
                     ToolErrorKind::Validation,
                 );
@@ -262,6 +269,27 @@ impl BatchHandler {
                 "results": result_metadata,
             }))
             .with_truncated(any_nested_truncated || captured.truncated)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParseBatchRequestsError {
+    Missing,
+    InvalidType,
+    InvalidJson,
+}
+
+fn parse_batch_requests(value: Option<&Value>) -> Result<Vec<Value>, ParseBatchRequestsError> {
+    match value {
+        Some(Value::Array(requests)) => Ok(requests.clone()),
+        Some(Value::String(requests)) => serde_json::from_str::<Value>(requests)
+            .map_err(|_| ParseBatchRequestsError::InvalidJson)
+            .and_then(|parsed| match parsed {
+                Value::Array(requests) => Ok(requests),
+                _ => Err(ParseBatchRequestsError::InvalidType),
+            }),
+        Some(_) => Err(ParseBatchRequestsError::InvalidType),
+        None => Err(ParseBatchRequestsError::Missing),
     }
 }
 

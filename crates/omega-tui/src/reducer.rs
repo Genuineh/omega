@@ -123,6 +123,10 @@ impl TuiUpdateReducer {
             RuntimeUiEffect::UpsertContextSupervision { snapshot } => {
                 app.set_context_supervision(*snapshot)
             }
+            RuntimeUiEffect::UpsertStepKnowledgeSummary {
+                section_id,
+                summary,
+            } => app.upsert_step_knowledge_summary(section_id, *summary),
             RuntimeUiEffect::UpsertStepSubflow { subflow } => app.upsert_step_subflow(subflow),
         }
     }

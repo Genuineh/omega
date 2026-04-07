@@ -128,6 +128,12 @@ fn response_activation_notice(activation: Option<ResponseActivation>) -> Option<
         Some(ResponseActivation::StepSubflowDetailOpened(label)) => {
             Some(format!("Opened subflow detail overlay for {label}."))
         }
+        Some(ResponseActivation::DocumentKnowledgeDetailOpened) => {
+            Some("Opened document knowledge detail overlay.".to_string())
+        }
+        Some(ResponseActivation::MemoryKnowledgeDetailOpened) => {
+            Some("Opened memory knowledge detail overlay.".to_string())
+        }
         None => None,
     }
 }

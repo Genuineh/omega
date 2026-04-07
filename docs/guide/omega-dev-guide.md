@@ -2,7 +2,7 @@
 status: active
 owner: omega-team
 created: 2026-03-18
-updated: 2026-04-02
+updated: 2026-04-07
 audience: developers
 level: intermediate
 ---
@@ -44,6 +44,12 @@ cargo test
 
 ```bash
 cargo run -p omega-app
+```
+
+如果你要启用文档/检索后端：
+
+```bash
+cargo run -p omega-app --features document-backend
 ```
 
 ### Step 4: 进入文档入口
@@ -111,13 +117,23 @@ cargo run -p omega-app
 cargo run -p omega-app
 ```
 
+### 运行文档/检索后端入口
+
+```bash
+cargo run -p omega-app --features document-backend
+```
+
 ### 运行定向测试
 
 ```bash
 cargo test -p omega-client
 cargo test -p omega-session
 cargo test -p omega-tui
+cargo test-document-backend
+cargo test-document-commands
 ```
+
+`cargo test -p omega-app` 现在默认不再拉起 `document-backend`，用于日常快速回归；`cargo test-document-backend` 只覆盖文档存储/keyword+semantic+hybrid retrieval 后端，`cargo test-document-commands` 单独覆盖 `omega-session` 的 `/document` command 集成。feature-enabled session 文档测试默认强制 mock embedding backend，避免真实模型下载与 `.fastembed_cache` 污染工作树。
 
 ### 格式化与静态检查
 
@@ -167,6 +183,7 @@ Omega 使用 `tracing` 输出两类日志：
 
 常见排障动作：
 - provider 交互异常时先用 `OMEGA_LOG=debug cargo run -p omega-app`
+- 如果要排查 `/document`、`search_codebase` 或 hybrid retrieval，请改用 `OMEGA_LOG=debug cargo run -p omega-app --features document-backend`
 - 如果怀疑节流或 429，检查 `.omega/model.toml` 的 `[provider]` 覆盖项
 - 如果 TUI 视图异常，先确认当前文档基线是否与 `docs/TODO.md` 和相关 spec 一致
 

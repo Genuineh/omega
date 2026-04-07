@@ -1,0 +1,3 @@
+[alias]
+test-document-backend = "test -p omega-document -p omega-context --features omega-context/document-backend --color never"
+test-document-commands = "test -p omega-session --features document-backend spawn_command_document --lib --color never -- --test-threads=1"

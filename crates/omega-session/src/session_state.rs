@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use omega_context::GovernanceEventSignal;
 use serde_json::Value;
 
 use crate::runtime_ui::WorkflowRunRole;
@@ -10,6 +11,7 @@ pub(crate) struct SessionContext {
     pub(crate) routing: RoutingContext,
     pub(crate) step_summaries: Vec<StepSummary>,
     pub(crate) step_outputs: BTreeMap<String, Value>,
+    pub(crate) governance_events: Vec<GovernanceEventSignal>,
 }
 
 impl SessionContext {
@@ -19,6 +21,7 @@ impl SessionContext {
             routing: RoutingContext::for_workflow(root_workflow_id.into(), WorkflowRunRole::Root),
             step_summaries: Vec::new(),
             step_outputs: BTreeMap::new(),
+            governance_events: Vec::new(),
         }
     }
 
@@ -30,6 +33,7 @@ impl SessionContext {
         self.latest_user_turn = latest_user_turn.into();
         self.routing = RoutingContext::for_workflow(root_workflow_id.into(), WorkflowRunRole::Root);
         self.step_outputs.clear();
+        self.governance_events.clear();
     }
 }
 

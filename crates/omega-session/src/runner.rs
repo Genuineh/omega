@@ -8,8 +8,9 @@ use omega_context::{
     ContextTokenCountSource, ContextTokenCounter, ContextWorkflowRole, DocumentHitItem,
     DocumentHitSummary, DocumentSupervisionSnapshot, DocumentSupervisionTotals, HealthScore,
     MemoryHitItem, MemoryHitSummary, MemorySupervisionSnapshot, MemorySupervisionTotals,
-    OmegaContextFacade, OutputRepairContextRequest, OutputRepairFailure, SearchMode,
-    SearchResult, StepContextRequest, SupervisionReadiness,
+    ObservationRecallHitItem, OmegaContextFacade, OutputRepairContextRequest,
+    OutputRepairFailure, ResponseDocumentKnowledge, ResponseMemoryKnowledge, SearchMode,
+    SearchResult, StepContextRequest, StepKnowledgeSummary, SupervisionReadiness,
 };
 use omega_core::{
     Agent, ChatRequest, CoreSharedTodoManager, CoreToolExecutionContext, CoreToolResult,
@@ -514,6 +515,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                         };
                         self.send_step_output_diagnostics(
                             &diagnostic_context,
+                            response_streamer.primary_section_id(),
                             &step_input,
                             OutputDiagnosticState {
                                 status: StepOutputStatus::Invalid,
@@ -693,6 +695,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                 Err(error) => {
                     self.send_step_output_diagnostics(
                         &diagnostic_context,
+                        response_streamer.primary_section_id(),
                         &step_input,
                         OutputDiagnosticState {
                             status: output_status,
@@ -755,6 +758,7 @@ impl<'a> WorkflowTurnRunner<'a> {
 
             self.send_step_output_diagnostics(
                 &diagnostic_context,
+                response_streamer.primary_section_id(),
                 &step_input,
                 OutputDiagnosticState {
                     status: output_status,
@@ -1112,7 +1116,6 @@ impl<'a> WorkflowTurnRunner<'a> {
         };
         let assembled = self
             .context_facade
-            .assembler
             .assemble_step_context(step_request, &token_counter)?;
         self.context_facade.diagnostics.record_context_assembly(
             &assembled.cache_diagnostics,
@@ -1143,6 +1146,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                     .map(step_summary_from_context)
                     .collect(),
                 step_outputs: session_context.step_outputs.clone(),
+                governance_events: session_context.governance_events.clone(),
             },
             structured_input,
             todo_snapshot,
@@ -1187,6 +1191,9 @@ impl<'a> WorkflowTurnRunner<'a> {
                 output_contract: step.output_contract.clone(),
             },
             step_prompt: step_prompt.to_string(),
+            document_hits: Vec::new(),
+            memory_hits: Vec::new(),
+            observation_hits: Vec::new(),
             structured_input: structured_input.cloned(),
             todo_snapshot: todo_snapshot.map(ToOwned::to_owned),
             current_execute_item: current_execute_item
@@ -1238,6 +1245,9 @@ impl<'a> WorkflowTurnRunner<'a> {
                     output_contract: step_input.step.output_contract.clone(),
                 },
                 step_prompt: step_input.step_prompt.clone(),
+                document_hits: Vec::new(),
+                memory_hits: Vec::new(),
+                observation_hits: Vec::new(),
                 structured_input: step_input.structured_input.clone(),
                 todo_snapshot: step_input.todo_snapshot.clone(),
                 current_execute_item: step_input
@@ -1313,7 +1323,7 @@ impl<'a> WorkflowTurnRunner<'a> {
         (!manager.items().is_empty()).then(|| manager.render())
     }
 
-    fn send_step_diagnostics_effect(&self, diagnostics: StepDiagnostics) {
+    fn send_step_diagnostics_effect(&self, section_id: Option<&str>, diagnostics: StepDiagnostics) {
         update_memory_supervision_hits(&self.supervision_state, &diagnostics);
         let context = diagnostics.context.clone();
         self.tx_result.send(crate::RuntimeMessageEnvelope::state(
@@ -1329,6 +1339,15 @@ impl<'a> WorkflowTurnRunner<'a> {
                 context,
                 &self.supervision_state,
             );
+            if let Some(section_id) = section_id {
+                send_step_knowledge_summary(
+                    &*self.tx_result,
+                    self.turn_id,
+                    section_id,
+                    context,
+                    &self.supervision_state,
+                );
+            }
         }
     }
 
@@ -1354,7 +1373,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                 session_writes: Vec::new(),
             },
         );
-        self.send_step_diagnostics_effect(build_step_diagnostics(
+        self.send_step_diagnostics_effect(None, build_step_diagnostics(
             context,
             Some(step_input.context_diagnostics.clone()),
             Some(step_input.cache_diagnostics.clone()),
@@ -1388,7 +1407,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                 session_writes: Vec::new(),
             },
         );
-        self.send_step_diagnostics_effect(build_step_diagnostics(
+        self.send_step_diagnostics_effect(None, build_step_diagnostics(
             context,
             Some(self.context_facade.diagnostics.context_diagnostics()),
             None,
@@ -1417,6 +1436,7 @@ impl<'a> WorkflowTurnRunner<'a> {
     fn send_step_output_diagnostics(
         &self,
         context: &StepDiagnosticContext<'_>,
+        section_id: &str,
         step_input: &StepExecutionInput,
         output_state: OutputDiagnosticState<'_>,
         progress_state: ExecuteLoopProgressState,
@@ -1435,7 +1455,7 @@ impl<'a> WorkflowTurnRunner<'a> {
             output_state.session_writes,
             tool_capabilities,
         );
-        self.send_step_diagnostics_effect(diagnostics);
+        self.send_step_diagnostics_effect(Some(section_id), diagnostics);
     }
 
     fn build_execute_progress_diagnostics(
@@ -3415,6 +3435,117 @@ fn send_context_supervision_snapshot(
     ));
 }
 
+fn send_step_knowledge_summary(
+    tx: &dyn RuntimeMessageBridge,
+    turn_id: u64,
+    section_id: &str,
+    context: &ContextDiagnostics,
+    supervision_state: &Arc<Mutex<ContextSupervisionState>>,
+) {
+    let summary = build_step_knowledge_summary(context, &supervision_state.lock().unwrap());
+    if let Some(summary) = summary {
+        tx.send(crate::RuntimeMessageEnvelope::state(
+            turn_id,
+            crate::StateMessage::StepKnowledgeSummary {
+                section_id: section_id.to_string(),
+                summary: Box::new(summary),
+            },
+        ));
+    }
+}
+
+fn build_step_knowledge_summary(
+    context: &ContextDiagnostics,
+    supervision_state: &ContextSupervisionState,
+) -> Option<StepKnowledgeSummary> {
+    let document = build_response_document_knowledge(context, supervision_state.document_hits.clone());
+    let memory = build_response_memory_knowledge(context, supervision_state.memory_hits.clone());
+    if document.is_none() && memory.is_none() {
+        None
+    } else {
+        Some(StepKnowledgeSummary { document, memory })
+    }
+}
+
+fn build_response_document_knowledge(
+    context: &ContextDiagnostics,
+    document_hits: Option<DocumentHitSummary>,
+) -> Option<ResponseDocumentKnowledge> {
+    let query_attempted = context
+        .document
+        .operator_usage
+        .iter()
+        .any(|usage| usage.operator == "search_codebase");
+    let readiness = document_supervision_readiness_with_backend_enabled(context, cfg!(feature = "document-backend"));
+    let hits = document_hits.as_ref();
+
+    if hits.is_none() && !query_attempted {
+        return None;
+    }
+
+    let no_promoted_store = context.document.active_version.is_none();
+    let result_count = hits.map(|summary| summary.result_count).unwrap_or_default();
+    let reason = if result_count > 0 {
+        None
+    } else if no_promoted_store {
+        Some("no promoted store version".to_string())
+    } else if query_attempted {
+        Some("no matches returned".to_string())
+    } else {
+        Some("document recall attempted without a hit snapshot".to_string())
+    };
+
+    Some(ResponseDocumentKnowledge {
+        readiness,
+        query: hits.map(|summary| summary.query.clone()).unwrap_or_default(),
+        mode: hits
+            .map(|summary| summary.mode.clone())
+            .unwrap_or_else(|| "unknown".to_string()),
+        degraded_from: hits.and_then(|summary| summary.degraded_from.clone()),
+        reason,
+        result_count,
+        top_hits: hits
+            .map(|summary| summary.top_hits.iter().take(3).cloned().collect())
+            .unwrap_or_default(),
+    })
+}
+
+fn build_response_memory_knowledge(
+    context: &ContextDiagnostics,
+    memory_hits: Option<MemoryHitSummary>,
+) -> Option<ResponseMemoryKnowledge> {
+    let current_query = context.memory.current_query.as_ref();
+    let current_observations = context.memory.current_observations.as_ref();
+    let hits = memory_hits.as_ref();
+
+    if current_query.is_none() && current_observations.is_none() && hits.is_none() {
+        return None;
+    }
+
+    Some(ResponseMemoryKnowledge {
+        memory_query: current_query.map(|query| query.query.clone()),
+        observation_query: current_observations.map(|query| query.query.clone()),
+        selected_summary_count: hits.map(|summary| summary.selected_count).unwrap_or_default(),
+        memory_hit_count: current_query.map(|query| query.result_count).unwrap_or_default(),
+        observation_hit_count: current_observations
+            .map(|query| query.result_count)
+            .unwrap_or_default(),
+        top_items: hits
+            .map(|summary| summary.top_hits.iter().take(3).cloned().collect())
+            .unwrap_or_default(),
+        top_observations: current_observations
+            .map(|summary| {
+                summary
+                    .top_hits
+                    .iter()
+                    .take(3)
+                    .cloned()
+                    .collect::<Vec<ObservationRecallHitItem>>()
+            })
+            .unwrap_or_default(),
+    })
+}
+
 fn build_context_supervision_snapshot(
     context: &ContextDiagnostics,
     supervision_state: &ContextSupervisionState,
@@ -3451,21 +3582,47 @@ fn build_context_supervision_snapshot(
                 current_summary_count: context.memory.current_summary_count,
                 turn_archive_count: context.store.turn_archive_count,
                 turn_archive_size_bytes: context.store.turn_archive_size_bytes,
+                retention_candidates_accepted: context.memory.retention_candidates_accepted,
+                retention_candidates_dropped: context.memory.retention_candidates_dropped,
+                dropped_candidates_by_profile: context.memory.dropped_candidates_by_profile.clone(),
+                memory_query_count: context.memory.memory_query_count,
+                memory_query_hit_mix: context.memory.memory_query_hit_mix.clone(),
+                observation_count: context.memory.observation_count,
+                observation_fresh_count: context.memory.observation_fresh_count,
+                observation_stale_count: context.memory.observation_stale_count,
+                observation_superseded_count: context.memory.observation_superseded_count,
+                observation_corrected_count: context.memory.observation_corrected_count,
+                observation_correction_activity: context.memory.observation_correction_activity,
             },
             current_hits: supervision_state.memory_hits.clone(),
+            current_query: context.memory.current_query.clone(),
+            current_observations: context.memory.current_observations.clone(),
         },
     }
 }
 
 fn document_supervision_readiness(context: &ContextDiagnostics) -> SupervisionReadiness {
-    if !cfg!(feature = "document-backend") {
+    document_supervision_readiness_with_backend_enabled(context, cfg!(feature = "document-backend"))
+}
+
+fn document_supervision_readiness_with_backend_enabled(
+    context: &ContextDiagnostics,
+    document_backend_enabled: bool,
+) -> SupervisionReadiness {
+    if !document_backend_enabled {
         return SupervisionReadiness::Disabled;
     }
-    if context.document.pending_version.is_some() || context.document.last_promotion_error.is_some() {
+    if context.document.last_promotion_error.is_some() {
         return SupervisionReadiness::Failed;
     }
-    if context.document.total_files_indexed == 0 && context.document.total_chunks == 0 {
-        return SupervisionReadiness::Idle;
+    if context.document.pending_version.is_some() {
+        return SupervisionReadiness::Degraded;
+    }
+    if context.document.active_version.is_none() {
+        if context.document.total_files_indexed == 0 && context.document.total_chunks == 0 {
+            return SupervisionReadiness::Uninitialized;
+        }
+        return SupervisionReadiness::Degraded;
     }
     if matches!(context.document.governance_health, Some(HealthScore::Critical)) {
         return SupervisionReadiness::Degraded;
@@ -3933,14 +4090,19 @@ mod tests {
 
     use super::{
         build_context_compaction_log, classify_summary_priority, compact_summary_text,
-        maybe_compact_summary, rank_summary_candidates, should_trigger_context_compaction,
-        step_summary_to_context, validate_execute_step_output, SlotPriority, WorkflowTurnRunner,
+        document_supervision_readiness_with_backend_enabled, maybe_compact_summary,
+        rank_summary_candidates, should_trigger_context_compaction, step_summary_to_context,
+        validate_execute_step_output, SlotPriority, WorkflowTurnRunner,
     };
     use crate::{
         output::parse_structured_output_candidates,
         session_state::{SessionContext, StepSummary}, RuntimeContentKind,
         RuntimeEnvelopeRecorder, RuntimeMessage, RuntimeSource, SessionSkillCatalog,
         SessionToolCatalog, StateMessage, EXECUTE_STEP_ID, PLAN_STEP_ID,
+    };
+    use omega_context::{
+        ContextDiagnostics, ContextDocumentDiagnostics, ContextMemoryDiagnostics,
+        ContextStoreDiagnostics, SupervisionReadiness,
     };
 
     fn workflow_step(step_id: &str, sources: Vec<&str>) -> WorkflowStep {
@@ -4207,5 +4369,25 @@ mod tests {
                 }) if text.contains("Ignoring root workflow as child target")
             )
         }));
+    }
+
+    #[test]
+    fn document_supervision_marks_missing_active_store_as_uninitialized() {
+        let readiness = document_supervision_readiness_with_backend_enabled(&ContextDiagnostics {
+            document: ContextDocumentDiagnostics {
+                total_files_indexed: 0,
+                total_chunks: 0,
+                total_embeddings: 0,
+                active_version: None,
+                pending_version: None,
+                last_promotion_error: None,
+                ..ContextDocumentDiagnostics::default()
+            },
+            memory: ContextMemoryDiagnostics::default(),
+            store: ContextStoreDiagnostics::default(),
+            ..ContextDiagnostics::default()
+        }, true);
+
+        assert_eq!(readiness, SupervisionReadiness::Uninitialized);
     }
 }

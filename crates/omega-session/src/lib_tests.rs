@@ -1,13 +1,15 @@
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use omega_client::{
     test_support::{IdleLlmClient, ScriptedLlmClient},
     ChatResponse, ContentBlock, STOP_REASON_END_TURN, STOP_REASON_TOOL_USE,
 };
+use omega_context::GovernanceEventSignal;
 use omega_core::DynLlmClient;
 use omega_test_support::persistent_test_root;
 use omega_workflow::{
@@ -21,7 +23,8 @@ use serde_json::Value;
 
 use super::output::validate_workflow_step_output;
 use super::{
-    parse_json_values, preview_text, render_output_contract, resolve_structured_input,
+    build_turn_retention_signals, parse_json_values, preview_text, render_output_contract,
+    resolve_structured_input,
     validate_schema_file, validate_structured_output, AgentSession, AgentSessionConfig,
     ConversationMessage, ProviderMarkupSanitizer, ResponseSectionDelta, ResponseSectionKind,
     ResponseSectionState, RuntimeContentKind, RuntimeEnvelopeRecorder, RuntimeMessage,
@@ -195,6 +198,32 @@ fn write_document_fixture(root: &Path) {
     let _ = std::fs::write(root.join("README.md"), "# Omega Test Fixture\n");
     let _ = std::fs::write(root.join("docs/README.md"), "# Docs\n");
     let _ = std::fs::write(root.join("docs/TODO.md"), "# TODO\n");
+}
+
+struct DocumentEmbeddingBackendGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
+    previous: Option<OsString>,
+}
+
+impl Drop for DocumentEmbeddingBackendGuard {
+    fn drop(&mut self) {
+        if let Some(previous) = self.previous.as_ref() {
+            std::env::set_var("OMEGA_DOCUMENT_EMBEDDING_BACKEND", previous);
+        } else {
+            std::env::remove_var("OMEGA_DOCUMENT_EMBEDDING_BACKEND");
+        }
+    }
+}
+
+fn force_mock_document_embedding_backend() -> DocumentEmbeddingBackendGuard {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    let lock = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+    let previous = std::env::var_os("OMEGA_DOCUMENT_EMBEDDING_BACKEND");
+    std::env::set_var("OMEGA_DOCUMENT_EMBEDDING_BACKEND", "mock");
+    DocumentEmbeddingBackendGuard {
+        _lock: lock,
+        previous,
+    }
 }
 
 fn write_review_skill(root: &Path) {
@@ -629,6 +658,70 @@ fn structured_contract_helpers_resolve_inputs_and_validate_required_json() {
         })
     );
     assert!(validate_structured_output(&step.output_contract, "not json").is_err());
+}
+
+#[test]
+fn retention_signals_collect_plan_and_execute_outputs() {
+    let mut session_context = SessionContext::new(ROOT_WORKFLOW_ID);
+    session_context.latest_user_turn =
+        "Prefer narrow validation and keep patch sizes small".to_string();
+    session_context.step_outputs.insert(
+        PLAN_STEP_ID.to_string(),
+        serde_json::json!({
+            "goal": "Ship memory query",
+            "tasks": [
+                {"id": "task-1", "title": "Wire memory query", "description": "Connect planner"},
+                {"id": "task-2", "title": "Render supervision", "description": "Show new stats"}
+            ],
+            "validation_targets": ["cargo test -p omega-context"]
+        }),
+    );
+    session_context.step_outputs.insert(
+        EXECUTE_STEP_ID.to_string(),
+        serde_json::json!({
+            "completed_tasks": ["task-1"],
+            "open_tasks": ["task-2"],
+            "validation_results": [
+                {"target": "cargo test -p omega-session", "status": "passed"}
+            ],
+            "changed_paths": ["crates/omega-context/src/lib.rs"]
+        }),
+    );
+
+    let signals = build_turn_retention_signals(&session_context);
+
+    assert_eq!(signals.changed_paths, vec!["crates/omega-context/src/lib.rs"]);
+    assert_eq!(signals.completed_tasks, vec!["task-1"]);
+    assert_eq!(signals.open_tasks, vec!["task-2"]);
+    assert_eq!(
+        signals.validation_targets,
+        vec![
+            "cargo test -p omega-context".to_string(),
+            "cargo test -p omega-session".to_string(),
+        ]
+    );
+    assert_eq!(
+        signals.developer_preferences,
+        vec!["Prefer narrow validation and keep patch sizes small".to_string()]
+    );
+    assert!(signals.governance_events.is_empty());
+}
+
+#[test]
+fn retention_signals_include_governance_events() {
+    let mut session_context = SessionContext::new(ROOT_WORKFLOW_ID);
+    session_context.governance_events.push(GovernanceEventSignal {
+        label: "document.archive docs/specs/command-spec.md".to_string(),
+        at: 99,
+    });
+
+    let signals = build_turn_retention_signals(&session_context);
+
+    assert_eq!(signals.governance_events.len(), 1);
+    assert_eq!(
+        signals.governance_events[0].label,
+        "document.archive docs/specs/command-spec.md"
+    );
 }
 
 #[test]
@@ -1535,6 +1628,7 @@ fn plan_section_hides_invalid_report_prose_and_only_shows_validated_plan_summary
 #[cfg(feature = "document-backend")]
 #[test]
 fn spawn_command_document_health_emits_command_section() {
+    let _embedding_backend_guard = force_mock_document_embedding_backend();
     let root = unique_session_test_root("document-command-init");
     write_document_fixture(&root);
     let runtime = tokio::runtime::Runtime::new().unwrap();
@@ -1601,6 +1695,53 @@ fn spawn_command_document_health_emits_command_section() {
     assert!(body.contains("Total docs:"));
 }
 
+#[cfg(feature = "document-backend")]
+#[test]
+fn spawn_command_document_query_emits_step_knowledge_summary() {
+    let _embedding_backend_guard = force_mock_document_embedding_backend();
+    let root = unique_session_test_root("document-command-query-knowledge");
+    write_document_fixture(&root);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: Arc::new(IdleClient),
+        system: "system".to_string(),
+        cwd: root,
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+    let recorder = RuntimeEnvelopeRecorder::new();
+
+    session
+        .spawn_command_with_test_bridge(
+            "/document query roadmap".to_string(),
+            502,
+            recorder.runtime_bridge(),
+        )
+        .unwrap();
+
+    let recorded = recorder.wait_for_turn_finished_messages(502, Duration::from_secs(30));
+    let summary = recorded.iter().find_map(|envelope| match &envelope.message {
+        RuntimeMessage::State(StateMessage::StepKnowledgeSummary {
+            section_id,
+            summary,
+        }) if section_id == "turn-502:command" => Some(summary.as_ref()),
+        _ => None,
+    });
+
+    let summary = summary.expect("expected step knowledge summary for command section");
+    let document = summary.document.as_ref().expect("expected document knowledge summary");
+    assert_eq!(document.query, "roadmap");
+    assert_eq!(document.mode, "hybrid");
+}
+
 #[test]
 fn command_hint_renders_ready_state_for_document_query() {
     let root = unique_session_test_root("command-hint");
@@ -1629,6 +1770,7 @@ fn command_hint_renders_ready_state_for_document_query() {
 #[cfg(feature = "document-backend")]
 #[test]
 fn spawn_command_document_create_list_and_archive_emit_complete_sections() {
+    let _embedding_backend_guard = force_mock_document_embedding_backend();
     let root = unique_session_test_root("document-command-governance");
     write_document_fixture(&root);
     let runtime = tokio::runtime::Runtime::new().unwrap();
@@ -1710,6 +1852,7 @@ fn spawn_command_document_create_list_and_archive_emit_complete_sections() {
 #[cfg(feature = "document-backend")]
 #[test]
 fn spawn_command_document_init_streams_scan_phases_and_samples() {
+    let _embedding_backend_guard = force_mock_document_embedding_backend();
     let root = unique_session_test_root("document-command-init-rich");
     write_document_fixture(&root);
     let runtime = tokio::runtime::Runtime::new().unwrap();

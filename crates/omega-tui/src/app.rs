@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use crossterm::event::KeyEvent;
@@ -7,7 +8,8 @@ use ratatui::{layout::Rect, widgets::ListState};
 use omega_observability::strip_ansi;
 use omega_session::{
     ContextSupervisionSnapshot, OverlayTarget, ResponseSectionState, RuntimeUiEnvelope,
-    StatusSlot, StatusValue, StepDiagnostics, StepOutputStatus, StepSubflowRef,
+    StatusSlot, StatusValue, StepDiagnostics, StepKnowledgeSummary, StepOutputStatus,
+    StepSubflowRef,
     StepSubflowStatus, ToolRun, ToolRunStatus, WorkflowRunRole,
 };
 use omega_theme::RenderPalette;
@@ -148,6 +150,8 @@ pub enum ResponseLineAction {
     ToggleToolLane(String),
     OpenToolRunDetail(String),
     OpenStepSubflowDetail(String),
+    OpenDocumentKnowledgeDetail(String),
+    OpenMemoryKnowledgeDetail(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -160,6 +164,8 @@ pub enum ResponseActivation {
     ToolLaneExpanded,
     ToolDetailOpened(String),
     StepSubflowDetailOpened(String),
+    DocumentKnowledgeDetailOpened,
+    MemoryKnowledgeDetailOpened,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -217,6 +223,7 @@ pub struct App {
     pub output_msgs: Vec<Msg>,
     pub tool_runs: Vec<ToolRun>,
     pub step_subflows: Vec<StepSubflowStatus>,
+    pub step_knowledge_summaries: BTreeMap<String, StepKnowledgeSummary>,
     step_diagnostics: Vec<StepDiagnostics>,
     context_supervision: Option<ContextSupervisionSnapshot>,
     diagnostics_lines: Vec<DiagnosticsLine>,
@@ -287,6 +294,7 @@ impl App {
             output_msgs: vec![],
             tool_runs: vec![],
             step_subflows: vec![],
+            step_knowledge_summaries: BTreeMap::new(),
             step_diagnostics: vec![],
             context_supervision: None,
             diagnostics_lines: vec![],
@@ -359,6 +367,7 @@ impl App {
         self.session_status = None;
         self.agent_status_label = Some("Running".to_string());
         self.step_subflows.clear();
+        self.step_knowledge_summaries.clear();
         self.clear_step_diagnostics();
         self.clear_context_supervision();
         self.active_turn_id
@@ -378,6 +387,7 @@ impl App {
         self.session_status = None;
         self.agent_status_label = Some("Idle".to_string());
         self.step_subflows.clear();
+        self.step_knowledge_summaries.clear();
         self.clear_step_diagnostics();
         self.clear_context_supervision();
     }
@@ -460,6 +470,14 @@ impl App {
                 entry.item_index,
             )
         });
+    }
+
+    pub fn upsert_step_knowledge_summary(
+        &mut self,
+        section_id: String,
+        summary: StepKnowledgeSummary,
+    ) {
+        self.step_knowledge_summaries.insert(section_id, summary);
     }
 
     pub fn step_subflow_status_for_ref(

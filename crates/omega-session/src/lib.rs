@@ -1,5 +1,6 @@
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use omega_command::{
     CommandHint, CommandHintProvider, CommandHintResolution, OmegaCommandDescriptor,
@@ -7,7 +8,8 @@ use omega_command::{
 };
 use omega_context::{
     ArchiveTrigger, DocType, DocumentMutationMode, DocumentOp, FileRecord, FileStatus,
-    OmegaContextFacade, SearchMode, SearchQuery,
+    GovernanceEventSignal, OmegaContextFacade, SearchMode, SearchQuery, TurnData,
+    TurnRetentionSignals,
 };
 pub use omega_context::{
     ContextBudgetDiagnostics, ContextDiagnostics, ContextDocumentDiagnostics,
@@ -15,7 +17,10 @@ pub use omega_context::{
     DocumentActivitySummary, DocumentHealthStatus, DocumentHitItem, DocumentHitSummary,
     DocumentOperatorUsage, DocumentStoreVersion, DocumentSupervisionSnapshot,
     DocumentSupervisionTotals, HealthScore, MemoryHitItem, MemoryHitSummary,
-    MemorySupervisionSnapshot, MemorySupervisionTotals, SupervisionReadiness,
+    MemoryQueryDiagnostics, MemoryQueryHitItem, MemorySupervisionSnapshot,
+    MemorySupervisionTotals, ObservationRecallDiagnostics, ObservationRecallHitItem,
+    ObservationFreshness, ResponseDocumentKnowledge, ResponseMemoryKnowledge,
+    StepKnowledgeSummary, SupervisionReadiness,
 };
 use omega_core::{Agent, CoreSharedTodoManager, DynLlmClient, Message, TodoManager};
 use omega_hooks::HookHost;
@@ -42,6 +47,8 @@ mod skill_catalog;
 mod test_support;
 mod tool_catalog;
 mod ui_emit;
+
+use crate::output::{parse_feature_execute_output, parse_feature_plan_output};
 
 pub use omega_workflow::{
     StepSkillRequest, StepToolRequest, DEEP_RESEARCH_SCENE_ID, DEEP_RESEARCH_WORKFLOW_ID,
@@ -356,6 +363,7 @@ impl AgentSession {
             );
             let result = runner.run(&mut agent, &mut turn_context);
             let turn_still_active = *thread_turn_rx.borrow() == turn_id;
+            let archive_data = turn_still_active.then(|| build_turn_archive(turn_id, &turn_context));
 
             if turn_still_active {
                 let mut shared = session_context.lock().unwrap();
@@ -371,6 +379,14 @@ impl AgentSession {
                 );
             } else {
                 info!(turn_id, "discarding canceled turn result");
+            }
+
+            if let Some(archive_data) = archive_data.as_ref() {
+                if let Err(error) = context_facade.memory.archive_turn(archive_data) {
+                    error!(turn_id, error = %error, "failed to archive turn memory");
+                } else if let Ok(snapshot) = context_facade.memory.diagnostics_snapshot() {
+                    context_facade.diagnostics.record_memory_snapshot(&snapshot);
+                }
             }
 
             match result {
@@ -428,8 +444,15 @@ impl AgentSession {
     ) -> anyhow::Result<()> {
         self.active_turn_tx.send_replace(turn_id);
         let context_facade = self.context_facade.clone();
+        let session_context = self.session_context.clone();
+        let scene_catalog = self.scene_catalog.clone();
 
         thread::spawn(move || {
+            let mut turn_context = {
+                let mut shared = session_context.lock().unwrap();
+                shared.begin_turn(input.clone(), scene_catalog.root_workflow_id.clone());
+                shared.clone()
+            };
             let registry = command_registry(&context_facade);
             let parsed = registry.parse(&input);
             let title = command_title_from_input(&input);
@@ -441,9 +464,22 @@ impl AgentSession {
             let mut progress = |text: &str| append_command_output(&*tx, turn_id, &section_id, text);
 
             let output = match parsed {
-                Ok(invocation) => execute_command(&context_facade, invocation, &mut progress),
+                Ok(invocation) => {
+                    execute_command(&context_facade, invocation, &mut turn_context, &mut progress)
+                }
                 Err(error) => Err(anyhow::anyhow!(error)),
             };
+
+            let archive_data = build_turn_archive(turn_id, &turn_context);
+            {
+                let mut shared = session_context.lock().unwrap();
+                *shared = turn_context;
+            }
+            if let Err(error) = context_facade.memory.archive_turn(&archive_data) {
+                error!(turn_id, error = %error, "failed to archive command turn memory");
+            } else if let Ok(snapshot) = context_facade.memory.diagnostics_snapshot() {
+                context_facade.diagnostics.record_memory_snapshot(&snapshot);
+            }
 
             match output {
                 Ok(output) => emit_command_output(&*tx, turn_id, &section_id, output),
@@ -455,6 +491,7 @@ impl AgentSession {
                         body: format!("Error: {error}"),
                         state: ResponseSectionState::Failed,
                         activity: format!("{} failed", command_title_from_input(&input)),
+                        knowledge_summary: None,
                     },
                 ),
             }
@@ -471,6 +508,7 @@ struct CommandExecutionOutput {
     body: String,
     state: ResponseSectionState,
     activity: String,
+    knowledge_summary: Option<StepKnowledgeSummary>,
 }
 
 fn command_registry(context_facade: &Arc<OmegaContextFacade>) -> OmegaCommandRegistry {
@@ -513,10 +551,11 @@ fn command_registry(context_facade: &Arc<OmegaContextFacade>) -> OmegaCommandReg
 fn execute_command(
     context_facade: &Arc<OmegaContextFacade>,
     invocation: OmegaCommandInvocation,
+    turn_context: &mut SessionContext,
     progress: &mut dyn FnMut(&str),
 ) -> anyhow::Result<CommandExecutionOutput> {
     match invocation.name.as_str() {
-        "document" => execute_document_command(context_facade, invocation, progress),
+        "document" => execute_document_command(context_facade, invocation, turn_context, progress),
         _ => Err(anyhow::anyhow!("unsupported command '/{}'", invocation.name)),
     }
 }
@@ -524,6 +563,7 @@ fn execute_command(
 fn execute_document_command(
     context_facade: &Arc<OmegaContextFacade>,
     invocation: OmegaCommandInvocation,
+    turn_context: &mut SessionContext,
     progress: &mut dyn FnMut(&str),
 ) -> anyhow::Result<CommandExecutionOutput> {
     if !context_facade.document_backend_enabled {
@@ -540,6 +580,7 @@ fn execute_document_command(
 
     match subcommand {
         "init" | "sync" => {
+            record_governance_event(turn_context, format!("document.{subcommand}"));
             context_facade.diagnostics.record_document_usage(
                 "/document",
                 "builtin_command",
@@ -588,9 +629,11 @@ fn execute_document_command(
                 ),
                 state: ResponseSectionState::Complete,
                 activity: format!("/document {subcommand} indexed {} files", scan.files_indexed),
+                knowledge_summary: None,
             })
         }
         "health" => {
+            record_governance_event(turn_context, "document.health_check");
             context_facade.diagnostics.record_document_usage(
                 "/document",
                 "builtin_command",
@@ -625,6 +668,7 @@ fn execute_document_command(
                 ),
                 state: ResponseSectionState::Complete,
                 activity: "/document health completed".to_string(),
+                knowledge_summary: None,
             })
         }
         "query" => {
@@ -650,9 +694,17 @@ fn execute_document_command(
                 body: render_document_query_results(&query_text, &results),
                 state: ResponseSectionState::Complete,
                 activity: format!("/document query returned {} results", results.len()),
+                knowledge_summary: Some(build_document_query_knowledge_summary(
+                    &context_facade.diagnostics.context_diagnostics(),
+                    &query_text,
+                    &results,
+                )),
             })
         }
         "create" => {
+            if let Some(path) = invocation.args.first() {
+                record_governance_event(turn_context, format!("document.create {path}"));
+            }
             if invocation.args.len() < 3 {
                 return Err(anyhow::anyhow!(
                     "usage: /document create <path> <doc_type> <title...>"
@@ -681,9 +733,13 @@ fn execute_document_command(
                 body: render_document_operation_result(&result),
                 state: state_from_document_result(&result),
                 activity: format!("/document create wrote {}", path),
+                knowledge_summary: None,
             })
         }
         "archive" => {
+            if let Some(path) = invocation.args.first() {
+                record_governance_event(turn_context, format!("document.archive {path}"));
+            }
             if invocation.args.is_empty() {
                 return Err(anyhow::anyhow!(
                     "usage: /document archive <path> [reason] [replaced_by]"
@@ -713,6 +769,7 @@ fn execute_document_command(
                 body: render_document_operation_result(&result),
                 state: state_from_document_result(&result),
                 activity: format!("/document archive updated {}", path),
+                knowledge_summary: None,
             })
         }
         "list" => {
@@ -734,6 +791,7 @@ fn execute_document_command(
                 body: render_document_list_result(&result.files, doc_type, status),
                 state: state_from_document_result(&result),
                 activity: format!("/document list returned {} files", result.files.len()),
+                knowledge_summary: None,
             })
         }
         other => Err(anyhow::anyhow!(
@@ -1034,27 +1092,114 @@ fn emit_command_output(
     section_id: &str,
     output: CommandExecutionOutput,
 ) {
-    append_command_output(tx, turn_id, section_id, &output.body);
+    let CommandExecutionOutput {
+        body,
+        state,
+        activity,
+        knowledge_summary,
+    } = output;
+
+    append_command_output(tx, turn_id, section_id, &body);
+    if let Some(summary) = knowledge_summary {
+        tx.send(RuntimeMessageEnvelope::state(
+            turn_id,
+            StateMessage::StepKnowledgeSummary {
+                section_id: section_id.to_string(),
+                summary: Box::new(summary),
+            },
+        ));
+    }
     tx.send(RuntimeMessageEnvelope::conversation(
         turn_id,
         ConversationMessage::CompleteSection {
             id: section_id.to_string(),
-            state: output.state,
+            state,
         },
     ));
     tx.send(RuntimeMessageEnvelope::state(
         turn_id,
         StateMessage::Activity {
             source: RuntimeSource::System,
-            kind: if output.state == ResponseSectionState::Failed {
+            kind: if state == ResponseSectionState::Failed {
                 RuntimeContentKind::Error
             } else {
                 RuntimeContentKind::Result
             },
-            text: output.activity,
+            text: activity,
             priority: None,
         },
     ));
+}
+
+fn build_document_query_knowledge_summary(
+    context: &ContextDiagnostics,
+    query_text: &str,
+    results: &[omega_context::SearchResult],
+) -> StepKnowledgeSummary {
+    let reason = if results.is_empty() {
+        if context.document.active_version.is_none() {
+            Some("no promoted store version".to_string())
+        } else {
+            Some("no matches returned".to_string())
+        }
+    } else {
+        None
+    };
+
+    StepKnowledgeSummary {
+        document: Some(ResponseDocumentKnowledge {
+            readiness: command_document_query_readiness(context),
+            query: query_text.to_string(),
+            mode: results
+                .first()
+                .map(|result| search_mode_label(result.mode_used).to_string())
+                .unwrap_or_else(|| "hybrid".to_string()),
+            degraded_from: results
+                .iter()
+                .find_map(|result| result.degraded_from.map(search_mode_label))
+                .map(ToOwned::to_owned),
+            reason,
+            result_count: results.len() as u32,
+            top_hits: results
+                .iter()
+                .take(3)
+                .map(|result| DocumentHitItem {
+                    path: result.path.clone(),
+                    preview: preview_text(&result.preview, 140),
+                })
+                .collect(),
+        }),
+        memory: None,
+    }
+}
+
+fn command_document_query_readiness(context: &ContextDiagnostics) -> SupervisionReadiness {
+    if let Some(error) = context.document.last_promotion_error.as_ref() {
+        if !error.trim().is_empty() {
+            return SupervisionReadiness::Failed;
+        }
+    }
+
+    if context.document.pending_version.is_some() {
+        return SupervisionReadiness::Degraded;
+    }
+
+    if context.document.active_version.is_none()
+        && context.document.total_files_indexed == 0
+        && context.document.total_chunks == 0
+    {
+        return SupervisionReadiness::Uninitialized;
+    }
+
+    if context.document.active_version.is_none() {
+        return SupervisionReadiness::Degraded;
+    }
+
+    if matches!(context.document.governance_health, Some(HealthScore::Critical)) {
+        return SupervisionReadiness::Degraded;
+    }
+
+    SupervisionReadiness::Ready
 }
 
 fn begin_command_output(
@@ -1106,6 +1251,111 @@ fn command_title_from_input(input: &str) -> String {
         .take(2)
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+fn build_turn_archive(turn_id: u64, session_context: &SessionContext) -> TurnData {
+    TurnData {
+        turn_id,
+        workflow_id: session_context.routing.active_workflow_id.clone(),
+        user_intent: session_context.latest_user_turn.clone(),
+        summaries: session_context
+            .step_summaries
+            .iter()
+            .map(|summary| omega_context::ContextStepSummary {
+                workflow_id: summary.workflow_id.clone(),
+                step_id: summary.step_id.clone(),
+                title: summary.title.clone(),
+                summary: summary.summary.clone(),
+                estimated_tokens: summary.estimated_tokens,
+            })
+            .collect(),
+        signals: build_turn_retention_signals(session_context),
+    }
+}
+
+pub(crate) fn build_turn_retention_signals(session_context: &SessionContext) -> TurnRetentionSignals {
+    let mut signals = TurnRetentionSignals::default();
+
+    if let Some(plan_value) = session_context.step_outputs.get(PLAN_STEP_ID) {
+        if let Ok(plan) = parse_feature_plan_output(plan_value.clone()) {
+            signals.validation_targets.extend(plan.validation_targets);
+            if session_context.step_outputs.get(EXECUTE_STEP_ID).is_none() {
+                signals
+                    .open_tasks
+                    .extend(plan.tasks.into_iter().map(|task| task.title));
+            }
+        }
+    }
+
+    if let Some(execute_value) = session_context.step_outputs.get(EXECUTE_STEP_ID) {
+        if let Ok(execute) = parse_feature_execute_output(execute_value.clone()) {
+            signals.changed_paths.extend(execute.changed_paths);
+            signals.completed_tasks.extend(execute.completed_tasks);
+            signals.open_tasks.extend(execute.open_tasks);
+            signals.validation_targets.extend(
+                execute
+                    .validation_results
+                    .into_iter()
+                    .map(|result| result.target),
+            );
+        }
+    }
+
+    signals
+        .developer_preferences
+        .extend(extract_preference_hints(&session_context.latest_user_turn));
+    signals
+        .governance_events
+        .extend(session_context.governance_events.clone());
+    dedupe_signal_values(&mut signals.changed_paths);
+    dedupe_signal_values(&mut signals.completed_tasks);
+    dedupe_signal_values(&mut signals.open_tasks);
+    dedupe_signal_values(&mut signals.validation_targets);
+    dedupe_signal_values(&mut signals.developer_preferences);
+    dedupe_governance_signal_values(&mut signals.governance_events);
+    signals
+}
+
+fn extract_preference_hints(text: &str) -> Vec<String> {
+    let lowered = text.to_lowercase();
+    let looks_like_preference = ["prefer", "always", "never", "must", "should", "keep"]
+        .iter()
+        .any(|needle| lowered.contains(needle));
+    if looks_like_preference {
+        vec![preview_text(text, 160)]
+    } else {
+        Vec::new()
+    }
+}
+
+fn dedupe_signal_values(values: &mut Vec<String>) {
+    let mut seen = std::collections::BTreeSet::new();
+    values.retain(|value| {
+        let trimmed = value.trim();
+        !trimmed.is_empty() && seen.insert(trimmed.to_string())
+    });
+}
+
+fn dedupe_governance_signal_values(values: &mut Vec<GovernanceEventSignal>) {
+    let mut seen = std::collections::BTreeSet::new();
+    values.retain(|value| {
+        let label = value.label.trim();
+        !label.is_empty() && seen.insert((label.to_string(), value.at))
+    });
+}
+
+fn record_governance_event(turn_context: &mut SessionContext, label: impl Into<String>) {
+    turn_context.governance_events.push(GovernanceEventSignal {
+        label: label.into(),
+        at: current_unix_timestamp(),
+    });
+}
+
+fn current_unix_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
 }
 
 pub(crate) fn preview_text(text: &str, limit: usize) -> String {

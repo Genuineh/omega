@@ -61,6 +61,50 @@ fn sample_step_diagnostics() -> StepDiagnostics {
                 current_summary_tokens: 144,
                 current_summary_count: 1,
                 compression_ratio_avg_percent: 50,
+                retention_candidates_accepted: 3,
+                retention_candidates_dropped: 1,
+                dropped_candidates_by_profile: std::collections::BTreeMap::from([(
+                    "ephemeral_debug".to_string(),
+                    1,
+                )]),
+                memory_query_count: 4,
+                memory_query_hit_mix: std::collections::BTreeMap::from([
+                    ("project_facts".to_string(), 3),
+                    ("open_threads".to_string(), 1),
+                ]),
+                observation_count: 2,
+                observation_fresh_count: 1,
+                observation_stale_count: 0,
+                observation_superseded_count: 1,
+                observation_corrected_count: 0,
+                observation_correction_activity: 1,
+                current_query: Some(omega_session::MemoryQueryDiagnostics {
+                    query: "memory query".to_string(),
+                    result_count: 2,
+                    hit_mix: std::collections::BTreeMap::from([
+                        ("project_facts".to_string(), 1),
+                        ("open_threads".to_string(), 1),
+                    ]),
+                    top_hits: vec![omega_session::MemoryQueryHitItem {
+                        profile: "project_facts".to_string(),
+                        title: "Project fact: planner wired".to_string(),
+                        preview: "Planner now wires archived memory query.".to_string(),
+                    }],
+                }),
+                current_observations: Some(omega_session::ObservationRecallDiagnostics {
+                    query: "memory query".to_string(),
+                    result_count: 1,
+                    freshness_mix: std::collections::BTreeMap::from([(
+                        "fresh".to_string(),
+                        1,
+                    )]),
+                    top_hits: vec![omega_session::ObservationRecallHitItem {
+                        id: "obs-1".to_string(),
+                        title: "Open thread: task-memory-query".to_string(),
+                        summary: "Query surface still needs planner wiring.".to_string(),
+                        freshness: omega_session::ObservationFreshness::Fresh,
+                    }],
+                }),
             },
             document: ContextDocumentDiagnostics {
                 total_files_indexed: 12,
@@ -1196,6 +1240,182 @@ fn activating_tool_summary_opens_detail_overlay() {
             );
         }
         other => panic!("expected detail overlay, got {other:?}"),
+    }
+}
+
+#[test]
+fn response_lines_include_knowledge_lane_for_section_summary() {
+    let mut app = App::new();
+    let turn_id = app.begin_turn();
+
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::BeginResponseSection {
+            section: ResponseSection {
+                id: "turn-13k:child:feature:execute".to_string(),
+                parent_id: None,
+                kind: ResponseSectionKind::Step,
+                title: "Execute".to_string(),
+                state: ResponseSectionState::Streaming,
+                metadata: workflow_metadata(
+                    Some("feature"),
+                    "feature",
+                    WorkflowRunRole::Child,
+                    Some("execute"),
+                    Some("Execute"),
+                    None,
+                ),
+            },
+        },
+    ));
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::UpsertStepKnowledgeSummary {
+            section_id: "turn-13k:child:feature:execute".to_string(),
+            summary: Box::new(omega_session::StepKnowledgeSummary {
+                document: Some(omega_session::ResponseDocumentKnowledge {
+                    readiness: omega_session::SupervisionReadiness::Ready,
+                    query: "roadmap".to_string(),
+                    mode: "hybrid".to_string(),
+                    degraded_from: None,
+                    reason: None,
+                    result_count: 2,
+                    top_hits: vec![omega_session::DocumentHitItem {
+                        path: "docs/TODO.md".to_string(),
+                        preview: "Current priorities and follow-up work".to_string(),
+                    }],
+                }),
+                memory: Some(omega_session::ResponseMemoryKnowledge {
+                    memory_query: Some("knowledge ui".to_string()),
+                    observation_query: None,
+                    selected_summary_count: 2,
+                    memory_hit_count: 2,
+                    observation_hit_count: 0,
+                    top_items: vec![omega_session::MemoryHitItem {
+                        workflow_id: "feature".to_string(),
+                        step_id: "plan".to_string(),
+                        title: "Knowledge UI plan".to_string(),
+                        preview: "Response lane and overlay follow-up".to_string(),
+                    }],
+                    top_observations: Vec::new(),
+                }),
+            }),
+        },
+    ));
+
+    assert_eq!(
+        app.response_lines(),
+        vec![
+            "step  child:feature  Execute  [streaming]".to_string(),
+            "  scene feature".to_string(),
+            "  knowledge".to_string(),
+            "    document  [ready]  2 hits  ·  roadmap  ·  docs/TODO.md".to_string(),
+            "    memory  2 summaries  ·  2 memory hits  ·  0 observations  ·  knowledge ui"
+                .to_string(),
+        ]
+    );
+}
+
+#[test]
+fn activating_knowledge_summary_opens_detail_overlay() {
+    let mut app = App::new();
+    let turn_id = app.begin_turn();
+
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::BeginResponseSection {
+            section: ResponseSection {
+                id: "turn-13m:child:feature:execute".to_string(),
+                parent_id: None,
+                kind: ResponseSectionKind::Step,
+                title: "Execute".to_string(),
+                state: ResponseSectionState::Streaming,
+                metadata: workflow_metadata(
+                    Some("feature"),
+                    "feature",
+                    WorkflowRunRole::Child,
+                    Some("execute"),
+                    Some("Execute"),
+                    None,
+                ),
+            },
+        },
+    ));
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::UpsertStepKnowledgeSummary {
+            section_id: "turn-13m:child:feature:execute".to_string(),
+            summary: Box::new(omega_session::StepKnowledgeSummary {
+                document: Some(omega_session::ResponseDocumentKnowledge {
+                    readiness: omega_session::SupervisionReadiness::Uninitialized,
+                    query: "roadmap".to_string(),
+                    mode: "hybrid".to_string(),
+                    degraded_from: None,
+                    reason: Some("no promoted store version".to_string()),
+                    result_count: 0,
+                    top_hits: Vec::new(),
+                }),
+                memory: Some(omega_session::ResponseMemoryKnowledge {
+                    memory_query: Some("knowledge ui".to_string()),
+                    observation_query: Some("knowledge ui observation".to_string()),
+                    selected_summary_count: 1,
+                    memory_hit_count: 1,
+                    observation_hit_count: 1,
+                    top_items: vec![omega_session::MemoryHitItem {
+                        workflow_id: "feature".to_string(),
+                        step_id: "report".to_string(),
+                        title: "Knowledge summary lane".to_string(),
+                        preview: "Need response-facing drill-down".to_string(),
+                    }],
+                    top_observations: vec![omega_session::ObservationRecallHitItem {
+                        id: "obs-1".to_string(),
+                        title: "Knowledge overlay feedback".to_string(),
+                        summary: "Overlay should expose readable previews".to_string(),
+                        freshness: omega_session::ObservationFreshness::Fresh,
+                    }],
+                }),
+            }),
+        },
+    ));
+
+    let document_line = app
+        .response_display_lines()
+        .iter()
+        .position(|line| line.text.contains("document  [uninitialized]"))
+        .unwrap();
+    app.response_state.select(Some(document_line));
+    assert_eq!(
+        app.activate_selected_response_item(),
+        Some(ResponseActivation::DocumentKnowledgeDetailOpened)
+    );
+    match app.overlay.as_ref() {
+        Some(OverlayState::Detail(detail)) => {
+            assert_eq!(detail.title, " Document Knowledge ");
+            assert!(detail.lines.iter().any(|line| line == "reason: no promoted store version"));
+        }
+        other => panic!("expected document knowledge detail overlay, got {other:?}"),
+    }
+
+    let memory_line = app
+        .response_display_lines()
+        .iter()
+        .position(|line| line.text.contains("memory  1 summaries"))
+        .unwrap();
+    app.response_state.select(Some(memory_line));
+    assert_eq!(
+        app.activate_selected_response_item(),
+        Some(ResponseActivation::MemoryKnowledgeDetailOpened)
+    );
+    match app.overlay.as_ref() {
+        Some(OverlayState::Detail(detail)) => {
+            assert_eq!(detail.title, " Memory Knowledge ");
+            assert!(detail.lines.iter().any(|line| line == "memory query: knowledge ui"));
+            assert!(detail
+                .lines
+                .iter()
+                .any(|line| line == "observations:"));
+        }
+        other => panic!("expected memory knowledge detail overlay, got {other:?}"),
     }
 }
 

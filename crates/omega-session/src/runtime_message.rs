@@ -1,6 +1,6 @@
 use std::sync::{mpsc, Arc};
 
-use omega_context::ContextSupervisionSnapshot;
+use omega_context::{ContextSupervisionSnapshot, StepKnowledgeSummary};
 
 use crate::runtime_ui::{
     OverlayRequest, ResponseSection, ResponseSectionDelta, ResponseSectionState, RuntimeUiEffect,
@@ -103,6 +103,10 @@ pub enum StateMessage {
     },
     ContextSupervision {
         snapshot: Box<ContextSupervisionSnapshot>,
+    },
+    StepKnowledgeSummary {
+        section_id: String,
+        summary: Box<StepKnowledgeSummary>,
     },
     Activity {
         source: RuntimeSource,
@@ -369,6 +373,16 @@ fn legacy_ui_envelopes_from_state(turn_id: u64, message: StateMessage) -> Vec<Ru
             turn_id,
             RuntimeUiEffect::UpsertContextSupervision { snapshot },
         )],
+        StateMessage::StepKnowledgeSummary {
+            section_id,
+            summary,
+        } => vec![RuntimeUiEnvelope::effect(
+            turn_id,
+            RuntimeUiEffect::UpsertStepKnowledgeSummary {
+                section_id,
+                summary,
+            },
+        )],
         StateMessage::Activity {
             source,
             kind,
@@ -456,6 +470,7 @@ fn legacy_ui_priority(priority: Option<RuntimePriority>) -> Option<UiPriority> {
 mod tests {
     use super::*;
     use crate::{OverlayRequest, OverlayTarget, UiContent};
+    use omega_context::{ResponseDocumentKnowledge, SupervisionReadiness};
 
     #[test]
     fn show_overlay_state_message_maps_to_runtime_ui_effect() {
@@ -516,6 +531,50 @@ mod tests {
                 RuntimeUiEffect::RequestToolApproval {
                     message: "workspace_write approval required".to_string(),
                 }
+            )]
+        );
+    }
+
+    #[test]
+    fn step_knowledge_summary_state_message_maps_to_runtime_ui_effect() {
+        let envelopes = legacy_runtime_ui_envelopes(RuntimeMessageEnvelope::state(
+            14,
+            StateMessage::StepKnowledgeSummary {
+                section_id: "turn-14:child:feature:execute".to_string(),
+                summary: Box::new(StepKnowledgeSummary {
+                    document: Some(ResponseDocumentKnowledge {
+                        readiness: SupervisionReadiness::Ready,
+                        query: "roadmap".to_string(),
+                        mode: "hybrid".to_string(),
+                        degraded_from: None,
+                        reason: None,
+                        result_count: 2,
+                        top_hits: Vec::new(),
+                    }),
+                    memory: None,
+                }),
+            },
+        ));
+
+        assert_eq!(
+            envelopes,
+            vec![RuntimeUiEnvelope::effect(
+                14,
+                RuntimeUiEffect::UpsertStepKnowledgeSummary {
+                    section_id: "turn-14:child:feature:execute".to_string(),
+                    summary: Box::new(StepKnowledgeSummary {
+                        document: Some(ResponseDocumentKnowledge {
+                            readiness: SupervisionReadiness::Ready,
+                            query: "roadmap".to_string(),
+                            mode: "hybrid".to_string(),
+                            degraded_from: None,
+                            reason: None,
+                            result_count: 2,
+                            top_hits: Vec::new(),
+                        }),
+                        memory: None,
+                    }),
+                },
             )]
         );
     }
