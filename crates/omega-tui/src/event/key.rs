@@ -69,6 +69,8 @@ pub(super) fn handle_key_event(
                     let notice = match app_guard.activate_selected_response_item() {
                         Some(ResponseActivation::ThinkingCollapsed) => "Thinking collapsed.",
                         Some(ResponseActivation::ThinkingExpanded) => "Thinking expanded.",
+                        Some(ResponseActivation::CommandCollapsed) => "Command output collapsed.",
+                        Some(ResponseActivation::CommandExpanded) => "Command output expanded.",
                         Some(ResponseActivation::ToolLaneCollapsed) => "Tool lane collapsed.",
                         Some(ResponseActivation::ToolLaneExpanded) => "Tool lane expanded.",
                         Some(ResponseActivation::ToolDetailOpened(tool_name)) => {
@@ -83,7 +85,7 @@ pub(super) fn handle_key_event(
                             return Ok(false);
                         }
                         None if app_guard.show_thinking => {
-                            "Select a thinking block or tool summary before activating it."
+                            "Select a command, thinking block, or tool summary before activating it."
                         }
                         None => "Thinking visibility is disabled in .omega/tui.toml.",
                     };
@@ -167,12 +169,22 @@ pub(super) fn handle_key_event(
     match resolution {
         KeyResolution::PendingLeader => {
             let mut app_guard = app.lock().unwrap();
-            app_guard.begin_leader_pending(key);
+            app_guard.begin_leader_pending(key, keymap.leader_timeout());
             Ok(false)
         }
-        KeyResolution::PendingSequence => {
+        KeyResolution::PendingSequence(state) => {
             let mut app_guard = app.lock().unwrap();
-            app_guard.extend_pending_sequence(key);
+            app_guard.extend_pending_sequence(key, state.replay_text, state.timeout);
+            Ok(false)
+        }
+        KeyResolution::ReplayAsText(text) => {
+            {
+                let mut app_guard = app.lock().unwrap();
+                app_guard.clear_leader_pending();
+                app_guard.insert_text(&text);
+                app_guard.clear_status_notice();
+            }
+            refresh_command_hint(app, session);
             Ok(false)
         }
         KeyResolution::Matched(action) => {
@@ -196,7 +208,7 @@ pub(super) fn handle_key_event(
             }
             Ok(false)
         }
-        KeyResolution::NoMatch => handle_unmatched_key(key, app),
+        KeyResolution::NoMatch => handle_unmatched_key(key, app, session),
     }
 }
 
@@ -239,7 +251,13 @@ pub(super) fn handle_submit(
         app_guard.begin_turn()
     };
 
-    if let Err(error) = session.spawn_turn(input, turn_id, tx.clone()) {
+    let spawn_result = if input.starts_with('/') {
+        session.spawn_command(input, turn_id, tx.clone())
+    } else {
+        session.spawn_turn(input, turn_id, tx.clone())
+    };
+
+    if let Err(error) = spawn_result {
         let mut app_guard = app.lock().unwrap();
         app_guard.is_running = false;
         app_guard.push_msg(MsgKind::Error, &format!("Error: {error}"));
@@ -248,9 +266,19 @@ pub(super) fn handle_submit(
     Ok(false)
 }
 
-fn handle_unmatched_key(key: KeyEvent, app: &Arc<Mutex<App>>) -> anyhow::Result<bool> {
+fn handle_unmatched_key(
+    key: KeyEvent,
+    app: &Arc<Mutex<App>>,
+    session: &AgentSession,
+) -> anyhow::Result<bool> {
     let mut app_guard = app.lock().unwrap();
     if app_guard.is_leader_pending() {
+        if key.code == KeyCode::Esc {
+            app_guard.clear_leader_pending();
+            app_guard.set_status_notice("Pending key sequence cancelled.");
+            return Ok(false);
+        }
+
         if app_guard.interaction_mode == InteractionMode::Normal {
             match key.code {
                 KeyCode::Char('/') => {
@@ -274,7 +302,7 @@ fn handle_unmatched_key(key: KeyEvent, app: &Arc<Mutex<App>>) -> anyhow::Result<
         }
 
         app_guard.clear_leader_pending();
-        app_guard.set_status_notice("No mapping for that leader sequence.");
+        app_guard.set_status_notice("No mapping for that pending key sequence.");
         return Ok(false);
     }
 
@@ -287,6 +315,9 @@ fn handle_unmatched_key(key: KeyEvent, app: &Arc<Mutex<App>>) -> anyhow::Result<
             app_guard.insert_char(character);
         }
     }
+
+    drop(app_guard);
+    refresh_command_hint(app, session);
 
     Ok(false)
 }
@@ -316,6 +347,8 @@ fn execute_action(
             let mut app_guard = app.lock().unwrap();
             app_guard.enter_normal_mode();
             app_guard.set_status_notice("Mode: Normal");
+            drop(app_guard);
+            refresh_command_hint(app, session);
             Ok(false)
         }
         KeyAction::EnterInsertMode => {
@@ -325,6 +358,8 @@ fn execute_action(
             } else {
                 app_guard.set_status_notice("Insert mode is unavailable in the current context.");
             }
+            drop(app_guard);
+            refresh_command_hint(app, session);
             Ok(false)
         }
         KeyAction::ToggleInteractionMode => {
@@ -337,6 +372,8 @@ fn execute_action(
             } else {
                 app_guard.set_status_notice("Insert mode is unavailable in the current context.");
             }
+            drop(app_guard);
+            refresh_command_hint(app, session);
             Ok(false)
         }
         KeyAction::FocusNextPanel => {
@@ -374,17 +411,19 @@ fn execute_action(
         }
         KeyAction::DeleteCharAt => {
             app.lock().unwrap().delete_char_at();
+            refresh_command_hint(app, session);
             Ok(false)
         }
         KeyAction::DeleteCharBefore => {
             app.lock().unwrap().delete_char_before();
+            refresh_command_hint(app, session);
             Ok(false)
         }
         KeyAction::SubmitInput => handle_submit(app, session, tx),
         KeyAction::CancelPendingSequence => {
             let mut app_guard = app.lock().unwrap();
             app_guard.clear_leader_pending();
-            app_guard.set_status_notice("Leader sequence cancelled.");
+            app_guard.set_status_notice("Pending key sequence cancelled.");
             Ok(false)
         }
         KeyAction::PanelSearch => {
@@ -413,5 +452,16 @@ fn execute_action(
             ));
             Ok(false)
         }
+    }
+}
+
+fn refresh_command_hint(app: &Arc<Mutex<App>>, session: &AgentSession) {
+    let input = app.lock().unwrap().input_buffer.clone();
+    let hint = session.command_hint(&input);
+    let mut app_guard = app.lock().unwrap();
+    if let Some(hint) = hint {
+        app_guard.set_command_hint(hint);
+    } else {
+        app_guard.clear_command_hint();
     }
 }

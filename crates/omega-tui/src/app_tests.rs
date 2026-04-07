@@ -3,6 +3,7 @@ use omega_session::{
     ContextDocumentDiagnostics, ContextMemoryDiagnostics, ContextStoreDiagnostics,
     ExecuteProgressDiagnostics, HealthScore, OverlayRequest, ResponseSection, ResponseSectionDelta,
     ResponseSectionKind, ResponseSectionMetadata, RuntimeUiEffect, RuntimeUiMessage,
+    SectionOrigin,
     StepContextWrite, StepContextWriteKind, StepDiagnostics, StepInputDiagnostics, StepInputStatus,
     StepOutputAttemptKind, StepOutputContractMode, StepOutputDiagnostics,
     StepOutputRecoveryDecision, StepOutputStatus, StepSubflowRef, StepSubflowState,
@@ -13,6 +14,26 @@ use omega_session::{
 use ratatui::layout::Rect;
 
 use super::*;
+
+fn workflow_metadata(
+    scene_id: Option<&str>,
+    workflow_id: &str,
+    workflow_role: WorkflowRunRole,
+    step_id: Option<&str>,
+    step_label: Option<&str>,
+    subflow_ref: Option<StepSubflowRef>,
+) -> ResponseSectionMetadata {
+    ResponseSectionMetadata {
+        scene_id: scene_id.map(ToOwned::to_owned),
+        origin: SectionOrigin::Workflow {
+            workflow_id: workflow_id.to_string(),
+            workflow_role,
+        },
+        step_id: step_id.map(ToOwned::to_owned),
+        step_label: step_label.map(ToOwned::to_owned),
+        subflow_ref,
+    }
+}
 
 fn sample_step_diagnostics() -> StepDiagnostics {
     StepDiagnostics {
@@ -47,7 +68,13 @@ fn sample_step_diagnostics() -> StepDiagnostics {
                 total_embeddings: 48,
                 index_staleness_seconds: 4,
                 governance_health: Some(HealthScore::NeedsAttention),
+                health_status: omega_session::DocumentHealthStatus::NeedsAttention,
                 last_health_check: Some(2),
+                active_version: None,
+                pending_version: None,
+                last_promotion_error: None,
+                recent_activity: Vec::new(),
+                operator_usage: Vec::new(),
             },
             store: ContextStoreDiagnostics {
                 lance_db_size_bytes: 4096,
@@ -223,7 +250,7 @@ fn activating_diagnostics_item_opens_detail_overlay() {
             assert!(detail
                 .lines
                 .iter()
-                .any(|line| line.contains("context_document: files=12 chunks=48 embeddings=48 staleness_seconds=4 governance_health=needs_attention")));
+                .any(|line| line.contains("context_document: files=12 chunks=48 embeddings=48 staleness_seconds=4 health=needs_attention governance_health=needs_attention")));
             assert!(detail
                 .lines
                 .iter()
@@ -428,14 +455,14 @@ fn step_text_routes_to_response_with_step_label() {
                 kind: ResponseSectionKind::Step,
                 title: "Plan".to_string(),
                 state: ResponseSectionState::Streaming,
-                metadata: ResponseSectionMetadata {
-                    scene_id: Some("feature".to_string()),
-                    workflow_id: "feature".to_string(),
-                    workflow_role: WorkflowRunRole::Child,
-                    step_id: Some("plan".to_string()),
-                    step_label: Some("Plan".to_string()),
-                    subflow_ref: None,
-                },
+                metadata: workflow_metadata(
+                    Some("feature"),
+                    "feature",
+                    WorkflowRunRole::Child,
+                    Some("plan"),
+                    Some("Plan"),
+                    None,
+                ),
             },
         },
     ));
@@ -467,6 +494,118 @@ fn step_text_routes_to_response_with_step_label() {
 }
 
 #[test]
+fn command_sections_render_in_response_panel() {
+    let mut app = App::new();
+    let turn_id = app.begin_turn();
+
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::BeginResponseSection {
+            section: ResponseSection {
+                id: "turn-1:command".to_string(),
+                parent_id: None,
+                kind: ResponseSectionKind::Command,
+                title: "/document health".to_string(),
+                state: ResponseSectionState::Streaming,
+                metadata: ResponseSectionMetadata {
+                    scene_id: None,
+                    origin: SectionOrigin::Command {
+                        command_name: "/document health".to_string(),
+                        source: "builtin".to_string(),
+                    },
+                    step_id: None,
+                    step_label: None,
+                    subflow_ref: None,
+                },
+            },
+        },
+    ));
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::AppendResponseSection {
+            id: "turn-1:command".to_string(),
+            delta: ResponseSectionDelta::Text(
+                "Overall health: good\nTotal docs: 12".to_string(),
+            ),
+        },
+    ));
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::CompleteResponseSection {
+            id: "turn-1:command".to_string(),
+            state: ResponseSectionState::Complete,
+        },
+    ));
+
+    assert_eq!(
+        app.response_lines(),
+        vec![
+            "command  builtin  /document health  [done]  [collapse]".to_string(),
+            "  » Overall health: good".to_string(),
+            "  » Total docs: 12".to_string(),
+        ]
+    );
+    assert!(app.log_lines.is_empty());
+}
+
+#[test]
+fn command_sections_can_be_collapsed_from_response_panel() {
+    let mut app = App::new();
+    let turn_id = app.begin_turn();
+
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::BeginResponseSection {
+            section: ResponseSection {
+                id: "turn-1:command".to_string(),
+                parent_id: None,
+                kind: ResponseSectionKind::Command,
+                title: "/document init".to_string(),
+                state: ResponseSectionState::Streaming,
+                metadata: ResponseSectionMetadata {
+                    scene_id: None,
+                    origin: SectionOrigin::Command {
+                        command_name: "/document init".to_string(),
+                        source: "builtin".to_string(),
+                    },
+                    step_id: None,
+                    step_label: None,
+                    subflow_ref: None,
+                },
+            },
+        },
+    ));
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::AppendResponseSection {
+            id: "turn-1:command".to_string(),
+            delta: ResponseSectionDelta::Text(
+                "Running /document init...\nIndexed 12 files\nVector ignored: 4".to_string(),
+            ),
+        },
+    ));
+
+    let header_index = app
+        .response_display_lines()
+        .iter()
+        .position(|line| line.text == "command  builtin  /document init  [streaming]  [collapse]")
+        .unwrap();
+    app.response_state.select(Some(header_index));
+    assert_eq!(
+        app.activate_selected_response_item(),
+        Some(ResponseActivation::CommandCollapsed)
+    );
+
+    assert_eq!(
+        app.response_lines(),
+        vec![
+            "command  builtin  /document init  [streaming]  [expand]".to_string(),
+            "  » ▸ 3 lines · Running /document init...".to_string(),
+        ]
+    );
+}
+
+#[test]
 fn routing_and_final_answer_sections_form_response_timeline() {
     let mut app = App::new();
     let turn_id = app.begin_turn();
@@ -480,14 +619,14 @@ fn routing_and_final_answer_sections_form_response_timeline() {
                 kind: ResponseSectionKind::Routing,
                 title: "Scene Recognition".to_string(),
                 state: ResponseSectionState::Streaming,
-                metadata: ResponseSectionMetadata {
-                    scene_id: None,
-                    workflow_id: "root".to_string(),
-                    workflow_role: WorkflowRunRole::Root,
-                    step_id: Some("scene-recognition".to_string()),
-                    step_label: Some("Scene Recognition".to_string()),
-                    subflow_ref: None,
-                },
+                metadata: workflow_metadata(
+                    None,
+                    "root",
+                    WorkflowRunRole::Root,
+                    Some("scene-recognition"),
+                    Some("Scene Recognition"),
+                    None,
+                ),
             },
         },
     ));
@@ -514,14 +653,14 @@ fn routing_and_final_answer_sections_form_response_timeline() {
                 kind: ResponseSectionKind::FinalAnswer,
                 title: "Final Answer".to_string(),
                 state: ResponseSectionState::Streaming,
-                metadata: ResponseSectionMetadata {
-                    scene_id: Some("chat".to_string()),
-                    workflow_id: "chat".to_string(),
-                    workflow_role: WorkflowRunRole::Child,
-                    step_id: Some("chat".to_string()),
-                    step_label: Some("Chat".to_string()),
-                    subflow_ref: None,
-                },
+                metadata: workflow_metadata(
+                    Some("chat"),
+                    "chat",
+                    WorkflowRunRole::Child,
+                    Some("chat"),
+                    Some("Chat"),
+                    None,
+                ),
             },
         },
     ));
@@ -567,14 +706,14 @@ fn thinking_sections_stream_then_collapse_on_complete() {
                 kind: ResponseSectionKind::FinalAnswer,
                 title: "Final Answer".to_string(),
                 state: ResponseSectionState::Streaming,
-                metadata: ResponseSectionMetadata {
-                    scene_id: Some("chat".to_string()),
-                    workflow_id: "chat".to_string(),
-                    workflow_role: WorkflowRunRole::Child,
-                    step_id: Some("chat".to_string()),
-                    step_label: Some("Chat".to_string()),
-                    subflow_ref: None,
-                },
+                metadata: workflow_metadata(
+                    Some("chat"),
+                    "chat",
+                    WorkflowRunRole::Child,
+                    Some("chat"),
+                    Some("Chat"),
+                    None,
+                ),
             },
         },
     ));
@@ -587,14 +726,14 @@ fn thinking_sections_stream_then_collapse_on_complete() {
                 kind: ResponseSectionKind::Thinking,
                 title: "Thinking".to_string(),
                 state: ResponseSectionState::Streaming,
-                metadata: ResponseSectionMetadata {
-                    scene_id: Some("chat".to_string()),
-                    workflow_id: "chat".to_string(),
-                    workflow_role: WorkflowRunRole::Child,
-                    step_id: Some("chat".to_string()),
-                    step_label: Some("Chat".to_string()),
-                    subflow_ref: None,
-                },
+                metadata: workflow_metadata(
+                    Some("chat"),
+                    "chat",
+                    WorkflowRunRole::Child,
+                    Some("chat"),
+                    Some("Chat"),
+                    None,
+                ),
             },
         },
     ));
@@ -675,14 +814,14 @@ fn thinking_sections_limit_streaming_body_to_recent_lines() {
                 kind: ResponseSectionKind::FinalAnswer,
                 title: "Final Answer".to_string(),
                 state: ResponseSectionState::Streaming,
-                metadata: ResponseSectionMetadata {
-                    scene_id: Some("chat".to_string()),
-                    workflow_id: "chat".to_string(),
-                    workflow_role: WorkflowRunRole::Child,
-                    step_id: Some("chat".to_string()),
-                    step_label: Some("Chat".to_string()),
-                    subflow_ref: None,
-                },
+                metadata: workflow_metadata(
+                    Some("chat"),
+                    "chat",
+                    WorkflowRunRole::Child,
+                    Some("chat"),
+                    Some("Chat"),
+                    None,
+                ),
             },
         },
     ));
@@ -695,14 +834,14 @@ fn thinking_sections_limit_streaming_body_to_recent_lines() {
                 kind: ResponseSectionKind::Thinking,
                 title: "Thinking".to_string(),
                 state: ResponseSectionState::Streaming,
-                metadata: ResponseSectionMetadata {
-                    scene_id: Some("chat".to_string()),
-                    workflow_id: "chat".to_string(),
-                    workflow_role: WorkflowRunRole::Child,
-                    step_id: Some("chat".to_string()),
-                    step_label: Some("Chat".to_string()),
-                    subflow_ref: None,
-                },
+                metadata: workflow_metadata(
+                    Some("chat"),
+                    "chat",
+                    WorkflowRunRole::Child,
+                    Some("chat"),
+                    Some("Chat"),
+                    None,
+                ),
             },
         },
     ));
@@ -744,14 +883,14 @@ fn failed_thinking_sections_surface_failure_summary() {
                 kind: ResponseSectionKind::Thinking,
                 title: "Thinking".to_string(),
                 state: ResponseSectionState::Streaming,
-                metadata: ResponseSectionMetadata {
-                    scene_id: Some("chat".to_string()),
-                    workflow_id: "chat".to_string(),
-                    workflow_role: WorkflowRunRole::Child,
-                    step_id: Some("chat".to_string()),
-                    step_label: Some("Chat".to_string()),
-                    subflow_ref: None,
-                },
+                metadata: workflow_metadata(
+                    Some("chat"),
+                    "chat",
+                    WorkflowRunRole::Child,
+                    Some("chat"),
+                    Some("Chat"),
+                    None,
+                ),
             },
         },
     ));
@@ -793,14 +932,14 @@ fn interrupt_turn_stops_streaming_reasoning_and_running_tool_styles() {
                 kind: ResponseSectionKind::Step,
                 title: "Explore".to_string(),
                 state: ResponseSectionState::Streaming,
-                metadata: ResponseSectionMetadata {
-                    scene_id: Some("feature".to_string()),
-                    workflow_id: "feature".to_string(),
-                    workflow_role: WorkflowRunRole::Child,
-                    step_id: Some("explore".to_string()),
-                    step_label: Some("Explore".to_string()),
-                    subflow_ref: None,
-                },
+                metadata: workflow_metadata(
+                    Some("feature"),
+                    "feature",
+                    WorkflowRunRole::Child,
+                    Some("explore"),
+                    Some("Explore"),
+                    None,
+                ),
             },
         },
     ));
@@ -813,14 +952,14 @@ fn interrupt_turn_stops_streaming_reasoning_and_running_tool_styles() {
                 kind: ResponseSectionKind::Thinking,
                 title: "Thinking".to_string(),
                 state: ResponseSectionState::Streaming,
-                metadata: ResponseSectionMetadata {
-                    scene_id: Some("feature".to_string()),
-                    workflow_id: "feature".to_string(),
-                    workflow_role: WorkflowRunRole::Child,
-                    step_id: Some("explore".to_string()),
-                    step_label: Some("Explore".to_string()),
-                    subflow_ref: None,
-                },
+                metadata: workflow_metadata(
+                    Some("feature"),
+                    "feature",
+                    WorkflowRunRole::Child,
+                    Some("explore"),
+                    Some("Explore"),
+                    None,
+                ),
             },
         },
     ));
@@ -876,14 +1015,14 @@ fn thinking_sections_can_be_hidden_by_config() {
                 kind: ResponseSectionKind::Thinking,
                 title: "Thinking".to_string(),
                 state: ResponseSectionState::Streaming,
-                metadata: ResponseSectionMetadata {
-                    scene_id: Some("chat".to_string()),
-                    workflow_id: "chat".to_string(),
-                    workflow_role: WorkflowRunRole::Child,
-                    step_id: Some("chat".to_string()),
-                    step_label: Some("Chat".to_string()),
-                    subflow_ref: None,
-                },
+                metadata: workflow_metadata(
+                    Some("chat"),
+                    "chat",
+                    WorkflowRunRole::Child,
+                    Some("chat"),
+                    Some("Chat"),
+                    None,
+                ),
             },
         },
     ));
@@ -912,14 +1051,14 @@ fn tool_run_effects_render_inside_step_block() {
                 kind: ResponseSectionKind::Step,
                 title: "Execute".to_string(),
                 state: ResponseSectionState::Streaming,
-                metadata: ResponseSectionMetadata {
-                    scene_id: Some("feature".to_string()),
-                    workflow_id: "feature".to_string(),
-                    workflow_role: WorkflowRunRole::Child,
-                    step_id: Some("execute".to_string()),
-                    step_label: Some("Execute".to_string()),
-                    subflow_ref: None,
-                },
+                metadata: workflow_metadata(
+                    Some("feature"),
+                    "feature",
+                    WorkflowRunRole::Child,
+                    Some("execute"),
+                    Some("Execute"),
+                    None,
+                ),
             },
         },
     ));
@@ -995,14 +1134,14 @@ fn activating_tool_summary_opens_detail_overlay() {
                 kind: ResponseSectionKind::Step,
                 title: "Execute".to_string(),
                 state: ResponseSectionState::Streaming,
-                metadata: ResponseSectionMetadata {
-                    scene_id: Some("feature".to_string()),
-                    workflow_id: "feature".to_string(),
-                    workflow_role: WorkflowRunRole::Child,
-                    step_id: Some("execute".to_string()),
-                    step_label: Some("Execute".to_string()),
-                    subflow_ref: None,
-                },
+                metadata: workflow_metadata(
+                    Some("feature"),
+                    "feature",
+                    WorkflowRunRole::Child,
+                    Some("execute"),
+                    Some("Execute"),
+                    None,
+                ),
             },
         },
     ));
@@ -1074,14 +1213,14 @@ fn tool_lane_defaults_to_collapsed_for_six_or_more_tools_and_can_toggle() {
                 kind: ResponseSectionKind::Step,
                 title: "Execute".to_string(),
                 state: ResponseSectionState::Streaming,
-                metadata: ResponseSectionMetadata {
-                    scene_id: Some("feature".to_string()),
-                    workflow_id: "feature".to_string(),
-                    workflow_role: WorkflowRunRole::Child,
-                    step_id: Some("execute".to_string()),
-                    step_label: Some("Execute".to_string()),
-                    subflow_ref: None,
-                },
+                metadata: workflow_metadata(
+                    Some("feature"),
+                    "feature",
+                    WorkflowRunRole::Child,
+                    Some("execute"),
+                    Some("Execute"),
+                    None,
+                ),
             },
         },
     ));
@@ -1227,13 +1366,13 @@ fn step_subflow_sections_render_as_nested_timeline() {
                     kind: ResponseSectionKind::Step,
                     title: "Execute".to_string(),
                     state: ResponseSectionState::Streaming,
-                    metadata: ResponseSectionMetadata {
-                        scene_id: Some("feature".to_string()),
-                        workflow_id: "feature".to_string(),
-                        workflow_role: WorkflowRunRole::Child,
-                        step_id: Some("execute".to_string()),
-                        step_label: Some("Execute".to_string()),
-                        subflow_ref: Some(StepSubflowRef {
+                    metadata: workflow_metadata(
+                        Some("feature"),
+                        "feature",
+                        WorkflowRunRole::Child,
+                        Some("execute"),
+                        Some("Execute"),
+                        Some(StepSubflowRef {
                             parent_workflow_id: "feature".to_string(),
                             parent_step_id: "execute".to_string(),
                             parent_step_label: "Execute".to_string(),
@@ -1243,7 +1382,7 @@ fn step_subflow_sections_render_as_nested_timeline() {
                             item_index,
                             item_total: 3,
                         }),
-                    },
+                    ),
                 },
             },
         ));
@@ -1305,13 +1444,13 @@ fn activating_subflow_header_opens_detail_overlay() {
                 kind: ResponseSectionKind::Step,
                 title: "Execute".to_string(),
                 state: ResponseSectionState::Streaming,
-                metadata: ResponseSectionMetadata {
-                    scene_id: Some("feature".to_string()),
-                    workflow_id: "feature".to_string(),
-                    workflow_role: WorkflowRunRole::Child,
-                    step_id: Some("execute".to_string()),
-                    step_label: Some("Execute".to_string()),
-                    subflow_ref: Some(StepSubflowRef {
+                metadata: workflow_metadata(
+                    Some("feature"),
+                    "feature",
+                    WorkflowRunRole::Child,
+                    Some("execute"),
+                    Some("Execute"),
+                    Some(StepSubflowRef {
                         parent_workflow_id: "feature".to_string(),
                         parent_step_id: "execute".to_string(),
                         parent_step_label: "Execute".to_string(),
@@ -1321,7 +1460,7 @@ fn activating_subflow_header_opens_detail_overlay() {
                         item_index: 2,
                         item_total: 3,
                     }),
-                },
+                ),
             },
         },
     ));
@@ -1390,13 +1529,13 @@ fn todo_snapshot_backfills_prior_subflow_statuses_without_replayed_sections() {
                 kind: ResponseSectionKind::Step,
                 title: "Execute".to_string(),
                 state: ResponseSectionState::Streaming,
-                metadata: ResponseSectionMetadata {
-                    scene_id: Some("research".to_string()),
-                    workflow_id: "research".to_string(),
-                    workflow_role: WorkflowRunRole::Child,
-                    step_id: Some("execute".to_string()),
-                    step_label: Some("Execute".to_string()),
-                    subflow_ref: Some(StepSubflowRef {
+                metadata: workflow_metadata(
+                    Some("research"),
+                    "research",
+                    WorkflowRunRole::Child,
+                    Some("execute"),
+                    Some("Execute"),
+                    Some(StepSubflowRef {
                         parent_workflow_id: "research".to_string(),
                         parent_step_id: "execute".to_string(),
                         parent_step_label: "Execute".to_string(),
@@ -1406,7 +1545,7 @@ fn todo_snapshot_backfills_prior_subflow_statuses_without_replayed_sections() {
                         item_index: 4,
                         item_total: 5,
                     }),
-                },
+                ),
             },
         },
     ));

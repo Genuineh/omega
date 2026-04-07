@@ -48,6 +48,8 @@ pub struct FileRecord {
     pub chunk_count: u32,
     pub total_tokens: u32,
     pub tags: Vec<String>,
+    #[serde(default = "default_vector_index_eligible")]
+    pub vector_index_eligible: bool,
     pub last_indexed_at: u64,
 }
 
@@ -56,8 +58,26 @@ pub struct ScanResult {
     pub files_indexed: usize,
     pub chunks_indexed: usize,
     pub deleted_marked: usize,
+    #[serde(default)]
+    pub vector_ignored_files: usize,
+    #[serde(default)]
+    pub vector_ignored_paths: Vec<String>,
+    #[serde(default)]
+    pub indexed_paths: Vec<String>,
+    #[serde(default)]
+    pub embedded_paths: Vec<String>,
     pub manifest_path: String,
     pub keyword_index_path: String,
+    #[serde(default)]
+    pub active_version: Option<DocumentStoreVersion>,
+    #[serde(default)]
+    pub pending_version: Option<DocumentStoreVersion>,
+    #[serde(default)]
+    pub archived_version_path: Option<String>,
+}
+
+fn default_vector_index_eligible() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -200,6 +220,62 @@ pub enum HealthScore {
     Good,
     NeedsAttention,
     Critical,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DocumentHealthStatus {
+    #[default]
+    NeverChecked,
+    Good,
+    NeedsAttention,
+    Critical,
+    Failed,
+}
+
+impl DocumentHealthStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NeverChecked => "never_checked",
+            Self::Good => "good",
+            Self::NeedsAttention => "needs_attention",
+            Self::Critical => "critical",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct DocumentStoreVersion {
+    pub version_id: String,
+    pub schema_version: u32,
+    pub manifest_revision: u64,
+    pub tantivy_revision: u64,
+    pub lance_revision: Option<u64>,
+    pub built_at: u64,
+    pub promoted_at: Option<u64>,
+    pub build_trigger: String,
+    pub total_files_indexed: u64,
+    pub total_chunks: u64,
+    pub total_embeddings: u64,
+    pub deleted_marked: u64,
+    pub manifest_hash: String,
+    pub storage_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct DocumentOperatorUsage {
+    pub operator: String,
+    pub source: String,
+    pub count: u64,
+    pub last_used_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct DocumentActivitySummary {
+    pub label: String,
+    pub detail: String,
+    pub at: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

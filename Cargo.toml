@@ -2,6 +2,7 @@
 members = [
     "crates/omega-app",
     "crates/omega-client",
+    "crates/omega-command",
     "crates/omega-document",
     "crates/omega-hooks",
     "crates/omega-message",

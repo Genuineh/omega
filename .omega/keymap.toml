@@ -3,12 +3,18 @@
 
 [leader]
 key = "space"
-timeout_ms = 900
+timeout_ms = 300
+
+[[bindings]]
+keys = "esc"
+action = "enter_normal_mode"
+mode = "insert"
 
 [[bindings]]
 keys = "leader j k"
 action = "enter_normal_mode"
 mode = "insert"
+text_fallback = true
 
 [[bindings]]
 keys = "leader j k"

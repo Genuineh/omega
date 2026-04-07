@@ -3423,15 +3423,22 @@ fn build_context_supervision_snapshot(
         document: DocumentSupervisionSnapshot {
             enabled: cfg!(feature = "document-backend"),
             readiness: document_supervision_readiness(context),
+            health_status: context.document.health_status,
             totals: DocumentSupervisionTotals {
                 total_files_indexed: context.document.total_files_indexed,
                 total_chunks: context.document.total_chunks,
                 total_embeddings: context.document.total_embeddings,
                 index_staleness_seconds: context.document.index_staleness_seconds,
                 governance_health: context.document.governance_health,
+                last_health_check: context.document.last_health_check,
                 lance_db_size_bytes: context.store.lance_db_size_bytes,
                 tantivy_index_size_bytes: context.store.tantivy_index_size_bytes,
             },
+            active_version: context.document.active_version.clone(),
+            pending_version: context.document.pending_version.clone(),
+            last_promotion_error: context.document.last_promotion_error.clone(),
+            recent_activity: context.document.recent_activity.clone(),
+            operator_usage: context.document.operator_usage.clone(),
             current_hits: supervision_state.document_hits.clone(),
         },
         memory: MemorySupervisionSnapshot {
@@ -3453,6 +3460,9 @@ fn build_context_supervision_snapshot(
 fn document_supervision_readiness(context: &ContextDiagnostics) -> SupervisionReadiness {
     if !cfg!(feature = "document-backend") {
         return SupervisionReadiness::Disabled;
+    }
+    if context.document.pending_version.is_some() || context.document.last_promotion_error.is_some() {
+        return SupervisionReadiness::Failed;
     }
     if context.document.total_files_indexed == 0 && context.document.total_chunks == 0 {
         return SupervisionReadiness::Idle;

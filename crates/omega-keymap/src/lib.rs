@@ -8,18 +8,24 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde::Deserialize;
 
 pub const DEFAULT_KEYMAP_PATH: &str = ".omega/keymap.toml";
-const DEFAULT_LEADER_TIMEOUT_MS: u64 = 900;
+const DEFAULT_LEADER_TIMEOUT_MS: u64 = 300;
 const DEFAULT_KEYMAP_TOML: &str = r#"# Default omega-tui keymap
 # Normal-mode commands use the leader prefix to avoid collisions with text input.
 
 [leader]
 key = "space"
-timeout_ms = 900
+timeout_ms = 300
+
+[[bindings]]
+keys = "esc"
+action = "enter_normal_mode"
+mode = "insert"
 
 [[bindings]]
 keys = "leader j k"
 action = "enter_normal_mode"
 mode = "insert"
+text_fallback = true
 
 [[bindings]]
 keys = "leader j k"
@@ -173,13 +179,20 @@ impl KeyAction {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyResolution {
     Matched(KeyAction),
     PendingLeader,
-    PendingSequence,
+    PendingSequence(PendingSequenceState),
+    ReplayAsText(String),
     NoMatch,
     InvalidInContext(KeyAction),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingSequenceState {
+    pub replay_text: Option<String>,
+    pub timeout: Duration,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -201,6 +214,8 @@ pub struct KeyBinding {
     pub mode: Option<InteractionMode>,
     pub focus: Option<KeyFocus>,
     pub input_capable: Option<bool>,
+    pub text_fallback: bool,
+    pub timeout: Option<Duration>,
 }
 
 impl KeyBinding {
@@ -216,6 +231,10 @@ impl KeyBinding {
             && self
                 .input_capable
                 .is_none_or(|input_capable| input_capable == context.input_capable)
+    }
+
+    fn effective_timeout(&self, default_timeout: Duration) -> Duration {
+        self.timeout.unwrap_or(default_timeout)
     }
 }
 
@@ -268,6 +287,14 @@ impl KeySequence {
     fn starts_with(&self, prefix: &KeySequence) -> bool {
         self.strokes.starts_with(&prefix.strokes)
     }
+
+    fn len(&self) -> usize {
+        self.strokes.len()
+    }
+
+    fn fallback_text(&self) -> Option<String> {
+        self.strokes.iter().map(KeyStroke::fallback_char).collect()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -305,6 +332,17 @@ impl KeyStroke {
             code: KeyCodePattern::from_event(event.code)?,
             modifiers: event.modifiers,
         })
+    }
+
+    fn fallback_char(&self) -> Option<char> {
+        if !(self.modifiers == KeyModifiers::NONE || self.modifiers == KeyModifiers::SHIFT) {
+            return None;
+        }
+
+        match self.code {
+            KeyCodePattern::Char(character) => Some(character),
+            _ => None,
+        }
     }
 }
 
@@ -445,18 +483,36 @@ impl KeymapManager {
         event: KeyEvent,
     ) -> KeyResolution {
         if !pending.is_empty() {
-            let sequence = match KeySequence::from_events(pending)
-                .and_then(|sequence| sequence.with_appended_event(event))
-            {
+            let pending_sequence = match KeySequence::from_events(pending) {
                 Ok(sequence) => sequence,
                 Err(_) => return KeyResolution::NoMatch,
             };
 
-            if self.has_prefix_match(&sequence) {
-                return KeyResolution::PendingSequence;
+            let sequence = match pending_sequence.with_appended_event(event) {
+                Ok(sequence) => sequence,
+                Err(_) => return KeyResolution::NoMatch,
+            };
+
+            let exact_resolution = self.resolve_sequence(&sequence, context);
+            if !matches!(exact_resolution, KeyResolution::NoMatch) {
+                return exact_resolution;
             }
 
-            return self.resolve_sequence(&sequence, context);
+            if let Some(pending_state) = self.pending_state(&sequence, context) {
+                return KeyResolution::PendingSequence(pending_state);
+            }
+
+            if self
+                .prefix_candidates(&pending_sequence, context)
+                .iter()
+                .any(|binding| binding.text_fallback)
+            {
+                if let Some(text) = sequence.fallback_text() {
+                    return KeyResolution::ReplayAsText(text);
+                }
+            }
+
+            return KeyResolution::NoMatch;
         }
 
         if context.leader_pending {
@@ -467,17 +523,39 @@ impl KeymapManager {
                 Err(_) => return KeyResolution::NoMatch,
             };
 
-            if self.has_prefix_match(&sequence) {
-                return KeyResolution::PendingSequence;
+            let exact_resolution = self.resolve_sequence(&sequence, context);
+            if !matches!(exact_resolution, KeyResolution::NoMatch) {
+                return exact_resolution;
             }
 
-            return self.resolve_sequence(&sequence, context);
+            if let Some(pending_state) = self.pending_state(&sequence, context) {
+                return KeyResolution::PendingSequence(pending_state);
+            }
+
+            return KeyResolution::NoMatch;
         }
 
         match KeyStroke::from_event(event) {
-            Ok(stroke) if stroke == self.leader => KeyResolution::PendingLeader,
+            Ok(stroke) if stroke == self.leader && context.mode == InteractionMode::Normal => {
+                let sequence =
+                    KeySequence::new(vec![self.leader]).expect("single leader key should parse");
+                if !self.prefix_candidates(&sequence, context).is_empty() {
+                    KeyResolution::PendingLeader
+                } else {
+                    self.resolve_sequence(&sequence, context)
+                }
+            }
             Ok(_) => match KeySequence::from_event(event) {
-                Ok(sequence) => self.resolve_sequence(&sequence, context),
+                Ok(sequence) => {
+                    let exact_resolution = self.resolve_sequence(&sequence, context);
+                    if !matches!(exact_resolution, KeyResolution::NoMatch) {
+                        exact_resolution
+                    } else if let Some(pending_state) = self.pending_state(&sequence, context) {
+                        KeyResolution::PendingSequence(pending_state)
+                    } else {
+                        KeyResolution::NoMatch
+                    }
+                }
                 Err(_) => KeyResolution::NoMatch,
             },
             Err(_) => KeyResolution::NoMatch,
@@ -523,10 +601,47 @@ impl KeymapManager {
         KeyResolution::InvalidInContext(candidates[0].action)
     }
 
-    fn has_prefix_match(&self, prefix: &KeySequence) -> bool {
+    fn prefix_candidates<'a>(
+        &'a self,
+        prefix: &KeySequence,
+        context: &KeyContext,
+    ) -> Vec<&'a KeyBinding> {
         self.bindings
             .iter()
-            .any(|binding| binding.sequence != *prefix && binding.sequence.starts_with(prefix))
+            .filter(|binding| {
+                binding.sequence != *prefix
+                    && binding.sequence.starts_with(prefix)
+                    && binding.mode.is_none_or(|mode| mode == context.mode)
+                    && binding.focus.is_none_or(|focus| focus == context.focus)
+            })
+            .collect()
+    }
+
+    fn pending_state(
+        &self,
+        sequence: &KeySequence,
+        context: &KeyContext,
+    ) -> Option<PendingSequenceState> {
+        let candidates = self.prefix_candidates(sequence, context);
+        if candidates.is_empty() {
+            return None;
+        }
+
+        let replay_text = if candidates.iter().any(|binding| binding.text_fallback) {
+            sequence.fallback_text()
+        } else {
+            None
+        };
+        let timeout = candidates
+            .iter()
+            .map(|binding| binding.effective_timeout(self.leader_timeout))
+            .min()
+            .unwrap_or(self.leader_timeout);
+
+        Some(PendingSequenceState {
+            replay_text,
+            timeout,
+        })
     }
 
     fn parse_keymap_str(raw: &str, source: KeymapSource) -> Result<Self> {
@@ -555,6 +670,8 @@ impl KeymapManager {
                     mode: binding.mode,
                     focus: binding.focus,
                     input_capable: binding.input_capable,
+                    text_fallback: binding.text_fallback.unwrap_or(false),
+                    timeout: binding.timeout_ms.map(Duration::from_millis),
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -605,6 +722,24 @@ fn validate_bindings(bindings: &[KeyBinding]) -> Result<()> {
             );
         }
 
+        if binding.mode == Some(InteractionMode::Insert)
+            && binding.sequence.len() > 1
+            && binding.sequence.fallback_text().is_some()
+            && !binding.text_fallback
+        {
+            bail!(
+                "insert-mode multi-key binding '{}' must set text_fallback = true",
+                binding.action.as_str()
+            );
+        }
+
+        if binding.text_fallback && binding.sequence.fallback_text().is_none() {
+            bail!(
+                "binding '{}' cannot use text_fallback because its sequence contains non-text keys",
+                binding.action.as_str()
+            );
+        }
+
         let duplicate_key = (
             binding.sequence.clone(),
             binding.mode,
@@ -639,6 +774,8 @@ struct KeyBindingConfig {
     mode: Option<InteractionMode>,
     focus: Option<KeyFocus>,
     input_capable: Option<bool>,
+    text_fallback: Option<bool>,
+    timeout_ms: Option<u64>,
 }
 
 #[cfg(test)]
@@ -702,13 +839,13 @@ mod tests {
         fs::create_dir_all(&omega_dir).unwrap();
         fs::write(
             omega_dir.join("keymap.toml"),
-            "[leader]\nkey = \"ctrl+g\"\ntimeout_ms = 1200\n\n[[bindings]]\nkeys = \"leader j k\"\naction = \"enter_normal_mode\"\nmode = \"insert\"\n",
+            "[leader]\nkey = \"ctrl+g\"\ntimeout_ms = 1200\n\n[[bindings]]\nkeys = \"leader j k\"\naction = \"enter_insert_mode\"\nmode = \"normal\"\ninput_capable = true\n",
         )
         .unwrap();
 
         let manager = KeymapManager::load_from_file(&omega_dir.join("keymap.toml")).unwrap();
         let context = KeyContext {
-            mode: InteractionMode::Insert,
+            mode: InteractionMode::Normal,
             focus: KeyFocus::Response,
             input_capable: true,
             leader_pending: false,
@@ -787,6 +924,29 @@ mod tests {
     }
 
     #[test]
+    fn insert_mode_space_starts_replayable_pending_sequence() {
+        let manager = KeymapManager::default();
+        let context = KeyContext {
+            mode: InteractionMode::Insert,
+            focus: KeyFocus::InputField,
+            input_capable: true,
+            leader_pending: false,
+        };
+
+        assert_eq!(
+            manager.resolve(&context, press(KeyCode::Char(' '), KeyModifiers::NONE)),
+            KeyResolution::PendingSequence(PendingSequenceState {
+                replay_text: Some(" ".to_string()),
+                timeout: Duration::from_millis(DEFAULT_LEADER_TIMEOUT_MS),
+            })
+        );
+        assert_eq!(
+            manager.resolve(&context, press(KeyCode::Esc, KeyModifiers::NONE)),
+            KeyResolution::Matched(KeyAction::EnterNormalMode)
+        );
+    }
+
+    #[test]
     fn leader_jk_is_pending_after_j_and_matches_on_k() {
         let manager = KeymapManager::default();
         let context = KeyContext {
@@ -802,7 +962,10 @@ mod tests {
                 &[press(KeyCode::Char(' '), KeyModifiers::NONE)],
                 press(KeyCode::Char('j'), KeyModifiers::NONE)
             ),
-            KeyResolution::PendingSequence
+            KeyResolution::PendingSequence(PendingSequenceState {
+                replay_text: None,
+                timeout: Duration::from_millis(DEFAULT_LEADER_TIMEOUT_MS),
+            })
         );
         assert_eq!(
             manager.resolve_with_pending(
@@ -837,6 +1000,65 @@ mod tests {
         assert_eq!(
             resolution,
             KeyResolution::InvalidInContext(KeyAction::EnterInsertMode)
+        );
+    }
+
+    #[test]
+    fn insert_prefix_replays_text_when_sequence_breaks() {
+        let manager = KeymapManager::default();
+        let context = KeyContext {
+            mode: InteractionMode::Insert,
+            focus: KeyFocus::InputField,
+            input_capable: true,
+            leader_pending: false,
+        };
+
+        assert_eq!(
+            manager.resolve_with_pending(
+                &context,
+                &[press(KeyCode::Char(' '), KeyModifiers::NONE)],
+                press(KeyCode::Char('a'), KeyModifiers::NONE)
+            ),
+            KeyResolution::ReplayAsText(" a".to_string())
+        );
+    }
+
+    #[test]
+    fn insert_mode_multi_key_bindings_require_text_fallback() {
+        let root = temp_root("insert-fallback-validation");
+        let omega_dir = root.join(".omega");
+        fs::create_dir_all(&omega_dir).unwrap();
+        fs::write(
+            omega_dir.join("keymap.toml"),
+            "[[bindings]]\nkeys = \"j k\"\naction = \"enter_normal_mode\"\nmode = \"insert\"\n",
+        )
+        .unwrap();
+
+        let error = KeymapManager::load_from_file(&omega_dir.join("keymap.toml")).unwrap_err();
+
+        assert!(error.to_string().contains("text_fallback = true"));
+    }
+
+    #[test]
+    fn insert_prefix_uses_binding_specific_timeout() {
+        let manager = KeymapManager::parse_keymap_str(
+            "[leader]\nkey = \"space\"\ntimeout_ms = 900\n\n[[bindings]]\nkeys = \"j k\"\naction = \"enter_normal_mode\"\nmode = \"insert\"\ntext_fallback = true\ntimeout_ms = 120\n",
+            KeymapSource::BuiltIn,
+        )
+        .unwrap();
+        let context = KeyContext {
+            mode: InteractionMode::Insert,
+            focus: KeyFocus::InputField,
+            input_capable: true,
+            leader_pending: false,
+        };
+
+        assert_eq!(
+            manager.resolve(&context, press(KeyCode::Char('j'), KeyModifiers::NONE)),
+            KeyResolution::PendingSequence(PendingSequenceState {
+                replay_text: Some("j".to_string()),
+                timeout: Duration::from_millis(120),
+            })
         );
     }
 }

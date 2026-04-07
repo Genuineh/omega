@@ -1,0 +1,6 @@
+[package]
+name = "omega-command"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

@@ -1,7 +1,7 @@
 use omega_observability::strip_ansi;
 use omega_session::{
-    ResponseSection, ResponseSectionKind, ResponseSectionState, StepSubflowRef, StepSubflowState,
-    ToolRun, ToolRunStatus,
+    ResponseSection, ResponseSectionKind, ResponseSectionState, SectionOrigin, StepSubflowRef,
+    StepSubflowState, ToolRun, ToolRunStatus,
 };
 
 use crate::render::markdown::{parse_markdown_lines, StyledSpan};
@@ -145,6 +145,14 @@ impl App {
                     Some(ResponseActivation::ThinkingExpanded)
                 }
             }
+            ResponseLineAction::ToggleCommandSection(id) => {
+                let collapsed = self.toggle_command_section(&id)?;
+                if collapsed {
+                    Some(ResponseActivation::CommandCollapsed)
+                } else {
+                    Some(ResponseActivation::CommandExpanded)
+                }
+            }
             ResponseLineAction::ToggleToolLane(id) => {
                 let collapsed = self.toggle_tool_lane(&id)?;
                 if collapsed {
@@ -230,6 +238,14 @@ impl App {
         Some(message.collapsed)
     }
 
+    fn toggle_command_section(&mut self, id: &str) -> Option<bool> {
+        let message = self.output_msgs.iter_mut().find(|message| {
+            message.id.as_deref() == Some(id) && message.kind == MsgKind::Command
+        })?;
+        message.collapsed = !message.collapsed;
+        Some(message.collapsed)
+    }
+
     fn toggle_tool_lane(&mut self, id: &str) -> Option<bool> {
         let message = self.output_msgs.iter_mut().find(|message| {
             message.id.as_deref() == Some(id)
@@ -275,16 +291,23 @@ impl App {
                     })
                     .collect()
             }
-            MsgKind::Routing | MsgKind::Step | MsgKind::FinalAnswer | MsgKind::Thinking => {
+            MsgKind::Routing
+            | MsgKind::Step
+            | MsgKind::FinalAnswer
+            | MsgKind::Thinking
+            | MsgKind::Command => {
                 let mut lines = Vec::new();
                 let message_state = message.state.unwrap_or(ResponseSectionState::Complete);
-                let default_action = if message.kind == MsgKind::Thinking {
-                    message
+                let default_action = match message.kind {
+                    MsgKind::Thinking => message
                         .id
                         .clone()
-                        .map(ResponseLineAction::ToggleThinkingSection)
-                } else {
-                    None
+                        .map(ResponseLineAction::ToggleThinkingSection),
+                    MsgKind::Command => message
+                        .id
+                        .clone()
+                        .map(ResponseLineAction::ToggleCommandSection),
+                    _ => None,
                 };
 
                 // Final Answer: decorative top rule (15B-43)
@@ -316,7 +339,7 @@ impl App {
                     spans: Vec::new(),
                 });
 
-                if message.kind != MsgKind::Thinking {
+                if !matches!(message.kind, MsgKind::Thinking | MsgKind::Command) {
                     if let Some(scene_id) = message.scene_id.as_deref() {
                         lines.push(ResponseDisplayLine {
                             kind: message.kind,
@@ -350,7 +373,7 @@ impl App {
                             });
                         }
                     }
-                    MsgKind::Step | MsgKind::FinalAnswer => {
+                    MsgKind::Step | MsgKind::FinalAnswer | MsgKind::Command => {
                         let tool_runs = message
                             .id
                             .as_deref()
@@ -361,15 +384,39 @@ impl App {
                         let base_style = ratatui::style::Style::default();
                         let body_indent = if message.kind == MsgKind::FinalAnswer {
                             "  │ "
+                        } else if message.kind == MsgKind::Command {
+                            "  » "
                         } else {
                             "  "
                         };
                         let body_indent_style = if message.kind == MsgKind::FinalAnswer {
                             base_style.fg(colors.final_answer_border_fg)
+                        } else if message.kind == MsgKind::Command {
+                            base_style
+                                .fg(colors.context_label)
+                                .add_modifier(ratatui::style::Modifier::BOLD)
                         } else {
                             base_style
                         };
-                        if body_lines.len() == 1 && body_lines[0].is_empty() && tool_runs.is_empty()
+                        if message.kind == MsgKind::Command && message.collapsed {
+                            lines.push(ResponseDisplayLine {
+                                kind: message.kind,
+                                text: format!(
+                                    "{body_indent}▸ {}",
+                                    summarize_command_text(&message.text, message_state)
+                                ),
+                                is_header: false,
+                                message_id: message.id.clone(),
+                                action: default_action.clone(),
+                                is_tool_line: false,
+                                tool_status: None,
+                                response_state: Some(message_state),
+                                thinking_line_kind: None,
+                                spans: Vec::new(),
+                            });
+                        } else if body_lines.len() == 1
+                            && body_lines[0].is_empty()
+                            && tool_runs.is_empty()
                         {
                             lines.push(ResponseDisplayLine {
                                 kind: message.kind,
@@ -960,20 +1007,35 @@ impl Msg {
     }
 
     fn from_response_section(section: ResponseSection) -> Self {
+        let (workflow_id, workflow_role, title) = match &section.metadata.origin {
+            SectionOrigin::Workflow {
+                workflow_id,
+                workflow_role,
+            } => (
+                Some(workflow_id.clone()),
+                Some(*workflow_role),
+                Some(section.title.clone()),
+            ),
+            SectionOrigin::Command {
+                command_name,
+                source,
+            } => (Some(source.clone()), None, Some(command_name.clone())),
+        };
         Self {
             kind: match section.kind {
                 ResponseSectionKind::Routing => MsgKind::Routing,
                 ResponseSectionKind::Step => MsgKind::Step,
                 ResponseSectionKind::FinalAnswer => MsgKind::FinalAnswer,
                 ResponseSectionKind::Thinking => MsgKind::Thinking,
+                ResponseSectionKind::Command => MsgKind::Command,
             },
             text: String::new(),
             id: Some(section.id),
             parent_id: section.parent_id,
-            title: Some(section.title),
+            title,
             state: Some(section.state),
-            workflow_id: Some(section.metadata.workflow_id),
-            workflow_role: Some(section.metadata.workflow_role),
+            workflow_id,
+            workflow_role,
             scene_id: section.metadata.scene_id,
             subflow_ref: section.metadata.subflow_ref,
             collapsed: false,
@@ -1117,14 +1179,10 @@ fn format_response_header(message: &Msg) -> String {
         MsgKind::Routing => "route",
         MsgKind::Step => "step",
         MsgKind::FinalAnswer => "final",
+        MsgKind::Command => "command",
         MsgKind::Thinking => "  reasoning",
         _ => "msg",
     };
-    let workflow_role = message
-        .workflow_role
-        .map(WorkflowRunRole::as_str)
-        .unwrap_or("unknown");
-    let workflow_id = message.workflow_id.as_deref().unwrap_or("workflow");
     let title = match message.kind {
         MsgKind::Thinking => thinking_header_title(state),
         _ => message.title.as_deref().unwrap_or("Section"),
@@ -1135,7 +1193,43 @@ fn format_response_header(message: &Msg) -> String {
         ResponseSectionState::Failed => "failed",
     };
 
-    format!("{badge}  {workflow_role}:{workflow_id}  {title}  [{state}]")
+    if message.kind == MsgKind::Command {
+        let source = message.workflow_id.as_deref().unwrap_or("builtin");
+        let toggle = if message.collapsed { "  [expand]" } else { "  [collapse]" };
+        format!("{badge}  {source}  {title}  [{state}]{toggle}")
+    } else {
+        let workflow_role = message
+            .workflow_role
+            .map(WorkflowRunRole::as_str)
+            .unwrap_or("unknown");
+        let workflow_id = message.workflow_id.as_deref().unwrap_or("workflow");
+        format!("{badge}  {workflow_role}:{workflow_id}  {title}  [{state}]")
+    }
+}
+
+fn summarize_command_text(text: &str, state: ResponseSectionState) -> String {
+    let preview = first_non_empty_line(text)
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| truncate_preview(line, 56))
+        .unwrap_or_else(|| command_placeholder_text(state).to_string());
+    let line_count = text.lines().filter(|line| !line.trim().is_empty()).count();
+
+    if line_count == 0 {
+        preview
+    } else if line_count == 1 {
+        format!("1 line · {preview}")
+    } else {
+        format!("{line_count} lines · {preview}")
+    }
+}
+
+fn command_placeholder_text(state: ResponseSectionState) -> &'static str {
+    match state {
+        ResponseSectionState::Streaming => "running command",
+        ResponseSectionState::Complete => "command complete",
+        ResponseSectionState::Failed => "command failed",
+    }
 }
 
 fn summarize_thinking_text(text: &str, state: ResponseSectionState) -> String {

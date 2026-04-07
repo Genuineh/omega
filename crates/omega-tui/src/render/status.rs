@@ -10,20 +10,24 @@ use crate::app::{App, Panel, SessionRoutingSummary, SessionStatusSummary};
 
 use super::overlay::overlay_hint_text;
 
-pub(super) fn input_context_text(app: &App, sidebar_hidden: bool) -> &str {
+pub(super) fn input_context_text(app: &App, sidebar_hidden: bool) -> String {
     if app.overlay_active() {
-        overlay_hint_text(app)
-    } else if app.is_leader_pending() {
-        " Leader pending: jk=Toggle mode  Tab=Focus  ↑/↓=Scroll  c=Interrupt  q=Quit  Esc=Cancel"
+        overlay_hint_text(app).to_string()
+    } else if let Some(pending_hint) = app.pending_sequence_hint() {
+        pending_hint
+    } else if let Some(hint) = app.command_hint.as_deref() {
+        hint.to_string()
     } else if let Some(notice) = app.status_notice.as_deref() {
-        notice
+        notice.to_string()
     } else if sidebar_hidden {
         match app.interaction_mode {
             InteractionMode::Normal => {
                 " Sidebar hidden. Space=Leader  Space jk=Toggle mode  Space Tab=Focus  Space b=Sidebar  Space /=Search  Space ↑/↓=Scroll"
+                    .to_string()
             }
             InteractionMode::Insert => {
-                " Sidebar hidden below 60 cols. Enter=Send  Space jk=Toggle mode  ←→/Home/End=Cursor  Del/Backspace=Delete"
+                " Sidebar hidden below 60 cols. Enter=Send  Esc=Normal  ←→/Home/End=Cursor  Del/Backspace=Delete"
+                    .to_string()
             }
         }
     } else {
@@ -31,20 +35,27 @@ pub(super) fn input_context_text(app: &App, sidebar_hidden: bool) -> &str {
             InteractionMode::Normal => {
                 if app.focused_panel == Panel::SidebarRail {
                     " Sidebar rail: ←/→ cycle  Enter focus  x collapse  Space b=Toggle sidebar  Space Tab=Next focus"
+                        .to_string()
                 } else if app.focused_panel == Panel::Diagnostics {
                     " Diagnostics: Enter/x=Open detail  Space Tab=Focus  Space b=Sidebar  Space /=Search  Space ↑/↓=Scroll"
+                        .to_string()
                 } else if app.focused_panel == Panel::Document {
                     " Document supervision: Enter/x=Open detail  Space Tab=Focus  Space b=Sidebar  Space /=Search  Space ↑/↓=Scroll"
+                        .to_string()
                 } else if app.focused_panel == Panel::Memory {
                     " Memory supervision: Enter/x=Open detail  Space Tab=Focus  Space b=Sidebar  Space /=Search  Space ↑/↓=Scroll"
+                        .to_string()
                 } else if app.focused_panel == Panel::Response && app.show_thinking {
                     " Response: Enter/x=Toggle thinking or open subflow/tool detail  Space Tab=Focus  Space b=Sidebar  Space /=Search  Space ↑/↓=Scroll"
+                        .to_string()
                 } else {
                     " Space=Leader  Space jk=Toggle mode  Space Tab=Focus  Space b=Sidebar  Space /=Search  Space ↑/↓=Scroll"
+                        .to_string()
                 }
             }
             InteractionMode::Insert => {
-                " Enter=Send  Space jk=Toggle mode  ←→/Home/End=Cursor  Del/Backspace=Delete"
+                " Enter=Send  Esc=Normal  ←→/Home/End=Cursor  Del/Backspace=Delete"
+                    .to_string()
             }
         }
     }
@@ -55,7 +66,7 @@ pub(super) fn input_context_line(
     sidebar_hidden: bool,
     colors: &ColorScheme,
 ) -> Line<'static> {
-    let hint_val = input_context_text(app, sidebar_hidden).to_string();
+    let hint_val = input_context_text(app, sidebar_hidden);
 
     Line::from(vec![
         Span::styled(

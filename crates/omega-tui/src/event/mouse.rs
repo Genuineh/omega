@@ -114,6 +114,12 @@ fn response_activation_notice(activation: Option<ResponseActivation>) -> Option<
     match activation {
         Some(ResponseActivation::ThinkingCollapsed) => Some("Thinking collapsed.".to_string()),
         Some(ResponseActivation::ThinkingExpanded) => Some("Thinking expanded.".to_string()),
+        Some(ResponseActivation::CommandCollapsed) => {
+            Some("Command output collapsed.".to_string())
+        }
+        Some(ResponseActivation::CommandExpanded) => {
+            Some("Command output expanded.".to_string())
+        }
         Some(ResponseActivation::ToolLaneCollapsed) => Some("Tool lane collapsed.".to_string()),
         Some(ResponseActivation::ToolLaneExpanded) => Some("Tool lane expanded.".to_string()),
         Some(ResponseActivation::ToolDetailOpened(tool_name)) => {

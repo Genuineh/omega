@@ -71,6 +71,14 @@ pub struct WrappedPanelLine {
     pub text: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct PendingKeySequenceState {
+    pub started_at: Instant,
+    pub timeout: Duration,
+    pub key_events: Vec<KeyEvent>,
+    pub replay_text: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MsgKind {
     User,
@@ -81,6 +89,7 @@ pub enum MsgKind {
     Step,
     FinalAnswer,
     Thinking,
+    Command,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,6 +144,7 @@ impl ResponseDisplayLine {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResponseLineAction {
     ToggleThinkingSection(String),
+    ToggleCommandSection(String),
     ToggleToolLane(String),
     OpenToolRunDetail(String),
     OpenStepSubflowDetail(String),
@@ -144,6 +154,8 @@ pub enum ResponseLineAction {
 pub enum ResponseActivation {
     ThinkingCollapsed,
     ThinkingExpanded,
+    CommandCollapsed,
+    CommandExpanded,
     ToolLaneCollapsed,
     ToolLaneExpanded,
     ToolDetailOpened(String),
@@ -257,9 +269,9 @@ pub struct App {
     pub memory_displayed_count: usize,
     pub todo_displayed_count: usize,
     pub logs_displayed_count: usize,
-    pub leader_pending_since: Option<Instant>,
-    pub pending_key_events: Vec<KeyEvent>,
+    pub pending_key_sequence: Option<PendingKeySequenceState>,
     pub keymap_source: String,
+    pub command_hint: Option<String>,
     pub status_notice: Option<String>,
     pub text_selection: Option<PanelTextSelection>,
     pub mouse_selection_active: bool,
@@ -327,9 +339,9 @@ impl App {
             memory_displayed_count: 0,
             todo_displayed_count: 0,
             logs_displayed_count: 0,
-            leader_pending_since: None,
-            pending_key_events: Vec::new(),
+            pending_key_sequence: None,
             keymap_source: "builtin".to_string(),
+            command_hint: None,
             status_notice: None,
             text_selection: None,
             mouse_selection_active: false,
@@ -857,38 +869,92 @@ impl App {
     }
 
     pub fn is_leader_pending(&self) -> bool {
-        self.leader_pending_since.is_some()
+        self.pending_key_sequence.is_some()
+    }
+
+    pub fn pending_sequence_hint(&self) -> Option<String> {
+        let pending = self.pending_key_sequence.as_ref()?;
+        let keys = pending
+            .key_events
+            .iter()
+            .map(describe_key_event)
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        match pending.replay_text.as_ref() {
+            Some(replay_text) => Some(format!(
+                " Pending keys: {keys}  (timeout replays {:?})  Esc=Cancel",
+                replay_text
+            )),
+            None => Some(format!(
+                " Leader pending: {keys}  jk=Toggle mode  Tab=Focus  ↑/↓=Scroll  c=Interrupt  q=Quit  Esc=Cancel"
+            )),
+        }
     }
 
     pub fn pending_key_events(&self) -> &[KeyEvent] {
-        &self.pending_key_events
+        self.pending_key_sequence
+            .as_ref()
+            .map(|pending| pending.key_events.as_slice())
+            .unwrap_or(&[])
     }
 
-    pub fn begin_leader_pending(&mut self, leader_key: KeyEvent) {
-        self.leader_pending_since = Some(Instant::now());
-        self.pending_key_events.clear();
-        self.pending_key_events.push(leader_key);
+    pub fn begin_leader_pending(&mut self, leader_key: KeyEvent, timeout: Duration) {
+        self.begin_pending_key_sequence(leader_key, None, timeout);
         self.status_notice = None;
     }
 
-    pub fn extend_pending_sequence(&mut self, key: KeyEvent) {
-        self.leader_pending_since = Some(Instant::now());
-        self.pending_key_events.push(key);
+    pub fn begin_pending_key_sequence(
+        &mut self,
+        key: KeyEvent,
+        replay_text: Option<String>,
+        timeout: Duration,
+    ) {
+        self.pending_key_sequence = Some(PendingKeySequenceState {
+            started_at: Instant::now(),
+            timeout,
+            key_events: vec![key],
+            replay_text,
+        });
+    }
+
+    pub fn extend_pending_sequence(
+        &mut self,
+        key: KeyEvent,
+        replay_text: Option<String>,
+        timeout: Duration,
+    ) {
+        if let Some(pending) = self.pending_key_sequence.as_mut() {
+            pending.started_at = Instant::now();
+            pending.timeout = timeout;
+            pending.replay_text = replay_text;
+            pending.key_events.push(key);
+        } else {
+            self.begin_pending_key_sequence(key, replay_text, timeout);
+        }
         self.status_notice = None;
     }
 
     pub fn clear_leader_pending(&mut self) {
-        self.leader_pending_since = None;
-        self.pending_key_events.clear();
+        self.pending_key_sequence = None;
     }
 
-    pub fn expire_leader_pending(&mut self, timeout: Duration) {
-        if let Some(start) = self.leader_pending_since {
-            if start.elapsed() >= timeout {
-                self.clear_leader_pending();
-                self.status_notice = Some("Leader sequence timed out.".to_string());
-            }
+    pub fn expire_pending_key_sequence(&mut self) -> Option<String> {
+        let Some(pending) = self.pending_key_sequence.as_ref() else {
+            return None;
+        };
+
+        if pending.started_at.elapsed() < pending.timeout {
+            return None;
         }
+
+        let replay_text = pending.replay_text.clone();
+        self.clear_leader_pending();
+        if replay_text.is_none() {
+            self.status_notice = Some("Pending key sequence timed out.".to_string());
+        }
+
+        replay_text
     }
 
     pub fn enter_normal_mode(&mut self) {
@@ -908,6 +974,14 @@ impl App {
 
     pub fn set_status_notice(&mut self, notice: impl Into<String>) {
         self.status_notice = Some(notice.into());
+    }
+
+    pub fn set_command_hint(&mut self, hint: impl Into<String>) {
+        self.command_hint = Some(hint.into());
+    }
+
+    pub fn clear_command_hint(&mut self) {
+        self.command_hint = None;
     }
 
     pub fn clear_status_notice(&mut self) {
@@ -1206,6 +1280,12 @@ impl App {
         self.cursor_pos += 1;
     }
 
+    pub fn insert_text(&mut self, text: &str) {
+        for character in text.chars() {
+            self.insert_char(character);
+        }
+    }
+
     pub fn delete_char_before(&mut self) {
         if self.cursor_pos > 0 {
             self.cursor_pos -= 1;
@@ -1244,6 +1324,7 @@ impl App {
         let input = self.input_buffer.clone();
         self.input_buffer.clear();
         self.cursor_pos = 0;
+        self.command_hint = None;
         input
     }
 }
@@ -1254,6 +1335,25 @@ fn status_label(status: omega_session::StepSubflowState) -> &'static str {
         omega_session::StepSubflowState::Running => "running",
         omega_session::StepSubflowState::Complete => "done",
         omega_session::StepSubflowState::Failed => "failed",
+    }
+}
+
+fn describe_key_event(key: &KeyEvent) -> String {
+    match key.code {
+        crossterm::event::KeyCode::Char(' ') => "<space>".to_string(),
+        crossterm::event::KeyCode::Char(character) => character.to_string(),
+        crossterm::event::KeyCode::Esc => "Esc".to_string(),
+        crossterm::event::KeyCode::Tab => "Tab".to_string(),
+        crossterm::event::KeyCode::Enter => "Enter".to_string(),
+        crossterm::event::KeyCode::Backspace => "Backspace".to_string(),
+        crossterm::event::KeyCode::Delete => "Delete".to_string(),
+        crossterm::event::KeyCode::Left => "Left".to_string(),
+        crossterm::event::KeyCode::Right => "Right".to_string(),
+        crossterm::event::KeyCode::Up => "Up".to_string(),
+        crossterm::event::KeyCode::Down => "Down".to_string(),
+        crossterm::event::KeyCode::Home => "Home".to_string(),
+        crossterm::event::KeyCode::End => "End".to_string(),
+        other => format!("{other:?}"),
     }
 }
 

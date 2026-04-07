@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use omega_context::{ContextDiagnostics, HealthScore};
+use omega_context::{ContextDiagnostics, DocumentHealthStatus, HealthScore};
 use omega_core::{
     ChatEvent, CoreToolExecutionContext, CoreToolManifestMetadata, CoreToolResult,
 };
@@ -13,7 +13,7 @@ use crate::runtime_message::{
 };
 use crate::runtime_ui::{
     OverlayRequest, OverlayTarget, ResponseSection, ResponseSectionDelta, ResponseSectionKind,
-    ResponseSectionMetadata, ResponseSectionState, StepSubflowRef, StepSubflowStatus,
+    ResponseSectionMetadata, ResponseSectionState, SectionOrigin, StepSubflowRef, StepSubflowStatus,
     ToolCapabilityDiagnostics, ToolRun, ToolRunDetail, ToolRunStatus, UiContent,
     WorkflowRunRole,
 };
@@ -786,7 +786,8 @@ fn emit_document_observability(
     let warning_count = metadata_u64(&tool_result.metadata, &["warning_count"]).unwrap_or(0);
     let issues = document_issue_count(&tool_result.metadata);
     let summary = format!(
-        "document.{action} ok={ok} files={file_count} warnings={warning_count} issues={issues} health={} indexed_files={} todo={}",
+        "document.{action} ok={ok} files={file_count} warnings={warning_count} issues={issues} health={} governance={} indexed_files={} todo={}",
+        document_health_label(context),
         health_score_label(context.document.governance_health),
         context.document.total_files_indexed,
         context.store.todo_items_count,
@@ -824,15 +825,17 @@ fn emit_index_scan_activity(
     let chunks_indexed = metadata_u64(metadata, &["scan", "chunks_indexed"])
         .unwrap_or(context.document.total_chunks);
     let deleted_marked = metadata_u64(metadata, &["scan", "deleted_marked"]).unwrap_or(0);
+    let vector_ignored = metadata_u64(metadata, &["scan", "vector_ignored_files"]).unwrap_or(0);
 
     send_system_log_text(
         tx,
         turn_id,
         &format!(
-            "context.index files={} chunks={} deleted={} stale={}s tantivy={} lance={}",
+            "context.index files={} chunks={} deleted={} vector_ignored={} stale={}s tantivy={} lance={}",
             files_indexed,
             chunks_indexed,
             deleted_marked,
+            vector_ignored,
             context.document.index_staleness_seconds,
             context.store.tantivy_index_size_bytes,
             context.store.lance_db_size_bytes,
@@ -862,6 +865,7 @@ fn build_document_health_overlay_text(
     context: &ContextDiagnostics,
 ) -> String {
     let health_score = health_score_label(context.document.governance_health).to_string();
+    let health_status = document_health_label(context).to_string();
     let structure_violations =
         metadata_u64(&tool_result.metadata, &["health", "structure_violations"]).unwrap_or(0);
     let naming_violations =
@@ -875,7 +879,8 @@ fn build_document_health_overlay_text(
         metadata_u64(&tool_result.metadata, &["health", "orphaned_docs"]).unwrap_or(0);
 
     format!(
-        "Document health\nscore: {}\nindexed_files: {}\nindexed_chunks: {}\nindex_staleness_seconds: {}\nstore_tantivy_bytes: {}\nstore_lance_bytes: {}\ntodo_items_count: {}\nturn_archive_count: {}\nstructure_violations: {}\nnaming_violations: {}\nbroken_crossrefs: {}\nstale_docs: {}\nmissing_frontmatter: {}\norphaned_docs: {}\n\n{}",
+        "Document health\nstatus: {}\nscore: {}\nindexed_files: {}\nindexed_chunks: {}\nindex_staleness_seconds: {}\nstore_tantivy_bytes: {}\nstore_lance_bytes: {}\ntodo_items_count: {}\nturn_archive_count: {}\nlast_health_check: {}\nactive_version: {}\npending_version: {}\npromotion_error: {}\nstructure_violations: {}\nnaming_violations: {}\nbroken_crossrefs: {}\nstale_docs: {}\nmissing_frontmatter: {}\norphaned_docs: {}\n\n{}",
+        health_status,
         health_score,
         context.document.total_files_indexed,
         context.document.total_chunks,
@@ -884,6 +889,18 @@ fn build_document_health_overlay_text(
         context.store.lance_db_size_bytes,
         context.store.todo_items_count,
         context.store.turn_archive_count,
+        context
+            .document
+            .last_health_check
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "never".to_string()),
+        format_store_version(context.document.active_version.as_ref()),
+        format_store_version(context.document.pending_version.as_ref()),
+        context
+            .document
+            .last_promotion_error
+            .as_deref()
+            .unwrap_or("none"),
         structure_violations,
         naming_violations,
         broken_crossrefs,
@@ -901,6 +918,27 @@ fn health_score_label(score: Option<HealthScore>) -> &'static str {
         Some(HealthScore::Critical) => "critical",
         None => "unknown",
     }
+}
+
+fn document_health_label(context: &ContextDiagnostics) -> &'static str {
+    match context.document.health_status {
+        DocumentHealthStatus::NeverChecked => "never_checked",
+        DocumentHealthStatus::Good => "good",
+        DocumentHealthStatus::NeedsAttention => "needs_attention",
+        DocumentHealthStatus::Critical => "critical",
+        DocumentHealthStatus::Failed => "failed",
+    }
+}
+
+fn format_store_version(version: Option<&omega_context::DocumentStoreVersion>) -> String {
+    version
+        .map(|version| {
+            format!(
+                "{} rev={} path={}",
+                version.version_id, version.manifest_revision, version.storage_path
+            )
+        })
+        .unwrap_or_else(|| "none".to_string())
 }
 
 fn document_issue_count(metadata: &Value) -> u64 {
@@ -993,8 +1031,10 @@ impl<'a> StepResponseStreamer<'a> {
         };
         let metadata = ResponseSectionMetadata {
             scene_id: scene_id.map(ToOwned::to_owned),
-            workflow_id: workflow_id.to_string(),
-            workflow_role: role,
+            origin: SectionOrigin::Workflow {
+                workflow_id: workflow_id.to_string(),
+                workflow_role: role,
+            },
             step_id: Some(step.id.clone()),
             step_label: Some(step.label.clone()),
             subflow_ref: current_item.map(|item| StepSubflowRef {
@@ -1448,13 +1488,20 @@ mod tests {
                 total_embeddings: 48,
                 index_staleness_seconds: 4,
                 governance_health: Some(omega_context::HealthScore::NeedsAttention),
+                health_status: omega_context::DocumentHealthStatus::NeedsAttention,
                 last_health_check: Some(2),
+                active_version: None,
+                pending_version: None,
+                last_promotion_error: None,
+                recent_activity: Vec::new(),
+                operator_usage: Vec::new(),
             },
             store: ContextStoreDiagnostics {
                 lance_db_size_bytes: 4096,
                 tantivy_index_size_bytes: 2048,
                 todo_items_count: 3,
                 turn_archive_count: 2,
+                turn_archive_size_bytes: 8192,
             },
         }
     }
@@ -1537,7 +1584,8 @@ mod tests {
             "scan": {
                 "files_indexed": 12,
                 "chunks_indexed": 48,
-                "deleted_marked": 0
+                "deleted_marked": 0,
+                "vector_ignored_files": 2
             }
         }));
 
@@ -1554,7 +1602,7 @@ mod tests {
         assert!(envelopes.iter().any(|envelope| matches!(
             &envelope.message,
             RuntimeMessage::State(StateMessage::Activity { text, .. })
-                if text.contains("context.index files=12 chunks=48 deleted=0")
+                if text.contains("context.index files=12 chunks=48 deleted=0 vector_ignored=2")
                     && text.contains("tantivy=2048")
         )));
         assert!(envelopes.iter().any(|envelope| matches!(
@@ -1600,7 +1648,8 @@ mod tests {
             "scan": {
                 "files_indexed": 3,
                 "chunks_indexed": 9,
-                "deleted_marked": 0
+                "deleted_marked": 0,
+                "vector_ignored_files": 1
             }
         }));
 

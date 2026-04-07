@@ -1,8 +1,8 @@
 use omega_observability::strip_ansi;
 use omega_session::{
-    CacheDiagnostics, ContextDiagnostics, HealthScore, StepContextWrite, StepContextWriteKind,
-    StepDiagnostics, StepInputStatus, StepOutputAttemptKind, StepOutputRecoveryDecision,
-    StepOutputStatus, ToolCapabilityDiagnostics,
+    CacheDiagnostics, ContextDiagnostics, DocumentHealthStatus, HealthScore, StepContextWrite,
+    StepContextWriteKind, StepDiagnostics, StepInputStatus, StepOutputAttemptKind,
+    StepOutputRecoveryDecision, StepOutputStatus, ToolCapabilityDiagnostics,
 };
 
 use super::{App, DiagnosticsLine, Panel};
@@ -451,12 +451,20 @@ fn build_step_diagnostics_detail_lines(diagnostics: &StepDiagnostics) -> Vec<Str
             context.memory.compression_ratio_avg_percent,
         ));
         lines.push(format!(
-            "context_document: files={} chunks={} embeddings={} staleness_seconds={} governance_health={}",
+            "context_document: files={} chunks={} embeddings={} staleness_seconds={} health={} governance_health={} active_version={} pending_version={} promotion_error={}",
             context.document.total_files_indexed,
             context.document.total_chunks,
             context.document.total_embeddings,
             context.document.index_staleness_seconds,
+            document_health_label(context),
             context_health_label(context),
+            format_store_version(context.document.active_version.as_ref()),
+            format_store_version(context.document.pending_version.as_ref()),
+            context
+                .document
+                .last_promotion_error
+                .as_deref()
+                .unwrap_or("none"),
         ));
         lines.push(format!(
             "context_store: todo_items={} turn_archive_count={} tantivy_index_size_bytes={} lance_db_size_bytes={}",
@@ -652,6 +660,27 @@ fn context_health_label(context: &ContextDiagnostics) -> &'static str {
         Some(HealthScore::Critical) => "critical",
         None => "unknown",
     }
+}
+
+fn document_health_label(context: &ContextDiagnostics) -> &'static str {
+    match context.document.health_status {
+        DocumentHealthStatus::NeverChecked => "never_checked",
+        DocumentHealthStatus::Good => "good",
+        DocumentHealthStatus::NeedsAttention => "needs_attention",
+        DocumentHealthStatus::Critical => "critical",
+        DocumentHealthStatus::Failed => "failed",
+    }
+}
+
+fn format_store_version(version: Option<&omega_session::DocumentStoreVersion>) -> String {
+    version
+        .map(|version| {
+            format!(
+                "{}@{}",
+                version.version_id, version.manifest_revision
+            )
+        })
+        .unwrap_or_else(|| "none".to_string())
 }
 
 fn diagnostics_output_contract_label(status: StepOutputStatus, format: Option<&str>) -> String {

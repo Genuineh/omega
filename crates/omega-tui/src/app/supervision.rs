@@ -1,4 +1,4 @@
-use omega_session::{ContextSupervisionSnapshot, HealthScore};
+use omega_session::{ContextSupervisionSnapshot, DocumentHealthStatus, HealthScore};
 
 use super::{App, Panel};
 
@@ -103,11 +103,67 @@ fn build_document_lines(snapshot: &ContextSupervisionSnapshot) -> Vec<String> {
             format_bytes(document.totals.tantivy_index_size_bytes)
         ),
         format!(
-            "freshness: staleness={}s health={}",
+            "freshness: staleness={}s health={} governance={}",
             document.totals.index_staleness_seconds,
+            document.health_status.as_str(),
             health_label(document.totals.governance_health)
         ),
     ];
+
+    if let Some(version) = document.active_version.as_ref() {
+        lines.push(format!(
+            "active: {} rev={} tantivy={} lance={} path={}",
+            version.version_id,
+            version.manifest_revision,
+            version.tantivy_revision,
+            version
+                .lance_revision
+                .map(|revision| revision.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            version.storage_path,
+        ));
+    } else {
+        lines.push("active: no promoted store version yet".to_string());
+    }
+
+    if let Some(version) = document.pending_version.as_ref() {
+        lines.push(format!(
+            "pending: {} rev={} path={}",
+            version.version_id, version.manifest_revision, version.storage_path
+        ));
+    }
+    if let Some(error) = document.last_promotion_error.as_ref() {
+        lines.push(format!("promotion: {error}"));
+    }
+    if let Some(last_health_check) = document.totals.last_health_check {
+        lines.push(format!("health check: last_run={}s", last_health_check));
+    } else if matches!(document.health_status, DocumentHealthStatus::NeverChecked) {
+        lines.push("health check: never run".to_string());
+    }
+
+    if !document.operator_usage.is_empty() {
+        lines.push("usage:".to_string());
+        for usage in document.operator_usage.iter().take(3) {
+            lines.push(format!(
+                "- {} via {} count={} last={}",
+                usage.operator,
+                usage.source,
+                usage.count,
+                usage
+                    .last_used_at
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "unknown".to_string())
+            ));
+        }
+    }
+
+    if !document.recent_activity.is_empty() {
+        lines.push("activity:".to_string());
+        for activity in document.recent_activity.iter().take(3) {
+            lines.push(format!("- {} @{}", activity.label, activity.at));
+            lines.push(format!("  {}", activity.detail));
+        }
+    }
 
     match document.current_hits.as_ref() {
         Some(hits) => {

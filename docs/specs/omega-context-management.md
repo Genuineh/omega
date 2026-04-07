@@ -2,8 +2,8 @@
 status: active
 owner: omega-team
 created: 2026-03-27
-updated: 2026-04-02
-version: 0.2
+updated: 2026-04-03
+version: 0.4
 supersedes: []
 related_prds: []
 ---
@@ -415,6 +415,76 @@ pub struct IndexCommitLog {
 - 如果 LanceDB 落后于 manifest revision，semantic/hybrid 自动降级为 keyword。
 - 如果 tantivy 损坏或落后，系统进入 `index_degraded` 状态并触发 rebuild，不阻塞会话主流程。
 - `manage_document` 与 `scan_workspace` 的变更都以 revision 为单位提交，保证恢复与回放。
+
+#### 3.2.2 Store Exclusion Rules (`.omega/.storeignore`)
+
+为避免生成产物、vendored 目录、快照文件或低价值大文本持续进入 embedding/LanceDB 管线，仓库可选提供一个 repo-local 规则文件：
+
+```
+.omega/.storeignore
+```
+
+目标边界：
+- 声明“哪些路径完全不进入 `.omega/store` 知识库产物”。
+- 不替代 walk-level 硬排除（`.git/`、`target/`、`.omega/store/`）。
+- 匹配文件不会写入 `FileStore` manifest、tantivy 或 LanceDB。
+- `/document init|sync` 需要暴露 ignored/indexed/embedded 样本，便于解释本次处理范围。
+
+首期语法采用 gitignore-like 的受限子集：
+- 每行一个相对仓库根目录的 glob 规则。
+- 空行忽略。
+- `#` 开头视为注释。
+- 支持 `*`、`**`、`?` 与目录前缀匹配。
+- 首期不支持 `!` 反选，避免规则优先级与 revision replay 复杂化。
+
+建议数据模型：
+
+```rust
+pub struct StoreIgnoreRules {
+    pub patterns: Vec<String>,
+}
+
+pub struct FileRecord {
+    // existing fields ...
+    pub vector_index_eligible: bool,
+}
+
+pub struct ScanResult {
+    pub files_indexed: usize,
+    pub chunks_indexed: usize,
+    pub deleted_marked: usize,
+    pub vector_ignored_files: usize,
+    pub vector_ignored_paths: Vec<String>,
+    pub indexed_paths: Vec<String>,
+    pub embedded_paths: Vec<String>,
+    pub manifest_path: String,
+    pub keyword_index_path: String,
+}
+```
+
+扫描与索引数据流：
+
+```
+1. Walk workspace with existing hard exclusions
+2. Load `.omega/.storeignore` if present
+3. Drop matching paths before record/chunk creation
+4. Build/refresh FileStore records only for non-ignored files
+5. Rebuild tantivy and LanceDB only from manifest-backed active records/chunks
+6. Expose ignored/indexed/embedded samples in scan diagnostics and command output
+```
+
+查询语义要求：
+- `Keyword`：不会命中 `.storeignore` 排除文件。
+- `Semantic`：不会返回 `.storeignore` 排除文件。
+- `Hybrid`：不会返回 `.storeignore` 排除文件。
+- diagnostics / command output 需要暴露 `vector_ignored_files`、`vector_ignored_paths`、`indexed_paths` 与 `embedded_paths`，让 `/document init|sync` 能解释“这次具体处理了哪些文件”。
+
+验收标准：
+- 缺失 `.omega/.storeignore` 时行为与当前实现完全一致。
+- 新增规则后，匹配文件不会写入 `.omega/store/files.jsonl`。
+- keyword / semantic / hybrid 都不会返回被排除文件。
+- `/document init|sync` Response 至少展示 ignored/indexed/embedded 的样本列表。
+- 测试覆盖 parser、scan 统计、semantic/hybrid 边界与 revision 回放。
 
 #### 3.3 Multi-Dimensional Composite Query
 
@@ -1261,6 +1331,7 @@ replacement_must_backlink = true
 | Cache anchor instability causes cache miss storms | High | Monitor `cache_hit_ratio`; fallback to no-cache if ratio < 0.3 |
 | Over-aggressive compression loses critical context | High | Critical/High priority slots never compressed; only Low/Optional |
 | LanceDB storage growth on large repos | Medium | 定期 compact + 可选限制索引范围（.gitignore 排除） |
+| `.storeignore` 规则误配导致知识库缺项 | Medium | 在 scan/command diagnostics 中暴露 ignored/indexed/embedded 样本，并允许用户通过编辑 `.omega/.storeignore` 后重建 |
 | Persistent TODO corruption on crash | Medium | JSONL append-only with checksum; replay from scratch on error |
 | Embedding quality variance across models | Medium | fastembed 本地默认；semantic 模式可选 |
 | Doc governance false positives | Medium | 规则可覆盖（.omega/doc-rules.toml）；warning 不 block |
@@ -1282,3 +1353,4 @@ replacement_must_backlink = true
 - 2026-03-27 v0.1: 初版规格，定义三层上下文管理体系（Memory / Document / Context），接入 Anthropic cache_control 主动缓存，规划五阶段实施路径。
 - 2026-03-27 v0.2: 重大修订：(1) omega-context 作为唯一对外 facade，omega-memory / omega-document 不直接暴露；(2) 接入 LanceDB 嵌入式向量数据库 + tantivy 全文检索，支持多维复合查询；(3) 新增 Document Governance Engine，基于规则的文档生命周期管理（对齐 AGENTS.md docs skill）；(4) 新增 Observability/Monitoring 章节、TUI Integration 章节、完整 Testing Strategy。
 - 2026-03-27 v0.3: 根据架构评审优化：(1) 将根因修复前移到 Phase 1，避免向量/治理基础设施先于 execute 修复；(2) 用聚焦接口 + `OmegaContextFacade` 替代单一 god trait；(3) 明确 `FileStore` 为真源、tantivy/LanceDB 为派生索引，并加入 revision 一致性协议；(4) `manage_document` 改为 check/plan/apply staged 模式；(5) 默认禁用启动期 embedding，并改为后台索引。
+- 2026-04-03 v0.4: `.omega/.storeignore` 已调整为 store-level 排除规则：匹配路径在扫描阶段直接跳过，不进入 `FileStore` manifest、tantivy 或 LanceDB；`/document init|sync` 还会暴露 ignored/indexed/embedded 样本，帮助解释本次处理范围。

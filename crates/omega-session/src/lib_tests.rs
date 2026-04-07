@@ -25,7 +25,8 @@ use super::{
     validate_schema_file, validate_structured_output, AgentSession, AgentSessionConfig,
     ConversationMessage, ProviderMarkupSanitizer, ResponseSectionDelta, ResponseSectionKind,
     ResponseSectionState, RuntimeContentKind, RuntimeEnvelopeRecorder, RuntimeMessage,
-    RuntimeMessageEnvelope, RuntimeSource, RuntimeUiEffect, RuntimeUiEnvelope, SessionContext,
+    RuntimeMessageEnvelope, RuntimeSource, RuntimeUiEffect, RuntimeUiEnvelope, SectionOrigin,
+    SessionContext,
     SessionSkillCatalog, SessionToolCatalog, StateMessage, StatusSlot, StatusValue,
     StepContextWriteKind, StepOutputAttemptKind, StepOutputStatus, StepSkillRequest,
     StepToolRequest, ToolRunStatus, UiMessageKind, UiSource, UiTarget, WorkflowRunRole,
@@ -187,6 +188,13 @@ fn feature_execute_future_completion_json() -> &'static str {
 
 fn unique_session_test_root(name: &str) -> PathBuf {
     persistent_test_root(&format!("agent-session-{name}"))
+}
+
+fn write_document_fixture(root: &Path) {
+    let _ = std::fs::create_dir_all(root.join("docs/specs"));
+    let _ = std::fs::write(root.join("README.md"), "# Omega Test Fixture\n");
+    let _ = std::fs::write(root.join("docs/README.md"), "# Docs\n");
+    let _ = std::fs::write(root.join("docs/TODO.md"), "# TODO\n");
 }
 
 fn write_review_skill(root: &Path) {
@@ -1522,6 +1530,234 @@ fn plan_section_hides_invalid_report_prose_and_only_shows_validated_plan_summary
     assert!(!plan_text.contains("## 项目概述"));
     assert!(plan_text.contains("Analyze the requested topic with read-only evidence"));
     assert!(plan_text.contains("\"tasks\""));
+}
+
+#[cfg(feature = "document-backend")]
+#[test]
+fn spawn_command_document_health_emits_command_section() {
+    let root = unique_session_test_root("document-command-init");
+    write_document_fixture(&root);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: Arc::new(IdleClient),
+        system: "system".to_string(),
+        cwd: root,
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+    let recorder = RuntimeEnvelopeRecorder::new();
+
+    session
+        .spawn_command_with_test_bridge(
+            "/document health".to_string(),
+            501,
+            recorder.runtime_bridge(),
+        )
+        .unwrap();
+
+    let recorded = recorder.wait_for_turn_finished_messages(501, Duration::from_secs(30));
+    assert!(recorded.iter().any(|envelope| {
+        matches!(
+            &envelope.message,
+            RuntimeMessage::Conversation(ConversationMessage::BeginSection { section })
+                if section.kind == ResponseSectionKind::Command
+                    && matches!(
+                        &section.metadata.origin,
+                        SectionOrigin::Command { command_name, source }
+                            if command_name == "/document health" && source == "builtin"
+                    )
+        )
+    }));
+    assert!(recorded.iter().any(|envelope| {
+        matches!(
+            &envelope.message,
+            RuntimeMessage::Conversation(ConversationMessage::CompleteSection { state, .. })
+                if *state == ResponseSectionState::Complete
+        )
+    }));
+
+    let body = recorded
+        .iter()
+        .filter_map(|envelope| match &envelope.message {
+            RuntimeMessage::Conversation(ConversationMessage::AppendSection { delta, .. }) => {
+                match delta {
+                    ResponseSectionDelta::Text(text) => Some(text.as_str()),
+                }
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(body.contains("Running /document health..."));
+    assert!(body.contains("Overall health:"));
+    assert!(body.contains("Total docs:"));
+}
+
+#[test]
+fn command_hint_renders_ready_state_for_document_query() {
+    let root = unique_session_test_root("command-hint");
+    write_document_fixture(&root);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: Arc::new(IdleClient),
+        system: "system".to_string(),
+        cwd: root,
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+
+    let hint = session.command_hint("/document query roadmap").unwrap();
+    assert!(hint.contains("/document"));
+}
+
+#[cfg(feature = "document-backend")]
+#[test]
+fn spawn_command_document_create_list_and_archive_emit_complete_sections() {
+    let root = unique_session_test_root("document-command-governance");
+    write_document_fixture(&root);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: Arc::new(IdleClient),
+        system: "system".to_string(),
+        cwd: root.clone(),
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+
+    let create_recorder = RuntimeEnvelopeRecorder::new();
+    session
+        .spawn_command_with_test_bridge(
+            "/document create docs/specs/command-spec.md spec Command System".to_string(),
+            601,
+            create_recorder.runtime_bridge(),
+        )
+        .unwrap();
+    let create_events = create_recorder.wait_for_turn_finished_messages(601, Duration::from_secs(30));
+    assert!(create_events.iter().any(|envelope| {
+        matches!(
+            &envelope.message,
+            RuntimeMessage::Conversation(ConversationMessage::CompleteSection { state, .. })
+                if *state == ResponseSectionState::Complete
+        )
+    }));
+
+    let list_recorder = RuntimeEnvelopeRecorder::new();
+    session
+        .spawn_command_with_test_bridge(
+            "/document list spec active".to_string(),
+            602,
+            list_recorder.runtime_bridge(),
+        )
+        .unwrap();
+    let list_events = list_recorder.wait_for_turn_finished_messages(602, Duration::from_secs(30));
+    let list_body = list_events
+        .iter()
+        .filter_map(|envelope| match &envelope.message {
+            RuntimeMessage::Conversation(ConversationMessage::AppendSection { delta, .. }) => {
+                match delta {
+                    ResponseSectionDelta::Text(text) => Some(text.as_str()),
+                }
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(list_body.contains("command-spec.md"));
+
+    let archive_recorder = RuntimeEnvelopeRecorder::new();
+    session
+        .spawn_command_with_test_bridge(
+            "/document archive docs/specs/command-spec.md superseded".to_string(),
+            603,
+            archive_recorder.runtime_bridge(),
+        )
+        .unwrap();
+    let archive_events =
+        archive_recorder.wait_for_turn_finished_messages(603, Duration::from_secs(30));
+    assert!(archive_events.iter().any(|envelope| {
+        matches!(
+            &envelope.message,
+            RuntimeMessage::Conversation(ConversationMessage::CompleteSection { state, .. })
+                if *state == ResponseSectionState::Complete
+        )
+    }));
+}
+
+#[cfg(feature = "document-backend")]
+#[test]
+fn spawn_command_document_init_streams_scan_phases_and_samples() {
+    let root = unique_session_test_root("document-command-init-rich");
+    write_document_fixture(&root);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: Arc::new(IdleClient),
+        system: "system".to_string(),
+        cwd: root.clone(),
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+    let recorder = RuntimeEnvelopeRecorder::new();
+
+    session
+        .spawn_command_with_test_bridge(
+            "/document init".to_string(),
+            701,
+            recorder.runtime_bridge(),
+        )
+        .unwrap();
+
+    let recorded = recorder.wait_for_turn_finished_messages(701, Duration::from_secs(30));
+    let body = recorded
+        .iter()
+        .filter_map(|envelope| match &envelope.message {
+            RuntimeMessage::Conversation(ConversationMessage::AppendSection { delta, .. }) => {
+                match delta {
+                    ResponseSectionDelta::Text(text) => Some(text.as_str()),
+                }
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(body.contains("Running /document init..."));
+    assert!(body.contains("Phase: load storeignore rules and scan workspace"));
+    assert!(body.contains("Phase: scan complete, preparing command summary"));
+    assert!(body.contains("Indexed files:"));
+    assert!(body.contains("Embedded files:"));
+    assert!(body.contains("Manifest: .omega/store/files.jsonl"));
 }
 
 #[test]
@@ -5337,8 +5573,7 @@ fn spawn_turn_emits_response_sections_for_routing_and_thinking() {
                     section.parent_id,
                     section.kind,
                     section.title,
-                    section.metadata.workflow_id,
-                    section.metadata.workflow_role,
+                    section.metadata.origin,
                     section.metadata.scene_id,
                 ));
             }
@@ -5376,8 +5611,11 @@ fn spawn_turn_emits_response_sections_for_routing_and_thinking() {
         entry.0 == "turn-11:root:root:select-workflow"
             && entry.2 == ResponseSectionKind::Routing
             && entry.3 == "Select Workflow"
-            && entry.4 == ROOT_WORKFLOW_ID
-            && entry.5 == WorkflowRunRole::Root
+            && entry.4
+                == SectionOrigin::Workflow {
+                    workflow_id: ROOT_WORKFLOW_ID.to_string(),
+                    workflow_role: WorkflowRunRole::Root,
+                }
     }));
     assert!(began.iter().any(|entry| {
         entry
@@ -5386,8 +5624,10 @@ fn spawn_turn_emits_response_sections_for_routing_and_thinking() {
                 None,
                 ResponseSectionKind::FinalAnswer,
                 "Final Answer".to_string(),
-                CHAT_WORKFLOW_ID.to_string(),
-                WorkflowRunRole::Child,
+                SectionOrigin::Workflow {
+                    workflow_id: CHAT_WORKFLOW_ID.to_string(),
+                    workflow_role: WorkflowRunRole::Child,
+                },
                 Some("chat".to_string()),
             )
     }));
@@ -5398,8 +5638,10 @@ fn spawn_turn_emits_response_sections_for_routing_and_thinking() {
                 Some("turn-11:child:chat:chat".to_string()),
                 ResponseSectionKind::Thinking,
                 "Thinking".to_string(),
-                CHAT_WORKFLOW_ID.to_string(),
-                WorkflowRunRole::Child,
+                SectionOrigin::Workflow {
+                    workflow_id: CHAT_WORKFLOW_ID.to_string(),
+                    workflow_role: WorkflowRunRole::Child,
+                },
                 Some("chat".to_string()),
             )
     }));
@@ -5509,7 +5751,7 @@ fn spawn_turn_falls_back_to_text_routing_when_root_json_validation_fails() {
                 effect: RuntimeUiEffect::BeginResponseSection { section },
             } => {
                 assert_eq!(turn_id, 73);
-                began.push((section.id, section.metadata.workflow_id, section.kind));
+                began.push((section.id, section.metadata.origin, section.kind));
             }
             RuntimeUiEnvelope::Effect {
                 turn_id,

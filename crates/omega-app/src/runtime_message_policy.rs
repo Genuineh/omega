@@ -311,7 +311,13 @@ mod tests {
                     total_embeddings: 48,
                     index_staleness_seconds: 4,
                     governance_health: Some(HealthScore::NeedsAttention),
+                    health_status: omega_session::DocumentHealthStatus::NeedsAttention,
                     last_health_check: Some(2),
+                    active_version: None,
+                    pending_version: None,
+                    last_promotion_error: None,
+                    recent_activity: Vec::new(),
+                    operator_usage: Vec::new(),
                 },
                 store: ContextStoreDiagnostics {
                     lance_db_size_bytes: 4096,

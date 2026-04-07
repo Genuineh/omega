@@ -1,11 +1,19 @@
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 
-use omega_context::OmegaContextFacade;
+use omega_command::{
+    CommandHint, CommandHintProvider, CommandHintResolution, OmegaCommandDescriptor,
+    OmegaCommandInvocation, OmegaCommandRegistry, OmegaCommandSource, OmegaCommandSubcommand,
+};
+use omega_context::{
+    ArchiveTrigger, DocType, DocumentMutationMode, DocumentOp, FileRecord, FileStatus,
+    OmegaContextFacade, SearchMode, SearchQuery,
+};
 pub use omega_context::{
     ContextBudgetDiagnostics, ContextDiagnostics, ContextDocumentDiagnostics,
     ContextMemoryDiagnostics, ContextStoreDiagnostics, ContextSupervisionSnapshot,
-    DocumentHitItem, DocumentHitSummary, DocumentSupervisionSnapshot,
+    DocumentActivitySummary, DocumentHealthStatus, DocumentHitItem, DocumentHitSummary,
+    DocumentOperatorUsage, DocumentStoreVersion, DocumentSupervisionSnapshot,
     DocumentSupervisionTotals, HealthScore, MemoryHitItem, MemoryHitSummary,
     MemorySupervisionSnapshot, MemorySupervisionTotals, SupervisionReadiness,
 };
@@ -50,7 +58,7 @@ pub use runtime_ui::{
     ActivityTarget, CacheDiagnostics, ExecuteProgressDiagnostics, OverlayRequest, OverlayTarget,
     ResponseSection, ResponseSectionDelta, ResponseSectionKind, ResponseSectionMetadata,
     ResponseSectionState, RuntimeUiBridge, RuntimeUiEffect, RuntimeUiEnvelope, RuntimeUiMessage,
-    RuntimeUiSink, SessionRuntimeContext, StatusSlot, StatusValue, StepContextWrite,
+    RuntimeUiSink, SectionOrigin, SessionRuntimeContext, StatusSlot, StatusValue, StepContextWrite,
     StepContextWriteKind, StepDiagnostics, StepInputDiagnostics, StepInputStatus,
     StepOutputAttemptKind, StepOutputContractMode, StepOutputDiagnostics,
     StepOutputRecoveryDecision, StepOutputStatus, StepSubflowRef, StepSubflowState,
@@ -202,6 +210,15 @@ impl AgentSession {
 
     pub fn is_ready(&self) -> bool {
         self.agent_slot.lock().unwrap().agent.is_some()
+    }
+
+    pub fn command_hint(&self, input: &str) -> Option<String> {
+        if !input.trim_start().starts_with('/') {
+            return None;
+        }
+
+        let registry = command_registry(&self.context_facade);
+        Some(render_command_hint(registry.resolve_hint(input)))
     }
 
     pub fn checkpoint_current_messages(&self) {
@@ -383,6 +400,712 @@ impl AgentSession {
 
         Ok(())
     }
+
+    pub fn spawn_command(
+        &self,
+        input: String,
+        turn_id: u64,
+        tx: mpsc::Sender<RuntimeMessageEnvelope>,
+    ) -> anyhow::Result<()> {
+        self.spawn_command_with_bridge(input, turn_id, Arc::new(tx))
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn spawn_command_with_test_bridge(
+        &self,
+        input: String,
+        turn_id: u64,
+        tx: SharedRuntimeMessageBridge,
+    ) -> anyhow::Result<()> {
+        self.spawn_command_with_bridge(input, turn_id, tx)
+    }
+
+    fn spawn_command_with_bridge(
+        &self,
+        input: String,
+        turn_id: u64,
+        tx: SharedRuntimeMessageBridge,
+    ) -> anyhow::Result<()> {
+        self.active_turn_tx.send_replace(turn_id);
+        let context_facade = self.context_facade.clone();
+
+        thread::spawn(move || {
+            let registry = command_registry(&context_facade);
+            let parsed = registry.parse(&input);
+            let title = command_title_from_input(&input);
+            let source = parsed
+                .as_ref()
+                .map(|invocation| invocation.source)
+                .unwrap_or(OmegaCommandSource::Builtin);
+            let section_id = begin_command_output(&*tx, turn_id, &title, source);
+            let mut progress = |text: &str| append_command_output(&*tx, turn_id, &section_id, text);
+
+            let output = match parsed {
+                Ok(invocation) => execute_command(&context_facade, invocation, &mut progress),
+                Err(error) => Err(anyhow::anyhow!(error)),
+            };
+
+            match output {
+                Ok(output) => emit_command_output(&*tx, turn_id, &section_id, output),
+                Err(error) => emit_command_output(
+                    &*tx,
+                    turn_id,
+                    &section_id,
+                    CommandExecutionOutput {
+                        body: format!("Error: {error}"),
+                        state: ResponseSectionState::Failed,
+                        activity: format!("{} failed", command_title_from_input(&input)),
+                    },
+                ),
+            }
+
+            ui_emit::send_turn_finished(&*tx, turn_id);
+        });
+
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct CommandExecutionOutput {
+    body: String,
+    state: ResponseSectionState,
+    activity: String,
+}
+
+fn command_registry(context_facade: &Arc<OmegaContextFacade>) -> OmegaCommandRegistry {
+    let facade = Arc::clone(context_facade);
+    OmegaCommandRegistry::new(vec![OmegaCommandDescriptor::new(
+        "document",
+        vec!["doc".to_string()],
+        None,
+        vec![
+            OmegaCommandSubcommand::new("init", "Initialize document indexes", None),
+            OmegaCommandSubcommand::new("sync", "Refresh indexed workspace documents", None),
+            OmegaCommandSubcommand::new("health", "Check repository document health", None),
+            OmegaCommandSubcommand::new(
+                "query",
+                "Search indexed project documents",
+                Some("<text>"),
+            ),
+            OmegaCommandSubcommand::new(
+                "create",
+                "Create a managed document from a template",
+                Some("<path> <doc_type> <title...>"),
+            ),
+            OmegaCommandSubcommand::new(
+                "archive",
+                "Archive a managed document",
+                Some("<path> [reason] [replaced_by]"),
+            ),
+            OmegaCommandSubcommand::new(
+                "list",
+                "List tracked documents",
+                Some("[doc_type] [status]"),
+            ),
+        ],
+        "Manage workspace document indexing and query operations.",
+        OmegaCommandSource::Builtin,
+        Arc::new(move || facade.document_backend_enabled),
+    )])
+}
+
+fn execute_command(
+    context_facade: &Arc<OmegaContextFacade>,
+    invocation: OmegaCommandInvocation,
+    progress: &mut dyn FnMut(&str),
+) -> anyhow::Result<CommandExecutionOutput> {
+    match invocation.name.as_str() {
+        "document" => execute_document_command(context_facade, invocation, progress),
+        _ => Err(anyhow::anyhow!("unsupported command '/{}'", invocation.name)),
+    }
+}
+
+fn execute_document_command(
+    context_facade: &Arc<OmegaContextFacade>,
+    invocation: OmegaCommandInvocation,
+    progress: &mut dyn FnMut(&str),
+) -> anyhow::Result<CommandExecutionOutput> {
+    if !context_facade.document_backend_enabled {
+        return Err(anyhow::anyhow!(
+            "document backend disabled; rebuild with feature 'document-backend' enabled"
+        ));
+    }
+
+    let Some(subcommand) = invocation.subcommand.as_deref() else {
+        return Err(anyhow::anyhow!(
+            "missing subcommand for '/document'; expected init, sync, health, query, create, archive, or list"
+        ));
+    };
+
+    match subcommand {
+        "init" | "sync" => {
+            context_facade.diagnostics.record_document_usage(
+                "/document",
+                "builtin_command",
+                &format!("subcommand={subcommand}"),
+            );
+            progress("Phase: load storeignore rules and scan workspace");
+            let scan = context_facade.query.scan_workspace()?;
+            progress("Phase: scan complete, preparing command summary");
+            context_facade.diagnostics.record_document_scan(&scan);
+            let ignored_summary = if scan.vector_ignored_paths.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "\nIgnored paths:\n- {}",
+                    scan.vector_ignored_paths.join("\n- ")
+                )
+            };
+            let indexed_summary = if scan.indexed_paths.is_empty() {
+                String::new()
+            } else {
+                format!("\nIndexed files:\n- {}", scan.indexed_paths.join("\n- "))
+            };
+            let embedded_summary = if scan.embedded_paths.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "\nEmbedded files:\n- {}",
+                    scan.embedded_paths.join("\n- ")
+                )
+            };
+            Ok(CommandExecutionOutput {
+                body: format!(
+                    "Phase: scan workspace\nIndexed {} files\nChunks indexed: {}\nDeleted marked: {}\nStoreignored skipped: {}\nManifest: {}\nKeyword index: {}\nActive version: {}\nPending version: {}\nArchived version path: {}{}{}{}",
+                    scan.files_indexed,
+                    scan.chunks_indexed,
+                    scan.deleted_marked,
+                    scan.vector_ignored_files,
+                    scan.manifest_path,
+                    scan.keyword_index_path,
+                    format_store_version(scan.active_version.as_ref()),
+                    format_store_version(scan.pending_version.as_ref()),
+                    scan.archived_version_path.as_deref().unwrap_or("none"),
+                    ignored_summary,
+                    indexed_summary,
+                    embedded_summary,
+                ),
+                state: ResponseSectionState::Complete,
+                activity: format!("/document {subcommand} indexed {} files", scan.files_indexed),
+            })
+        }
+        "health" => {
+            context_facade.diagnostics.record_document_usage(
+                "/document",
+                "builtin_command",
+                "subcommand=health",
+            );
+            let health = context_facade.governance.check_document_health()?;
+            context_facade.diagnostics.record_document_health(&health);
+            let snapshot = context_facade.diagnostics.context_diagnostics();
+            Ok(CommandExecutionOutput {
+                body: format!(
+                    "Overall health: {}\nHealth status: {}\nTotal docs: {}\nStructure violations: {}\nNaming violations: {}\nBroken crossrefs: {}\nMissing frontmatter: {}\nStale docs: {}\nLast health check: {}\nActive version: {}\nPending version: {}\nPromotion error: {}",
+                    health_score_label(health.overall_health),
+                    snapshot.document.health_status.as_str(),
+                    health.total_docs,
+                    health.structure_violations.len(),
+                    health.naming_violations.len(),
+                    health.broken_crossrefs.len(),
+                    health.missing_frontmatter.len(),
+                    health.stale_docs.len(),
+                    snapshot
+                        .document
+                        .last_health_check
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "never".to_string()),
+                    format_store_version(snapshot.document.active_version.as_ref()),
+                    format_store_version(snapshot.document.pending_version.as_ref()),
+                    snapshot
+                        .document
+                        .last_promotion_error
+                        .as_deref()
+                        .unwrap_or("none"),
+                ),
+                state: ResponseSectionState::Complete,
+                activity: "/document health completed".to_string(),
+            })
+        }
+        "query" => {
+            let query_text = invocation.args.join(" ");
+            if query_text.trim().is_empty() {
+                return Err(anyhow::anyhow!("missing search text for '/document query'"));
+            }
+            context_facade.diagnostics.record_document_usage(
+                "/document",
+                "builtin_command",
+                &format!("subcommand=query query={query_text}"),
+            );
+            let scan = context_facade.query.scan_workspace()?;
+            context_facade.diagnostics.record_document_scan(&scan);
+            let results = context_facade.query.search(SearchQuery {
+                text: Some(query_text.clone()),
+                mode: SearchMode::Hybrid,
+                filters: Vec::new(),
+                sort: None,
+                max_results: 10,
+            })?;
+            Ok(CommandExecutionOutput {
+                body: render_document_query_results(&query_text, &results),
+                state: ResponseSectionState::Complete,
+                activity: format!("/document query returned {} results", results.len()),
+            })
+        }
+        "create" => {
+            if invocation.args.len() < 3 {
+                return Err(anyhow::anyhow!(
+                    "usage: /document create <path> <doc_type> <title...>"
+                ));
+            }
+            context_facade.diagnostics.record_document_usage(
+                "/document",
+                "builtin_command",
+                "subcommand=create",
+            );
+
+            let path = invocation.args[0].clone();
+            let doc_type = parse_doc_type(&invocation.args[1]).ok_or_else(|| {
+                anyhow::anyhow!("unknown doc_type '{}' for '/document create'", invocation.args[1])
+            })?;
+            let title = invocation.args[2..].join(" ");
+            let result = context_facade.governance.manage_document(DocumentOp::Create {
+                mode: DocumentMutationMode::Apply,
+                path: path.clone(),
+                doc_type,
+                title: title.clone(),
+                content: document_template(doc_type, &title),
+            })?;
+
+            Ok(CommandExecutionOutput {
+                body: render_document_operation_result(&result),
+                state: state_from_document_result(&result),
+                activity: format!("/document create wrote {}", path),
+            })
+        }
+        "archive" => {
+            if invocation.args.is_empty() {
+                return Err(anyhow::anyhow!(
+                    "usage: /document archive <path> [reason] [replaced_by]"
+                ));
+            }
+            context_facade.diagnostics.record_document_usage(
+                "/document",
+                "builtin_command",
+                "subcommand=archive",
+            );
+
+            let path = invocation.args[0].clone();
+            let reason = invocation
+                .args
+                .get(1)
+                .and_then(|value| parse_archive_trigger(value))
+                .unwrap_or(ArchiveTrigger::HistoryOnly);
+            let replaced_by = invocation.args.get(2).cloned();
+            let result = context_facade.governance.manage_document(DocumentOp::Archive {
+                mode: DocumentMutationMode::Apply,
+                path: path.clone(),
+                reason,
+                replaced_by,
+            })?;
+
+            Ok(CommandExecutionOutput {
+                body: render_document_operation_result(&result),
+                state: state_from_document_result(&result),
+                activity: format!("/document archive updated {}", path),
+            })
+        }
+        "list" => {
+            context_facade.diagnostics.record_document_usage(
+                "/document",
+                "builtin_command",
+                "subcommand=list",
+            );
+            let doc_type = invocation.args.first().and_then(|value| parse_doc_type(value));
+            let status = invocation.args.get(1).and_then(|value| parse_file_status(value));
+            let result = context_facade
+                .governance
+                .manage_document(DocumentOp::List {
+                    doc_type,
+                    status: status.clone(),
+                })?;
+
+            Ok(CommandExecutionOutput {
+                body: render_document_list_result(&result.files, doc_type, status),
+                state: state_from_document_result(&result),
+                activity: format!("/document list returned {} files", result.files.len()),
+            })
+        }
+        other => Err(anyhow::anyhow!(
+            "unsupported '/document' subcommand '{other}'"
+        )),
+    }
+}
+
+fn render_document_query_results(
+    query_text: &str,
+    results: &[omega_context::SearchResult],
+) -> String {
+    if results.is_empty() {
+        return format!("Query: {query_text}\nNo indexed documents matched.");
+    }
+
+    let mut body = format!("Query: {query_text}\nResults: {}", results.len());
+    for result in results.iter().take(5) {
+        body.push_str(&format!(
+            "\n- {} ({}, score {:.2})\n  {}",
+            result.path,
+            search_mode_label(result.mode_used),
+            result.score,
+            preview_text(&result.preview, 140),
+        ));
+    }
+    body
+}
+
+fn render_document_operation_result(result: &omega_context::DocumentOpResult) -> String {
+    let mut body = result.message.clone();
+
+    if let Some(mode) = result.mode {
+        body.push_str(&format!("\nMode: {}", mutation_mode_label(mode)));
+    }
+
+    if !result.files.is_empty() {
+        body.push_str(&format!("\nFiles: {}", result.files.len()));
+        for file in result.files.iter().take(5) {
+            body.push_str(&format!(
+                "\n- {} ({}, {})",
+                file.path,
+                doc_type_label(file.doc_type),
+                file_status_label(&file.status),
+            ));
+        }
+    }
+
+    if !result.warnings.is_empty() {
+        body.push_str("\nWarnings:");
+        for warning in &result.warnings {
+            body.push_str(&format!("\n- {warning}"));
+        }
+    }
+
+    body
+}
+
+fn render_document_list_result(
+    files: &[FileRecord],
+    doc_type: Option<DocType>,
+    status: Option<FileStatus>,
+) -> String {
+    let mut body = format!(
+        "Tracked documents: {}\nFilter: doc_type={} status={}",
+        files.len(),
+        doc_type_label(doc_type),
+        status_label(status.as_ref()),
+    );
+
+    if files.is_empty() {
+        body.push_str("\nNo tracked documents matched.");
+        return body;
+    }
+
+    for file in files.iter().take(10) {
+        body.push_str(&format!(
+            "\n- {} ({}, {})",
+            file.path,
+            doc_type_label(file.doc_type),
+            file_status_label(&file.status),
+        ));
+    }
+    body
+}
+
+fn render_command_hint(resolution: CommandHintResolution) -> String {
+    match resolution {
+        CommandHintResolution::TopLevel(commands) => {
+            let summary = commands
+                .into_iter()
+                .map(|command| format_hint_item(&format!("/{}", command.name), &command))
+                .collect::<Vec<_>>()
+                .join("  •  ");
+            format!(" Slash: {summary}")
+        }
+        CommandHintResolution::Command {
+            command,
+            subcommands,
+        } => {
+            let list = subcommands
+                .into_iter()
+                .take(4)
+                .map(|subcommand| format_hint_item(&subcommand.name, &subcommand))
+                .collect::<Vec<_>>()
+                .join("  •  ");
+            if list.is_empty() {
+                format_hint_line(&format!("/{}", command.name), &command)
+            } else {
+                format!(
+                    " {}  •  subcommands: {}",
+                    format_hint_line(&format!("/{}", command.name), &command),
+                    list,
+                )
+            }
+        }
+        CommandHintResolution::Ready {
+            command,
+            subcommand,
+            args,
+        } => {
+            if let Some(subcommand) = subcommand {
+                let pending = if args.is_empty() {
+                    String::new()
+                } else {
+                    format!("  •  args: {}", args.join(" "))
+                };
+                format!(
+                    " Ready: /{} {}{}",
+                    command.name,
+                    format_hint_item(&subcommand.name, &subcommand),
+                    pending,
+                )
+            } else {
+                format!(" Ready: {}", format_hint_line(&format!("/{}", command.name), &command))
+            }
+        }
+        CommandHintResolution::Disabled { command, .. } => {
+            format!(
+                " Slash unavailable: /{} — {}",
+                command.name, command.description
+            )
+        }
+        CommandHintResolution::NoMatch { input } => {
+            format!(" Slash: no command matches '/{}'", input)
+        }
+    }
+}
+
+fn format_hint_line(label: &str, hint: &CommandHint) -> String {
+    let mut line = format!("{} — {}", label, hint.description);
+    if let Some(argument_hint) = hint.argument_hint.as_deref() {
+        line.push_str(&format!(" {}", argument_hint));
+    }
+    line
+}
+
+fn format_hint_item(label: &str, hint: &CommandHint) -> String {
+    match hint.argument_hint.as_deref() {
+        Some(argument_hint) => format!("{} {}", label, argument_hint),
+        None => format!("{}", label),
+    }
+}
+
+fn document_template(doc_type: DocType, title: &str) -> String {
+    match doc_type {
+        DocType::Readme | DocType::Todo | DocType::Changelog => {
+            format!("# {title}\n")
+        }
+        _ => format!("---\nstatus: draft\ntitle: {title}\n---\n\n# {title}\n"),
+    }
+}
+
+fn parse_doc_type(value: &str) -> Option<DocType> {
+    match value.to_ascii_lowercase().as_str() {
+        "spec" | "specs" => Some(DocType::Spec),
+        "prd" | "prds" => Some(DocType::Prd),
+        "guide" | "guides" => Some(DocType::Guide),
+        "adr" | "adrs" | "decision" | "decisions" => Some(DocType::Adr),
+        "todo" => Some(DocType::Todo),
+        "archive" | "archived" => Some(DocType::Archive),
+        "readme" => Some(DocType::Readme),
+        "changelog" => Some(DocType::Changelog),
+        _ => None,
+    }
+}
+
+fn parse_file_status(value: &str) -> Option<FileStatus> {
+    match value.to_ascii_lowercase().as_str() {
+        "active" => Some(FileStatus::Active),
+        "archived" | "archive" => Some(FileStatus::Archived),
+        "deleted" => Some(FileStatus::Deleted),
+        _ => None,
+    }
+}
+
+fn parse_archive_trigger(value: &str) -> Option<ArchiveTrigger> {
+    match value.to_ascii_lowercase().as_str() {
+        "superseded" => Some(ArchiveTrigger::Superseded),
+        "completed" | "completed_and_inactive" | "inactive" => {
+            Some(ArchiveTrigger::CompletedAndInactive)
+        }
+        "outdated" | "structurally_outdated" => Some(ArchiveTrigger::StructurallyOutdated),
+        "history" | "history_only" => Some(ArchiveTrigger::HistoryOnly),
+        _ => None,
+    }
+}
+
+fn state_from_document_result(result: &omega_context::DocumentOpResult) -> ResponseSectionState {
+    if result.ok {
+        ResponseSectionState::Complete
+    } else {
+        ResponseSectionState::Failed
+    }
+}
+
+fn mutation_mode_label(mode: DocumentMutationMode) -> &'static str {
+    match mode {
+        DocumentMutationMode::Check => "check",
+        DocumentMutationMode::Plan => "plan",
+        DocumentMutationMode::Apply => "apply",
+    }
+}
+
+fn doc_type_label(doc_type: Option<DocType>) -> &'static str {
+    match doc_type {
+        Some(DocType::Spec) => "spec",
+        Some(DocType::Prd) => "prd",
+        Some(DocType::Guide) => "guide",
+        Some(DocType::Adr) => "adr",
+        Some(DocType::Todo) => "todo",
+        Some(DocType::Archive) => "archive",
+        Some(DocType::Readme) => "readme",
+        Some(DocType::Changelog) => "changelog",
+        None => "any",
+    }
+}
+
+fn status_label(status: Option<&FileStatus>) -> &'static str {
+    match status {
+        Some(FileStatus::Active) => "active",
+        Some(FileStatus::Deleted) => "deleted",
+        Some(FileStatus::Archived) => "archived",
+        Some(FileStatus::Moved { .. }) => "moved",
+        None => "any",
+    }
+}
+
+fn file_status_label(status: &FileStatus) -> &'static str {
+    status_label(Some(status))
+}
+
+fn health_score_label(score: HealthScore) -> &'static str {
+    match score {
+        HealthScore::Good => "good",
+        HealthScore::NeedsAttention => "needs_attention",
+        HealthScore::Critical => "critical",
+    }
+}
+
+fn format_store_version(version: Option<&DocumentStoreVersion>) -> String {
+    version
+        .map(|version| {
+            format!(
+                "{} rev={} path={}",
+                version.version_id, version.manifest_revision, version.storage_path
+            )
+        })
+        .unwrap_or_else(|| "none".to_string())
+}
+
+fn search_mode_label(mode: SearchMode) -> &'static str {
+    match mode {
+        SearchMode::Keyword => "keyword",
+        SearchMode::Semantic => "semantic",
+        SearchMode::Hybrid => "hybrid",
+    }
+}
+
+fn append_command_output(
+    tx: &dyn RuntimeMessageBridge,
+    turn_id: u64,
+    section_id: &str,
+    text: &str,
+) {
+    tx.send(RuntimeMessageEnvelope::conversation(
+        turn_id,
+        ConversationMessage::AppendSection {
+            id: section_id.to_string(),
+            delta: ResponseSectionDelta::Text(format!("\n{text}")),
+        },
+    ));
+}
+
+fn emit_command_output(
+    tx: &dyn RuntimeMessageBridge,
+    turn_id: u64,
+    section_id: &str,
+    output: CommandExecutionOutput,
+) {
+    append_command_output(tx, turn_id, section_id, &output.body);
+    tx.send(RuntimeMessageEnvelope::conversation(
+        turn_id,
+        ConversationMessage::CompleteSection {
+            id: section_id.to_string(),
+            state: output.state,
+        },
+    ));
+    tx.send(RuntimeMessageEnvelope::state(
+        turn_id,
+        StateMessage::Activity {
+            source: RuntimeSource::System,
+            kind: if output.state == ResponseSectionState::Failed {
+                RuntimeContentKind::Error
+            } else {
+                RuntimeContentKind::Result
+            },
+            text: output.activity,
+            priority: None,
+        },
+    ));
+}
+
+fn begin_command_output(
+    tx: &dyn RuntimeMessageBridge,
+    turn_id: u64,
+    title: &str,
+    source: OmegaCommandSource,
+) -> String {
+    let section_id = format!("turn-{turn_id}:command");
+    tx.send(RuntimeMessageEnvelope::conversation(
+        turn_id,
+        ConversationMessage::BeginSection {
+            section: ResponseSection {
+                id: section_id.clone(),
+                parent_id: None,
+                kind: ResponseSectionKind::Command,
+                title: title.to_string(),
+                state: ResponseSectionState::Streaming,
+                metadata: ResponseSectionMetadata {
+                    scene_id: None,
+                    origin: SectionOrigin::Command {
+                        command_name: title.to_string(),
+                        source: source.as_str().to_string(),
+                    },
+                    step_id: None,
+                    step_label: None,
+                    subflow_ref: None,
+                },
+            },
+        },
+    ));
+    tx.send(RuntimeMessageEnvelope::conversation(
+        turn_id,
+        ConversationMessage::AppendSection {
+            id: section_id.clone(),
+            delta: ResponseSectionDelta::Text(format!("Running {title}...")),
+        },
+    ));
+    section_id
+}
+
+fn command_title_from_input(input: &str) -> String {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return "/command".to_string();
+    }
+    trimmed
+        .split_whitespace()
+        .take(2)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub(crate) fn preview_text(text: &str, limit: usize) -> String {

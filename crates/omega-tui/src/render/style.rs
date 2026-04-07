@@ -58,6 +58,24 @@ pub(super) fn response_line_style(line: &ResponseDisplayLine, colors: &ColorSche
                 Style::default().fg(colors.text)
             }
         }
+        MsgKind::Command => {
+            if line.is_tool_line {
+                match line.tool_status {
+                    None => Style::default()
+                        .fg(colors.context_label)
+                        .add_modifier(Modifier::BOLD),
+                    Some(ToolRunStatus::Running) => Style::default().fg(colors.focus_border),
+                    Some(ToolRunStatus::Failed) => Style::default().fg(colors.error_message),
+                    _ => Style::default().fg(colors.context_hint),
+                }
+            } else if line.is_header {
+                Style::default()
+                    .fg(colors.context_label)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(colors.agent_message)
+            }
+        }
         MsgKind::Thinking => {
             let state = line
                 .response_state

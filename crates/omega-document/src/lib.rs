@@ -12,7 +12,7 @@ use arrow_array::{
 use arrow_schema::{DataType, Field as ArrowField, Schema as ArrowSchema};
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use futures_util::{future::BoxFuture, FutureExt, TryStreamExt};
-use globset::{Glob, GlobSetBuilder};
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use lancedb::index::Index as LanceIndex;
 use lancedb::query::{ExecutableQuery, QueryBase};
 use omega_todo::{TodoItem, TodoManager};
@@ -29,7 +29,11 @@ const TODO_STORE_PATH: &str = ".omega/store/todos.jsonl";
 const TANTIVY_DIR: &str = ".omega/store/tantivy";
 const LANCE_DIR: &str = ".omega/store/lance";
 const INDEX_COMMIT_LOG_PATH: &str = ".omega/store/index-commit-log.json";
+const STORE_VERSION_PATH: &str = ".omega/store/store-version.json";
+const STORE_HISTORY_DIR: &str = ".omega/store/history";
+const STORE_STAGING_DIR: &str = ".omega/store/staging";
 const DOC_RULES_PATH: &str = ".omega/doc-rules.toml";
+const STOREIGNORE_PATH: &str = ".omega/.storeignore";
 const DEFAULT_MAX_RESULTS: usize = 10;
 const SEARCH_PREVIEW_LIMIT: usize = 200;
 const CHUNK_TARGET_CHARS: usize = 2_000;
@@ -40,6 +44,7 @@ const LANCE_FILES_TABLE: &str = "files";
 const LANCE_CHUNKS_TABLE: &str = "chunks";
 const LANCE_TURNS_TABLE: &str = "turns";
 const HYBRID_RRF_K: f32 = 60.0;
+const STORE_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -88,6 +93,8 @@ pub struct FileRecord {
     pub chunk_count: u32,
     pub total_tokens: u32,
     pub tags: Vec<String>,
+    #[serde(default = "default_vector_index_eligible")]
+    pub vector_index_eligible: bool,
     pub last_indexed_at: u64,
 }
 
@@ -107,8 +114,26 @@ pub struct ScanResult {
     pub files_indexed: usize,
     pub chunks_indexed: usize,
     pub deleted_marked: usize,
+    #[serde(default)]
+    pub vector_ignored_files: usize,
+    #[serde(default)]
+    pub vector_ignored_paths: Vec<String>,
+    #[serde(default)]
+    pub indexed_paths: Vec<String>,
+    #[serde(default)]
+    pub embedded_paths: Vec<String>,
     pub manifest_path: String,
     pub keyword_index_path: String,
+    #[serde(default)]
+    pub active_version: Option<DocumentStoreVersion>,
+    #[serde(default)]
+    pub pending_version: Option<DocumentStoreVersion>,
+    #[serde(default)]
+    pub archived_version_path: Option<String>,
+}
+
+fn default_vector_index_eligible() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -275,6 +300,55 @@ pub enum HealthScore {
     Critical,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DocumentHealthStatus {
+    #[default]
+    NeverChecked,
+    Good,
+    NeedsAttention,
+    Critical,
+    Failed,
+}
+
+impl DocumentHealthStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::NeverChecked => "never_checked",
+            Self::Good => "good",
+            Self::NeedsAttention => "needs_attention",
+            Self::Critical => "critical",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct DocumentStoreVersion {
+    pub version_id: String,
+    pub schema_version: u32,
+    pub manifest_revision: u64,
+    pub tantivy_revision: u64,
+    pub lance_revision: Option<u64>,
+    pub built_at: u64,
+    pub promoted_at: Option<u64>,
+    pub build_trigger: String,
+    pub total_files_indexed: u64,
+    pub total_chunks: u64,
+    pub total_embeddings: u64,
+    pub deleted_marked: u64,
+    pub manifest_hash: String,
+    pub storage_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+struct StoreVersionLedger {
+    active_version: Option<DocumentStoreVersion>,
+    pending_version: Option<DocumentStoreVersion>,
+    last_error: Option<String>,
+    archived_version_path: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DocumentHealthReport {
     pub total_docs: usize,
@@ -379,8 +453,14 @@ impl OmegaDocument {
         let now = unix_timestamp_now();
         let previous_records = self.file_store.load_records_map()?;
         let previous_commit = self.file_store.load_commit_log()?;
+        let previous_ledger = self.file_store.load_version_ledger()?;
+        let storeignore = StoreIgnoreRules::load(&self.root)?;
         let mut active_records = BTreeMap::new();
         let mut deleted_marked = 0usize;
+        let mut vector_ignored_files = 0usize;
+        let mut vector_ignored_paths = Vec::new();
+        let mut indexed_paths = Vec::new();
+        let mut embedded_paths = Vec::new();
         let mut chunks = Vec::new();
 
         for entry in WalkDir::new(&self.root)
@@ -394,6 +474,13 @@ impl OmegaDocument {
 
             let absolute_path = entry.path();
             let relative_path = normalize_relative_path(&self.root, absolute_path)?;
+            if storeignore.is_match(&relative_path) {
+                vector_ignored_files += 1;
+                if vector_ignored_paths.len() < 10 {
+                    vector_ignored_paths.push(relative_path);
+                }
+                continue;
+            }
             let metadata = entry.metadata().with_context(|| {
                 format!("failed to read metadata for {}", absolute_path.display())
             })?;
@@ -411,6 +498,12 @@ impl OmegaDocument {
                 let file_tokens = estimate_tokens(text.as_ref());
                 (file_chunks.len() as u32, file_tokens, file_chunks)
             };
+            if indexed_paths.len() < 10 {
+                indexed_paths.push(relative_path.clone());
+            }
+            if chunk_count > 0 && embedded_paths.len() < 10 {
+                embedded_paths.push(relative_path.clone());
+            }
             chunks.extend(new_chunks);
 
             let existing_tags = previous_records
@@ -433,6 +526,7 @@ impl OmegaDocument {
                     chunk_count,
                     total_tokens,
                     tags: existing_tags,
+                    vector_index_eligible: true,
                     last_indexed_at: now,
                 },
             );
@@ -440,6 +534,9 @@ impl OmegaDocument {
 
         for (path, previous) in previous_records {
             if active_records.contains_key(&path) {
+                continue;
+            }
+            if storeignore.is_match(&path) {
                 continue;
             }
             deleted_marked += 1;
@@ -462,45 +559,115 @@ impl OmegaDocument {
         } else {
             previous_commit.current_manifest_revision.max(1)
         };
-        self.file_store.write_records(&records)?;
-        if manifest_changed
+        let build_required = manifest_changed
             || !self.keyword_index.index_dir.exists()
             || previous_commit.tantivy_revision != revision
-        {
-            self.keyword_index.rebuild(&records, &chunks)?;
-        }
-
-        let lance_revision = if manifest_changed
             || !self.vector_index.db_dir.exists()
-            || previous_commit.lance_revision != Some(revision)
-        {
-            self.vector_index
-                .rebuild(&records, &chunks, revision)
-                .map(|_| Some(revision))
-                .or_else(|_| {
-                    if !manifest_changed && previous_commit.lance_revision == Some(revision) {
-                        Ok::<Option<u64>, anyhow::Error>(previous_commit.lance_revision)
-                    } else {
-                        Ok::<Option<u64>, anyhow::Error>(previous_commit.lance_revision)
+            || previous_commit.lance_revision != Some(revision);
+        let mut active_version = previous_ledger.active_version.clone();
+        let mut pending_version = previous_ledger.pending_version.clone();
+        let mut archived_version_path = None;
+
+        if build_required {
+            let version_id = format!("store-v{:010}-{now}", revision);
+            let staged = self.file_store.staged_layout(&version_id);
+            remove_path_if_exists(&staged.root)?;
+            fs::create_dir_all(&staged.root)
+                .with_context(|| format!("failed to create {}", staged.root.display()))?;
+            FileStore::write_records_to(&staged.manifest_path, &records)?;
+            KeywordIndex::rebuild_at(&staged.tantivy_dir, &records, &chunks)?;
+
+            let staged_storage_path = relative_store_path(&self.root, &staged.root)?;
+            let mut staged_version = build_store_version(
+                &version_id,
+                revision,
+                Some(revision),
+                now,
+                &manifest_hash,
+                &staged_storage_path,
+                &records,
+                chunks.len(),
+                deleted_marked,
+            );
+
+            match VectorIndex::rebuild_at(&staged.lance_dir, &records, &chunks, revision) {
+                Ok(()) => {
+                    let commit_log = IndexCommitLog {
+                        current_manifest_revision: revision,
+                        tantivy_revision: revision,
+                        lance_revision: Some(revision),
+                        manifest_hash: manifest_hash.clone(),
+                        committed_at: now,
+                    };
+                    FileStore::write_commit_log_to(&staged.commit_log_path, &commit_log)?;
+                    if let Some(previous_active) = previous_ledger.active_version.as_ref() {
+                        archived_version_path = self.file_store.archive_active_version(previous_active)?;
                     }
-                })?
-        } else {
-            previous_commit.lance_revision
-        };
-        self.file_store.write_commit_log(&IndexCommitLog {
-            current_manifest_revision: revision,
-            tantivy_revision: revision,
-            lance_revision,
-            manifest_hash,
-            committed_at: now,
-        })?;
+                    if let Some(previous_pending) = previous_ledger.pending_version.as_ref() {
+                        remove_path_if_exists(&self.root.join(&previous_pending.storage_path))?;
+                    }
+                    staged_version.promoted_at = Some(now);
+                    staged_version.storage_path = STORE_DIR.to_string();
+                    active_version = Some(staged_version.clone());
+                    pending_version = None;
+                    self.file_store.replace_active_with_stage(
+                        &staged,
+                        &commit_log,
+                        &StoreVersionLedger {
+                            active_version: Some(staged_version),
+                            pending_version: None,
+                            last_error: None,
+                            archived_version_path: archived_version_path.clone(),
+                        },
+                    )?;
+                }
+                Err(error) => {
+                    let error_text = format!("{error:#}");
+                    pending_version = Some(staged_version);
+                    self.file_store.write_version_ledger(&StoreVersionLedger {
+                        active_version: previous_ledger.active_version.clone(),
+                        pending_version: pending_version.clone(),
+                        last_error: Some(error_text),
+                        archived_version_path: previous_ledger.archived_version_path.clone(),
+                    })?;
+                    active_version = previous_ledger.active_version.clone();
+                }
+            }
+        } else if active_version.is_none() && previous_commit.current_manifest_revision > 0 {
+            let version_id = format!("store-v{:010}-legacy", previous_commit.current_manifest_revision);
+            let promoted = build_store_version(
+                &version_id,
+                previous_commit.current_manifest_revision,
+                previous_commit.lance_revision,
+                previous_commit.committed_at,
+                &previous_commit.manifest_hash,
+                STORE_DIR,
+                &records,
+                chunks.len(),
+                deleted_marked,
+            );
+            active_version = Some(promoted.clone());
+            self.file_store.write_version_ledger(&StoreVersionLedger {
+                active_version: Some(promoted),
+                pending_version: None,
+                last_error: None,
+                archived_version_path: None,
+            })?;
+        }
 
         Ok(ScanResult {
             files_indexed: records.len(),
             chunks_indexed: chunks.len(),
             deleted_marked,
+            vector_ignored_files,
+            vector_ignored_paths,
+            indexed_paths,
+            embedded_paths,
             manifest_path: FILE_MANIFEST_PATH.to_string(),
             keyword_index_path: TANTIVY_DIR.to_string(),
+            active_version,
+            pending_version,
+            archived_version_path,
         })
     }
 
@@ -870,6 +1037,7 @@ impl OmegaDocument {
                             chunk_count: 1,
                             total_tokens: estimate_tokens(content),
                             tags: Vec::new(),
+                            vector_index_eligible: true,
                             last_indexed_at: unix_timestamp_now(),
                         })],
                     warnings: Vec::new(),
@@ -1060,6 +1228,18 @@ pub struct FileStore {
     root: PathBuf,
     manifest_path: PathBuf,
     commit_log_path: PathBuf,
+    version_ledger_path: PathBuf,
+    history_dir: PathBuf,
+    staging_dir: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+struct StoreLayout {
+    root: PathBuf,
+    manifest_path: PathBuf,
+    commit_log_path: PathBuf,
+    tantivy_dir: PathBuf,
+    lance_dir: PathBuf,
 }
 
 impl FileStore {
@@ -1067,6 +1247,9 @@ impl FileStore {
         Self {
             manifest_path: root.join(FILE_MANIFEST_PATH),
             commit_log_path: root.join(INDEX_COMMIT_LOG_PATH),
+            version_ledger_path: root.join(STORE_VERSION_PATH),
+            history_dir: root.join(STORE_HISTORY_DIR),
+            staging_dir: root.join(STORE_STAGING_DIR),
             root,
         }
     }
@@ -1074,6 +1257,46 @@ impl FileStore {
     fn ensure_store_dirs(&self) -> Result<()> {
         fs::create_dir_all(self.root.join(STORE_DIR))
             .with_context(|| format!("failed to create {}", self.root.join(STORE_DIR).display()))
+            .and_then(|_| {
+                fs::create_dir_all(&self.history_dir)
+                    .with_context(|| format!("failed to create {}", self.history_dir.display()))
+            })
+            .and_then(|_| {
+                fs::create_dir_all(&self.staging_dir)
+                    .with_context(|| format!("failed to create {}", self.staging_dir.display()))
+            })
+    }
+
+    fn active_layout(&self) -> StoreLayout {
+        StoreLayout {
+            root: self.root.join(STORE_DIR),
+            manifest_path: self.manifest_path.clone(),
+            commit_log_path: self.commit_log_path.clone(),
+            tantivy_dir: self.root.join(TANTIVY_DIR),
+            lance_dir: self.root.join(LANCE_DIR),
+        }
+    }
+
+    fn staged_layout(&self, version_id: &str) -> StoreLayout {
+        let root = self.staging_dir.join(version_id);
+        StoreLayout {
+            manifest_path: root.join("files.jsonl"),
+            commit_log_path: root.join("index-commit-log.json"),
+            tantivy_dir: root.join("tantivy"),
+            lance_dir: root.join("lance"),
+            root,
+        }
+    }
+
+    fn history_layout(&self, version_id: &str) -> StoreLayout {
+        let root = self.history_dir.join(version_id);
+        StoreLayout {
+            manifest_path: root.join("files.jsonl"),
+            commit_log_path: root.join("index-commit-log.json"),
+            tantivy_dir: root.join("tantivy"),
+            lance_dir: root.join("lance"),
+            root,
+        }
     }
 
     fn load_records(&self) -> Result<Vec<FileRecord>> {
@@ -1099,13 +1322,21 @@ impl FileStore {
 
     fn write_records(&self, records: &[FileRecord]) -> Result<()> {
         self.ensure_store_dirs()?;
+        Self::write_records_to(&self.manifest_path, records)
+    }
+
+    fn write_records_to(path: &Path, records: &[FileRecord]) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
         let payload = records
             .iter()
             .map(serde_json::to_string)
             .collect::<std::result::Result<Vec<_>, _>>()?
             .join("\n");
-        fs::write(&self.manifest_path, format!("{payload}\n"))
-            .with_context(|| format!("failed to write manifest {}", self.manifest_path.display()))
+        fs::write(path, format!("{payload}\n"))
+            .with_context(|| format!("failed to write manifest {}", path.display()))
     }
 
     fn load_commit_log(&self) -> Result<IndexCommitLog> {
@@ -1123,13 +1354,110 @@ impl FileStore {
 
     fn write_commit_log(&self, log: &IndexCommitLog) -> Result<()> {
         self.ensure_store_dirs()?;
+        Self::write_commit_log_to(&self.commit_log_path, log)
+    }
+
+    fn write_commit_log_to(path: &Path, log: &IndexCommitLog) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
         let payload = serde_json::to_string_pretty(log)?;
-        fs::write(&self.commit_log_path, payload).with_context(|| {
+        fs::write(path, payload)
+            .with_context(|| format!("failed to write index commit log {}", path.display()))
+    }
+
+    fn load_version_ledger(&self) -> Result<StoreVersionLedger> {
+        if !self.version_ledger_path.exists() {
+            return Ok(StoreVersionLedger::default());
+        }
+        let contents = fs::read_to_string(&self.version_ledger_path).with_context(|| {
             format!(
-                "failed to write index commit log {}",
-                self.commit_log_path.display()
+                "failed to read store version ledger {}",
+                self.version_ledger_path.display()
+            )
+        })?;
+        serde_json::from_str(&contents).context("invalid store version ledger")
+    }
+
+    fn write_version_ledger(&self, ledger: &StoreVersionLedger) -> Result<()> {
+        self.ensure_store_dirs()?;
+        let payload = serde_json::to_string_pretty(ledger)?;
+        fs::write(&self.version_ledger_path, payload).with_context(|| {
+            format!(
+                "failed to write store version ledger {}",
+                self.version_ledger_path.display()
             )
         })
+    }
+
+    fn archive_active_version(&self, version: &DocumentStoreVersion) -> Result<Option<String>> {
+        let active = self.active_layout();
+        if !active.manifest_path.exists()
+            && !active.commit_log_path.exists()
+            && !active.tantivy_dir.exists()
+            && !active.lance_dir.exists()
+        {
+            return Ok(None);
+        }
+
+        let archived = self.history_layout(&version.version_id);
+        if archived.root.exists() {
+            fs::remove_dir_all(&archived.root).with_context(|| {
+                format!("failed to replace archived store {}", archived.root.display())
+            })?;
+        }
+        fs::create_dir_all(&archived.root)
+            .with_context(|| format!("failed to create {}", archived.root.display()))?;
+        copy_path(&active.manifest_path, &archived.manifest_path)?;
+        copy_path(&active.commit_log_path, &archived.commit_log_path)?;
+        copy_path(&active.tantivy_dir, &archived.tantivy_dir)?;
+        copy_path(&active.lance_dir, &archived.lance_dir)?;
+        Ok(Some(relative_store_path(&self.root, &archived.root)?))
+    }
+
+    fn replace_active_with_stage(
+        &self,
+        staged: &StoreLayout,
+        commit_log: &IndexCommitLog,
+        ledger: &StoreVersionLedger,
+    ) -> Result<()> {
+        let active = self.active_layout();
+        remove_path_if_exists(&active.manifest_path)?;
+        remove_path_if_exists(&active.commit_log_path)?;
+        remove_path_if_exists(&active.tantivy_dir)?;
+        remove_path_if_exists(&active.lance_dir)?;
+
+        if let Some(parent) = active.manifest_path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        fs::rename(&staged.manifest_path, &active.manifest_path).with_context(|| {
+            format!(
+                "failed to promote staged manifest {} -> {}",
+                staged.manifest_path.display(),
+                active.manifest_path.display()
+            )
+        })?;
+        fs::rename(&staged.tantivy_dir, &active.tantivy_dir).with_context(|| {
+            format!(
+                "failed to promote staged tantivy index {} -> {}",
+                staged.tantivy_dir.display(),
+                active.tantivy_dir.display()
+            )
+        })?;
+        fs::rename(&staged.lance_dir, &active.lance_dir).with_context(|| {
+            format!(
+                "failed to promote staged lance index {} -> {}",
+                staged.lance_dir.display(),
+                active.lance_dir.display()
+            )
+        })?;
+        Self::write_commit_log_to(&active.commit_log_path, commit_log)?;
+        self.write_version_ledger(ledger)?;
+        remove_path_if_exists(&staged.commit_log_path)?;
+        remove_path_if_exists(&staged.root)?;
+        Ok(())
     }
 }
 
@@ -1207,16 +1535,19 @@ impl KeywordIndex {
     }
 
     fn rebuild(&self, records: &[FileRecord], chunks: &[Chunk]) -> Result<()> {
-        if self.index_dir.exists() {
-            fs::remove_dir_all(&self.index_dir).with_context(|| {
-                format!("failed to clear index dir {}", self.index_dir.display())
-            })?;
+        Self::rebuild_at(&self.index_dir, records, chunks)
+    }
+
+    fn rebuild_at(index_dir: &Path, records: &[FileRecord], chunks: &[Chunk]) -> Result<()> {
+        if index_dir.exists() {
+            fs::remove_dir_all(index_dir)
+                .with_context(|| format!("failed to clear index dir {}", index_dir.display()))?;
         }
-        fs::create_dir_all(&self.index_dir)
-            .with_context(|| format!("failed to create index dir {}", self.index_dir.display()))?;
+        fs::create_dir_all(index_dir)
+            .with_context(|| format!("failed to create index dir {}", index_dir.display()))?;
         let schema = keyword_schema();
         let fields = KeywordFields::new(&schema)?;
-        let index = Index::create_in_dir(&self.index_dir, schema.clone())?;
+        let index = Index::create_in_dir(index_dir, schema.clone())?;
         let mut writer = index.writer(20_000_000)?;
 
         let records_by_path = records
@@ -1370,20 +1701,21 @@ impl VectorIndex {
     }
 
     fn rebuild(&self, records: &[FileRecord], chunks: &[Chunk], _revision: u64) -> Result<()> {
-        fs::create_dir_all(&self.db_dir).with_context(|| {
-            format!(
-                "failed to create vector index dir {}",
-                self.db_dir.display()
-            )
+        Self::rebuild_at(&self.db_dir, records, chunks, _revision)
+    }
+
+    fn rebuild_at(db_dir: &Path, records: &[FileRecord], chunks: &[Chunk], _revision: u64) -> Result<()> {
+        fs::create_dir_all(db_dir).with_context(|| {
+            format!("failed to create vector index dir {}", db_dir.display())
         })?;
-        let chunk_rows = build_lance_chunk_rows(chunks)?;
+        let chunk_rows = build_lance_chunk_rows(records, chunks)?;
         let file_rows = build_lance_file_rows(records, &chunk_rows);
         let file_batch = build_lance_file_batch(&file_rows)?;
         let chunk_batch = build_lance_chunk_batch(&chunk_rows)?;
         let files_schema = lance_file_schema();
         let chunks_schema = lance_chunk_schema();
         let turns_schema = lance_turn_schema();
-        let db_dir = self.db_dir.clone();
+        let db_dir = db_dir.to_path_buf();
 
         run_async_operation(move || {
             async move {
@@ -1490,6 +1822,9 @@ impl VectorIndex {
             let Some(record) = records_by_path.get(&hit.file_path) else {
                 continue;
             };
+            if !record.vector_index_eligible {
+                continue;
+            }
             if !matches_filters(record, &query.filters) {
                 continue;
             }
@@ -1547,16 +1882,26 @@ struct SemanticHit {
     content_preview: String,
 }
 
-fn build_lance_chunk_rows(chunks: &[Chunk]) -> Result<Vec<LanceChunkRow>> {
-    if chunks.is_empty() {
+fn build_lance_chunk_rows(records: &[FileRecord], chunks: &[Chunk]) -> Result<Vec<LanceChunkRow>> {
+    let eligible_paths = records
+        .iter()
+        .filter(|record| record.vector_index_eligible)
+        .filter(|record| !matches!(record.status, FileStatus::Deleted))
+        .map(|record| record.path.as_str())
+        .collect::<BTreeSet<_>>();
+    let eligible_chunks = chunks
+        .iter()
+        .filter(|chunk| eligible_paths.contains(chunk.file_path.as_str()))
+        .collect::<Vec<_>>();
+    if eligible_chunks.is_empty() {
         return Ok(Vec::new());
     }
-    let texts = chunks
+    let texts = eligible_chunks
         .iter()
         .map(|chunk| format!("{}\n{}", chunk.file_path, chunk.content_preview))
         .collect::<Vec<_>>();
     let embeddings = embed_passages(&texts)?;
-    Ok(chunks
+    Ok(eligible_chunks
         .iter()
         .zip(embeddings)
         .map(|(chunk, embedding)| LanceChunkRow {
@@ -1590,6 +1935,7 @@ fn build_lance_file_rows(
     records
         .iter()
         .filter(|record| !matches!(record.status, FileStatus::Deleted))
+        .filter(|record| record.vector_index_eligible)
         .map(|record| {
             let embedding = sums
                 .get(&record.path)
@@ -1825,8 +2171,11 @@ fn vector_array(embeddings: Vec<Vec<f32>>) -> ArrayRef {
 fn embed_passages(texts: &[String]) -> Result<Vec<Vec<f32>>> {
     match embedding_backend_kind() {
         EmbeddingBackendKind::FastEmbed => {
-            let mut model = TextEmbedding::try_new(InitOptions::new(EmbeddingModel::AllMiniLML6V2))
-                .context("failed to initialize fastembed model")?;
+            let mut model = TextEmbedding::try_new(
+                InitOptions::new(EmbeddingModel::AllMiniLML6V2)
+                    .with_show_download_progress(false),
+            )
+            .context("failed to initialize fastembed model")?;
             let embeddings = model
                 .embed(
                     texts
@@ -1848,8 +2197,11 @@ fn embed_passages(texts: &[String]) -> Result<Vec<Vec<f32>>> {
 fn embed_query(text: &str) -> Result<Vec<f32>> {
     match embedding_backend_kind() {
         EmbeddingBackendKind::FastEmbed => {
-            let mut model = TextEmbedding::try_new(InitOptions::new(EmbeddingModel::AllMiniLML6V2))
-                .context("failed to initialize fastembed model")?;
+            let mut model = TextEmbedding::try_new(
+                InitOptions::new(EmbeddingModel::AllMiniLML6V2)
+                    .with_show_download_progress(false),
+            )
+            .context("failed to initialize fastembed model")?;
             let embeddings = model
                 .embed(vec![format!("query: {text}")], None)
                 .context("failed to generate query embedding")?;
@@ -2318,6 +2670,62 @@ fn glob_matches(pattern: &str, path: &str) -> bool {
     set.is_match(path)
 }
 
+struct StoreIgnoreRules {
+    matcher: Option<GlobSet>,
+}
+
+impl StoreIgnoreRules {
+    fn load(root: &Path) -> Result<Self> {
+        let path = root.join(STOREIGNORE_PATH);
+        if !path.exists() {
+            return Ok(Self { matcher: None });
+        }
+
+        let contents = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read storeignore file {}", path.display()))?;
+        let mut builder = GlobSetBuilder::new();
+        let mut pattern_count = 0usize;
+
+        for (index, line) in contents.lines().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            let pattern = normalize_storeignore_pattern(trimmed);
+            let glob = Glob::new(&pattern).with_context(|| {
+                format!(
+                    "invalid .storeignore pattern at {}:{}",
+                    path.display(),
+                    index + 1
+                )
+            })?;
+            builder.add(glob);
+            pattern_count += 1;
+        }
+
+        let matcher = if pattern_count == 0 {
+            None
+        } else {
+            Some(builder.build().context("failed to compile .storeignore rules")?)
+        };
+
+        Ok(Self { matcher })
+    }
+
+    fn is_match(&self, path: &str) -> bool {
+        self.matcher.as_ref().is_some_and(|matcher| matcher.is_match(path))
+    }
+}
+
+fn normalize_storeignore_pattern(pattern: &str) -> String {
+    let normalized = pattern.trim().replace('\\', "/");
+    if let Some(prefix) = normalized.strip_suffix('/') {
+        format!("{prefix}/**")
+    } else {
+        normalized
+    }
+}
+
 fn matches_readme_patterns(patterns: &[String], path: &str) -> bool {
     if patterns.is_empty() {
         return false;
@@ -2422,6 +2830,60 @@ fn normalize_link_target(source_path: &str, target: &str) -> String {
     normalize_path_string(&base.join(target_path))
 }
 
+fn copy_path(source: &Path, destination: &Path) -> Result<()> {
+    if !source.exists() {
+        return Ok(());
+    }
+    if source.is_dir() {
+        copy_dir_recursive(source, destination)
+    } else {
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        fs::copy(source, destination).with_context(|| {
+            format!(
+                "failed to copy {} -> {}",
+                source.display(),
+                destination.display()
+            )
+        })?;
+        Ok(())
+    }
+}
+
+fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<()> {
+    fs::create_dir_all(destination)
+        .with_context(|| format!("failed to create {}", destination.display()))?;
+    for entry in fs::read_dir(source)
+        .with_context(|| format!("failed to read {}", source.display()))?
+    {
+        let entry = entry.with_context(|| format!("failed to read {}", source.display()))?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        copy_path(&source_path, &destination_path)?;
+    }
+    Ok(())
+}
+
+fn remove_path_if_exists(path: &Path) -> Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    if path.is_dir() {
+        fs::remove_dir_all(path)
+            .with_context(|| format!("failed to remove {}", path.display()))?;
+    } else {
+        fs::remove_file(path)
+            .with_context(|| format!("failed to remove {}", path.display()))?;
+    }
+    Ok(())
+}
+
+fn relative_store_path(root: &Path, path: &Path) -> Result<String> {
+    normalize_relative_path(root, path)
+}
+
 fn normalize_path_string(path: &Path) -> String {
     let mut parts = Vec::new();
     for component in path.components() {
@@ -2469,6 +2931,35 @@ fn manifest_hash_for_records(records: &[FileRecord]) -> String {
         hasher.update(&record.size_bytes.to_le_bytes());
     }
     hasher.finalize().to_hex().to_string()
+}
+
+fn build_store_version(
+    version_id: &str,
+    manifest_revision: u64,
+    lance_revision: Option<u64>,
+    built_at: u64,
+    manifest_hash: &str,
+    storage_path: &str,
+    records: &[FileRecord],
+    chunk_count: usize,
+    deleted_marked: usize,
+) -> DocumentStoreVersion {
+    DocumentStoreVersion {
+        version_id: version_id.to_string(),
+        schema_version: STORE_SCHEMA_VERSION,
+        manifest_revision,
+        tantivy_revision: manifest_revision,
+        lance_revision,
+        built_at,
+        promoted_at: None,
+        build_trigger: "scan_workspace".to_string(),
+        total_files_indexed: records.len() as u64,
+        total_chunks: chunk_count as u64,
+        total_embeddings: chunk_count as u64,
+        deleted_marked: deleted_marked as u64,
+        manifest_hash: manifest_hash.to_string(),
+        storage_path: storage_path.to_string(),
+    }
 }
 
 fn apply_sort(results: &mut [SearchResult], sort: SortField) {
@@ -2630,6 +3121,11 @@ mod tests {
         .unwrap();
     }
 
+    fn write_storeignore(root: &std::path::Path, rules: &str) {
+        std::fs::create_dir_all(root.join(".omega")).unwrap();
+        std::fs::write(root.join(".omega/.storeignore"), rules).unwrap();
+    }
+
     #[test]
     fn scan_workspace_writes_manifest_and_keyword_search_finds_matches() {
         let root = temp_root("scan-search");
@@ -2654,6 +3150,60 @@ mod tests {
         assert!(results
             .iter()
             .any(|result| result.path == "docs/specs/example.md"));
+    }
+
+    #[test]
+    fn scan_workspace_writes_active_store_version_metadata() {
+        let root = temp_root("store-version-active");
+        seed_repo(&root);
+        let documents = OmegaDocument::new(root.clone());
+
+        let scan = documents.scan_workspace().unwrap();
+        let ledger = documents.file_store.load_version_ledger().unwrap();
+        let active = ledger.active_version.expect("active version should exist");
+
+        assert!(root.join(".omega/store/store-version.json").exists());
+        assert_eq!(scan.active_version.as_ref(), Some(&active));
+        assert!(active.version_id.starts_with("store-v"));
+        assert_eq!(active.storage_path, ".omega/store");
+        assert!(active.promoted_at.is_some());
+        assert!(active.manifest_revision >= 1);
+    }
+
+    #[test]
+    fn scan_workspace_archives_previous_active_version_before_promotion() {
+        let root = temp_root("store-version-history");
+        seed_repo(&root);
+        let documents = OmegaDocument::new(root.clone());
+
+        let first_scan = documents.scan_workspace().unwrap();
+        let first_version = first_scan
+            .active_version
+            .clone()
+            .expect("first scan should promote an active version");
+
+        std::fs::write(
+            root.join("docs/specs/example.md"),
+            "---\nstatus: draft\n---\n\n# Example\n\nkeyword anchor\n\nsecond revision\n",
+        )
+        .unwrap();
+
+        let second_scan = documents.scan_workspace().unwrap();
+        let second_version = second_scan
+            .active_version
+            .clone()
+            .expect("second scan should promote an active version");
+
+        assert_ne!(first_version.version_id, second_version.version_id);
+        let archived_path = second_scan
+            .archived_version_path
+            .expect("previous active version should be archived");
+        let archived_root = root.join(&archived_path);
+        assert!(archived_root.exists());
+        assert!(archived_root.join("files.jsonl").exists());
+        assert!(archived_root.join("index-commit-log.json").exists());
+        assert!(archived_root.join("tantivy").exists());
+        assert!(archived_root.join("lance").exists());
     }
 
     #[test]
@@ -2706,6 +3256,149 @@ mod tests {
         assert!(results
             .iter()
             .any(|result| result.path == "docs/specs/example.md"));
+    }
+
+    #[test]
+    fn scan_workspace_excludes_storeignored_files_from_manifest() {
+        let root = temp_root("storeignore-scan");
+        seed_repo(&root);
+        std::fs::write(
+            root.join("docs/specs/ignored.md"),
+            "---\nstatus: draft\n---\n\n# Ignored\n\nignored vector anchor\n",
+        )
+        .unwrap();
+        write_storeignore(&root, "docs/specs/ignored.md\n");
+        let documents = OmegaDocument::new(root);
+
+        let scan = documents.scan_workspace().unwrap();
+        let records = documents.file_store.load_records_map().unwrap();
+
+        assert_eq!(scan.vector_ignored_files, 1);
+        assert_eq!(scan.vector_ignored_paths, vec!["docs/specs/ignored.md".to_string()]);
+        assert!(!records.contains_key("docs/specs/ignored.md"));
+        assert!(records["docs/specs/example.md"].vector_index_eligible);
+    }
+
+    #[test]
+    fn scan_workspace_applies_storeignore_to_dot_directories_and_root_files() {
+        let root = temp_root("storeignore-dot-paths");
+        seed_repo(&root);
+        std::fs::create_dir_all(root.join(".claude/skills/demo")).unwrap();
+        std::fs::create_dir_all(root.join(".github/workflows")).unwrap();
+        std::fs::create_dir_all(root.join(".omega/prompts")).unwrap();
+        std::fs::write(root.join(".claude/skills/demo/SKILL.md"), "demo skill").unwrap();
+        std::fs::write(root.join(".github/workflows/ci.yml"), "name: ci\n").unwrap();
+        std::fs::write(root.join("Cargo.lock"), "# lock\n").unwrap();
+        std::fs::write(root.join(".omega/prompts/cache.txt"), "cache\n").unwrap();
+        write_storeignore(&root, ".claude/\n.github/\nCargo.lock\n.omega/**\n");
+        let documents = OmegaDocument::new(root);
+
+        let scan = documents.scan_workspace().unwrap();
+        let records = documents.file_store.load_records_map().unwrap();
+
+        assert_eq!(scan.vector_ignored_files, 5);
+        assert!(scan
+            .vector_ignored_paths
+            .contains(&".claude/skills/demo/SKILL.md".to_string()));
+        assert!(scan
+            .vector_ignored_paths
+            .contains(&".github/workflows/ci.yml".to_string()));
+        assert!(scan.vector_ignored_paths.contains(&"Cargo.lock".to_string()));
+        assert!(scan
+            .vector_ignored_paths
+            .contains(&".omega/prompts/cache.txt".to_string()));
+        assert!(scan
+            .vector_ignored_paths
+            .contains(&".omega/.storeignore".to_string()));
+        assert!(!records.contains_key(".claude/skills/demo/SKILL.md"));
+        assert!(!records.contains_key(".github/workflows/ci.yml"));
+        assert!(!records.contains_key("Cargo.lock"));
+        assert!(!records.contains_key(".omega/prompts/cache.txt"));
+        assert!(!records.contains_key(".omega/.storeignore"));
+    }
+
+    #[test]
+    fn keyword_search_skips_storeignored_files() {
+        let root = temp_root("storeignore-keyword");
+        seed_repo(&root);
+        std::fs::write(
+            root.join("docs/specs/ignored.md"),
+            "---\nstatus: draft\n---\n\n# Ignored\n\nignored vector anchor\n",
+        )
+        .unwrap();
+        write_storeignore(&root, "docs/specs/ignored.md\n");
+        let documents = OmegaDocument::new(root);
+
+        documents.scan_workspace().unwrap();
+        let results = documents
+            .search(SearchQuery {
+                text: Some("ignored vector anchor".to_string()),
+                mode: SearchMode::Keyword,
+                filters: Vec::new(),
+                sort: None,
+                max_results: 5,
+            })
+            .unwrap();
+
+        assert!(results
+            .iter()
+            .all(|result| result.path != "docs/specs/ignored.md"));
+    }
+
+    #[test]
+    fn semantic_search_skips_storeignored_files() {
+        let root = temp_root("storeignore-semantic");
+        seed_repo(&root);
+        std::fs::write(
+            root.join("docs/specs/ignored.md"),
+            "---\nstatus: draft\n---\n\n# Ignored\n\nignored vector anchor\n",
+        )
+        .unwrap();
+        write_storeignore(&root, "docs/specs/ignored.md\n");
+        let documents = OmegaDocument::new(root);
+
+        documents.scan_workspace().unwrap();
+        let results = documents
+            .search(SearchQuery {
+                text: Some("ignored vector anchor".to_string()),
+                mode: SearchMode::Semantic,
+                filters: Vec::new(),
+                sort: None,
+                max_results: 5,
+            })
+            .unwrap();
+
+        assert!(results
+            .iter()
+            .all(|result| result.path != "docs/specs/ignored.md"));
+    }
+
+    #[test]
+    fn hybrid_search_skips_storeignored_files() {
+        let root = temp_root("storeignore-hybrid");
+        seed_repo(&root);
+        std::fs::write(
+            root.join("docs/specs/ignored.md"),
+            "---\nstatus: draft\n---\n\n# Ignored\n\nignored vector anchor\n",
+        )
+        .unwrap();
+        write_storeignore(&root, "docs/specs/ignored.md\n");
+        let documents = OmegaDocument::new(root);
+
+        documents.scan_workspace().unwrap();
+        let results = documents
+            .search(SearchQuery {
+                text: Some("ignored vector anchor".to_string()),
+                mode: SearchMode::Hybrid,
+                filters: Vec::new(),
+                sort: None,
+                max_results: 5,
+            })
+            .unwrap();
+
+        assert!(results
+            .iter()
+            .all(|result| result.path != "docs/specs/ignored.md"));
     }
 
     #[test]

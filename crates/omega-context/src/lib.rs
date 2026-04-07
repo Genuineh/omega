@@ -16,10 +16,11 @@ use omega_client::{
 #[cfg(feature = "document-backend")]
 use omega_document::OmegaDocument;
 pub use document_model::{
-    ArchiveTrigger, DocType, DocumentHealthReport, DocumentMutationMode, DocumentOp,
-    DocumentOpResult, FileRecord, FileStatus, FileType, HealthScore, MetadataUpdate,
-    ScanResult, SearchFilter, SearchMode, SearchQuery, SearchResult, SortField, TodoOp,
-    TodoOpResult,
+    ArchiveTrigger, DocType, DocumentActivitySummary, DocumentHealthReport,
+    DocumentHealthStatus, DocumentMutationMode, DocumentOp, DocumentOperatorUsage,
+    DocumentOpResult, DocumentStoreVersion, FileRecord, FileStatus, FileType, HealthScore,
+    MetadataUpdate, ScanResult, SearchFilter, SearchMode, SearchQuery, SearchResult,
+    SortField, TodoOp, TodoOpResult,
 };
 pub use omega_memory::StepSummary as ContextStepSummary;
 use omega_memory::{rank_summary_candidates, should_trigger_context_compaction, StepContextHint};
@@ -215,7 +216,13 @@ pub struct ContextDocumentDiagnostics {
     pub total_embeddings: u64,
     pub index_staleness_seconds: u64,
     pub governance_health: Option<HealthScore>,
+    pub health_status: DocumentHealthStatus,
     pub last_health_check: Option<u64>,
+    pub active_version: Option<DocumentStoreVersion>,
+    pub pending_version: Option<DocumentStoreVersion>,
+    pub last_promotion_error: Option<String>,
+    pub recent_activity: Vec<DocumentActivitySummary>,
+    pub operator_usage: Vec<DocumentOperatorUsage>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -235,6 +242,7 @@ pub enum SupervisionReadiness {
     Idle,
     Ready,
     Degraded,
+    Failed,
 }
 
 impl SupervisionReadiness {
@@ -244,6 +252,7 @@ impl SupervisionReadiness {
             Self::Idle => "idle",
             Self::Ready => "ready",
             Self::Degraded => "degraded",
+            Self::Failed => "failed",
         }
     }
 }
@@ -258,7 +267,13 @@ pub struct ContextSupervisionSnapshot {
 pub struct DocumentSupervisionSnapshot {
     pub enabled: bool,
     pub readiness: SupervisionReadiness,
+    pub health_status: DocumentHealthStatus,
     pub totals: DocumentSupervisionTotals,
+    pub active_version: Option<DocumentStoreVersion>,
+    pub pending_version: Option<DocumentStoreVersion>,
+    pub last_promotion_error: Option<String>,
+    pub recent_activity: Vec<DocumentActivitySummary>,
+    pub operator_usage: Vec<DocumentOperatorUsage>,
     pub current_hits: Option<DocumentHitSummary>,
 }
 
@@ -269,6 +284,7 @@ pub struct DocumentSupervisionTotals {
     pub total_embeddings: u64,
     pub index_staleness_seconds: u64,
     pub governance_health: Option<HealthScore>,
+    pub last_health_check: Option<u64>,
     pub lance_db_size_bytes: u64,
     pub tantivy_index_size_bytes: u64,
 }
@@ -368,6 +384,7 @@ pub trait ContextDiagnosticsProvider: Send + Sync {
     );
     fn record_document_scan(&self, scan: &ScanResult);
     fn record_document_health(&self, health: &DocumentHealthReport);
+    fn record_document_usage(&self, operator: &str, source: &str, detail: &str);
 }
 
 pub struct OmegaContextFacade {
@@ -580,6 +597,10 @@ impl KnowledgeQueryService for LocalKnowledgeQueryService {
                 files_indexed: 0,
                 chunks_indexed: 0,
                 deleted_marked: 0,
+                vector_ignored_files: 0,
+                vector_ignored_paths: Vec::new(),
+                indexed_paths: Vec::new(),
+                embedded_paths: Vec::new(),
                 manifest_path: self
                     .root
                     .join(".omega/store/files.jsonl")
@@ -590,6 +611,9 @@ impl KnowledgeQueryService for LocalKnowledgeQueryService {
                     .join(".omega/store/tantivy")
                     .display()
                     .to_string(),
+                active_version: None,
+                pending_version: None,
+                archived_version_path: None,
             })
         }
     }
@@ -806,18 +830,110 @@ impl ContextDiagnosticsProvider for LocalDiagnostics {
         state.document.total_files_indexed = scan.files_indexed as u64;
         state.document.total_chunks = scan.chunks_indexed as u64;
         state.document.total_embeddings = scan.chunks_indexed as u64;
+        state.document.active_version = scan.active_version.clone();
+        state.document.pending_version = scan.pending_version.clone();
+        state.document.last_promotion_error = scan.pending_version.as_ref().map(|version| {
+            format!(
+                "pending promotion for {} remains staged at {}",
+                version.version_id, version.storage_path
+            )
+        });
+        push_document_activity(
+            &mut state.document.recent_activity,
+            "scan workspace",
+            format!(
+                "files={} chunks={} embeddings={}{}",
+                scan.files_indexed,
+                scan.chunks_indexed,
+                scan.chunks_indexed,
+                scan.archived_version_path
+                    .as_ref()
+                    .map(|path| format!(" archived={path}"))
+                    .unwrap_or_default()
+            ),
+        );
         state.last_scan_at = Some(current_unix_timestamp());
     }
 
     fn record_document_health(&self, health: &DocumentHealthReport) {
         let mut state = self.state.lock().unwrap();
         state.document.governance_health = Some(health.overall_health);
+        state.document.health_status = match health.overall_health {
+            HealthScore::Good => DocumentHealthStatus::Good,
+            HealthScore::NeedsAttention => DocumentHealthStatus::NeedsAttention,
+            HealthScore::Critical => DocumentHealthStatus::Critical,
+        };
+        let health_status = state.document.health_status;
         state.document.last_health_check = Some(current_unix_timestamp());
         state.document.total_files_indexed = state
             .document
             .total_files_indexed
             .max(health.total_docs as u64);
+        push_document_activity(
+            &mut state.document.recent_activity,
+            "health check",
+            format!(
+                "score={} issues={}",
+                health_status.as_str(),
+                health.structure_violations.len()
+                    + health.naming_violations.len()
+                    + health.orphaned_docs.len()
+                    + health.broken_crossrefs.len()
+                    + health.stale_docs.len()
+                    + health.missing_frontmatter.len()
+            ),
+        );
     }
+
+    fn record_document_usage(&self, operator: &str, source: &str, detail: &str) {
+        let mut state = self.state.lock().unwrap();
+        let now = current_unix_timestamp();
+        if let Some(existing) = state
+            .document
+            .operator_usage
+            .iter_mut()
+            .find(|usage| usage.operator == operator && usage.source == source)
+        {
+            existing.count = existing.count.saturating_add(1);
+            existing.last_used_at = Some(now);
+        } else {
+            state.document.operator_usage.push(DocumentOperatorUsage {
+                operator: operator.to_string(),
+                source: source.to_string(),
+                count: 1,
+                last_used_at: Some(now),
+            });
+        }
+        state.document.operator_usage.sort_by(|left, right| {
+            right
+                .last_used_at
+                .cmp(&left.last_used_at)
+                .then_with(|| right.count.cmp(&left.count))
+                .then_with(|| left.operator.cmp(&right.operator))
+        });
+        state.document.operator_usage.truncate(6);
+        push_document_activity(
+            &mut state.document.recent_activity,
+            operator,
+            format!("source={source} {detail}"),
+        );
+    }
+}
+
+fn push_document_activity(
+    activity: &mut Vec<DocumentActivitySummary>,
+    label: impl Into<String>,
+    detail: impl Into<String>,
+) {
+    activity.insert(
+        0,
+        DocumentActivitySummary {
+            label: label.into(),
+            detail: detail.into(),
+            at: current_unix_timestamp(),
+        },
+    );
+    activity.truncate(6);
 }
 
 fn current_unix_timestamp() -> u64 {
@@ -937,6 +1053,9 @@ impl ToolHandler for SearchCodebaseHandler {
 
         let input: SearchCodebaseInput = serde_json::from_value(input)
             .map_err(|error| anyhow::anyhow!("invalid search_codebase input: {error}"))?;
+        self.facade
+            .diagnostics
+            .record_document_usage("search_codebase", "builtin_tool", &format!("query={}", input.query));
         let scan = self.facade.query.scan_workspace()?;
         self.facade.diagnostics.record_document_scan(&scan);
         let query = SearchQuery {
@@ -1028,6 +1147,11 @@ impl ToolHandler for ManageDocumentHandler {
         let input: ManageDocumentInput = serde_json::from_value(input)
             .map_err(|error| anyhow::anyhow!("invalid manage_document input: {error}"))?;
         let action = input.action.clone();
+        self.facade.diagnostics.record_document_usage(
+            "manage_document",
+            "builtin_tool",
+            &format!("action={action}"),
+        );
         let scan = matches!(action.as_str(), "health_check" | "list")
             .then(|| self.facade.query.scan_workspace())
             .transpose()?;
@@ -2284,8 +2408,15 @@ mod tests {
             files_indexed: 12,
             chunks_indexed: 48,
             deleted_marked: 0,
+            vector_ignored_files: 0,
+            vector_ignored_paths: Vec::new(),
+            indexed_paths: Vec::new(),
+            embedded_paths: Vec::new(),
             manifest_path: ".omega/store/files.jsonl".to_string(),
             keyword_index_path: ".omega/store/tantivy".to_string(),
+            active_version: None,
+            pending_version: None,
+            archived_version_path: None,
         });
         facade
             .diagnostics

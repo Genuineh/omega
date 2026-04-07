@@ -2,9 +2,13 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use omega_client::test_support::IdleLlmClient;
 use omega_core::DynLlmClient;
 use omega_keymap::{InteractionMode, KeymapManager};
-use omega_session::{ResponseSectionState, WorkflowRunRole};
+use omega_session::{
+    ConversationMessage, ResponseSectionKind, ResponseSectionState, RuntimeMessage, StateMessage,
+    WorkflowRunRole,
+};
 use omega_test_support::persistent_test_root;
 use omega_workflow::LoadedWorkflowCatalog;
+use std::time::Duration;
 
 use crate::app::{Msg, Panel};
 
@@ -88,6 +92,12 @@ fn event_test_root(name: &str) -> std::path::PathBuf {
     persistent_test_root(&format!("tui-{name}"))
 }
 
+fn write_document_fixture(root: &std::path::Path) {
+    let _ = std::fs::create_dir_all(root.join("docs/specs"));
+    let _ = std::fs::write(root.join("README.md"), "# Omega Test Fixture\n");
+    let _ = std::fs::write(root.join("docs/README.md"), "# Docs\n");
+}
+
 fn seed_collapsed_reasoning(app: &mut App) {
     app.response_rect = ratatui::layout::Rect::new(0, 0, 80, 8);
     app.output_msgs.push(Msg {
@@ -151,6 +161,74 @@ fn submit_while_running_shows_wait_message() {
     assert!(app_guard.output_msgs[0]
         .text
         .contains("Previous turn still finishing"));
+}
+
+#[test]
+fn submit_slash_command_emits_command_section() {
+    let client: DynLlmClient = Arc::new(IdleClient);
+    let root = event_test_root("slash-command");
+    write_document_fixture(&root);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let session = test_session(client, root, &runtime);
+    let app = Arc::new(Mutex::new(App::new()));
+    let (tx, rx) = mpsc::channel();
+    {
+        let mut app_guard = app.lock().unwrap();
+        app_guard.input_buffer = "/document health".to_string();
+    }
+
+    let should_quit = handle_submit(&app, &session, &tx).unwrap();
+
+    assert!(!should_quit);
+    let mut recorded = Vec::new();
+    loop {
+        let envelope = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let finished = matches!(
+            envelope.message,
+            RuntimeMessage::State(StateMessage::TurnFinished)
+        );
+        recorded.push(envelope);
+        if finished {
+            break;
+        }
+    }
+
+    assert!(recorded.iter().any(|envelope| {
+        matches!(
+            &envelope.message,
+            RuntimeMessage::Conversation(ConversationMessage::BeginSection { section })
+                if section.kind == ResponseSectionKind::Command
+        )
+    }));
+    let app_guard = app.lock().unwrap();
+    assert!(app_guard
+        .output_msgs
+        .iter()
+        .any(|message| message.text.contains("> /document health")));
+}
+
+#[test]
+fn typing_slash_command_updates_command_hint() {
+    let harness = EventReplayHarness::new();
+    {
+        let mut app_guard = harness.app.lock().unwrap();
+        app_guard.interaction_mode = InteractionMode::Insert;
+    }
+
+    harness.replay_keys(&[
+        (KeyCode::Char('/'), KeyModifiers::NONE),
+        (KeyCode::Char('d'), KeyModifiers::NONE),
+        (KeyCode::Char('o'), KeyModifiers::NONE),
+        (KeyCode::Char('c'), KeyModifiers::NONE),
+        (KeyCode::Char('u'), KeyModifiers::NONE),
+        (KeyCode::Char('m'), KeyModifiers::NONE),
+        (KeyCode::Char('e'), KeyModifiers::NONE),
+        (KeyCode::Char('n'), KeyModifiers::NONE),
+        (KeyCode::Char('t'), KeyModifiers::NONE),
+    ]);
+
+    let hint = harness.inspect(|app| app.command_hint.clone());
+    assert!(hint.as_deref().is_some_and(|value| value.contains("/document")));
 }
 
 #[test]
@@ -451,6 +529,47 @@ fn leader_jk_toggles_into_insert_mode_and_allows_typing() {
 }
 
 #[test]
+fn leader_jk_enters_insert_mode_while_turn_running() {
+    let client: DynLlmClient = Arc::new(IdleClient);
+    let root = event_test_root("insert-mode-running-test");
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let session = test_session(client, root, &runtime);
+    let app = Arc::new(Mutex::new(App::new()));
+    let (tx, _rx) = mpsc::channel();
+    let keymap = KeymapManager::default();
+    app.lock().unwrap().is_running = true;
+
+    handle_key_event(
+        press_key(KeyCode::Char(' '), KeyModifiers::NONE),
+        &app,
+        &session,
+        &tx,
+        &keymap,
+    )
+    .unwrap();
+    handle_key_event(
+        press_key(KeyCode::Char('j'), KeyModifiers::NONE),
+        &app,
+        &session,
+        &tx,
+        &keymap,
+    )
+    .unwrap();
+    handle_key_event(
+        press_key(KeyCode::Char('k'), KeyModifiers::NONE),
+        &app,
+        &session,
+        &tx,
+        &keymap,
+    )
+    .unwrap();
+
+    let app_guard = app.lock().unwrap();
+    assert_eq!(app_guard.interaction_mode, InteractionMode::Insert);
+    assert!(app_guard.status_notice.as_deref().is_some_and(|notice| notice.contains("Mode: Insert")));
+}
+
+#[test]
 fn plain_text_is_ignored_in_normal_mode() {
     let client: DynLlmClient = Arc::new(IdleClient);
     let root = event_test_root("normal-mode-test");
@@ -517,9 +636,69 @@ fn leader_jk_rejects_insert_mode_when_input_is_disabled() {
 }
 
 #[test]
-fn leader_jk_toggles_back_to_normal_mode() {
+fn esc_returns_insert_mode_to_normal() {
     let client: DynLlmClient = Arc::new(IdleClient);
     let root = event_test_root("toggle-normal-test");
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let session = test_session(client, root, &runtime);
+    let app = Arc::new(Mutex::new(App::new()));
+    let (tx, _rx) = mpsc::channel();
+    let keymap = KeymapManager::default();
+    app.lock().unwrap().interaction_mode = InteractionMode::Insert;
+
+    handle_key_event(
+        press_key(KeyCode::Esc, KeyModifiers::NONE),
+        &app,
+        &session,
+        &tx,
+        &keymap,
+    )
+    .unwrap();
+
+    let app_guard = app.lock().unwrap();
+    assert_eq!(app_guard.interaction_mode, InteractionMode::Normal);
+    assert!(app_guard
+        .status_notice
+        .as_deref()
+        .is_some_and(|notice| notice.contains("Mode: Normal")));
+}
+
+#[test]
+fn esc_returns_insert_mode_to_normal_while_turn_running() {
+    let client: DynLlmClient = Arc::new(IdleClient);
+    let root = event_test_root("toggle-normal-running-test");
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let session = test_session(client, root, &runtime);
+    let app = Arc::new(Mutex::new(App::new()));
+    let (tx, _rx) = mpsc::channel();
+    let keymap = KeymapManager::default();
+    {
+        let mut app_guard = app.lock().unwrap();
+        app_guard.interaction_mode = InteractionMode::Insert;
+        app_guard.is_running = true;
+    }
+
+    handle_key_event(
+        press_key(KeyCode::Esc, KeyModifiers::NONE),
+        &app,
+        &session,
+        &tx,
+        &keymap,
+    )
+    .unwrap();
+
+    let app_guard = app.lock().unwrap();
+    assert_eq!(app_guard.interaction_mode, InteractionMode::Normal);
+    assert!(app_guard
+        .status_notice
+        .as_deref()
+        .is_some_and(|notice| notice.contains("Mode: Normal")));
+}
+
+#[test]
+fn insert_mode_space_is_inserted_into_input() {
+    let client: DynLlmClient = Arc::new(IdleClient);
+    let root = event_test_root("insert-space-test");
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let session = test_session(client, root, &runtime);
     let app = Arc::new(Mutex::new(App::new()));
@@ -535,16 +714,9 @@ fn leader_jk_toggles_back_to_normal_mode() {
         &keymap,
     )
     .unwrap();
+
     handle_key_event(
-        press_key(KeyCode::Char('j'), KeyModifiers::NONE),
-        &app,
-        &session,
-        &tx,
-        &keymap,
-    )
-    .unwrap();
-    handle_key_event(
-        press_key(KeyCode::Char('k'), KeyModifiers::NONE),
+        press_key(KeyCode::Char('a'), KeyModifiers::NONE),
         &app,
         &session,
         &tx,
@@ -553,11 +725,77 @@ fn leader_jk_toggles_back_to_normal_mode() {
     .unwrap();
 
     let app_guard = app.lock().unwrap();
-    assert_eq!(app_guard.interaction_mode, InteractionMode::Normal);
+    assert_eq!(app_guard.input_buffer, " a");
+    assert!(!app_guard.is_leader_pending());
+}
+
+#[test]
+fn insert_mode_space_timeout_replays_pending_text() {
+    let client: DynLlmClient = Arc::new(IdleClient);
+    let root = event_test_root("insert-space-timeout-test");
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let session = test_session(client, root, &runtime);
+    let app = Arc::new(Mutex::new(App::new()));
+    let (tx, _rx) = mpsc::channel();
+    let keymap = KeymapManager::default();
+    app.lock().unwrap().interaction_mode = InteractionMode::Insert;
+
+    handle_key_event(
+        press_key(KeyCode::Char(' '), KeyModifiers::NONE),
+        &app,
+        &session,
+        &tx,
+        &keymap,
+    )
+    .unwrap();
+
+    {
+        let mut app_guard = app.lock().unwrap();
+        let pending = app_guard.pending_key_sequence.as_mut().unwrap();
+        pending.started_at -= pending.timeout + Duration::from_millis(1);
+        let replay_text = app_guard.expire_pending_key_sequence();
+        assert_eq!(replay_text.as_deref(), Some(" "));
+        app_guard.insert_text(replay_text.as_deref().unwrap());
+    }
+
+    let app_guard = app.lock().unwrap();
+    assert_eq!(app_guard.input_buffer, " ");
+    assert!(!app_guard.is_leader_pending());
+}
+
+#[test]
+fn esc_cancels_pending_leader_sequence() {
+    let client: DynLlmClient = Arc::new(IdleClient);
+    let root = event_test_root("leader-cancel-test");
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let session = test_session(client, root, &runtime);
+    let app = Arc::new(Mutex::new(App::new()));
+    let (tx, _rx) = mpsc::channel();
+    let keymap = KeymapManager::default();
+
+    handle_key_event(
+        press_key(KeyCode::Char(' '), KeyModifiers::NONE),
+        &app,
+        &session,
+        &tx,
+        &keymap,
+    )
+    .unwrap();
+    handle_key_event(
+        press_key(KeyCode::Esc, KeyModifiers::NONE),
+        &app,
+        &session,
+        &tx,
+        &keymap,
+    )
+    .unwrap();
+
+    let app_guard = app.lock().unwrap();
+    assert!(!app_guard.is_leader_pending());
     assert!(app_guard
         .status_notice
         .as_deref()
-        .is_some_and(|notice| notice.contains("Mode: Normal")));
+        .is_some_and(|notice| notice.contains("cancelled")));
 }
 
 #[test]

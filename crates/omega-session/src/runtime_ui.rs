@@ -172,13 +172,25 @@ pub enum ResponseSectionKind {
     Step,
     FinalAnswer,
     Thinking,
+    Command,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SectionOrigin {
+    Workflow {
+        workflow_id: String,
+        workflow_role: WorkflowRunRole,
+    },
+    Command {
+        command_name: String,
+        source: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResponseSectionMetadata {
     pub scene_id: Option<String>,
-    pub workflow_id: String,
-    pub workflow_role: WorkflowRunRole,
+    pub origin: SectionOrigin,
     pub step_id: Option<String>,
     pub step_label: Option<String>,
     pub subflow_ref: Option<StepSubflowRef>,

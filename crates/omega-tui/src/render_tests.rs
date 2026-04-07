@@ -1,7 +1,7 @@
 use omega_session::{
     ResponseSection, ResponseSectionDelta, ResponseSectionKind, ResponseSectionMetadata,
-    ResponseSectionState, RuntimeUiEffect, RuntimeUiEnvelope, StepSubflowState,
-    StepSubflowStatus, WorkflowRunRole,
+    ResponseSectionState, RuntimeUiEffect, RuntimeUiEnvelope, SectionOrigin,
+    StepSubflowState, StepSubflowStatus, WorkflowRunRole,
 };
 use omega_theme::OmegaTheme;
 use ratatui::{
@@ -11,14 +11,33 @@ use ratatui::{
 };
 
 use crate::app::{
-    App, MsgKind, Panel, ResponseDisplayLine, SessionRoutingSummary, SessionStatusSummary,
-    ThinkingLineKind,
+    App, MsgKind, Panel, PendingKeySequenceState, ResponseDisplayLine, SessionRoutingSummary,
+    SessionStatusSummary, ThinkingLineKind,
 };
 
 use super::{
     bottom_status_line, bottom_status_text, input_context_line, input_context_text, render,
     response_line_style, wrap_text,
 };
+
+fn workflow_metadata(
+    scene_id: Option<&str>,
+    workflow_id: &str,
+    workflow_role: WorkflowRunRole,
+    step_id: Option<&str>,
+    step_label: Option<&str>,
+) -> ResponseSectionMetadata {
+    ResponseSectionMetadata {
+        scene_id: scene_id.map(ToOwned::to_owned),
+        origin: SectionOrigin::Workflow {
+            workflow_id: workflow_id.to_string(),
+            workflow_role,
+        },
+        step_id: step_id.map(ToOwned::to_owned),
+        step_label: step_label.map(ToOwned::to_owned),
+        subflow_ref: None,
+    }
+}
 
 #[test]
 fn wraps_unicode_text_by_character_width() {
@@ -101,14 +120,13 @@ fn markdown_response_lines_wrap_in_narrow_terminal() {
                 kind: ResponseSectionKind::FinalAnswer,
                 title: "Final Answer".to_string(),
                 state: ResponseSectionState::Streaming,
-                metadata: ResponseSectionMetadata {
-                    scene_id: Some("chat".to_string()),
-                    workflow_id: "chat".to_string(),
-                    workflow_role: WorkflowRunRole::Child,
-                    step_id: Some("report".to_string()),
-                    step_label: Some("Report".to_string()),
-                    subflow_ref: None,
-                },
+                metadata: workflow_metadata(
+                    Some("chat"),
+                    "chat",
+                    WorkflowRunRole::Child,
+                    Some("report"),
+                    Some("Report"),
+                ),
             },
         },
     ));
@@ -244,8 +262,29 @@ fn leader_and_notice_text_live_in_input_context_bar() {
     app.set_status_notice("Context notice");
     assert_eq!(input_context_text(&app, false), "Context notice");
 
-    app.leader_pending_since = Some(std::time::Instant::now());
-    assert!(input_context_text(&app, false).contains("Leader pending"));
+    app.pending_key_sequence = Some(PendingKeySequenceState {
+        started_at: std::time::Instant::now(),
+        timeout: std::time::Duration::from_millis(400),
+        key_events: vec![crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char(' '),
+            crossterm::event::KeyModifiers::NONE,
+        )],
+        replay_text: Some(" ".to_string()),
+    });
+    assert!(input_context_text(&app, false).contains("Pending keys"));
+}
+
+#[test]
+fn command_hint_takes_priority_in_input_context_bar() {
+    let mut app = App::new();
+
+    app.set_status_notice("Context notice");
+    app.set_command_hint(" Slash: /document query <text>");
+
+    assert_eq!(
+        input_context_text(&app, false),
+        " Slash: /document query <text>"
+    );
 }
 
 #[test]

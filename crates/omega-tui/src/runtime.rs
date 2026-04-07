@@ -84,7 +84,16 @@ pub fn run(config: TuiLaunchConfig) -> anyhow::Result<()> {
 
         {
             let mut app_guard = app.lock().unwrap();
-            app_guard.expire_leader_pending(keymap.leader_timeout());
+            if let Some(replay_text) = app_guard.expire_pending_key_sequence() {
+                app_guard.insert_text(&replay_text);
+                app_guard.set_status_notice(format!("Replayed pending input {:?}.", replay_text));
+                let hint = session.command_hint(&app_guard.input_buffer);
+                if let Some(hint) = hint {
+                    app_guard.set_command_hint(hint);
+                } else {
+                    app_guard.clear_command_hint();
+                }
+            }
             app_guard.spinner_tick = app_guard.spinner_tick.wrapping_add(1);
         }
 
@@ -114,8 +123,27 @@ mod tests {
         ActivityTarget, ResponseSection, ResponseSectionDelta, ResponseSectionKind,
         ResponseSectionMetadata, ResponseSectionState, RuntimeUiEffect, RuntimeUiEnvelope,
         RuntimeUiMessage, StatusSlot, StatusValue, UiContent, UiMessageKind, UiSource, UiTarget,
-        WorkflowRunRole,
+        SectionOrigin, WorkflowRunRole,
     };
+
+    fn workflow_metadata(
+        scene_id: Option<&str>,
+        workflow_id: &str,
+        workflow_role: WorkflowRunRole,
+        step_id: Option<&str>,
+        step_label: Option<&str>,
+    ) -> ResponseSectionMetadata {
+        ResponseSectionMetadata {
+            scene_id: scene_id.map(ToOwned::to_owned),
+            origin: SectionOrigin::Workflow {
+                workflow_id: workflow_id.to_string(),
+                workflow_role,
+            },
+            step_id: step_id.map(ToOwned::to_owned),
+            step_label: step_label.map(ToOwned::to_owned),
+            subflow_ref: None,
+        }
+    }
 
     #[test]
     fn interrupt_turn_invalidates_old_updates() {
@@ -221,14 +249,13 @@ mod tests {
                     kind: ResponseSectionKind::Step,
                     title: "Plan".to_string(),
                     state: ResponseSectionState::Streaming,
-                    metadata: ResponseSectionMetadata {
-                        scene_id: Some("feature".to_string()),
-                        workflow_id: "feature".to_string(),
-                        workflow_role: WorkflowRunRole::Child,
-                        step_id: Some("plan".to_string()),
-                        step_label: Some("Plan".to_string()),
-                        subflow_ref: None,
-                    },
+                    metadata: workflow_metadata(
+                        Some("feature"),
+                        "feature",
+                        WorkflowRunRole::Child,
+                        Some("plan"),
+                        Some("Plan"),
+                    ),
                 },
             },
         ));
@@ -255,14 +282,13 @@ mod tests {
                     kind: ResponseSectionKind::FinalAnswer,
                     title: "Final Answer".to_string(),
                     state: ResponseSectionState::Streaming,
-                    metadata: ResponseSectionMetadata {
-                        scene_id: Some("feature".to_string()),
-                        workflow_id: "feature".to_string(),
-                        workflow_role: WorkflowRunRole::Child,
-                        step_id: Some("report".to_string()),
-                        step_label: Some("Report".to_string()),
-                        subflow_ref: None,
-                    },
+                    metadata: workflow_metadata(
+                        Some("feature"),
+                        "feature",
+                        WorkflowRunRole::Child,
+                        Some("report"),
+                        Some("Report"),
+                    ),
                 },
             },
         ));
