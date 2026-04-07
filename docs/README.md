@@ -23,7 +23,9 @@ version: v1.0
 |------|------------------|
 | Runtime and app boundary | `docs/specs/omega-app-package.md`, `docs/specs/omega-runtime-message-pipeline.md`, `docs/specs/omega-runtime-ui-message-contract.md` |
 | Context assembly and session data | `docs/specs/omega-context-management.md`, `docs/specs/omega-step-session-asset-model.md`, `docs/specs/omega-step-lifecycle-hooks.md` |
+| Knowledge evolution and long-term project memory | `docs/specs/omega-knowledge-evolution.md`, `docs/specs/omega-context-management.md`, `docs/specs/omega-tui-document-memory-supervision.md` |
 | Tools and workflow policy | `docs/specs/omega-tool-system-upgrade.md`, `docs/specs/omega-tool-prompt-optimization.md`, `docs/specs/omega-workflow-package.md`, `docs/specs/omega-scene-routing.md` |
+| Command system and document knowledge | `docs/specs/omega-command-system.md`, `docs/specs/omega-context-management.md`, `docs/specs/omega-tui-document-memory-supervision.md` |
 | Client/provider integration | `docs/specs/omega-client-anthropic-api-abstraction.md`, `docs/specs/omega-deterministic-test-seams.md` |
 | TUI shell and interaction model | `docs/specs/omega-tui-runtime-experience.md`, `docs/specs/omega-tui-collapsible-sidebar.md`, `docs/specs/omega-tui-document-memory-supervision.md`, `docs/specs/omega-tui-modal-keymap.md`, `docs/specs/omega-tui-overlay-popups.md` |
 | TUI rendering and message presentation | `docs/specs/omega-tui-message-display-polish.md`, `docs/specs/omega-tui-response-thinking-experience.md`, `docs/specs/omega-tui-step-subflow-visibility.md`, `docs/specs/omega-tui-step-tool-thinking-refinement.md` |

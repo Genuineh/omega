@@ -9,10 +9,12 @@ _任务编号以 `docs/specs/omega-agent-impl-plan.md` 为准；`8A/8B`、`15A/1
 ### High
 
 - **Task 10**: `omega-subagent` 是当前主线，但要建立在已完成的上下文管理基线之上，避免调度再次被上下文膨胀拖垮。
+- **Task 17 / Task 17A**: 建立独立 command system，当前 scope 收窄为 builtin + tool-extension commands；先以 `/document` 验证 slash hint UX、Response panel 的 command-special rendering，以及 command-result contract；首期必须直接覆盖仓库向量索引初始化、RAG 查询和项目级知识库维护，而不是再叠一层平行文档工具。
 - **Task 11A ~ 11F-3**: 已完成并转入基线能力，不再作为独立主线推进；原 Task 11 的上下文压缩需求已被这条子任务链替代。
 
 ### Medium
-
+- **2026-04-03 `.storeignore` vector-index follow-up**: 为知识库扫描新增 `.omega/.storeignore` 仓库级规则文件，只控制“哪些文件不进入 embedding/LanceDB 派生向量索引”，而不是跳过整个 `FileStore`/tantivy/治理管线；后续实现必须保证 keyword 检索与文档治理仍可见这些文件，semantic/hybrid 仅对未忽略文件建立向量结果。
+- **2026-04-07 knowledge evolution follow-up**: Hindsight 调研已经收敛为 `docs/specs/omega-knowledge-evolution.md`。当前 document health / operator attribution / store versioning / supervision baseline 已完成，下一轮应按 `retention profiles -> memory query -> project observations -> unified recall planner` 的顺序推进，避免在 `MemoryService` 仍无 query surface 时提前引入跨层 recall API。
 - **2026-04-02 document backend default enablement**: `omega-app` 默认 feature 现已包含 `document-backend`，因此默认 `cargo run -p omega-app` 会直接接通 `omega-document` / LanceDB / Tantivy 后端；`.omega/store/` 仍按需惰性生成，但不再需要额外 `--features document-backend` 才能使用 `search_codebase` 与 `manage_document`。
 - **2026-04-02 context supervision follow-up**: 下一轮 TUI/context 工作应为 document system 与 memory system 规划专门监管面板，统一回答“是否启用、总量/大小、当前命中摘要”三类问题；详细方案见 `docs/specs/omega-tui-document-memory-supervision.md`。
 - **2026-04-02 runtime maintenance**: 默认只读分析已拆为两条 child workflow：`research = explore -> report` 与 `deep-research = explore -> plan -> execute -> report`；root workflow 也已收敛为单步 `select-workflow`，并在一次结构化输出中同时写入 `recognized_scene_id` 与 `selected_workflow_id`。对系统性、全局性、深入式分析优先提升到 `deep-research`，实现类请求仍优先提升到 `feature`。
@@ -831,6 +833,68 @@ _2026-03-31 规划补充：当前仓库已经具备 `omega-client::test_support:
 - **Related**: docs/specs/omega-context-management.md §3.2, §3.2.1, §3.3
 - **Summary**: `omega-document` 现已新增 `.omega/store/lance/` 派生向量索引与 `.omega/store/index-commit-log.json` revision commit log，使用 LanceDB 维护 `files/chunks/turns` 表，其中 `chunks` 与 `files` 已接入 embedding 列和本地语义检索；`search()` 现支持 `keyword / semantic / hybrid` 三种模式，并在 Lance revision 落后于 manifest 或向量查询失败时自动降级到 keyword。运行时默认使用 fastembed `AllMiniLML6V2` 生成 embedding，测试路径使用 deterministic mock embedding 避免模型下载；`omega-context` 的 `search_codebase` 工具说明与默认 mode 也已同步改为 hybrid。验证已通过 `cargo test -p omega-document --color never`、`cargo test -p omega-context --color never`、`cargo test -p omega-core --color never` 与 `cargo test -p omega-session --lib --color never`。
 
+### Task 11E-1: omega-document — `.omega/.storeignore` store 排除规则
+- **Status**: Completed
+- **Priority**: Medium
+- **Complexity**: Medium
+- **Description**: 为知识库扫描增加 `.omega/.storeignore`，用仓库级 glob 规则声明“哪些路径不进入 `.omega/store` 知识库存储”；匹配文件会在扫描阶段直接跳过，不写入 `files.jsonl`、tantivy 或 LanceDB，同时继续保留 `.git` / `target` / `.omega/store` 的 walk-level 硬排除。
+- **Completion Note**: `omega-document` 现已在 `scan_workspace()` 读取 `.omega/.storeignore`，支持空行、`#` 注释与相对根路径 glob，并在扫描阶段直接排除匹配文件；`ScanResult` 还会暴露 `vector_ignored_paths`、`indexed_paths` 与 `embedded_paths` 样本，`omega-session` 的 `/document init|sync` Response 也会展示这些阶段化信息。验证已通过 `cargo test -p omega-document storeignore` 与 `cargo test -p omega-session --features document-backend spawn_command_document_init_streams_scan_phases_and_samples`。
+- **Related**: docs/specs/omega-context-management.md §3.2.2, docs/specs/omega-command-system.md
+
+### Task 11E-2: omega-document / omega-context / omega-tui — Document Health Contract And Supervision Semantics
+- **Status**: Completed
+- **Priority**: High
+- **Complexity**: M
+- **Description**: 收敛 document system 的健康语义，禁止在 backend 已启用、store 已存在时长期停留在 `health=unknown`。需要为 manifest、Tantivy、LanceDB、revision freshness、governance warnings 与最近一次 health check 建立统一的 typed health state，并让 supervision / overlay / `/document health` 使用同一份快照。
+- **Planning Note**: `enabled`、`readiness`、`health`、`hits` 是四个独立维度，不能继续把“尚未查询”“尚未 health check”“索引降级”混成一个 `unknown` 文本。最低交付应让 TUI 稳定区分 `idle / ready / degraded / failed / never_checked`，并写清每个状态的判定来源。
+- **Completion Note**: `omega-context` 现已引入 `DocumentHealthStatus`、最近一次 health check、promotion error 与 recent activity/usage 视图；`omega-session` supervision snapshot 与 `omega-tui` diagnostics/supervision 面板统一消费同一份 typed snapshot，不再把 backend 已启用时的长期未知状态压缩成单一 `unknown` 文本。
+- **Blocked by**: Task 11E, Task 11F-4
+- **Blocks**: Task 11E-3, Task 11E-4
+- **Related**: docs/specs/omega-tui-document-memory-supervision.md, docs/specs/omega-command-system.md, docs/specs/omega-context-management.md
+
+### Task 11E-3: omega-context / omega-session / omega-command — Document Operator Surface And Usage Attribution
+- **Status**: Completed
+- **Priority**: High
+- **Complexity**: M
+- **Description**: 审计并收敛 document system 的 operator surface，明确 `search_codebase`、`manage_document`、`/document init|sync|query|health` 与未来自动刷新路径分别由谁触发、谁最常使用，以及哪些 builtin/tool 调用实际上绕过了主路径。目标不是新增平行工具，而是让 command surface、tool facade 与 supervision usage attribution 共用同一份调用契约。
+- **Planning Note**: 要显式回答“并不被经常使用，是否 builtin 内的 tool 存在问题”这个问题，至少需要：(1) 统一命令/工具 capability 映射；(2) 为 document 相关入口写 usage counters 或 recent-activity summary；(3) 标出哪些路径只在 `/document` 下可见、哪些路径是 agent tool 默认入口。
+- **Completion Note**: `search_codebase`、`manage_document` 与 `/document init|sync|query|health|create|archive|list` 现已统一写入 document usage diagnostics，并在 supervision/TUI 中展示 operator usage 与 recent activity，command surface 与 builtin tool facade 使用同一套 attribution 契约。
+- **Blocked by**: Task 11E-2, Task 17A
+- **Blocks**: Task 11E-5
+- **Related**: docs/specs/omega-command-system.md, docs/specs/omega-context-management.md
+
+### Task 11E-4: omega-document — Store Revision Ledger And Versioned Index Metadata
+- **Status**: Completed
+- **Priority**: High
+- **Complexity**: L
+- **Description**: 把 document store 的 revision 从“内部 commit log”提升为显式版本治理层。每次完整扫描或重建完成后，都要生成新的 store version，记录 manifest revision、vector revision、tantivy revision、schema version、构建时间、触发来源与摘要统计，并让 supervision 与 `/document health` 能直接展示当前 active version。
+- **Planning Note**: 这里的 version 必须覆盖“本次 `.omega/store/` 处于什么代际”而不是只记录 Lance 表内部 revision。推荐引入顶层 `store-version.json` 或等价 typed ledger，并把 `files/chunks/embeddings` 总量、staleness 基线和生成来源一并固化，避免 health 面板继续只能看到大小看不到版本。
+- **Completion Note**: `omega-document` 现已为扫描流程生成显式 `DocumentStoreVersion` 与 `.omega/store/store-version.json` ledger，记录 manifest/tantivy/lance revision、schema version、统计信息与 storage path；`/document init|sync|health` 与 supervision/TUI 可直接显示 active/pending version。
+- **Blocked by**: Task 11E-2
+- **Blocks**: Task 11E-5, Task 11E-6
+- **Related**: docs/specs/omega-context-management.md, docs/specs/omega-command-system.md
+
+### Task 11E-5: omega-document — Historical Store Snapshots Under `.omega/store/history/`
+- **Status**: Completed
+- **Priority**: Medium
+- **Complexity**: L
+- **Description**: 为 document store 增加历史版本保留策略。每次 active store version 被新的完整处理结果替换前，若当前存在向量数据库或其它派生索引，则将该版本对应的持久化文件整体备份到 `.omega/store/history/<version>/`，并保留可枚举的元数据索引，支持向前查找与人工比对。
+- **Planning Note**: 历史快照是“完整版本目录”而不是零散文件复制。至少应包含该版本对应的 manifest snapshot、Tantivy、LanceDB 与 version metadata；是否保留 chunk cache 可按容量策略另行裁剪，但不能只保留 Lance 而丢失版本上下文。需要同步规划 retention policy、磁盘占用上限与清理命令。
+- **Completion Note**: active store version 在 promotion 前会整体归档到 `.omega/store/history/<version>/`，保留 manifest、commit log、Tantivy、LanceDB 与版本 metadata，并通过归档路径写回 scan 结果供上层展示与回归测试验证。
+- **Blocked by**: Task 11E-3, Task 11E-4
+- **Blocks**: Task 11E-6
+- **Related**: docs/specs/omega-command-system.md, docs/specs/omega-tui-document-memory-supervision.md
+
+### Task 11E-6: omega-document / omega-command / omega-session — Post-Process Vector Refresh And Version Promotion
+- **Status**: Completed
+- **Priority**: High
+- **Complexity**: L
+- **Description**: 为“完成一次完整的处理更新后自动更新向量数据库”建立稳定流程。完整扫描/治理 apply 成功后，如果当前 workspace 启用了向量索引，则必须触发 vector refresh，待新 revision ready 后再提升 active store version；若 refresh 失败，则保持旧版本继续服务，并在 supervision / `/document health` 中明确显示 pending promotion 或 degraded 状态。
+- **Planning Note**: 这里要避免“manifest 已更新但 active vector 仍旧版本”的静默漂移。推荐流程为 `prepare new version -> build derived indexes -> validate health -> promote active pointer -> archive previous version`，而不是直接在 active store 上原地覆盖。
+- **Completion Note**: `scan_workspace()` 现已切换为 staged build -> derived index rebuild -> archive previous active -> promote staged store 的流程；若向量刷新未完成或 promotion 失败，则保留旧 active version 继续服务，并通过 pending version / promotion error / failed readiness 暴露给 `/document health`、session snapshot 与 TUI supervision。
+- **Blocked by**: Task 11E-4, Task 11E-5
+- **Related**: docs/specs/omega-command-system.md, docs/specs/omega-context-management.md, docs/specs/omega-tui-document-memory-supervision.md
+
 ### Task 11F: Observability + TUI Integration
 - **Status**: Completed
 - **Completed**: 2026-03-30
@@ -882,6 +946,65 @@ _2026-03-31 规划补充：当前仓库已经具备 `omega-client::test_support:
 - **Blocks**: Task 15B-12
 - **Related**: docs/specs/omega-tui-document-memory-supervision.md, docs/specs/omega-context-management.md, docs/specs/omega-tui-runtime-experience.md
 - **Summary**: `omega-context` 已补 `ContextSupervisionSnapshot`、`turn_archive_size_bytes` 与 typed document/memory hit summaries；`omega-session` 已把 selected summary preview 与 `ContextSupervision` state message 接入 runtime；`omega-tui` sidebar 现提供独立 `Document` / `Memory` 监管面板并支持 detail overlay；`omega-app` runtime policy 已转发该状态。验证已通过 `cargo test -p omega-tui --color never` 与 `cargo test -p omega-app --color never`。
+
+### Task 11G: omega-memory / omega-context — Knowledge Evolution Follow-up
+- **Status**: Pending
+- **Priority**: Medium
+- **Complexity**: High
+- **Description**: 在已完成的 `11E` / `11F` document + supervision 基线上，补齐长期项目知识能力，但必须遵守修正后的依赖顺序：先提升 retention 质量，再补 memory query，再做 observation 层，最后才考虑跨 memory/document 的 unified recall planner。
+- **Related**: docs/specs/omega-knowledge-evolution.md, docs/specs/omega-context-management.md, docs/specs/omega-tui-document-memory-supervision.md
+
+### Task 11G-1: omega-memory / omega-session — Retention Profiles And Noise Gate
+- **Status**: Pending
+- **Priority**: Medium
+- **Complexity**: M
+- **Description**: 为 `archive_turn()` 增加 `project_facts / developer_preferences / open_threads / ephemeral_debug` 四类 retention profile，并在长期保留前显式丢弃低价值调试噪音。需要把 accepted/dropped counters 接入 diagnostics，但不得影响当前 `rank_summary_candidates()` 的 context assembly 语义。
+- **Blocks**: Task 11G-2, Task 11G-3
+- **Related**: docs/specs/omega-knowledge-evolution.md §Phase 1
+
+### Task 11G-2: omega-memory / omega-context — Memory Query Surface For Archived Knowledge
+- **Status**: Pending
+- **Priority**: Medium
+- **Complexity**: M
+- **Description**: 在 retention gate 落地后，为 `MemoryService` 增加最小 query surface，覆盖 archived summaries 与 accepted retention candidates。该能力是后续 recall planner 的前置条件；在此之前不要新增 facade 顶层 unified recall request。
+- **Blocked by**: Task 11G-1
+- **Blocks**: Task 11G-4, Task 11G-5
+- **Related**: docs/specs/omega-knowledge-evolution.md §Phase 2
+
+### Task 11G-3: omega-context — Evidence-Backed Project Observations
+- **Status**: Pending
+- **Priority**: Medium
+- **Complexity**: L
+- **Description**: 在 raw turn summaries、document/store events 与 accepted retention candidates 之上增加 `project observations` 派生层。每条 observation 必须带 evidence refs、freshness state 与 supersession/correction metadata，并保持 repo-local 存储；它只能作为派生知识，不能覆盖 `files.jsonl` 或 store version ledger。
+- **Blocked by**: Task 11G-1
+- **Blocks**: Task 11G-4, Task 11G-5
+- **Related**: docs/specs/omega-knowledge-evolution.md §Phase 3
+
+### Task 11G-4: omega-context / omega-session / omega-tui — Observation And Memory Knowledge Supervision
+- **Status**: Pending
+- **Priority**: Medium
+- **Complexity**: M
+- **Description**: 将 retention / memory query / observation 的阶段化状态补进 diagnostics 与 supervision：至少包括 accepted/dropped retention candidates、memory query count、observation freshness 和 correction activity。UI 先复用现有 supervision 容器，不额外发明新的常驻面板。
+- **Blocked by**: Task 11G-2, Task 11G-3
+- **Blocks**: Task 11G-5
+- **Related**: docs/specs/omega-knowledge-evolution.md §Commands And Supervision, docs/specs/omega-tui-document-memory-supervision.md
+
+### Task 11G-5: omega-context — Unified Recall Planner After Memory Query Baseline
+- **Status**: Pending
+- **Priority**: Medium
+- **Complexity**: L
+- **Description**: 在 `MemoryService::query()` 与 observation layer 都成立之后，再在 `omega-context` 内部建立 unified recall planner，统一调度 document query、memory query、observation recall 与现有 summary selection，并继续受 token budget 约束。此阶段优先做内部 planner，不预设 facade 顶层 public API。
+- **Blocked by**: Task 11G-2, Task 11G-3, Task 11G-4
+- **Blocks**: Task 11G-6
+- **Related**: docs/specs/omega-knowledge-evolution.md §Phase 4
+
+### Task 11G-6: omega-document / omega-context — Advanced Retrieval Follow-Up
+- **Status**: Pending
+- **Priority**: Low
+- **Complexity**: L
+- **Description**: 在 unified recall planner 稳定后，再推进 strategy-specific chunking、lightweight relation-aware retrieval 与 temporal-aware retrieval。它们不属于低风险首轮范围，必须建立在 observation lifecycle 与 memory query 已稳定的前提上。
+- **Blocked by**: Task 11G-5
+- **Related**: docs/specs/omega-knowledge-evolution.md §Phase 5
 
 ### ── M7: 任务系统 (s07) ──
 
@@ -1303,9 +1426,66 @@ _基础体验已在 M1.7 完成，此处保留高级特性。_
 - **Status**: Completed
 - **Completed**: 2026-03-19
 - **Priority**: Low
-- **Description**: 引入统一 leader 键入口，并扩展为类似 Vim 的 `Normal` / `Insert` 模式交互体系；支持仅在特定模式/焦点/可输入上下文下触发的快捷键；默认使用 `leader j k` 在两种模式间切换；快捷键配置从 `.omega/keymap.toml` 启动加载，并新增独立 `omega-keymap` 包负责解析、校验与匹配
+- **Description**: 引入统一 leader 键入口，并扩展为类似 Vim 的 `Normal` / `Insert` 模式交互体系；支持仅在特定模式/焦点/可输入上下文下触发的快捷键；默认使用 `leader j k` 从 `Normal` 进入 `Insert`、`Esc` 从 `Insert` 返回 `Normal`；快捷键配置从 `.omega/keymap.toml` 启动加载，并新增独立 `omega-keymap` 包负责解析、校验与匹配
 - **Related**: docs/specs/omega-agent-spec.md, docs/specs/omega-tui-modal-keymap.md
-- **Summary**: 新增独立 `omega-keymap` crate，负责内置默认映射、`.omega/keymap.toml` 加载、绑定校验、leader 序列解析与 `mode/focus/input_capable` 条件匹配；`omega-tui` 新增 `Normal` / `Insert` 模式、leader pending 状态、超时取消与上下文提示栏，并把现有焦点切换、滚动、输入提交、光标编辑与中断/退出快捷键统一改为经 keymap 解析；默认模式切换使用 `leader j k` 在 `Normal` / `Insert` 间来回切换；自由文本输入现在仅在 `Insert` 模式下接受，配置缺失时会自动生成默认 `.omega/keymap.toml`，配置非法时回退到内置默认 keymap，并在 UI/日志中给出提示；`cargo test -p omega-keymap -p omega-tui` 与 `cargo clippy -p omega-keymap -p omega-tui --all-targets -- -D warnings` 通过
+- **Summary**: 新增独立 `omega-keymap` crate，负责内置默认映射、`.omega/keymap.toml` 加载、绑定校验、leader 序列解析与 `mode/focus/input_capable` 条件匹配；`omega-tui` 新增 `Normal` / `Insert` 模式、leader pending 状态、超时取消与上下文提示栏，并把现有焦点切换、滚动、输入提交、光标编辑与中断/退出快捷键统一改为经 keymap 解析。2026-04-03 已进一步升级为真正的 buffered prefix pipeline：insert-mode 支持多键前缀、失配/超时文本回放、binding 级 timeout，以及可见的 pending-sequence UX 提示。
+
+### Task 15B-13A: omega-keymap — Insert Pending Buffer And Timeout Replay
+- **Status**: Completed
+- **Completed**: 2026-04-03
+- **Priority**: High
+- **Description**: 扩展 `omega-keymap`，让 insert-mode 也能声明多键前缀与 leader 序列；在解析层新增 pending text sequence、timeout replay 与 fallback-to-text 语义，使诸如 `space` / `jk` 这类前缀既可组成命令，也可在超时或失配后回放为原始文本。
+- **Complexity**: L
+- **Blocked by**: Task 15B-13
+- **Blocks**: Task 15B-13B, Task 15B-13C
+- **Related**: docs/specs/omega-tui-modal-keymap.md
+- **Summary**: `omega-keymap` 已新增带元数据的 `PendingSequence` 与 `ReplayAsText` 结算结果，binding schema 支持 `text_fallback` 与 `timeout_ms`，默认 keymap 与解析器现在能表达 insert-mode `leader j k` 这类前缀映射，同时在失配或超时时安全回放原始文本；相关单测已覆盖 insert prefix、binding-specific timeout 和缺失 `text_fallback` 的校验路径。
+
+### Task 15B-13B: omega-tui — Buffered Input Router And Mode Semantics
+- **Status**: Completed
+- **Completed**: 2026-04-03
+- **Priority**: High
+- **Description**: 重写 `omega-tui` 的键盘事件管线，让 overlay route、keymap resolution、insert text buffering、timeout flush 与 raw text commit 成为清晰分层；running 状态下也必须保持 `Insert <-> Normal` 切换与 pending 文本回填稳定，不再依赖 “insert 未命中时立即写字符” 的单层兜底逻辑。
+- **Complexity**: L
+- **Blocked by**: Task 15B-13A
+- **Blocks**: Task 15B-13C
+- **Related**: docs/specs/omega-tui-modal-keymap.md, docs/specs/omega-runtime-ui-message-contract.md
+- **Summary**: `omega-tui` 现已把 leader-only pending 状态升级为通用 pending sequence buffer，事件路由会消费 `PendingSequence` / `ReplayAsText`，runtime tick 负责超时回放，Insert/Normal 切换在 running 状态下仍然稳定；同时 command hint、overlay 优先级与 raw text commit 已与新的缓冲语义对齐。
+
+### Task 15B-13C: omega-keymap / omega-tui — Config Migration, Regression Matrix, And UX Cues
+- **Status**: Completed
+- **Completed**: 2026-04-03
+- **Priority**: Medium
+- **Description**: 为 `.omega/keymap.toml` 增加 insert-mode prefix/timeout/fallback 配置示例与迁移说明；补齐 regression tests，覆盖 `space` 作为普通输入与 leader 前缀共存、`jk` insert mapping、timeout flush、overlay 抢占与 running 场景；同时完善 status/hint 文案，让用户能看见当前 pending 序列和即将回放的文本。
+- **Complexity**: M
+- **Blocked by**: Task 15B-13A, Task 15B-13B
+- **Related**: docs/specs/omega-tui-modal-keymap.md
+- **Summary**: 工作区 `.omega/keymap.toml` 与内置默认 keymap 已迁移到 v0.2 语义，insert-mode `leader j k` 使用 `text_fallback = true`；`omega-tui` 的 input context bar 现在会显示 pending key 序列与 timeout replay 提示；回归测试已覆盖 running 态模式切换、insert 空格即时失配回放、timeout flush，以及 pending sequence 取消路径。
+
+### ── M12: Command System ──
+
+> 验证方式：`cargo run -p omega-app` → 在输入框通过 `/document ...` 触发命令，完成索引初始化、RAG 查询与知识库维护
+> 对标：`learn/claude-code-source-code/src/commands.ts` + `src/types/command.ts` 的中心注册表与 command metadata 模式，但保持 Omega 的 `workflow / context / tool` 边界
+
+### Task 17: omega-command / omega-app / omega-session — Command System Foundation
+- **Status**: Completed
+- **Started**: 2026-04-03
+- **Completed**: 2026-04-03
+- **Priority**: High
+- **Description**: 建立独立 command registry / parser / executor / runtime message contract，当前仅支持 builtin source 与 tool-extension source；首期必须交付 slash hint mode、aliases、argument hints、enablement，以及 Response panel 对 command section 的特殊区分渲染。
+- **Planning Note**: 参考 Claude Code 的 central registry + metadata + lazy execution 模式，但当前不要引入 workflow/prompt-macro/repo-local/skill/plugin command source；输入层只负责触发与展示提示，命令注册与执行语义应沉到独立 `omega-command` crate，并通过 typed command response section 接入现有 Response timeline。v0.4 架构修正已经完成：`omega-command` 现在提供 parser/registry + subcommand metadata + hint resolution，TUI 输入栏会在 slash 输入期间显示 command hints，slash submit 会直接走 session command executor，Response timeline 通过 `ResponseSectionKind::Command` + `SectionOrigin::Command` 做特殊渲染。
+- **Blocks**: Task 17A
+- **Related**: docs/specs/omega-command-system.md, docs/specs/omega-tool-prompt-optimization.md, docs/specs/omega-context-management.md
+
+### Task 17A: omega-context / omega-document / omega-app — `/document` Command Family
+- **Status**: Completed
+- **Started**: 2026-04-03
+- **Completed**: 2026-04-03
+- **Priority**: High
+- **Description**: 以 `/document` 作为第一条命令族，首期支持 `init` / `query` / `health` / `sync`，随后扩展 `create` / `archive` / `list`；必须直接复用 `scan_workspace`、`search`、`manage_document` 与 diagnostics/supervision snapshot，不新增平行 RAG 存储面。
+- **Planning Note**: `init` / `sync` 负责初始化或增量刷新 `.omega/store/` 下的 manifest + Tantivy + LanceDB；`query` 默认走 hybrid retrieval，`health` 和 `create/archive/list` 负责项目级知识库治理与维护。当前 `/document init|sync|health|query|create|archive|list` 已全部接入 `omega-context` facade，并且所有用户可见结果都会写入 Response panel 的 command section；新增回归测试覆盖了 slash submit、slash hint、以及 `document-backend` 下的 create/list/archive 端到端路径。
+- **Blocked by**: Task 17
+- **Related**: docs/specs/omega-command-system.md, docs/specs/omega-context-management.md, docs/specs/omega-tui-document-memory-supervision.md
 
 ### Task 16: 最终整合测试
 - **Status**: Pending
