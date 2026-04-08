@@ -169,7 +169,14 @@ mod tests {
             },
         ));
 
-        assert!(app.output_msgs.is_empty());
+        assert!(!app
+            .response_lines()
+            .iter()
+            .any(|line| line.contains("stale")));
+        assert!(app
+            .response_lines()
+            .iter()
+            .any(|line| line.contains("Task Delivery Summary")));
         assert!(!app.is_running);
     }
 
@@ -330,6 +337,13 @@ mod tests {
                 "final  child:feature  Final Answer  [done]".to_string(),
                 "  scene feature".to_string(),
                 "  │ hello".to_string(),
+                "step  child:delivery-1  Task Delivery Summary  [done]".to_string(),
+                "  scene delivery".to_string(),
+                "  complete · model unknown · 0 tok · 0 llm · 0 tools · 0 skills · 0 files".to_string(),
+                "  document searches: 0 · memory searches: 0 · observations: 0".to_string(),
+                "  changed files: none".to_string(),
+                "  delivery  complete · model unknown · 0 tok · 0 llm · 0 tools · 0 skills · 0 files".to_string(),
+                "    knowledge  doc=0 · mem=0 · obs=0  |  files 0".to_string(),
             ]
         );
         assert_eq!(app.todo_lines, vec!["[>] #1: Code"]);

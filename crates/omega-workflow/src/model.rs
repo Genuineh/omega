@@ -223,7 +223,10 @@ impl WorkflowDefinition {
     pub fn default_root_with_tool_policy(tool_policy: &ToolPolicyConfig) -> Self {
         Self {
             name: ROOT_WORKFLOW_ID.to_string(),
-            steps: [BuiltinWorkflowStepId::SelectWorkflow]
+            steps: [
+                BuiltinWorkflowStepId::SelectWorkflow,
+                BuiltinWorkflowStepId::SelectSkills,
+            ]
             .into_iter()
             .map(|step| WorkflowStep::from_builtin_with_tool_policy(step, tool_policy))
             .collect(),

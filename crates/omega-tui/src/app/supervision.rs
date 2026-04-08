@@ -301,15 +301,30 @@ fn build_memory_lines(snapshot: &ContextSupervisionSnapshot) -> Vec<String> {
         Some(query) => {
             lines.push(String::new());
             lines.push(format!(
-                "memory query: {}",
+                "archived memory query: {}",
                 if query.query.is_empty() {
                     "(empty query)"
                 } else {
                     query.query.as_str()
                 }
             ));
+            if !query.planned_queries.is_empty() {
+                lines.push(format!(
+                    "planned memory queries: {}",
+                    query.planned_queries.join(" | ")
+                ));
+            }
+            if let Some(reason) = query.rewrite_reason.as_deref() {
+                lines.push(format!("memory rewrite reason: {reason}"));
+            }
+            if !query.rewrite_queries.is_empty() {
+                lines.push(format!(
+                    "memory rewrite queries: {}",
+                    query.rewrite_queries.join(" | ")
+                ));
+            }
             lines.push(format!(
-                "memory query results: {} ({})",
+                "archived memory hits: {} ({})",
                 query.result_count,
                 format_kv_counts(&query.hit_mix)
             ));
@@ -332,6 +347,21 @@ fn build_memory_lines(snapshot: &ContextSupervisionSnapshot) -> Vec<String> {
                     observations.query.as_str()
                 }
             ));
+            if !observations.planned_queries.is_empty() {
+                lines.push(format!(
+                    "planned observation queries: {}",
+                    observations.planned_queries.join(" | ")
+                ));
+            }
+            if let Some(reason) = observations.rewrite_reason.as_deref() {
+                lines.push(format!("observation rewrite reason: {reason}"));
+            }
+            if !observations.rewrite_queries.is_empty() {
+                lines.push(format!(
+                    "observation rewrite queries: {}",
+                    observations.rewrite_queries.join(" | ")
+                ));
+            }
             lines.push(format!(
                 "observation hits: {} ({})",
                 observations.result_count,

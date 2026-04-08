@@ -79,6 +79,11 @@ fn sample_step_diagnostics() -> StepDiagnostics {
                 observation_corrected_count: 0,
                 observation_correction_activity: 1,
                 current_query: Some(omega_session::MemoryQueryDiagnostics {
+                    raw_query: "memory query".to_string(),
+                    planned_queries: vec!["memory query".to_string()],
+                    rewrite_reason: None,
+                    rewrite_queries: Vec::new(),
+                    recovery_path: Some("deterministic_bundle".to_string()),
                     query: "memory query".to_string(),
                     result_count: 2,
                     hit_mix: std::collections::BTreeMap::from([
@@ -92,6 +97,11 @@ fn sample_step_diagnostics() -> StepDiagnostics {
                     }],
                 }),
                 current_observations: Some(omega_session::ObservationRecallDiagnostics {
+                    raw_query: "memory query".to_string(),
+                    planned_queries: vec!["memory query".to_string()],
+                    rewrite_reason: None,
+                    rewrite_queries: Vec::new(),
+                    recovery_path: Some("deterministic_bundle".to_string()),
                     query: "memory query".to_string(),
                     result_count: 1,
                     freshness_mix: std::collections::BTreeMap::from([(
@@ -262,6 +272,164 @@ fn upserting_step_diagnostics_builds_sidebar_lines() {
         .iter()
         .any(|line| line.text.contains("current=task-2")));
     assert_eq!(app.rail_badge(SidebarSection::Diagnostics), "D 1");
+}
+
+#[test]
+fn upserting_skill_load_summary_builds_skills_sidebar_lines() {
+    let mut app = App::new();
+
+    app.upsert_skill_load_summary(
+        "turn-42:root:root:load-skills".to_string(),
+        omega_session::SkillLoadSummary {
+            source_step_id: Some("select-skills".to_string()),
+            recognized_skill_ids: vec!["docs-specs".to_string(), "plan".to_string()],
+            loaded_skill_ids: vec!["docs-specs".to_string()],
+            ignored_skill_ids: vec!["plan".to_string()],
+            selection_reason: Some("spec task".to_string()),
+        },
+    );
+
+    assert_eq!(app.rail_badge(SidebarSection::Skills), "S 1/2");
+    assert!(app
+        .skill_lines
+        .iter()
+        .any(|line| line.contains("recognized ids: docs-specs, plan")));
+    assert!(app
+        .skill_lines
+        .iter()
+        .any(|line| line.contains("loaded ids: docs-specs")));
+    assert!(app
+        .skill_lines
+        .iter()
+        .any(|line| line.contains("ignored ids: plan")));
+}
+
+#[test]
+fn finishing_turn_builds_delivery_sidebar_lines_and_badge() {
+    let mut app = App::new();
+    let turn_id = app.begin_turn();
+    app.remember_delivery_model_name("gpt-5.4");
+    app.upsert_step_diagnostics(sample_step_diagnostics());
+    app.upsert_skill_load_summary(
+        "turn-1:root:root:load-skills".to_string(),
+        omega_session::SkillLoadSummary {
+            source_step_id: Some("select-skills".to_string()),
+            recognized_skill_ids: vec!["docs-specs".to_string(), "plan".to_string()],
+            loaded_skill_ids: vec!["docs-specs".to_string()],
+            ignored_skill_ids: vec!["plan".to_string()],
+            selection_reason: Some("spec task".to_string()),
+        },
+    );
+    app.upsert_step_knowledge_summary(
+        "turn-1:child:feature:plan".to_string(),
+        omega_session::StepKnowledgeSummary {
+            document: Some(omega_session::ResponseDocumentKnowledge {
+                raw_query: "delivery summary".to_string(),
+                planned_queries: vec!["delivery summary".to_string()],
+                rewrite_reason: None,
+                rewrite_queries: Vec::new(),
+                recovery_path: Some("deterministic_bundle".to_string()),
+                readiness: omega_session::SupervisionReadiness::Ready,
+                query: "delivery summary".to_string(),
+                mode: "keyword".to_string(),
+                degraded_from: None,
+                reason: None,
+                result_count: 1,
+                top_hits: Vec::new(),
+            }),
+            memory: Some(omega_session::ResponseMemoryKnowledge {
+                raw_query: Some("delivery memory".to_string()),
+                planned_queries: vec!["delivery memory".to_string()],
+                rewrite_reason: None,
+                rewrite_queries: Vec::new(),
+                recovery_path: Some("deterministic_bundle".to_string()),
+                memory_query: Some("delivery memory".to_string()),
+                observation_query: Some("delivery observation".to_string()),
+                selected_summary_count: 0,
+                top_selected_summaries: Vec::new(),
+                memory_hit_count: 0,
+                observation_hit_count: 0,
+                top_memory_hits: Vec::new(),
+                top_observations: Vec::new(),
+            }),
+        },
+    );
+    app.begin_tool_run(omega_session::ToolRun {
+        id: "tool-1".to_string(),
+        parent_section_id: "turn-1:child:feature:plan".to_string(),
+        tool_name: "write_file".to_string(),
+        status: omega_session::ToolRunStatus::Running,
+        invocation_preview: "crates/omega-tui/src/app.rs".to_string(),
+        result_preview: Some("updated file".to_string()),
+        detail: ToolRunDetail {
+            title: " Tool: write_file ".to_string(),
+            lines: vec!["path: crates/omega-tui/src/app.rs".to_string()],
+        },
+    });
+    app.complete_tool_run("tool-1", omega_session::ToolRunStatus::Complete);
+
+    app.set_status_slot(StatusSlot::Agent, StatusValue::Label("Idle".to_string()));
+
+    assert_eq!(turn_id, 1);
+    assert_eq!(app.rail_badge(SidebarSection::Delivery), "V 2/1");
+    assert!(app
+        .delivery_lines
+        .iter()
+        .any(|line| line.contains("model: gpt-5.4")));
+    assert!(app
+        .delivery_lines
+        .iter()
+        .any(|line| line.contains("files: 1 changed")));
+    assert!(app
+        .response_lines()
+        .iter()
+        .any(|line| line.contains("Task Delivery Summary")));
+}
+
+#[test]
+fn activating_delivery_summary_opens_detail_overlay() {
+    let mut app = App::new();
+    app.begin_turn();
+    app.remember_delivery_model_name("gpt-5.4");
+    app.upsert_step_diagnostics(sample_step_diagnostics());
+    app.begin_tool_run(omega_session::ToolRun {
+        id: "tool-1".to_string(),
+        parent_section_id: "turn-1:child:feature:plan".to_string(),
+        tool_name: "write_file".to_string(),
+        status: omega_session::ToolRunStatus::Running,
+        invocation_preview: "crates/omega-tui/src/app.rs".to_string(),
+        result_preview: Some("updated file".to_string()),
+        detail: ToolRunDetail {
+            title: " Tool: write_file ".to_string(),
+            lines: vec!["path: crates/omega-tui/src/app.rs".to_string()],
+        },
+    });
+    app.complete_tool_run("tool-1", omega_session::ToolRunStatus::Complete);
+    app.set_status_slot(StatusSlot::Agent, StatusValue::Label("Idle".to_string()));
+
+    let delivery_line = app
+        .response_display_lines()
+        .iter()
+        .position(|line| line.text.contains("delivery  complete"))
+        .expect("delivery response lane should exist");
+
+    let activation = app.activate_response_item_at_line(delivery_line);
+
+    assert_eq!(activation, Some(ResponseActivation::DeliveryDetailOpened));
+    match app.overlay.as_ref() {
+        Some(OverlayState::Detail(detail)) => {
+            assert_eq!(detail.title, " Task Delivery ");
+            assert!(detail
+                .lines
+                .iter()
+                .any(|line| line.contains("model: gpt-5.4")));
+            assert!(detail
+                .lines
+                .iter()
+                .any(|line| line.contains("crates/omega-tui/src/app.rs [update]")));
+        }
+        other => panic!("expected delivery detail overlay, got {other:?}"),
+    }
 }
 
 #[test]
@@ -1274,6 +1442,11 @@ fn response_lines_include_knowledge_lane_for_section_summary() {
             section_id: "turn-13k:child:feature:execute".to_string(),
             summary: Box::new(omega_session::StepKnowledgeSummary {
                 document: Some(omega_session::ResponseDocumentKnowledge {
+                    raw_query: "roadmap".to_string(),
+                    planned_queries: vec!["roadmap".to_string()],
+                    rewrite_reason: None,
+                    rewrite_queries: Vec::new(),
+                    recovery_path: Some("deterministic_bundle".to_string()),
                     readiness: omega_session::SupervisionReadiness::Ready,
                     query: "roadmap".to_string(),
                     mode: "hybrid".to_string(),
@@ -1286,14 +1459,24 @@ fn response_lines_include_knowledge_lane_for_section_summary() {
                     }],
                 }),
                 memory: Some(omega_session::ResponseMemoryKnowledge {
+                    raw_query: Some("knowledge ui".to_string()),
+                    planned_queries: vec!["knowledge ui".to_string()],
+                    rewrite_reason: None,
+                    rewrite_queries: Vec::new(),
+                    recovery_path: Some("deterministic_bundle".to_string()),
                     memory_query: Some("knowledge ui".to_string()),
                     observation_query: None,
                     selected_summary_count: 2,
-                    memory_hit_count: 2,
-                    observation_hit_count: 0,
-                    top_items: vec![omega_session::MemoryHitItem {
+                    top_selected_summaries: vec![omega_session::MemoryHitItem {
                         workflow_id: "feature".to_string(),
                         step_id: "plan".to_string(),
+                        title: "Knowledge UI plan".to_string(),
+                        preview: "Response lane and overlay follow-up".to_string(),
+                    }],
+                    memory_hit_count: 2,
+                    observation_hit_count: 0,
+                    top_memory_hits: vec![omega_session::MemoryQueryHitItem {
+                        profile: "project_facts".to_string(),
                         title: "Knowledge UI plan".to_string(),
                         preview: "Response lane and overlay follow-up".to_string(),
                     }],
@@ -1310,10 +1493,90 @@ fn response_lines_include_knowledge_lane_for_section_summary() {
             "  scene feature".to_string(),
             "  knowledge".to_string(),
             "    document  [ready]  2 hits  ·  roadmap  ·  docs/TODO.md".to_string(),
-            "    memory  2 summaries  ·  2 memory hits  ·  0 observations  ·  knowledge ui"
+            "    memory  2 selected  ·  2 archived  ·  0 observations  ·  knowledge ui"
                 .to_string(),
         ]
     );
+}
+
+#[test]
+fn response_lines_include_skill_lane_and_activation_opens_detail_overlay() {
+    let mut app = App::new();
+    let turn_id = app.begin_turn();
+
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::BeginResponseSection {
+            section: ResponseSection {
+                id: "turn-42:root:root:load-skills".to_string(),
+                parent_id: None,
+                kind: ResponseSectionKind::Step,
+                title: "Load Skills".to_string(),
+                state: ResponseSectionState::Streaming,
+                metadata: workflow_metadata(
+                    Some("feature"),
+                    "root",
+                    WorkflowRunRole::Root,
+                    Some("load-skills"),
+                    Some("Load Skills"),
+                    None,
+                ),
+            },
+        },
+    ));
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::AppendResponseSection {
+            id: "turn-42:root:root:load-skills".to_string(),
+            delta: ResponseSectionDelta::Text(
+                "recognized: docs-specs, plan\nloaded: docs-specs\nignored: plan".to_string(),
+            ),
+        },
+    ));
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::UpsertSkillLoadSummary {
+            section_id: "turn-42:root:root:load-skills".to_string(),
+            summary: Box::new(omega_session::SkillLoadSummary {
+                source_step_id: Some("select-skills".to_string()),
+                recognized_skill_ids: vec!["docs-specs".to_string(), "plan".to_string()],
+                loaded_skill_ids: vec!["docs-specs".to_string()],
+                ignored_skill_ids: vec!["plan".to_string()],
+                selection_reason: Some("spec task".to_string()),
+            }),
+        },
+    ));
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::CompleteResponseSection {
+            id: "turn-42:root:root:load-skills".to_string(),
+            state: ResponseSectionState::Complete,
+        },
+    ));
+
+    let response_lines = app.response_display_lines();
+    let skill_line = response_lines
+        .iter()
+        .position(|line| line.text.contains("skills  recognized=2 loaded=1 ignored=1"))
+        .expect("skill lane line should exist");
+
+    let activation = app.activate_response_item_at_line(skill_line);
+
+    assert_eq!(activation, Some(super::ResponseActivation::SkillLoadDetailOpened));
+    match app.overlay.as_ref() {
+        Some(OverlayState::Detail(detail)) => {
+            assert!(detail.title.contains("Routed Skills"));
+            assert!(detail
+                .lines
+                .iter()
+                .any(|line| line.contains("recognized ids: docs-specs, plan")));
+            assert!(detail
+                .lines
+                .iter()
+                .any(|line| line.contains("ignored ids: plan")));
+        }
+        other => panic!("expected detail overlay, got {other:?}"),
+    }
 }
 
 #[test]
@@ -1347,6 +1610,11 @@ fn activating_knowledge_summary_opens_detail_overlay() {
             section_id: "turn-13m:child:feature:execute".to_string(),
             summary: Box::new(omega_session::StepKnowledgeSummary {
                 document: Some(omega_session::ResponseDocumentKnowledge {
+                    raw_query: "roadmap".to_string(),
+                    planned_queries: vec!["roadmap".to_string(), "omega roadmap".to_string()],
+                    rewrite_reason: None,
+                    rewrite_queries: Vec::new(),
+                    recovery_path: Some("deterministic_bundle".to_string()),
                     readiness: omega_session::SupervisionReadiness::Uninitialized,
                     query: "roadmap".to_string(),
                     mode: "hybrid".to_string(),
@@ -1356,14 +1624,27 @@ fn activating_knowledge_summary_opens_detail_overlay() {
                     top_hits: Vec::new(),
                 }),
                 memory: Some(omega_session::ResponseMemoryKnowledge {
+                    raw_query: Some("knowledge ui overlay".to_string()),
+                    planned_queries: vec![
+                        "knowledge ui".to_string(),
+                        "response overlay".to_string(),
+                    ],
+                    rewrite_reason: None,
+                    rewrite_queries: Vec::new(),
+                    recovery_path: Some("deterministic_bundle".to_string()),
                     memory_query: Some("knowledge ui".to_string()),
                     observation_query: Some("knowledge ui observation".to_string()),
                     selected_summary_count: 1,
-                    memory_hit_count: 1,
-                    observation_hit_count: 1,
-                    top_items: vec![omega_session::MemoryHitItem {
+                    top_selected_summaries: vec![omega_session::MemoryHitItem {
                         workflow_id: "feature".to_string(),
                         step_id: "report".to_string(),
+                        title: "Knowledge summary lane".to_string(),
+                        preview: "Need response-facing drill-down".to_string(),
+                    }],
+                    memory_hit_count: 1,
+                    observation_hit_count: 1,
+                    top_memory_hits: vec![omega_session::MemoryQueryHitItem {
+                        profile: "project_facts".to_string(),
                         title: "Knowledge summary lane".to_string(),
                         preview: "Need response-facing drill-down".to_string(),
                     }],
@@ -1399,7 +1680,7 @@ fn activating_knowledge_summary_opens_detail_overlay() {
     let memory_line = app
         .response_display_lines()
         .iter()
-        .position(|line| line.text.contains("memory  1 summaries"))
+        .position(|line| line.text.contains("memory  1 selected"))
         .unwrap();
     app.response_state.select(Some(memory_line));
     assert_eq!(
@@ -1409,11 +1690,13 @@ fn activating_knowledge_summary_opens_detail_overlay() {
     match app.overlay.as_ref() {
         Some(OverlayState::Detail(detail)) => {
             assert_eq!(detail.title, " Memory Knowledge ");
+            assert!(detail.lines.iter().any(|line| line == "planned queries: knowledge ui | response overlay"));
             assert!(detail.lines.iter().any(|line| line == "memory query: knowledge ui"));
             assert!(detail
                 .lines
                 .iter()
-                .any(|line| line == "observations:"));
+                .any(|line| line == "archived memory hits:"));
+            assert!(detail.lines.iter().any(|line| line == "observations:"));
         }
         other => panic!("expected memory knowledge detail overlay, got {other:?}"),
     }
@@ -1789,6 +2072,100 @@ fn todo_snapshot_backfills_prior_subflow_statuses_without_replayed_sections() {
             "  subflow  execute-4  #risk-4  Coverage analysis  [running]  repeat 3".to_string(),
             "    collecting coverage gaps".to_string(),
             "  subflow  execute-5  #risk-5  Dependency audit  [queued]".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn later_subflows_do_not_render_done_while_earlier_item_is_still_running() {
+    let mut app = App::new();
+    let turn_id = app.begin_turn();
+
+    app.set_todo_snapshot(
+        turn_id,
+        "[>] #plan-1: Verify duplicated diagnostics path\n[x] #plan-2: Trace tool callback path\n[ ] #plan-3: Compare archive paths\n\n(1/3 completed)",
+    );
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::UpsertStepSubflow {
+            subflow: StepSubflowStatus {
+                workflow_id: "feature".to_string(),
+                workflow_role: WorkflowRunRole::Child,
+                step_id: "execute".to_string(),
+                step_label: "Execute".to_string(),
+                subflow_id: "execute-2".to_string(),
+                item_id: Some("plan-2".to_string()),
+                item_label: Some("Trace tool callback path".to_string()),
+                item_index: 2,
+                item_total: 3,
+                status: StepSubflowState::Complete,
+                repeat_count_for_item: 0,
+                no_progress_streak_for_item: 0,
+                completion_source: Some("structured_output".to_string()),
+            },
+        },
+    ));
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::UpsertStepSubflow {
+            subflow: StepSubflowStatus {
+                workflow_id: "feature".to_string(),
+                workflow_role: WorkflowRunRole::Child,
+                step_id: "execute".to_string(),
+                step_label: "Execute".to_string(),
+                subflow_id: "execute-1".to_string(),
+                item_id: Some("plan-1".to_string()),
+                item_label: Some("Verify duplicated diagnostics path".to_string()),
+                item_index: 1,
+                item_total: 3,
+                status: StepSubflowState::Running,
+                repeat_count_for_item: 0,
+                no_progress_streak_for_item: 0,
+                completion_source: None,
+            },
+        },
+    ));
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::BeginResponseSection {
+            section: ResponseSection {
+                id: "turn-31:child:feature:execute-1".to_string(),
+                parent_id: None,
+                kind: ResponseSectionKind::Step,
+                title: "Execute".to_string(),
+                state: ResponseSectionState::Streaming,
+                metadata: workflow_metadata(
+                    Some("feature"),
+                    "feature",
+                    WorkflowRunRole::Child,
+                    Some("execute"),
+                    Some("Execute"),
+                    Some(StepSubflowRef {
+                        parent_workflow_id: "feature".to_string(),
+                        parent_step_id: "execute".to_string(),
+                        parent_step_label: "Execute".to_string(),
+                        subflow_id: "execute-1".to_string(),
+                        item_id: Some("plan-1".to_string()),
+                        item_label: Some("Verify duplicated diagnostics path".to_string()),
+                        item_index: 1,
+                        item_total: 3,
+                    }),
+                ),
+            },
+        },
+    ));
+
+    assert_eq!(
+        app.response_lines(),
+        vec![
+            "step  child:feature  Execute  [streaming]".to_string(),
+            "  scene feature".to_string(),
+            "  items 1/3 · current execute-1 · todo #plan-1".to_string(),
+            "  subflow  execute-1  #plan-1  Verify duplicated diagnostics path  [running]"
+                .to_string(),
+            "    …".to_string(),
+            "  subflow  execute-2  #plan-2  Trace tool callback path  [queued]".to_string(),
+            "  subflow  execute-3  #plan-3  Compare archive paths  [queued]".to_string(),
         ]
     );
 }

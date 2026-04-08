@@ -70,7 +70,7 @@ pub use runtime_ui::{
     StepOutputAttemptKind, StepOutputContractMode, StepOutputDiagnostics,
     StepOutputRecoveryDecision, StepOutputStatus, StepSubflowRef, StepSubflowState,
     StepSubflowStatus, StepSummarySource, TokenCountSource, ToolCapabilityDiagnostics, ToolRun,
-    ToolRunDetail, ToolRunStatus,
+    ToolRunDetail, ToolRunStatus, SkillLoadSummary,
     UiContent, UiMessageKind, UiPriority, UiSource, UiTarget, WorkflowRunRole,
 };
 pub use skill_catalog::{ResolvedSkillSet, SessionSkillCatalog};
@@ -158,8 +158,12 @@ impl AgentSession {
             default_manifests,
             available_manifests,
         ));
-        let initial_system =
-            skill_catalog.build_system_prompt(&config.system, "", &StepSkillRequest::MatchTask);
+        let initial_system = skill_catalog.build_system_prompt(
+            &config.system,
+            "",
+            &[],
+            &StepSkillRequest::MatchTask,
+        );
         let context_facade = Arc::new(OmegaContextFacade::local(config.cwd.clone()));
         let mut agent = Agent::new(config.client.clone(), initial_system, dispatcher)?;
         agent.set_max_tokens(config.max_output_tokens);
@@ -245,6 +249,7 @@ impl AgentSession {
         let system = self.skill_catalog.build_system_prompt(
             &self.base_system,
             "",
+            &[],
             &StepSkillRequest::MatchTask,
         );
         let dispatcher = omega_core::create_default_tools_with_todo_manager_and_bash_allowlist(
@@ -1148,6 +1153,11 @@ fn build_document_query_knowledge_summary(
 
     StepKnowledgeSummary {
         document: Some(ResponseDocumentKnowledge {
+            raw_query: query_text.to_string(),
+            planned_queries: vec![query_text.to_string()],
+            rewrite_reason: None,
+            rewrite_queries: Vec::new(),
+            recovery_path: Some("command_query".to_string()),
             readiness: command_document_query_readiness(context),
             query: query_text.to_string(),
             mode: results

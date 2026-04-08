@@ -84,6 +84,16 @@ pub(super) fn handle_key_event(
                             ));
                             return Ok(false);
                         }
+                        Some(ResponseActivation::DeliveryDetailOpened) => {
+                            app_guard
+                                .set_status_notice("Opened task delivery detail overlay.");
+                            return Ok(false);
+                        }
+                        Some(ResponseActivation::SkillLoadDetailOpened) => {
+                            app_guard
+                                .set_status_notice("Opened routed skills detail overlay.");
+                            return Ok(false);
+                        }
                         Some(ResponseActivation::DocumentKnowledgeDetailOpened) => {
                             app_guard.set_status_notice(
                                 "Opened document knowledge detail overlay.",
@@ -128,6 +138,40 @@ pub(super) fn handle_key_event(
                     return Ok(false);
                 }
                 _ => {}
+            }
+        }
+    }
+
+    {
+        let mut app_guard = app.lock().unwrap();
+        if app_guard.interaction_mode == InteractionMode::Normal
+            && app_guard.focused_panel == Panel::Delivery
+        {
+            if matches!(key.code, KeyCode::Enter | KeyCode::Char('x')) {
+                let notice = if app_guard.open_latest_delivery_detail() {
+                    "Opened task delivery detail overlay."
+                } else {
+                    "Task delivery summary is not available yet."
+                };
+                app_guard.set_status_notice(notice);
+                return Ok(false);
+            }
+        }
+    }
+
+    {
+        let mut app_guard = app.lock().unwrap();
+        if app_guard.interaction_mode == InteractionMode::Normal
+            && app_guard.focused_panel == Panel::Skills
+        {
+            if matches!(key.code, KeyCode::Enter | KeyCode::Char('x')) {
+                let notice = if app_guard.open_skill_load_detail() {
+                    "Opened routed skills detail overlay."
+                } else {
+                    "Routed skill summary is not available yet."
+                };
+                app_guard.set_status_notice(notice);
+                return Ok(false);
             }
         }
     }

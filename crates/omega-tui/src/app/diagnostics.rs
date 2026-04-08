@@ -34,6 +34,7 @@ impl App {
                 ))
         });
         self.rebuild_diagnostics_lines();
+        self.refresh_delivery_panel();
     }
 
     pub fn diagnostics_panel_title(&self) -> String {
@@ -76,6 +77,7 @@ impl App {
         self.diagnostics_state.select(None);
         self.diagnostics_displayed_count = 0;
         self.diagnostics_pinned = false;
+        self.refresh_delivery_panel();
     }
 
     fn rebuild_diagnostics_lines(&mut self) {

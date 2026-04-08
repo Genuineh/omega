@@ -2,8 +2,8 @@
 status: draft
 owner: omega-team
 created: 2026-03-20
-updated: 2026-04-02
-version: 0.2
+updated: 2026-04-08
+version: 0.3
 supersedes: []
 related_prds: []
 ---
@@ -15,6 +15,8 @@ related_prds: []
 当前 Omega 的执行入口仍然默认直接进入单个 execution workflow。这对 feature-oriented coding task 是可行的，但对纯对话、轻量澄清或未来其他工作模式并不合适。下一阶段需要在 workflow 之上新增 `scene` 概念，把“当前是什么工作场景”作为显式路由前提。
 
 本规格定义一个 scene-aware routing 层：session 在每次收到用户新输入后，都先运行 root workflow 中唯一的 `select-workflow` step；该 step 同时完成 scene recognition 与 workflow selection，再委派到匹配的 child workflow 中稳定执行。scene 允许用户配置，并预置四种场景：`chat`、`research`、`deep-research` 与 `feature`。
+
+Status note (2026-04-08): 当前已实现基线已扩展为 root workflow 两步 `select-workflow -> select-skills`。scene/workflow routing 仍由 `select-workflow` 决定；后续追加的 `select-skills` 只负责 turn-scoped skill selection，不改变 scene/workflow routing 的 ownership 边界。详见 `docs/specs/omega-root-skill-routing.md`。
 
 默认预置映射：
 
@@ -200,6 +202,7 @@ scene routing 的目标不是继续让 root workflow 依赖“assistant 文本�
 - 当前 root workflow
 - 当前 recognized scene
 - 当前 selected workflow id
+- 规划中的 routed skill selection state（详见 `docs/specs/omega-root-skill-routing.md`）
 - active child workflow run
 - 未来可能的 workflow stack / nested workflow state
 - 当前 turn 已累积的 step summaries
@@ -295,3 +298,5 @@ scene-aware routing 是 runtime-visible 行为，因此后续实现至少要让�
 - 2026-03-23: Task 15F-9 实现完成：root routing 现以 JSON 为主路径产出结构化 routing handoff，`RoutingContext` 成为 `omega-session` 的唯一路由状态容器，child workflow delegation 与跨 turn session context 已在运行时落地。
 - 2026-04-02: root workflow 收敛为单步 `select-workflow`，同时把只读分析拆成轻量 `research` 与系统性 `deep-research` 两条默认 child workflow。
 - 2026-03-24: 明确 scene ambiguity policy：未识别 scene 的 fallback 继续落到 builtin `default_scene = feature`，而不是 `chat`；同时为明显的实现类请求补充了 `chat -> feature` 的 runtime promotion 保护，减少 root routing 误判。
+- 2026-04-08: 补充 root skill routing 规划说明；scene/workflow routing 继续只负责 child workflow 选择，turn-scoped skill selection 另由 companion spec `omega-root-skill-routing.md` 定义。
+- 2026-04-08: root skill routing 实现落地后，root workflow 当前基线更新为 `select-workflow -> select-skills`；scene/workflow 选择仍由前者负责，后者只负责 child workflow 前的 routed skill handoff。

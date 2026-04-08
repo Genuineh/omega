@@ -213,6 +213,37 @@ pub(crate) fn render_routing_context(routing: &RoutingContext) -> String {
     lines.join("\n")
 }
 
+pub(crate) fn render_skill_routing_context(
+    skill_routing: &crate::session_state::SkillRoutingContext,
+) -> String {
+    let mut lines = Vec::new();
+    if !skill_routing.selected_skill_ids.is_empty() {
+        lines.push(format!(
+            "Recognized routed skills: {}",
+            skill_routing.selected_skill_ids.join(", ")
+        ));
+    }
+    if !skill_routing.loaded_skill_ids.is_empty() {
+        lines.push(format!(
+            "Loaded routed skills: {}",
+            skill_routing.loaded_skill_ids.join(", ")
+        ));
+    }
+    if !skill_routing.ignored_skill_ids.is_empty() {
+        lines.push(format!(
+            "Ignored routed skills: {}",
+            skill_routing.ignored_skill_ids.join(", ")
+        ));
+    }
+    if let Some(reason) = skill_routing.selection_reason.as_deref() {
+        lines.push(format!("Skill selection reason: {reason}"));
+    }
+    if let Some(source_step_id) = skill_routing.source_step_id.as_deref() {
+        lines.push(format!("Skill selection source: {source_step_id}"));
+    }
+    lines.join("\n")
+}
+
 pub(crate) fn render_visible_tools(tool_names: &[String]) -> String {
     if tool_names.is_empty() {
         "Visible tools: none".to_string()
@@ -247,6 +278,13 @@ fn render_stable_session_context(session_context: &SessionContext) -> String {
         sections.push(format!(
             "<workflow_runtime>\n{}\n</workflow_runtime>",
             routing_context.trim_end()
+        ));
+    }
+    let skill_routing_context = render_skill_routing_context(&session_context.skill_routing);
+    if !skill_routing_context.trim().is_empty() {
+        sections.push(format!(
+            "<skill_routing>\n{}\n</skill_routing>",
+            skill_routing_context.trim_end()
         ));
     }
     sections.join("\n\n")

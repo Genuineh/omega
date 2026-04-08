@@ -104,6 +104,9 @@ pub struct StepContextRequest {
     pub tool_manifests: Vec<ToolManifestMetadata>,
     pub tool_definitions: Vec<ToolDefinition>,
     pub messages: Vec<Message>,
+    pub recall_rewrite_reason: Option<String>,
+    pub recall_rewrite_queries: Vec<String>,
+    pub recall_recovery_path: Option<String>,
     pub context_window: u32,
     pub max_output_tokens: u32,
     pub safety_margin_tokens: u32,
@@ -161,6 +164,7 @@ pub struct AssembledContext {
     pub system_blocks: Vec<SystemBlock>,
     pub selected_step_summaries: Vec<ContextStepSummary>,
     pub cache_diagnostics: ContextCacheDiagnostics,
+    pub document_summary: Option<DocumentHitSummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -297,6 +301,11 @@ pub struct StepKnowledgeSummary {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ResponseDocumentKnowledge {
+    pub raw_query: String,
+    pub planned_queries: Vec<String>,
+    pub rewrite_reason: Option<String>,
+    pub rewrite_queries: Vec<String>,
+    pub recovery_path: Option<String>,
     pub readiness: SupervisionReadiness,
     pub query: String,
     pub mode: String,
@@ -308,12 +317,18 @@ pub struct ResponseDocumentKnowledge {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ResponseMemoryKnowledge {
+    pub raw_query: Option<String>,
+    pub planned_queries: Vec<String>,
+    pub rewrite_reason: Option<String>,
+    pub rewrite_queries: Vec<String>,
+    pub recovery_path: Option<String>,
     pub memory_query: Option<String>,
     pub observation_query: Option<String>,
     pub selected_summary_count: u32,
+    pub top_selected_summaries: Vec<MemoryHitItem>,
     pub memory_hit_count: u32,
     pub observation_hit_count: u32,
-    pub top_items: Vec<MemoryHitItem>,
+    pub top_memory_hits: Vec<MemoryQueryHitItem>,
     pub top_observations: Vec<ObservationRecallHitItem>,
 }
 
@@ -345,6 +360,11 @@ pub struct DocumentSupervisionTotals {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct DocumentHitSummary {
+    pub raw_query: String,
+    pub planned_queries: Vec<String>,
+    pub rewrite_reason: Option<String>,
+    pub rewrite_queries: Vec<String>,
+    pub recovery_path: Option<String>,
     pub query: String,
     pub mode: String,
     pub degraded_from: Option<String>,
@@ -391,6 +411,11 @@ pub struct MemorySupervisionTotals {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct MemoryQueryDiagnostics {
+    pub raw_query: String,
+    pub planned_queries: Vec<String>,
+    pub rewrite_reason: Option<String>,
+    pub rewrite_queries: Vec<String>,
+    pub recovery_path: Option<String>,
     pub query: String,
     pub result_count: u32,
     pub hit_mix: BTreeMap<String, u32>,
@@ -406,6 +431,11 @@ pub struct MemoryQueryHitItem {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ObservationRecallDiagnostics {
+    pub raw_query: String,
+    pub planned_queries: Vec<String>,
+    pub rewrite_reason: Option<String>,
+    pub rewrite_queries: Vec<String>,
+    pub recovery_path: Option<String>,
     pub query: String,
     pub result_count: u32,
     pub freshness_mix: BTreeMap<String, u32>,
@@ -443,6 +473,7 @@ pub struct RecallPlan {
     pub document_hits: Vec<SearchResult>,
     pub memory_hits: Vec<MemoryQueryHit>,
     pub observations: Vec<ProjectObservation>,
+    pub document_summary: Option<DocumentHitSummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -459,6 +490,37 @@ impl Default for RecallBudgetConfig {
             observation_hits_tokens: 220,
             document_hits_tokens: 240,
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct RecallQueryBundle {
+    raw_query: String,
+    keyword_queries: Vec<String>,
+    concept_queries: Vec<String>,
+    path_hints: Vec<String>,
+    doc_type_hints: Vec<DocType>,
+    rewrite_reason: Option<String>,
+    rewrite_queries: Vec<String>,
+    recovery_path: Option<String>,
+}
+
+impl RecallQueryBundle {
+    fn planned_queries(&self) -> Vec<String> {
+        let mut values = self.keyword_queries.clone();
+        values.extend(self.concept_queries.clone());
+        values.extend(self.rewrite_queries.clone());
+        dedupe_trimmed_strings(&values)
+            .into_iter()
+            .take(5)
+            .collect()
+    }
+
+    fn primary_query(&self) -> String {
+        self.planned_queries()
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| self.raw_query.clone())
     }
 }
 
@@ -631,33 +693,46 @@ impl OmegaContextFacade {
         request.document_hits = recall.document_hits;
         request.memory_hits = recall.memory_hits;
         request.observation_hits = recall.observations;
-        let assembled = self.assembler.assemble_step_context(request, token_counter)?;
+        let mut assembled = self.assembler.assemble_step_context(request, token_counter)?;
+        assembled.document_summary = recall.document_summary;
         self.sync_memory_snapshot();
         Ok(assembled)
     }
 
     fn plan_recall(&self, request: &StepContextRequest) -> Result<RecallPlan> {
-        let query_text = request.session.latest_user_turn.trim();
-        if query_text.is_empty() {
+        let bundle = build_recall_query_bundle(request);
+        let planned_queries = bundle.planned_queries();
+        if planned_queries.is_empty() && bundle.raw_query.trim().is_empty() {
             self.sync_memory_snapshot();
             return Ok(RecallPlan::default());
         }
 
         let memory_hits = self.memory.query(MemoryQuery {
-            text: Some(query_text.to_string()),
+            text: Some(bundle.primary_query()),
+            queries: planned_queries.clone(),
+            raw_query: Some(bundle.raw_query.clone()),
             profiles: vec![
                 RetentionProfile::ProjectFacts,
                 RetentionProfile::DeveloperPreferences,
                 RetentionProfile::OpenThreads,
             ],
             max_results: 6,
+            rewrite_reason: bundle.rewrite_reason.clone(),
+            rewrite_queries: bundle.rewrite_queries.clone(),
+            recovery_path: bundle.recovery_path.clone(),
         })?;
         let observations = self.memory.query_observations(ObservationQuery {
-            text: Some(query_text.to_string()),
+            text: Some(bundle.primary_query()),
+            queries: planned_queries.clone(),
+            raw_query: Some(bundle.raw_query.clone()),
             max_results: 4,
             include_stale: true,
+            rewrite_reason: bundle.rewrite_reason.clone(),
+            rewrite_queries: bundle.rewrite_queries.clone(),
+            recovery_path: bundle.recovery_path.clone(),
         })?;
-        let document_hits = self.plan_document_recall(query_text, &memory_hits, &observations);
+        let (document_hits, document_summary) =
+            self.plan_document_recall(&bundle, &memory_hits, &observations);
 
         Ok(RecallPlan {
             document_hits,
@@ -669,53 +744,95 @@ impl OmegaContextFacade {
                 observations,
                 self.recall_budget.observation_hits_tokens,
             ),
+            document_summary,
         })
     }
 
     fn plan_document_recall(
         &self,
-        query_text: &str,
+        bundle: &RecallQueryBundle,
         memory_hits: &[MemoryQueryHit],
         observations: &[ProjectObservation],
-    ) -> Vec<SearchResult> {
+    ) -> (Vec<SearchResult>, Option<DocumentHitSummary>) {
         if !self.document_backend_enabled {
-            return Vec::new();
+            return (Vec::new(), None);
+        }
+
+        let planned_queries = bundle.planned_queries();
+        if planned_queries.is_empty() {
+            return (Vec::new(), None);
         }
 
         self.diagnostics.record_document_usage(
             "context_recall_planner",
             "planner",
-            &format!("query={}", preview_text(query_text, 80)),
+            &format!(
+                "queries={} raw={}",
+                planned_queries.len(),
+                preview_text(&bundle.raw_query, 80)
+            ),
         );
-        let related_paths = collect_related_paths(memory_hits, observations);
-        let recent_window = query_requests_recent_window(query_text)
-            .then(|| current_unix_timestamp().saturating_sub(14 * 24 * 60 * 60));
-        let results = self
-            .query
-            .search(SearchQuery {
-                text: Some(query_text.to_string()),
-                mode: SearchMode::Hybrid,
-                filters: recent_window
-                    .map(|timestamp| vec![SearchFilter::ModifiedAfter(timestamp)])
-                    .unwrap_or_default(),
-                sort: None,
-                max_results: 6,
-            })
-            .or_else(|_| {
-                self.query.search(SearchQuery {
+        let related_paths = collect_related_paths(memory_hits, observations, &bundle.path_hints);
+        let mut merged_results = Vec::new();
+        for query_text in &planned_queries {
+            let recent_window = query_requests_recent_window(query_text)
+                .then(|| current_unix_timestamp().saturating_sub(14 * 24 * 60 * 60));
+            let filters = recent_window
+                .map(|timestamp| vec![SearchFilter::ModifiedAfter(timestamp)])
+                .unwrap_or_else(|| document_query_filters(&bundle.doc_type_hints));
+            let results = self
+                .query
+                .search(SearchQuery {
                     text: Some(query_text.to_string()),
                     mode: SearchMode::Hybrid,
-                    filters: Vec::new(),
+                    filters,
                     sort: None,
                     max_results: 6,
                 })
-            })
-            .unwrap_or_default();
+                .or_else(|_| {
+                    self.query.search(SearchQuery {
+                        text: Some(query_text.to_string()),
+                        mode: SearchMode::Hybrid,
+                        filters: document_query_filters(&bundle.doc_type_hints),
+                        sort: None,
+                        max_results: 6,
+                    })
+                })
+                .unwrap_or_default();
+            merged_results.extend(results);
+        }
 
-        trim_document_hits_for_budget(
-            rerank_document_hits(results, &related_paths),
+        let hits = trim_document_hits_for_budget(
+            rerank_document_hits(dedupe_document_hits_by_path(merged_results), &related_paths),
             self.recall_budget.document_hits_tokens,
-        )
+        );
+        let summary = Some(DocumentHitSummary {
+            raw_query: bundle.raw_query.clone(),
+            planned_queries,
+            rewrite_reason: bundle.rewrite_reason.clone(),
+            rewrite_queries: bundle.rewrite_queries.clone(),
+            recovery_path: bundle.recovery_path.clone(),
+            query: bundle.primary_query(),
+            mode: hits
+                .first()
+                .map(|hit| search_mode_label(hit.mode_used).to_string())
+                .unwrap_or_else(|| "hybrid".to_string()),
+            degraded_from: hits
+                .iter()
+                .find_map(|hit| hit.degraded_from.map(search_mode_label))
+                .map(ToOwned::to_owned),
+            result_count: hits.len() as u32,
+            top_hits: hits
+                .iter()
+                .take(5)
+                .map(|hit| DocumentHitItem {
+                    path: hit.path.clone(),
+                    preview: preview_text(&hit.preview, 140),
+                })
+                .collect(),
+        });
+
+        (hits, summary)
     }
 
     fn sync_memory_snapshot(&self) {
@@ -815,6 +932,7 @@ impl ContextAssembler for DefaultContextAssembler {
                 uncached_input_tokens: None,
                 cache_hit_ratio_percent: None,
             },
+            document_summary: None,
         })
     }
 
@@ -914,6 +1032,7 @@ impl MemoryService for LocalMemoryService {
     fn query(&self, query: MemoryQuery) -> Result<Vec<MemoryQueryHit>> {
         let hits = self.store.query(&query)?;
         let query_text = query.text.unwrap_or_default();
+        let planned_queries = dedupe_trimmed_strings(&query.queries);
         let mut hit_mix = BTreeMap::new();
         for hit in &hits {
             *hit_mix.entry(hit.profile.as_str().to_string()).or_default() += 1;
@@ -924,6 +1043,11 @@ impl MemoryService for LocalMemoryService {
             *runtime.query_hit_mix.entry(profile.clone()).or_default() += *count as u64;
         }
         runtime.current_query = Some(MemoryQueryDiagnostics {
+            raw_query: query.raw_query.unwrap_or_else(|| query_text.clone()),
+            planned_queries,
+            rewrite_reason: query.rewrite_reason.clone(),
+            rewrite_queries: dedupe_trimmed_strings(&query.rewrite_queries),
+            recovery_path: query.recovery_path.clone(),
             query: query_text,
             result_count: hits.len() as u32,
             hit_mix,
@@ -942,6 +1066,7 @@ impl MemoryService for LocalMemoryService {
 
     fn query_observations(&self, query: ObservationQuery) -> Result<Vec<ProjectObservation>> {
         let observations = self.store.query_observations(&query)?;
+        let query_text = query.text.unwrap_or_default();
         let mut freshness_mix = BTreeMap::new();
         for observation in &observations {
             *freshness_mix
@@ -949,7 +1074,12 @@ impl MemoryService for LocalMemoryService {
                 .or_default() += 1;
         }
         self.runtime.lock().unwrap().current_observations = Some(ObservationRecallDiagnostics {
-            query: query.text.unwrap_or_default(),
+            raw_query: query.raw_query.unwrap_or_else(|| query_text.clone()),
+            planned_queries: dedupe_trimmed_strings(&query.queries),
+            rewrite_reason: query.rewrite_reason.clone(),
+            rewrite_queries: dedupe_trimmed_strings(&query.rewrite_queries),
+            recovery_path: query.recovery_path.clone(),
+            query: query_text,
             result_count: observations.len() as u32,
             freshness_mix,
             top_hits: observations
@@ -1383,6 +1513,14 @@ fn trim_document_hits_for_budget(hits: Vec<SearchResult>, max_tokens: u32) -> Ve
     selected
 }
 
+fn document_query_filters(doc_type_hints: &[DocType]) -> Vec<SearchFilter> {
+    if doc_type_hints.is_empty() {
+        Vec::new()
+    } else {
+        vec![SearchFilter::DocType(doc_type_hints.to_vec())]
+    }
+}
+
 fn trim_observations_for_budget(
     observations: Vec<ProjectObservation>,
     max_tokens: u32,
@@ -1416,6 +1554,23 @@ fn rerank_document_hits(
     results
 }
 
+fn dedupe_document_hits_by_path(results: Vec<SearchResult>) -> Vec<SearchResult> {
+    let mut deduped = BTreeMap::new();
+    for result in results {
+        deduped
+            .entry(result.path.clone())
+            .and_modify(|existing: &mut SearchResult| {
+                if result.score > existing.score
+                    || (result.score == existing.score && result.modified_at > existing.modified_at)
+                {
+                    *existing = result.clone();
+                }
+            })
+            .or_insert(result);
+    }
+    deduped.into_values().collect()
+}
+
 fn document_relation_rank(result: &SearchResult, related_paths: &BTreeSet<String>) -> u8 {
     related_paths
         .iter()
@@ -1427,8 +1582,12 @@ fn document_relation_rank(result: &SearchResult, related_paths: &BTreeSet<String
 fn collect_related_paths(
     memory_hits: &[MemoryQueryHit],
     observations: &[ProjectObservation],
+    path_hints: &[String],
 ) -> BTreeSet<String> {
     let mut paths = BTreeSet::new();
+    for path_hint in path_hints {
+        paths.insert(path_hint.clone());
+    }
     for hit in memory_hits {
         for evidence in &hit.evidence_refs {
             if let omega_memory::RetentionEvidenceRef::ChangedPath { path } = evidence {
@@ -1444,6 +1603,240 @@ fn collect_related_paths(
         }
     }
     paths
+}
+
+fn build_recall_query_bundle(request: &StepContextRequest) -> RecallQueryBundle {
+    let raw_query = request.session.latest_user_turn.trim().to_string();
+    let mut keyword_queries = Vec::new();
+    let mut concept_queries = Vec::new();
+    let mut path_hints = extract_path_hints(&raw_query);
+    let mut doc_type_hints = infer_doc_type_hints(&raw_query);
+
+    if !raw_query.is_empty() {
+        keyword_queries.push(raw_query.clone());
+        if let Some(compressed) = compress_recall_query(&raw_query) {
+            concept_queries.push(compressed);
+        }
+    }
+
+    if let Some(item) = request.current_execute_item.as_ref() {
+        if let Some(label) = item.item_label.as_deref() {
+            keyword_queries.push(format!("{} {}", request.step.label, label));
+            concept_queries.push(label.to_string());
+            path_hints.extend(extract_path_hints(label));
+            doc_type_hints.extend(infer_doc_type_hints(label));
+        }
+    } else if !request.step.label.trim().is_empty() {
+        concept_queries.push(request.step.label.trim().to_string());
+    }
+
+    let structured_anchors = extract_structured_input_strings(request.structured_input.as_ref());
+    if !structured_anchors.is_empty() {
+        keyword_queries.push(structured_anchors.iter().take(3).cloned().collect::<Vec<_>>().join(" "));
+        for anchor in &structured_anchors {
+            path_hints.extend(extract_path_hints(anchor));
+            doc_type_hints.extend(infer_doc_type_hints(anchor));
+        }
+    }
+
+    if let Some(todo_snapshot) = request.todo_snapshot.as_deref() {
+        let todo_anchors = extract_todo_labels(todo_snapshot);
+        if !todo_anchors.is_empty() {
+            concept_queries.push(todo_anchors.join(" "));
+        }
+    }
+
+    let summary_anchors = extract_recent_summary_entities(&request.session.step_summaries);
+    if !summary_anchors.is_empty() {
+        concept_queries.push(summary_anchors.join(" "));
+        for anchor in &summary_anchors {
+            path_hints.extend(extract_path_hints(anchor));
+        }
+    }
+
+    RecallQueryBundle {
+        raw_query,
+        keyword_queries: dedupe_trimmed_strings(&keyword_queries),
+        concept_queries: dedupe_trimmed_strings(&concept_queries),
+        path_hints: dedupe_trimmed_strings(&path_hints),
+        doc_type_hints: dedupe_doc_types(&doc_type_hints),
+        rewrite_reason: request.recall_rewrite_reason.clone(),
+        rewrite_queries: dedupe_trimmed_strings(&request.recall_rewrite_queries),
+        recovery_path: request.recall_recovery_path.clone(),
+    }
+}
+
+fn compress_recall_query(text: &str) -> Option<String> {
+    let anchors = text
+        .split(|ch: char| ch.is_whitespace() || [',', ';', ':', '，', '。', '、'].contains(&ch))
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .filter(|part| {
+            part.contains('/')
+                || part.contains("::")
+                || part.contains("omega-")
+                || part.ends_with(".rs")
+                || part.ends_with(".md")
+                || part.chars().count() >= 4
+                || part.chars().any(is_cjk_like)
+        })
+        .take(6)
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    if anchors.is_empty() {
+        None
+    } else {
+        Some(anchors.join(" "))
+    }
+}
+
+fn extract_structured_input_strings(value: Option<&Value>) -> Vec<String> {
+    let Some(value) = value else {
+        return Vec::new();
+    };
+    let mut values = Vec::new();
+    collect_structured_input_strings(value, &mut values);
+    dedupe_trimmed_strings(&values)
+}
+
+fn collect_structured_input_strings(value: &Value, values: &mut Vec<String>) {
+    match value {
+        Value::String(text) => {
+            if !text.trim().is_empty() {
+                values.push(text.trim().to_string());
+            }
+        }
+        Value::Array(items) => {
+            for item in items.iter().take(6) {
+                collect_structured_input_strings(item, values);
+            }
+        }
+        Value::Object(map) => {
+            for (key, value) in map.iter().take(8) {
+                values.push(key.trim().to_string());
+                collect_structured_input_strings(value, values);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn extract_todo_labels(todo_snapshot: &str) -> Vec<String> {
+    todo_snapshot
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| {
+            line.split_once(':')
+                .map(|(_, label)| label.trim())
+                .or_else(|| line.strip_prefix("[>] ").map(str::trim))
+        })
+        .filter(|label| !label.is_empty())
+        .map(ToOwned::to_owned)
+        .take(3)
+        .collect()
+}
+
+fn extract_recent_summary_entities(step_summaries: &[ContextStepSummary]) -> Vec<String> {
+    let mut counts = BTreeMap::new();
+    for summary in step_summaries.iter().rev().take(4) {
+        for anchor in extract_summary_anchors(summary) {
+            *counts.entry(anchor).or_insert(0_u32) += 1;
+        }
+    }
+    counts
+        .into_iter()
+        .filter(|(_, count)| *count > 1)
+        .map(|(anchor, _)| anchor)
+        .take(3)
+        .collect()
+}
+
+fn extract_summary_anchors(summary: &ContextStepSummary) -> Vec<String> {
+    let mut anchors = vec![summary.title.clone(), summary.workflow_id.clone()];
+    anchors.extend(extract_path_hints(&summary.summary));
+    if let Some(compressed) = compress_recall_query(&summary.summary) {
+        anchors.push(compressed);
+    }
+    dedupe_trimmed_strings(&anchors)
+}
+
+fn extract_path_hints(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .map(|part| part.trim_matches(|ch: char| matches!(ch, ',' | ':' | ';' | ')' | '(' | '[' | ']')))
+        .filter(|part| {
+            part.contains('/')
+                || part.contains("::")
+                || part.starts_with("omega-")
+                || part.starts_with("crates/")
+                || part.ends_with(".rs")
+                || part.ends_with(".md")
+        })
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn infer_doc_type_hints(text: &str) -> Vec<DocType> {
+    let normalized = text.to_lowercase();
+    let mut hints = Vec::new();
+    if normalized.contains("spec") {
+        hints.push(DocType::Spec);
+    }
+    if normalized.contains("guide") {
+        hints.push(DocType::Guide);
+    }
+    if normalized.contains("todo") || normalized.contains("task") {
+        hints.push(DocType::Todo);
+    }
+    if normalized.contains("readme") {
+        hints.push(DocType::Readme);
+    }
+    if normalized.contains("adr") || normalized.contains("decision") {
+        hints.push(DocType::Adr);
+    }
+    dedupe_doc_types(&hints)
+}
+
+fn dedupe_trimmed_strings(values: &[String]) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut deduped = Vec::new();
+    for value in values {
+        let trimmed = value.trim();
+        if trimmed.is_empty() || !seen.insert(trimmed.to_string()) {
+            continue;
+        }
+        deduped.push(trimmed.to_string());
+    }
+    deduped
+}
+
+fn dedupe_doc_types(values: &[DocType]) -> Vec<DocType> {
+    let mut deduped = Vec::new();
+    for value in values {
+        if !deduped.contains(value) {
+            deduped.push(*value);
+        }
+    }
+    deduped
+}
+
+fn is_cjk_like(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{3400}'..='\u{4DBF}'
+            | '\u{4E00}'..='\u{9FFF}'
+            | '\u{3040}'..='\u{309F}'
+            | '\u{30A0}'..='\u{30FF}'
+            | '\u{AC00}'..='\u{D7AF}'
+    )
+}
+
+fn search_mode_label(mode: SearchMode) -> &'static str {
+    match mode {
+        SearchMode::Keyword => "keyword",
+        SearchMode::Semantic => "semantic",
+        SearchMode::Hybrid => "hybrid",
+    }
 }
 
 fn query_requests_recent_window(query_text: &str) -> bool {
@@ -2593,9 +2986,12 @@ mod tests {
     use omega_tools::{ToolFamily, ToolManifestMetadata, ToolPromptProfile};
     use omega_workflow::{DataFormat, OutputRecoveryMode};
 
+    use crate::{DocType, FileStatus, FileType, SearchMode, SearchResult};
+
     use super::{
-        render_output_contract, render_visible_tools, CompactionPolicy, ContextAssembler,
-        ContextExecuteItem, ContextRouting, ContextSession, ContextStep, ContextTokenCounter,
+        build_recall_query_bundle, dedupe_document_hits_by_path, render_output_contract,
+        render_visible_tools, CompactionPolicy, ContextAssembler, ContextExecuteItem,
+        ContextRouting, ContextSession, ContextStep, ContextTokenCounter,
         ContextWorkflowRole, DefaultContextAssembler, DocumentHealthReport, HealthScore,
         LocalMemoryService, MemoryService, OmegaContextFacade, OutputRepairContextRequest,
         OutputRepairFailure, RecallBudgetConfig, ScanResult, StepContextRequest, TurnData,
@@ -2713,6 +3109,9 @@ mod tests {
                 input_schema: serde_json::json!({"type": "object"}),
             }],
             messages: vec![Message::user("hello")],
+            recall_rewrite_reason: None,
+            recall_rewrite_queries: Vec::new(),
+            recall_recovery_path: None,
             context_window: 200_000,
             max_output_tokens: 32_000,
             safety_margin_tokens: 2_000,
@@ -3099,6 +3498,59 @@ mod tests {
                 document_hits_tokens: 96,
             }
         );
+    }
+
+    #[test]
+    fn recall_query_bundle_collects_step_and_structured_anchors() {
+        let request = step_request();
+
+        let bundle = build_recall_query_bundle(&request);
+        let queries = bundle.planned_queries();
+
+        assert!(!queries.is_empty());
+        assert!(queries.iter().any(|query| query.contains("fix this bug")));
+        assert!(queries.iter().any(|query| query.contains("Inspect")));
+        assert!(queries.iter().any(|query| query.contains("goal")) || queries.iter().any(|query| query.contains("fix")));
+        assert!(
+            !bundle.concept_queries.is_empty()
+                || !bundle.path_hints.is_empty()
+                || !bundle.doc_type_hints.is_empty()
+        );
+    }
+
+    #[test]
+    fn dedupe_document_hits_keeps_highest_score_per_path() {
+        let deduped = dedupe_document_hits_by_path(vec![
+            SearchResult {
+                path: "docs/specs/omega-context-management.md".to_string(),
+                score: 0.2,
+                preview: "older".to_string(),
+                language: None,
+                file_type: FileType::Doc,
+                doc_type: Some(DocType::Spec),
+                status: FileStatus::Active,
+                modified_at: 10,
+                total_tokens: 40,
+                mode_used: SearchMode::Hybrid,
+                degraded_from: None,
+            },
+            SearchResult {
+                path: "docs/specs/omega-context-management.md".to_string(),
+                score: 0.8,
+                preview: "newer".to_string(),
+                language: None,
+                file_type: FileType::Doc,
+                doc_type: Some(DocType::Spec),
+                status: FileStatus::Active,
+                modified_at: 20,
+                total_tokens: 40,
+                mode_used: SearchMode::Hybrid,
+                degraded_from: None,
+            },
+        ]);
+
+        assert_eq!(deduped.len(), 1);
+        assert_eq!(deduped[0].preview, "newer");
     }
 
     #[test]

@@ -11,6 +11,13 @@ pub struct ResolvedSkillSet {
     preloaded_skills: Vec<Skill>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RoutedSkillLoadResult {
+    pub(crate) recognized_skill_ids: Vec<String>,
+    pub(crate) loaded_skill_ids: Vec<String>,
+    pub(crate) ignored_skill_ids: Vec<String>,
+}
+
 impl ResolvedSkillSet {
     pub fn new(descriptions: Vec<String>, preloaded_skills: Vec<Skill>) -> Self {
         Self {
@@ -61,17 +68,22 @@ impl SessionSkillCatalog {
         Self { loader }
     }
 
-    pub fn resolve_for_step(&self, task: &str, request: &StepSkillRequest) -> ResolvedSkillSet {
+    pub fn resolve_for_step(
+        &self,
+        task: &str,
+        routed_skill_ids: &[String],
+        request: &StepSkillRequest,
+    ) -> ResolvedSkillSet {
         let descriptions = self.loader.descriptions();
+        let routed = self.preload_named_skills(routed_skill_ids);
 
         match request {
             StepSkillRequest::Disable => ResolvedSkillSet::new(descriptions, Vec::new()),
-            StepSkillRequest::MatchTask => ResolvedSkillSet::new(
-                descriptions,
-                self.loader.match_for_task(task, DEFAULT_MATCH_LIMIT),
-            ),
+            StepSkillRequest::MatchTask => {
+                ResolvedSkillSet::new(descriptions, self.baseline_skills(task, routed))
+            }
             StepSkillRequest::Append(names) => {
-                let mut preloaded = self.loader.match_for_task(task, DEFAULT_MATCH_LIMIT);
+                let mut preloaded = self.baseline_skills(task, routed);
                 let mut seen = preloaded
                     .iter()
                     .map(|skill| skill.name.clone())
@@ -90,15 +102,76 @@ impl SessionSkillCatalog {
         }
     }
 
+    pub fn normalize_selected_skill_ids(&self, names: &[String]) -> Vec<String> {
+        self.load_routed_skills(names).loaded_skill_ids
+    }
+
+    pub(crate) fn load_routed_skills(&self, names: &[String]) -> RoutedSkillLoadResult {
+        let recognized_skill_ids = normalize_skill_ids(names);
+        let mut loaded_skill_ids = Vec::new();
+        let mut ignored_skill_ids = Vec::new();
+
+        for name in &recognized_skill_ids {
+            if self.loader.get(name).is_some() {
+                loaded_skill_ids.push(name.clone());
+            } else {
+                ignored_skill_ids.push(name.clone());
+            }
+        }
+
+        RoutedSkillLoadResult {
+            recognized_skill_ids,
+            loaded_skill_ids,
+            ignored_skill_ids,
+        }
+    }
+
+    fn baseline_skills(&self, task: &str, routed: Vec<Skill>) -> Vec<Skill> {
+        if routed.is_empty() {
+            self.loader.match_for_task(task, DEFAULT_MATCH_LIMIT)
+        } else {
+            routed
+        }
+    }
+
+    fn preload_named_skills(&self, names: &[String]) -> Vec<Skill> {
+        let mut preloaded = Vec::new();
+        let mut seen = BTreeSet::new();
+        for name in names {
+            if let Some(skill) = self.loader.get(name) {
+                if seen.insert(skill.name.clone()) {
+                    preloaded.push(skill.clone());
+                }
+            }
+        }
+        preloaded
+    }
+
     pub fn build_system_prompt(
         &self,
         base_prompt: &str,
         task: &str,
+        routed_skill_ids: &[String],
         request: &StepSkillRequest,
     ) -> String {
-        self.resolve_for_step(task, request)
+        self.resolve_for_step(task, routed_skill_ids, request)
             .build_system_prompt(base_prompt)
     }
+}
+
+pub(crate) fn normalize_skill_ids(names: &[String]) -> Vec<String> {
+    let mut normalized = Vec::new();
+    let mut seen = BTreeSet::new();
+    for name in names {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if seen.insert(trimmed.to_string()) {
+            normalized.push(trimmed.to_string());
+        }
+    }
+    normalized
 }
 
 #[cfg(test)]
@@ -147,6 +220,7 @@ mod tests {
         let prompt = catalog.build_system_prompt(
             "Base prompt",
             "Please review this patch",
+            &[],
             &StepSkillRequest::MatchTask,
         );
 
@@ -161,6 +235,7 @@ mod tests {
         let catalog = catalog();
         let resolved = catalog.resolve_for_step(
             "Please review this patch",
+            &[],
             &StepSkillRequest::Append(vec!["review".to_string(), "docs-specs".to_string()]),
         );
 
@@ -176,9 +251,61 @@ mod tests {
     fn disable_keeps_descriptions_but_skips_preloaded_skills() {
         let catalog = catalog();
         let resolved =
-            catalog.resolve_for_step("Please review this patch", &StepSkillRequest::Disable);
+            catalog.resolve_for_step("Please review this patch", &[], &StepSkillRequest::Disable);
 
         assert!(!resolved.descriptions().is_empty());
         assert!(resolved.preloaded_skills().is_empty());
+    }
+
+    #[test]
+    fn routed_skills_override_match_task_when_present() {
+        let catalog = catalog();
+        let resolved = catalog.resolve_for_step(
+            "Please review this patch",
+            &["docs-specs".to_string()],
+            &StepSkillRequest::MatchTask,
+        );
+
+        let names = resolved
+            .preloaded_skills()
+            .iter()
+            .map(|skill| skill.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["docs-specs"]);
+    }
+
+    #[test]
+    fn append_extends_routed_skills_without_duplicates() {
+        let catalog = catalog();
+        let resolved = catalog.resolve_for_step(
+            "Please review this patch",
+            &["docs-specs".to_string()],
+            &StepSkillRequest::Append(vec!["review".to_string(), "docs-specs".to_string()]),
+        );
+
+        let names = resolved
+            .preloaded_skills()
+            .iter()
+            .map(|skill| skill.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["docs-specs", "review"]);
+    }
+
+    #[test]
+    fn load_routed_skills_reports_loaded_and_ignored_ids() {
+        let catalog = catalog();
+        let result = catalog.load_routed_skills(&[
+            "docs-specs".to_string(),
+            "missing-skill".to_string(),
+            "docs-specs".to_string(),
+            " ".to_string(),
+        ]);
+
+        assert_eq!(
+            result.recognized_skill_ids,
+            vec!["docs-specs".to_string(), "missing-skill".to_string()]
+        );
+        assert_eq!(result.loaded_skill_ids, vec!["docs-specs".to_string()]);
+        assert_eq!(result.ignored_skill_ids, vec!["missing-skill".to_string()]);
     }
 }

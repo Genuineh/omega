@@ -1,6 +1,8 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SidebarSection {
     Diagnostics,
+    Delivery,
+    Skills,
     Document,
     Memory,
     Todos,
@@ -11,6 +13,8 @@ impl SidebarSection {
     pub fn label(self) -> &'static str {
         match self {
             Self::Diagnostics => "Diagnostics",
+            Self::Delivery => "Delivery",
+            Self::Skills => "Skills",
             Self::Document => "Document",
             Self::Memory => "Memory",
             Self::Todos => "Todos",
@@ -20,7 +24,9 @@ impl SidebarSection {
 
     pub fn next(self) -> Self {
         match self {
-            Self::Diagnostics => Self::Document,
+            Self::Diagnostics => Self::Delivery,
+            Self::Delivery => Self::Skills,
+            Self::Skills => Self::Document,
             Self::Document => Self::Memory,
             Self::Memory => Self::Todos,
             Self::Todos => Self::Logs,
@@ -31,7 +37,9 @@ impl SidebarSection {
     pub fn previous(self) -> Self {
         match self {
             Self::Diagnostics => Self::Logs,
-            Self::Document => Self::Diagnostics,
+            Self::Delivery => Self::Diagnostics,
+            Self::Skills => Self::Delivery,
+            Self::Document => Self::Skills,
             Self::Memory => Self::Document,
             Self::Todos => Self::Memory,
             Self::Logs => Self::Todos,
@@ -44,6 +52,8 @@ pub struct SidebarState {
     pub shell_collapsed: bool,
     pub rail_selection: SidebarSection,
     pub diagnostics_expanded: bool,
+    pub delivery_expanded: bool,
+    pub skills_expanded: bool,
     pub document_expanded: bool,
     pub memory_expanded: bool,
     pub todos_expanded: bool,
@@ -56,6 +66,8 @@ impl Default for SidebarState {
             shell_collapsed: false,
             rail_selection: SidebarSection::Diagnostics,
             diagnostics_expanded: false,
+            delivery_expanded: true,
+            skills_expanded: true,
             document_expanded: true,
             memory_expanded: true,
             todos_expanded: true,
@@ -67,6 +79,8 @@ impl Default for SidebarState {
 impl SidebarState {
     pub fn expanded_sections(self) -> usize {
         usize::from(self.diagnostics_expanded)
+            + usize::from(self.delivery_expanded)
+            + usize::from(self.skills_expanded)
             + usize::from(self.document_expanded)
             + usize::from(self.memory_expanded)
             + usize::from(self.todos_expanded)
@@ -88,6 +102,8 @@ impl SidebarState {
     pub fn is_expanded(self, section: SidebarSection) -> bool {
         match section {
             SidebarSection::Diagnostics => self.diagnostics_expanded,
+            SidebarSection::Delivery => self.delivery_expanded,
+            SidebarSection::Skills => self.skills_expanded,
             SidebarSection::Document => self.document_expanded,
             SidebarSection::Memory => self.memory_expanded,
             SidebarSection::Todos => self.todos_expanded,
@@ -102,6 +118,8 @@ impl SidebarState {
 
         match self.rail_selection {
             SidebarSection::Diagnostics => self.diagnostics_expanded = !self.diagnostics_expanded,
+            SidebarSection::Delivery => self.delivery_expanded = !self.delivery_expanded,
+            SidebarSection::Skills => self.skills_expanded = !self.skills_expanded,
             SidebarSection::Document => self.document_expanded = !self.document_expanded,
             SidebarSection::Memory => self.memory_expanded = !self.memory_expanded,
             SidebarSection::Todos => self.todos_expanded = !self.todos_expanded,
@@ -119,6 +137,8 @@ mod tests {
     fn toggling_last_expanded_section_keeps_sidebar_body_nonempty() {
         let mut state = SidebarState {
             diagnostics_expanded: false,
+            delivery_expanded: false,
+            skills_expanded: false,
             document_expanded: false,
             memory_expanded: false,
             todos_expanded: false,

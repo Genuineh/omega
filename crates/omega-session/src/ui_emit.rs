@@ -1498,6 +1498,11 @@ mod tests {
                 observation_corrected_count: 0,
                 observation_correction_activity: 1,
                 current_query: Some(omega_context::MemoryQueryDiagnostics {
+                    raw_query: "memory query".to_string(),
+                    planned_queries: vec!["memory query".to_string()],
+                    rewrite_reason: None,
+                    rewrite_queries: Vec::new(),
+                    recovery_path: Some("deterministic_bundle".to_string()),
                     query: "memory query".to_string(),
                     result_count: 2,
                     hit_mix: std::collections::BTreeMap::from([
@@ -1511,6 +1516,11 @@ mod tests {
                     }],
                 }),
                 current_observations: Some(omega_context::ObservationRecallDiagnostics {
+                    raw_query: "memory query".to_string(),
+                    planned_queries: vec!["memory query".to_string()],
+                    rewrite_reason: None,
+                    rewrite_queries: Vec::new(),
+                    recovery_path: Some("deterministic_bundle".to_string()),
                     query: "memory query".to_string(),
                     result_count: 1,
                     freshness_mix: std::collections::BTreeMap::from([

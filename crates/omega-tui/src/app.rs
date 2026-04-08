@@ -8,8 +8,8 @@ use ratatui::{layout::Rect, widgets::ListState};
 use omega_observability::strip_ansi;
 use omega_session::{
     ContextSupervisionSnapshot, OverlayTarget, ResponseSectionState, RuntimeUiEnvelope,
-    StatusSlot, StatusValue, StepDiagnostics, StepKnowledgeSummary, StepOutputStatus,
-    StepSubflowRef,
+    SkillLoadSummary, StatusSlot, StatusValue, StepDiagnostics, StepKnowledgeSummary,
+    StepOutputStatus, StepSubflowRef,
     StepSubflowStatus, ToolRun, ToolRunStatus, WorkflowRunRole,
 };
 use omega_theme::RenderPalette;
@@ -22,7 +22,9 @@ use crate::reducer::{session_status_from_status, workflow_summary_from_status, T
 use crate::sidebar::{SidebarSection, SidebarState};
 
 mod diagnostics;
+mod delivery;
 mod response;
+mod skills;
 mod supervision;
 mod text;
 mod todo;
@@ -30,6 +32,8 @@ mod todo;
 pub(crate) use text::wrap_text_segments;
 #[cfg(test)]
 pub(crate) use todo::todo_empty_lines;
+use skills::skill_placeholder_lines;
+use delivery::{delivery_placeholder_lines, DeliverySummary};
 use supervision::{document_placeholder_lines, memory_placeholder_lines};
 use todo::todo_unsynced_lines;
 
@@ -47,6 +51,8 @@ pub enum Panel {
     Response,
     SidebarRail,
     Diagnostics,
+    Delivery,
+    Skills,
     Document,
     Memory,
     Todo,
@@ -150,6 +156,8 @@ pub enum ResponseLineAction {
     ToggleToolLane(String),
     OpenToolRunDetail(String),
     OpenStepSubflowDetail(String),
+    OpenDeliveryDetail(u64),
+    OpenSkillLoadDetail(String),
     OpenDocumentKnowledgeDetail(String),
     OpenMemoryKnowledgeDetail(String),
 }
@@ -164,6 +172,8 @@ pub enum ResponseActivation {
     ToolLaneExpanded,
     ToolDetailOpened(String),
     StepSubflowDetailOpened(String),
+    DeliveryDetailOpened,
+    SkillLoadDetailOpened,
     DocumentKnowledgeDetailOpened,
     MemoryKnowledgeDetailOpened,
 }
@@ -223,10 +233,16 @@ pub struct App {
     pub output_msgs: Vec<Msg>,
     pub tool_runs: Vec<ToolRun>,
     pub step_subflows: Vec<StepSubflowStatus>,
+    pub delivery_summaries: BTreeMap<u64, DeliverySummary>,
+    pub latest_delivery_turn_id: Option<u64>,
+    pub skill_load_summaries: BTreeMap<String, SkillLoadSummary>,
+    pub latest_skill_load_section_id: Option<String>,
     pub step_knowledge_summaries: BTreeMap<String, StepKnowledgeSummary>,
     step_diagnostics: Vec<StepDiagnostics>,
     context_supervision: Option<ContextSupervisionSnapshot>,
     diagnostics_lines: Vec<DiagnosticsLine>,
+    pub delivery_lines: Vec<String>,
+    pub skill_lines: Vec<String>,
     pub document_lines: Vec<String>,
     pub memory_lines: Vec<String>,
     pub todo_lines: Vec<String>,
@@ -235,6 +251,8 @@ pub struct App {
     pub log_lines: Vec<String>,
     pub response_state: ListState,
     pub diagnostics_state: ListState,
+    pub delivery_state: ListState,
+    pub skills_state: ListState,
     pub document_state: ListState,
     pub memory_state: ListState,
     pub todo_state: ListState,
@@ -243,6 +261,8 @@ pub struct App {
     pub interaction_mode: InteractionMode,
     pub response_pinned: bool,
     pub diagnostics_pinned: bool,
+    pub delivery_pinned: bool,
+    pub skills_pinned: bool,
     pub document_pinned: bool,
     pub memory_pinned: bool,
     pub todo_pinned: bool,
@@ -254,6 +274,8 @@ pub struct App {
     pub sidebar_rect: Rect,
     pub sidebar_rail_rect: Rect,
     pub diagnostics_rect: Rect,
+    pub delivery_rect: Rect,
+    pub skills_rect: Rect,
     pub document_rect: Rect,
     pub memory_rect: Rect,
     pub todo_rect: Rect,
@@ -272,6 +294,8 @@ pub struct App {
     pub spinner_tick: u8,
     pub response_displayed_count: usize,
     pub diagnostics_displayed_count: usize,
+    pub delivery_displayed_count: usize,
+    pub skills_displayed_count: usize,
     pub document_displayed_count: usize,
     pub memory_displayed_count: usize,
     pub todo_displayed_count: usize,
@@ -286,6 +310,7 @@ pub struct App {
     pub overlay: Option<OverlayState>,
     pub overlay_rect: Rect,
     pub cached_palette: Option<RenderPalette>,
+    pub delivery_model_name: Option<String>,
 }
 
 impl App {
@@ -294,10 +319,16 @@ impl App {
             output_msgs: vec![],
             tool_runs: vec![],
             step_subflows: vec![],
+            delivery_summaries: BTreeMap::new(),
+            latest_delivery_turn_id: None,
+            skill_load_summaries: BTreeMap::new(),
+            latest_skill_load_section_id: None,
             step_knowledge_summaries: BTreeMap::new(),
             step_diagnostics: vec![],
             context_supervision: None,
             diagnostics_lines: vec![],
+            delivery_lines: delivery_placeholder_lines(),
+            skill_lines: skill_placeholder_lines(),
             document_lines: document_placeholder_lines(),
             memory_lines: memory_placeholder_lines(),
             todo_lines: todo_unsynced_lines(),
@@ -306,6 +337,8 @@ impl App {
             log_lines: vec![],
             response_state: ListState::default(),
             diagnostics_state: ListState::default(),
+            delivery_state: ListState::default(),
+            skills_state: ListState::default(),
             document_state: ListState::default(),
             memory_state: ListState::default(),
             todo_state: ListState::default(),
@@ -314,6 +347,8 @@ impl App {
             interaction_mode: InteractionMode::Normal,
             response_pinned: false,
             diagnostics_pinned: false,
+            delivery_pinned: false,
+            skills_pinned: false,
             document_pinned: false,
             memory_pinned: false,
             todo_pinned: false,
@@ -325,6 +360,8 @@ impl App {
             sidebar_rect: Rect::default(),
             sidebar_rail_rect: Rect::default(),
             diagnostics_rect: Rect::default(),
+            delivery_rect: Rect::default(),
+            skills_rect: Rect::default(),
             document_rect: Rect::default(),
             memory_rect: Rect::default(),
             todo_rect: Rect::default(),
@@ -343,6 +380,8 @@ impl App {
             spinner_tick: 0,
             response_displayed_count: 0,
             diagnostics_displayed_count: 0,
+            delivery_displayed_count: 0,
+            skills_displayed_count: 0,
             document_displayed_count: 0,
             memory_displayed_count: 0,
             todo_displayed_count: 0,
@@ -357,6 +396,7 @@ impl App {
             overlay: None,
             overlay_rect: Rect::default(),
             cached_palette: None,
+            delivery_model_name: None,
         }
     }
 
@@ -367,9 +407,11 @@ impl App {
         self.session_status = None;
         self.agent_status_label = Some("Running".to_string());
         self.step_subflows.clear();
+        self.clear_skill_load_summaries();
         self.step_knowledge_summaries.clear();
         self.clear_step_diagnostics();
         self.clear_context_supervision();
+        self.refresh_delivery_panel();
         self.active_turn_id
     }
 
@@ -379,6 +421,7 @@ impl App {
     }
 
     pub fn interrupt_turn(&mut self) {
+        self.finalize_current_delivery_summary(true);
         self.fail_streaming_response_sections();
         self.fail_running_tool_runs();
         self.active_turn_id = self.active_turn_id.wrapping_add(1);
@@ -387,9 +430,11 @@ impl App {
         self.session_status = None;
         self.agent_status_label = Some("Idle".to_string());
         self.step_subflows.clear();
+        self.clear_skill_load_summaries();
         self.step_knowledge_summaries.clear();
         self.clear_step_diagnostics();
         self.clear_context_supervision();
+        self.refresh_delivery_panel();
     }
 
     pub fn is_current_turn(&self, turn_id: u64) -> bool {
@@ -407,8 +452,12 @@ impl App {
             }
             StatusSlot::Agent => match value {
                 StatusValue::Label(label) => {
+                    let was_running = self.is_running;
                     self.is_running = label != "Idle";
                     self.agent_status_label = Some(label);
+                    if was_running && !self.is_running {
+                        self.finalize_current_delivery_summary(false);
+                    }
                 }
                 StatusValue::Hidden => {
                     self.is_running = false;
@@ -478,6 +527,7 @@ impl App {
         summary: StepKnowledgeSummary,
     ) {
         self.step_knowledge_summaries.insert(section_id, summary);
+        self.refresh_delivery_panel();
     }
 
     pub fn step_subflow_status_for_ref(
@@ -615,6 +665,24 @@ impl App {
                 self.diagnostics_state
                     .select(Some(current.saturating_sub(amount)));
             }
+            Panel::Delivery => {
+                self.delivery_pinned = true;
+                let current = self.delivery_state.selected().unwrap_or_else(|| {
+                    self.delivery_displayed_count
+                        .max(self.delivery_lines.len())
+                        .saturating_sub(1)
+                });
+                self.delivery_state.select(Some(current.saturating_sub(amount)));
+            }
+            Panel::Skills => {
+                self.skills_pinned = true;
+                let current = self.skills_state.selected().unwrap_or_else(|| {
+                    self.skills_displayed_count
+                        .max(self.skill_lines.len())
+                        .saturating_sub(1)
+                });
+                self.skills_state.select(Some(current.saturating_sub(amount)));
+            }
             Panel::Document => {
                 self.document_pinned = true;
                 let current = self.document_state.selected().unwrap_or_else(|| {
@@ -681,6 +749,30 @@ impl App {
                 self.diagnostics_state.select(Some(new_idx));
                 if new_idx >= last {
                     self.diagnostics_pinned = false;
+                }
+            }
+            Panel::Delivery => {
+                let last = self
+                    .delivery_displayed_count
+                    .max(self.delivery_lines.len())
+                    .saturating_sub(1);
+                let current = self.delivery_state.selected().unwrap_or(last);
+                let new_idx = (current + amount).min(last);
+                self.delivery_state.select(Some(new_idx));
+                if new_idx >= last {
+                    self.delivery_pinned = false;
+                }
+            }
+            Panel::Skills => {
+                let last = self
+                    .skills_displayed_count
+                    .max(self.skill_lines.len())
+                    .saturating_sub(1);
+                let current = self.skills_state.selected().unwrap_or(last);
+                let new_idx = (current + amount).min(last);
+                self.skills_state.select(Some(new_idx));
+                if new_idx >= last {
+                    self.skills_pinned = false;
                 }
             }
             Panel::Document => {
@@ -756,6 +848,18 @@ impl App {
                     .saturating_add(self.diagnostics_rect.height)
         {
             Panel::Diagnostics
+        } else if self.delivery_rect.width > 0
+            && col >= self.delivery_rect.x
+            && row >= self.delivery_rect.y
+            && row < self.delivery_rect.y.saturating_add(self.delivery_rect.height)
+        {
+            Panel::Delivery
+        } else if self.skills_rect.width > 0
+            && col >= self.skills_rect.x
+            && row >= self.skills_rect.y
+            && row < self.skills_rect.y.saturating_add(self.skills_rect.height)
+        {
+            Panel::Skills
         } else if self.document_rect.width > 0
             && col >= self.document_rect.x
             && row >= self.document_rect.y
@@ -793,6 +897,14 @@ impl App {
         self.diagnostics_rect.width > 0 && self.diagnostics_rect.height > 0
     }
 
+    pub fn delivery_visible(&self) -> bool {
+        self.delivery_rect.width > 0 && self.delivery_rect.height > 0
+    }
+
+    pub fn skills_visible(&self) -> bool {
+        self.skills_rect.width > 0 && self.skills_rect.height > 0
+    }
+
     pub fn document_visible(&self) -> bool {
         self.document_rect.width > 0 && self.document_rect.height > 0
     }
@@ -814,6 +926,12 @@ impl App {
             self.focused_panel = Panel::Response;
         }
         if self.focused_panel == Panel::Diagnostics && !self.diagnostics_visible() {
+            self.focused_panel = Panel::Response;
+        }
+        if self.focused_panel == Panel::Delivery && !self.delivery_visible() {
+            self.focused_panel = Panel::Response;
+        }
+        if self.focused_panel == Panel::Skills && !self.skills_visible() {
             self.focused_panel = Panel::Response;
         }
         if self.focused_panel == Panel::Document && !self.document_visible() {
@@ -846,6 +964,12 @@ impl App {
         if self.diagnostics_visible() {
             panels.push(Panel::Diagnostics);
         }
+        if self.delivery_visible() {
+            panels.push(Panel::Delivery);
+        }
+        if self.skills_visible() {
+            panels.push(Panel::Skills);
+        }
         if self.document_visible() {
             panels.push(Panel::Document);
         }
@@ -875,6 +999,8 @@ impl App {
             Panel::Response => KeyFocus::Response,
             Panel::SidebarRail => KeyFocus::SidebarRail,
             Panel::Diagnostics => KeyFocus::Activity,
+            Panel::Delivery => KeyFocus::Activity,
+            Panel::Skills => KeyFocus::Activity,
             Panel::Document => KeyFocus::Activity,
             Panel::Memory => KeyFocus::Activity,
             Panel::Todo => KeyFocus::Todo,
@@ -1048,6 +1174,22 @@ impl App {
                     self.focused_panel = Panel::Diagnostics;
                 }
             }
+            SidebarSection::Delivery => {
+                if !self.sidebar.delivery_expanded {
+                    self.sidebar.delivery_expanded = true;
+                }
+                if self.delivery_visible() {
+                    self.focused_panel = Panel::Delivery;
+                }
+            }
+            SidebarSection::Skills => {
+                if !self.sidebar.skills_expanded {
+                    self.sidebar.skills_expanded = true;
+                }
+                if self.skills_visible() {
+                    self.focused_panel = Panel::Skills;
+                }
+            }
             SidebarSection::Document => {
                 if !self.sidebar.document_expanded {
                     self.sidebar.document_expanded = true;
@@ -1116,6 +1258,26 @@ impl App {
                     "D --".to_string()
                 }
             }
+            SidebarSection::Delivery => match self.delivery_panel_summary() {
+                Some(summary) => {
+                    format!("V {}/{}", summary.llm_request_count, summary.changed_files.len())
+                }
+                None => "V --".to_string(),
+            },
+            SidebarSection::Skills => match self.latest_skill_load_section_id.as_deref() {
+                Some(section_id) => self
+                    .skill_load_summaries
+                    .get(section_id)
+                    .map(|summary| {
+                        format!(
+                            "S {}/{}",
+                            summary.loaded_skill_ids.len(),
+                            summary.recognized_skill_ids.len()
+                        )
+                    })
+                    .unwrap_or_else(|| "S --".to_string()),
+                None => "S --".to_string(),
+            },
             SidebarSection::Document => match self.context_supervision.as_ref() {
                 Some(snapshot) if !snapshot.document.enabled => "off".to_string(),
                 Some(snapshot) => snapshot

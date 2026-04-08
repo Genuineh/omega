@@ -355,6 +355,53 @@ fn mouse_click_on_collapsed_reasoning_toggles_expand() {
 }
 
 #[test]
+fn mouse_click_on_bottom_status_opens_delivery_detail() {
+    let app = Arc::new(Mutex::new(App::new()));
+    {
+        let mut app_guard = app.lock().unwrap();
+        app_guard.begin_turn();
+        app_guard.remember_delivery_model_name("gpt-5.4");
+        app_guard.set_status_slot(
+            omega_session::StatusSlot::Agent,
+            omega_session::StatusValue::Label("Idle".to_string()),
+        );
+        app_guard.bottom_status_rect = ratatui::layout::Rect::new(0, 20, 80, 1);
+    }
+
+    handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 3,
+            row: 20,
+            modifiers: KeyModifiers::NONE,
+        },
+        &app,
+    );
+    handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 3,
+            row: 20,
+            modifiers: KeyModifiers::NONE,
+        },
+        &app,
+    );
+
+    let app_guard = app.lock().unwrap();
+    assert_eq!(
+        app_guard.status_notice.as_deref(),
+        Some("Opened task delivery detail overlay.")
+    );
+    match app_guard.overlay.as_ref() {
+        Some(crate::overlay::OverlayState::Detail(detail)) => {
+            assert_eq!(detail.title, " Task Delivery ");
+            assert!(detail.lines.iter().any(|line| line.contains("model: gpt-5.4")));
+        }
+        other => panic!("expected delivery detail overlay, got {other:?}"),
+    }
+}
+
+#[test]
 fn response_panel_jk_and_enter_expand_selected_reasoning() {
     let harness = EventReplayHarness::new();
     {
@@ -1002,9 +1049,9 @@ fn sidebar_rail_cycles_and_toggles_selected_section() {
     let app_guard = app.lock().unwrap();
     assert_eq!(
         app_guard.sidebar.rail_selection,
-        crate::sidebar::SidebarSection::Document
+        crate::sidebar::SidebarSection::Delivery
     );
-    assert!(!app_guard.sidebar.document_expanded);
+    assert!(!app_guard.sidebar.delivery_expanded);
     assert_eq!(app_guard.focused_panel, Panel::SidebarRail);
 }
 

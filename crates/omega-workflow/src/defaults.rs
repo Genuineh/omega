@@ -7,12 +7,12 @@ use crate::constants::{
     CHAT_BLOCKED_GROUP, CHAT_STEP_ID, CHAT_WORKFLOW_ID, DEEP_RESEARCH_WORKFLOW_ID,
     DEFAULT_CHAT_PROMPT_PATH, DEFAULT_EXECUTE_PROMPT_PATH, DEFAULT_EXECUTE_SCHEMA_PATH,
     DEFAULT_EXPLORE_PROMPT_PATH, DEFAULT_EXPLORE_SCHEMA_PATH, DEFAULT_PLAN_PROMPT_PATH,
-    DEFAULT_PLAN_SCHEMA_PATH, DEFAULT_REPORT_PROMPT_PATH,
-    DEFAULT_SCENE_RECOGNITION_PROMPT_PATH, DEFAULT_SELECT_WORKFLOW_PROMPT_PATH,
-    EXECUTE_STEP_ID, EXPLORE_STEP_ID, FEATURE_NON_EXECUTE_BLOCKED_GROUP,
-    FEATURE_WORKFLOW_ID, PLAN_STEP_ID, REPORT_STEP_ID, RESEARCH_WORKFLOW_ID,
-    ROOT_ROUTING_BLOCKED_GROUP, ROOT_WORKFLOW_ID, SCENE_RECOGNITION_STEP_ID,
-    SELECT_WORKFLOW_STEP_ID,
+    DEFAULT_PLAN_SCHEMA_PATH, DEFAULT_REPORT_PROMPT_PATH, DEFAULT_SCENE_RECOGNITION_PROMPT_PATH,
+    DEFAULT_SELECT_SKILLS_PROMPT_PATH, DEFAULT_SELECT_SKILLS_SCHEMA_PATH,
+    DEFAULT_SELECT_WORKFLOW_PROMPT_PATH, EXECUTE_STEP_ID, EXPLORE_STEP_ID,
+    FEATURE_NON_EXECUTE_BLOCKED_GROUP, FEATURE_WORKFLOW_ID, PLAN_STEP_ID, REPORT_STEP_ID,
+    RESEARCH_WORKFLOW_ID, ROOT_ROUTING_BLOCKED_GROUP, ROOT_WORKFLOW_ID,
+    SCENE_RECOGNITION_STEP_ID, SELECT_SKILLS_STEP_ID, SELECT_WORKFLOW_STEP_ID,
 };
 use crate::model::{
     DataFormat, OutputRecoveryMode, StepInputContract, StepLoopContract, StepLoopMode,
@@ -57,6 +57,18 @@ max_iterations = 4
 tool_request = { mode = "block", groups = ["root_routing_blocked"] }
 skill_request = { mode = "match_task" }
 output_contract = { mode = "required", format = "json", max_retries = 1, recovery_mode = "repair_then_regenerate" }
+enabled = true
+
+[[steps]]
+id = "select-skills"
+label = "Select Skills"
+prompt = ".omega/prompt/step/select-skills.md"
+loop_mode = "agent_loop"
+max_iterations = 4
+tool_request = { mode = "block", groups = ["root_routing_blocked"] }
+skill_request = { mode = "disable" }
+input_contract = { mode = "required", sources = ["select-workflow"] }
+output_contract = { mode = "required", format = "json", schema_path = ".omega/schema/step/select-skills.json", max_retries = 1, recovery_mode = "repair_then_regenerate" }
 enabled = true
 "#;
 
@@ -309,6 +321,24 @@ Use tools only when they materially improve workflow selection.
 Do not produce the final user-facing answer.
 "#;
 
+const DEFAULT_SELECT_SKILLS_PROMPT: &str = r#"You are in the root skill selection phase.
+
+Choose which skills should be preloaded for the upcoming child workflow.
+Use the user's request, the current routing context, the selected workflow, and the available skill descriptions.
+Do not inspect repository files, list directories, or probe the workspace for this decision.
+Select only the skills that materially improve the next workflow. Prefer a short list over an exhaustive list.
+If no skill is clearly needed, return an empty list.
+Return only a JSON object with this shape:
+{"selected_skill_ids":["docs-specs"],"selection_reason":"brief reason"}
+Rules:
+- `selected_skill_ids` must be an array of unique skill ids.
+- Include at most 5 skill ids.
+- `selection_reason` is optional but should be concise when present.
+- Do not wrap the JSON in markdown fences.
+- Do not add any extra prose.
+- Do not produce the final user-facing answer.
+"#;
+
 const DEFAULT_CHAT_PROMPT: &str = r#"You are in the chat workflow.
 
 Respond conversationally and directly to the user's request.
@@ -457,6 +487,23 @@ const DEFAULT_EXECUTE_SCHEMA: &str = r#"{
     }
 }"#;
 
+const DEFAULT_SELECT_SKILLS_SCHEMA: &str = r#"{
+    "type": "object",
+    "required": ["selected_skill_ids"],
+    "properties": {
+        "selected_skill_ids": {
+            "type": "array",
+            "maxItems": 5,
+            "uniqueItems": true,
+            "items": { "type": "string" }
+        },
+        "selection_reason": {
+            "type": "string",
+            "maxLength": 240
+        }
+    }
+}"#;
+
 pub(crate) fn default_scenes_toml() -> &'static str {
     DEFAULT_SCENES_TOML
 }
@@ -470,6 +517,7 @@ pub(crate) fn default_workflow_toml() -> &'static str {
 pub(crate) enum BuiltinWorkflowStepId {
     SceneRecognition,
     SelectWorkflow,
+    SelectSkills,
     Chat,
     Explore,
     Plan,
@@ -478,10 +526,11 @@ pub(crate) enum BuiltinWorkflowStepId {
 }
 
 impl BuiltinWorkflowStepId {
-    pub(crate) fn all() -> [Self; 7] {
+    pub(crate) fn all() -> [Self; 8] {
         [
             Self::SceneRecognition,
             Self::SelectWorkflow,
+            Self::SelectSkills,
             Self::Chat,
             Self::Explore,
             Self::Plan,
@@ -494,6 +543,7 @@ impl BuiltinWorkflowStepId {
         match self {
             Self::SceneRecognition => SCENE_RECOGNITION_STEP_ID,
             Self::SelectWorkflow => SELECT_WORKFLOW_STEP_ID,
+            Self::SelectSkills => SELECT_SKILLS_STEP_ID,
             Self::Chat => CHAT_STEP_ID,
             Self::Explore => EXPLORE_STEP_ID,
             Self::Plan => PLAN_STEP_ID,
@@ -506,6 +556,7 @@ impl BuiltinWorkflowStepId {
         match self {
             Self::SceneRecognition => "Scene Recognition",
             Self::SelectWorkflow => "Select Workflow",
+            Self::SelectSkills => "Select Skills",
             Self::Chat => "Chat",
             Self::Explore => "Explore",
             Self::Plan => "Plan",
@@ -518,6 +569,7 @@ impl BuiltinWorkflowStepId {
         match self {
             Self::SceneRecognition => DEFAULT_SCENE_RECOGNITION_PROMPT_PATH,
             Self::SelectWorkflow => DEFAULT_SELECT_WORKFLOW_PROMPT_PATH,
+            Self::SelectSkills => DEFAULT_SELECT_SKILLS_PROMPT_PATH,
             Self::Chat => DEFAULT_CHAT_PROMPT_PATH,
             Self::Explore => DEFAULT_EXPLORE_PROMPT_PATH,
             Self::Plan => DEFAULT_PLAN_PROMPT_PATH,
@@ -530,6 +582,7 @@ impl BuiltinWorkflowStepId {
         match self {
             Self::SceneRecognition => DEFAULT_SCENE_RECOGNITION_PROMPT,
             Self::SelectWorkflow => DEFAULT_SELECT_WORKFLOW_PROMPT,
+            Self::SelectSkills => DEFAULT_SELECT_SKILLS_PROMPT,
             Self::Chat => DEFAULT_CHAT_PROMPT,
             Self::Explore => DEFAULT_EXPLORE_PROMPT,
             Self::Plan => DEFAULT_PLAN_PROMPT,
@@ -551,6 +604,7 @@ impl BuiltinWorkflowStepId {
             }),
             Self::SceneRecognition
             | Self::SelectWorkflow
+            | Self::SelectSkills
             | Self::Chat
             | Self::Explore
             | Self::Plan
@@ -560,7 +614,7 @@ impl BuiltinWorkflowStepId {
 
     pub(crate) fn default_max_iterations(self) -> u32 {
         match self {
-            Self::SceneRecognition | Self::SelectWorkflow => 4,
+            Self::SceneRecognition | Self::SelectWorkflow | Self::SelectSkills => 4,
             Self::Chat | Self::Explore | Self::Plan | Self::Execute | Self::Report => 200,
         }
     }
@@ -570,6 +624,7 @@ impl BuiltinWorkflowStepId {
             Self::Execute => 8,
             Self::SceneRecognition
             | Self::SelectWorkflow
+            | Self::SelectSkills
             | Self::Chat
             | Self::Explore
             | Self::Plan
@@ -582,6 +637,7 @@ impl BuiltinWorkflowStepId {
             Self::Execute => vec!["todo_managed_execute".to_string()],
             Self::SceneRecognition
             | Self::SelectWorkflow
+            | Self::SelectSkills
             | Self::Chat
             | Self::Explore
             | Self::Plan
@@ -592,7 +648,7 @@ impl BuiltinWorkflowStepId {
     pub(crate) fn default_tool_request(self, tool_policy: &ToolPolicyConfig) -> StepToolRequest {
         match self {
             Self::Execute => StepToolRequest::Inherit,
-            Self::SceneRecognition | Self::SelectWorkflow => StepToolRequest::Block(
+            Self::SceneRecognition | Self::SelectWorkflow | Self::SelectSkills => StepToolRequest::Block(
                 tool_policy
                     .group_items(ROOT_ROUTING_BLOCKED_GROUP)
                     .unwrap_or(&[])
@@ -614,11 +670,23 @@ impl BuiltinWorkflowStepId {
     }
 
     pub(crate) fn default_skill_request(self) -> StepSkillRequest {
-        StepSkillRequest::MatchTask
+        match self {
+            Self::SelectSkills => StepSkillRequest::Disable,
+            Self::SceneRecognition
+            | Self::SelectWorkflow
+            | Self::Chat
+            | Self::Explore
+            | Self::Plan
+            | Self::Execute
+            | Self::Report => StepSkillRequest::MatchTask,
+        }
     }
 
     pub(crate) fn default_input_contract(self) -> StepInputContract {
         match self {
+            Self::SelectSkills => StepInputContract::Required {
+                sources: vec![SELECT_WORKFLOW_STEP_ID.to_string()],
+            },
             Self::Plan => StepInputContract::Required {
                 sources: vec![EXPLORE_STEP_ID.to_string()],
             },
@@ -643,6 +711,12 @@ impl BuiltinWorkflowStepId {
             Self::SceneRecognition | Self::SelectWorkflow => StepOutputContract::Required {
                 format: DataFormat::Json,
                 schema_path: None,
+                max_retries: 1,
+                recovery_mode: OutputRecoveryMode::RepairThenRegenerate,
+            },
+            Self::SelectSkills => StepOutputContract::Required {
+                format: DataFormat::Json,
+                schema_path: Some(PathBuf::from(DEFAULT_SELECT_SKILLS_SCHEMA_PATH)),
                 max_retries: 1,
                 recovery_mode: OutputRecoveryMode::RepairThenRegenerate,
             },
@@ -696,6 +770,7 @@ pub(crate) fn builtin_step_for_id(step_id: &str) -> Option<BuiltinWorkflowStepId
     match step_id {
         SCENE_RECOGNITION_STEP_ID => Some(BuiltinWorkflowStepId::SceneRecognition),
         SELECT_WORKFLOW_STEP_ID => Some(BuiltinWorkflowStepId::SelectWorkflow),
+        SELECT_SKILLS_STEP_ID => Some(BuiltinWorkflowStepId::SelectSkills),
         CHAT_STEP_ID => Some(BuiltinWorkflowStepId::Chat),
         EXPLORE_STEP_ID => Some(BuiltinWorkflowStepId::Explore),
         PLAN_STEP_ID => Some(BuiltinWorkflowStepId::Plan),
@@ -721,6 +796,7 @@ pub(crate) fn builtin_schema_content_for_path(schema_path: &Path) -> Option<&'st
         DEFAULT_EXPLORE_SCHEMA_PATH => Some(DEFAULT_EXPLORE_SCHEMA),
         DEFAULT_PLAN_SCHEMA_PATH => Some(DEFAULT_PLAN_SCHEMA),
         DEFAULT_EXECUTE_SCHEMA_PATH => Some(DEFAULT_EXECUTE_SCHEMA),
+        DEFAULT_SELECT_SKILLS_SCHEMA_PATH => Some(DEFAULT_SELECT_SKILLS_SCHEMA),
         _ => None,
     }
 }

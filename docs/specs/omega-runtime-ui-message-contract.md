@@ -2,8 +2,8 @@
 status: implemented
 owner: omega-team
 created: 2026-03-20
-updated: 2026-03-26
-version: 0.4
+updated: 2026-04-08
+version: 0.5
 supersedes: []
 related_prds: []
 ---
@@ -16,7 +16,7 @@ related_prds: []
 
 本规格保留为 `Task 15F-3` 的 implemented baseline 记录：它解释了 `RuntimeUiEnvelope` / `RuntimeUiEffect` / `TuiUpdateReducer` 这套旧 contract 是如何建立起来的，以及为什么它最终需要收敛到 message pipeline。当前要看运行中的主路径，请以 `omega-runtime-message-pipeline.md` 为准；当前要看 legacy/compat contract 或旧 reducer 的历史基线，请继续看本文件。
 
-当前补充说明：本规格的已实现部分已经覆盖 workflow / tool / todo / routing，以及 `Task 15F-6` / `Task 15B-20` / `Task 15B-21` / `Task 15F-7` 组合出的 response timeline + tool lifecycle foundation：`omega-session` 现在不仅可以发出 `BeginResponseSection` / `AppendResponseSection` / `CompleteResponseSection`，也可以发出 `BeginToolRun` / `UpdateToolRun` / `CompleteToolRun`。其中 `ToolRun` 以 stable `tool_use_id`、`parent_section_id`、`status`、`invocation_preview`、`result_preview` 与 detail lines 描述 step 内工具调用；`omega-tui` 当前已经兼容该 effect 扩展，并继续保留现有 `ResponseSectionKind::{Routing, Step, FinalAnswer, Thinking}` timeline 渲染。`Thinking` section 在流式阶段实时可见，完成后默认折叠为摘要，并受 `.omega/tui.toml` 的 `[response].show_thinking` 开关控制。
+当前补充说明：本规格的已实现部分已经覆盖 workflow / tool / todo / routing，以及 `Task 15F-6` / `Task 15B-20` / `Task 15B-21` / `Task 15F-7` 组合出的 response timeline + tool lifecycle foundation：`omega-session` 现在不仅可以发出 `BeginResponseSection` / `AppendResponseSection` / `CompleteResponseSection`，也可以发出 `BeginToolRun` / `UpdateToolRun` / `CompleteToolRun`。其中 `ToolRun` 以 stable `tool_use_id`、`parent_section_id`、`status`、`invocation_preview`、`result_preview` 与 detail lines 描述 step 内工具调用；`omega-tui` 当前已经兼容该 effect 扩展，并继续保留现有 `ResponseSectionKind::{Routing, Step, FinalAnswer, Thinking}` timeline 渲染。`Thinking` section 在流式阶段实时可见，完成后默认折叠为摘要，并受 `.omega/tui.toml` 的 `[response].show_thinking` 开关控制。自 2026-04-08 起，compat contract 也已覆盖 routed skill loading：`ActivityTarget::Skills`、`RuntimeUiEffect::UpsertSkillLoadSummary` 与对应 `StateMessage::SkillLoadSummary` 已落地，用于把 root `load-skills` 的 recognized / loaded / ignored summary 同时投递到 Response 与 Sidebar `Skills` 视图。
 
 ## Goals
 
@@ -254,7 +254,7 @@ pub enum UiTarget {
 说明：
 
 - `Response`: 面向用户阅读的主对话流。
-- `Activity`: 用于 logs / skills / delegations / background / inbox / team / worktree 等 view。
+- `Activity`: 用于 logs / skills / delivery / delegations / background / inbox / team / worktree 等 view。
 - `Todo`: 用于 turn-local plan snapshot。
 - `StatusBar`: 用于稳定的底部摘要槽位，而不是自由文本。
 - `Overlay`: 仅用于明确短时交互，不用于持久内容流。
@@ -283,10 +283,11 @@ pub enum UiPriority {
 ### Activity / StatusBar / Overlay Sub-Targets
 
 ```rust
-/// Activity 子面板。首轮仅 Log；后续按模块扩展。
+/// Activity 子面板。当前已实现 Log / Skills；后续按模块扩展。
 pub enum ActivityTarget {
     Log,
-    // future: Skills, Delegations, Background, Inbox, Team, Worktree
+    Skills,
+    // future: Delivery, Delegations, Background, Inbox, Team, Worktree
 }
 
 /// 底部状态栏固定槽位。
@@ -381,6 +382,7 @@ pub enum UiMessageKind {
 
 - workflow step 正文结果进入 `Response` 时，优先使用 `Narrative` 或 `Result`。
 - tool preview 默认进入 `Activity(Log)`。
+- task-level delivery summary 应保持可映射到 `Response` completion section、`Activity(Delivery)` 或等价 Sidebar panel，以及 `Overlay(Detail)`。
 - workflow step phase change 不再伪装成正文消息，应通过 `Effect` 或 `Activity(Log)` 表达。
 - scene / workflow routing 不应再以自由字符串塞进 `StatusSlot::Session` 后再由消费者反解析；应优先使用结构化 `StatusValue::SessionRouting`。
 - root / child workflow 的步骤 Activity 应通过 `WorkflowRunRole + workflow_id` 明确区分，而不是只发一条无法归类的 summary 文本。
@@ -401,6 +403,7 @@ pub enum RuntimeUiEffect {
     BeginToolRun { tool_run: ToolRun },
     UpdateToolRun { tool_run: ToolRun },
     CompleteToolRun { id: String, status: ToolRunStatus },
+    UpsertSkillLoadSummary { section_id: String, summary: SkillLoadSummary },
 }
 ```
 
@@ -622,3 +625,4 @@ pub struct SessionRuntimeContext {
 - 2026-03-20: `omega-repl` 路径已移除，current-state 描述收敛为单一用户路径。
 - 2026-03-20: 补充 `omega-app` 目标装配层，明确后续 bridge/sink wiring 与应用 bootstrap 应从 `omega-tui` 迁移到 `omega-app`。
 - 2026-03-20: v0.4 — `Task 15F-3` 落地实现；`omega-session` 已引入 `RuntimeUiEnvelope`/`RuntimeUiMessage`/`RuntimeUiEffect` typed contract 与 `RuntimeUiBridge`/`RuntimeUiSink` trait，主路径中的 `SessionUpdate` 已移除，`omega-tui` 现直接消费统一协议。
+- 2026-04-08: v0.5 — `Task 15B-47` / `Task 15B-48` 落地实现；compat/runtime contract 新增 `ActivityTarget::Skills` 与 `UpsertSkillLoadSummary`，root `load-skills` 固定动作现可把 recognized / loaded / ignored summary 暴露到 Response 与 Sidebar `Skills` 视图，并支持统一 detail overlay drill-down。

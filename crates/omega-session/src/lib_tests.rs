@@ -17,7 +17,7 @@ use omega_workflow::{
     StepOutputContract, CHAT_STEP_ID, CHAT_WORKFLOW_ID, DEEP_RESEARCH_SCENE_ID,
     DEEP_RESEARCH_WORKFLOW_ID, DEFAULT_EXPLORE_SCHEMA_PATH, EXECUTE_STEP_ID, EXPLORE_STEP_ID,
     FEATURE_WORKFLOW_ID, PLAN_STEP_ID, REPORT_STEP_ID, RESEARCH_WORKFLOW_ID, ROOT_WORKFLOW_ID,
-    SCENE_RECOGNITION_STEP_ID, SELECT_WORKFLOW_STEP_ID,
+    SCENE_RECOGNITION_STEP_ID, SELECT_SKILLS_STEP_ID, SELECT_WORKFLOW_STEP_ID,
 };
 use serde_json::Value;
 
@@ -118,6 +118,24 @@ fn normalize_root_routing_responses(mut responses: Vec<ChatResponse>) -> Vec<Cha
         normalized_scene, normalized_workflow
     ))];
     responses.remove(1);
+
+    let has_select_skills_response = responses
+        .get(1)
+        .and_then(|response| routing_json_value(response, "selected_skill_ids"))
+        .is_some();
+    if !has_select_skills_response {
+        responses.insert(
+            1,
+            ChatResponse {
+                id: "select-skills-compat".to_string(),
+                model: Some("test-model".to_string()),
+                content: vec![ContentBlock::text("{\"selected_skill_ids\":[]}")],
+                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                usage: None,
+            },
+        );
+    }
+
     responses
 }
 
@@ -126,7 +144,17 @@ fn routing_json_value(response: &ChatResponse, key: &str) -> Option<String> {
         return None;
     };
     let value = serde_json::from_str::<Value>(text).ok()?;
-    Some(value.get(key)?.as_str()?.to_string())
+    match value.get(key)? {
+        Value::String(value) => Some(value.to_string()),
+        Value::Array(values) => Some(
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(","),
+        ),
+        _ => None,
+    }
 }
 
 fn feature_explore_json() -> &'static str {
@@ -227,11 +255,17 @@ fn force_mock_document_embedding_backend() -> DocumentEmbeddingBackendGuard {
 }
 
 fn write_review_skill(root: &Path) {
-    let skills_dir = root.join(".claude/skills/review");
+    write_named_skill(root, "review", "Review code", "Find regressions.");
+}
+
+fn write_named_skill(root: &Path, name: &str, description: &str, body: &str) {
+    let skills_dir = root.join(".claude/skills").join(name);
     let _ = std::fs::create_dir_all(&skills_dir);
     let _ = std::fs::write(
         skills_dir.join("SKILL.md"),
-        "---\nname: review\ndescription: Review code\n---\nFind regressions.",
+        format!(
+            "---\nname: {name}\ndescription: {description}\n---\n{body}",
+        ),
     );
 }
 
@@ -4563,6 +4597,12 @@ fn spawn_turn_emits_root_then_child_workflow_steps_and_uses_phase_prompts() {
                 "Select Workflow".to_string(),
             ),
             (
+                ROOT_WORKFLOW_ID.to_string(),
+                WorkflowRunRole::Root,
+                SELECT_SKILLS_STEP_ID.to_string(),
+                "Select Skills".to_string(),
+            ),
+            (
                 FEATURE_WORKFLOW_ID.to_string(),
                 WorkflowRunRole::Child,
                 EXPLORE_STEP_ID.to_string(),
@@ -4824,6 +4864,11 @@ fn chat_scene_routes_to_chat_workflow_without_showing_root_text() {
                 SELECT_WORKFLOW_STEP_ID.to_string(),
             ),
             (
+                ROOT_WORKFLOW_ID.to_string(),
+                WorkflowRunRole::Root,
+                SELECT_SKILLS_STEP_ID.to_string(),
+            ),
+            (
                 CHAT_WORKFLOW_ID.to_string(),
                 WorkflowRunRole::Child,
                 CHAT_STEP_ID.to_string(),
@@ -4850,7 +4895,239 @@ fn chat_scene_routes_to_chat_workflow_without_showing_root_text() {
         system.contains("Active workflow: chat") && system.contains("Selected workflow: chat.")
     }));
     let max_tokens = client.recorded_max_tokens();
-    assert_eq!(max_tokens, vec![24_000, 24_000]);
+    assert_eq!(max_tokens, vec![24_000, 24_000, 24_000]);
+}
+
+#[test]
+fn text_routing_fallback_still_loads_routed_skills_before_child_workflow() {
+    let client: Arc<SequencedClient> = sequenced_client(vec![
+        ChatResponse {
+            id: "select-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("This request fits the chat scene.")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-2".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("chat is the right workflow here.")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-skills-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(
+                r#"{"selected_skill_ids":["review","missing-skill","review"]}"#,
+            )],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "chat-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("chat answer")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+    ]);
+    let client_dyn: DynLlmClient = client.clone();
+    let root = unique_session_test_root("text-fallback-routed-skill-load");
+    let _ = std::fs::create_dir_all(&root);
+    write_named_skill(&root, "review", "Review code", "Find regressions.");
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: client_dyn,
+        system: "system".to_string(),
+        cwd: root,
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 24_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+    let (tx, rx) = mpsc::channel();
+
+    session
+        .spawn_turn_ui_compat("just chat".to_string(), 10, tx)
+        .unwrap();
+
+    let mut assistant_results = Vec::new();
+    let mut logs = Vec::new();
+    loop {
+        match rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+            RuntimeUiEnvelope::Message { turn_id, message } => {
+                assert_eq!(turn_id, 10);
+                match (message.source, message.kind) {
+                    (UiSource::Assistant, UiMessageKind::Result) => {
+                        assistant_results.push(message.content.as_text().to_string());
+                    }
+                    (UiSource::SessionRouting, UiMessageKind::Summary | UiMessageKind::Warning)
+                    | (UiSource::System, UiMessageKind::Summary | UiMessageKind::Warning) => {
+                        logs.push(message.content.as_text().to_string());
+                    }
+                    _ => {}
+                }
+            }
+            RuntimeUiEnvelope::Effect {
+                turn_id,
+                effect:
+                    RuntimeUiEffect::SetStatusSlot {
+                        slot: StatusSlot::Agent,
+                        value: StatusValue::Label(label),
+                    },
+            } => {
+                assert_eq!(turn_id, 10);
+                assert_eq!(label, "Idle");
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    assert_eq!(assistant_results, vec!["chat answer".to_string()]);
+    assert!(logs.iter().any(|line| {
+        line.contains("Loaded routed skills [review] before child workflow start; ignored [missing-skill].")
+    }));
+    let child_system = client
+        .recorded_systems()
+        .into_iter()
+        .flatten()
+        .find(|system| {
+            system.contains("Workflow role: child") && system.contains("Active workflow: chat")
+        })
+        .expect("expected child workflow system prompt");
+    assert!(child_system.contains("Recognized routed skills: review, missing-skill"));
+    assert!(child_system.contains("<skill name=\"review\">"));
+    assert!(!child_system.contains("<skill name=\"missing-skill\">"));
+}
+
+#[test]
+fn select_skills_invalid_json_falls_back_without_aborting_turn() {
+    let client: Arc<SequencedClient> = sequenced_client(vec![
+        ChatResponse {
+            id: "select-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("This request fits the chat scene.")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-2".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("chat is the right workflow here.")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-skills-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("No extra skills are needed for this turn.")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "chat-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("chat answer")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+    ]);
+    let client_dyn: DynLlmClient = client;
+    let root = unique_session_test_root("select-skills-text-fallback");
+    let _ = std::fs::create_dir_all(&root);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: client_dyn,
+        system: "system".to_string(),
+        cwd: root,
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 24_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+    let (tx, rx) = mpsc::channel();
+
+    session
+        .spawn_turn_ui_compat("just chat".to_string(), 10, tx)
+        .unwrap();
+
+    let mut diagnostics = Vec::new();
+    let mut began = Vec::new();
+    let mut warnings = Vec::new();
+    loop {
+        match rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+            RuntimeUiEnvelope::Effect {
+                turn_id,
+                effect:
+                    RuntimeUiEffect::UpsertStepDiagnostics {
+                        diagnostics: update,
+                    },
+            } => {
+                assert_eq!(turn_id, 10);
+                diagnostics.push(*update);
+            }
+            RuntimeUiEnvelope::Effect {
+                turn_id,
+                effect: RuntimeUiEffect::BeginResponseSection { section },
+            } => {
+                assert_eq!(turn_id, 10);
+                began.push((section.id, section.kind));
+            }
+            RuntimeUiEnvelope::Message { turn_id, message } => {
+                assert_eq!(turn_id, 10);
+                match (message.source, message.kind) {
+                    (UiSource::System, UiMessageKind::Warning) => {
+                        warnings.push(message.content.as_text().to_string());
+                    }
+                    _ => {}
+                }
+            }
+            RuntimeUiEnvelope::Effect {
+                turn_id,
+                effect:
+                    RuntimeUiEffect::SetStatusSlot {
+                        slot: StatusSlot::Agent,
+                        value: StatusValue::Label(label),
+                    },
+            } => {
+                assert_eq!(turn_id, 10);
+                assert_eq!(label, "Idle");
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    assert_eq!(
+        warnings
+            .iter()
+            .filter(|text| {
+                text.contains("select-skills") && text.contains("falling back to text routing")
+            })
+            .count(),
+        1
+    );
+    assert!(diagnostics.iter().any(|diagnostics| {
+        diagnostics.step_id == SELECT_SKILLS_STEP_ID
+            && diagnostics.output.status == StepOutputStatus::Invalid
+    }));
+    assert!(began.iter().any(|entry| {
+        entry.0.starts_with("turn-10:child:") && entry.1 == ResponseSectionKind::FinalAnswer
+    }));
 }
 
 #[test]
@@ -5832,6 +6109,13 @@ fn spawn_turn_falls_back_to_text_routing_when_root_json_validation_fails() {
             id: "select-2".to_string(),
             model: Some("test-model".to_string()),
             content: vec![ContentBlock::text("chat is the right workflow here.")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-skills-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"selected_skill_ids\":[]}")],
             stop_reason: Some(STOP_REASON_END_TURN.to_string()),
             usage: None,
         },
@@ -7010,6 +7294,7 @@ fn session_skill_catalog_preserves_existing_prompt_shape() {
     let prompt = catalog.build_system_prompt(
         "Base prompt",
         "Please review this patch",
+        &[],
         &StepSkillRequest::Append(vec!["docs-specs".to_string()]),
     );
 

@@ -34,6 +34,23 @@ pub(super) fn handle_mouse_event(mouse: MouseEvent, app: &Arc<Mutex<App>>) {
 
     match mouse.kind {
         MouseEventKind::Down(MouseButton::Left) => {
+            let in_bottom_status = mouse.column >= app_guard.bottom_status_rect.x
+                && mouse.column
+                    < app_guard
+                        .bottom_status_rect
+                        .x
+                        .saturating_add(app_guard.bottom_status_rect.width)
+                && mouse.row >= app_guard.bottom_status_rect.y
+                && mouse.row
+                    < app_guard
+                        .bottom_status_rect
+                        .y
+                        .saturating_add(app_guard.bottom_status_rect.height);
+            if in_bottom_status {
+                app_guard.clear_text_selection();
+                return;
+            }
+
             let panel = app_guard.panel_at(mouse.column, mouse.row);
             match panel {
                 Panel::SidebarRail => {
@@ -43,6 +60,14 @@ pub(super) fn handle_mouse_event(mouse: MouseEvent, app: &Arc<Mutex<App>>) {
                 Panel::Diagnostics if app_guard.diagnostics_visible() => {
                     app_guard.focused_panel = Panel::Diagnostics;
                     app_guard.begin_mouse_selection(Panel::Diagnostics, mouse.column, mouse.row);
+                }
+                Panel::Delivery if app_guard.delivery_visible() => {
+                    app_guard.focused_panel = Panel::Delivery;
+                    app_guard.begin_mouse_selection(Panel::Delivery, mouse.column, mouse.row);
+                }
+                Panel::Skills if app_guard.skills_visible() => {
+                    app_guard.focused_panel = Panel::Skills;
+                    app_guard.begin_mouse_selection(Panel::Skills, mouse.column, mouse.row);
                 }
                 Panel::Document if app_guard.document_visible() => {
                     app_guard.focused_panel = Panel::Document;
@@ -70,6 +95,25 @@ pub(super) fn handle_mouse_event(mouse: MouseEvent, app: &Arc<Mutex<App>>) {
             app_guard.update_mouse_selection(mouse.column, mouse.row);
         }
         MouseEventKind::Up(MouseButton::Left) => {
+            let in_bottom_status = mouse.column >= app_guard.bottom_status_rect.x
+                && mouse.column
+                    < app_guard
+                        .bottom_status_rect
+                        .x
+                        .saturating_add(app_guard.bottom_status_rect.width)
+                && mouse.row >= app_guard.bottom_status_rect.y
+                && mouse.row
+                    < app_guard
+                        .bottom_status_rect
+                        .y
+                        .saturating_add(app_guard.bottom_status_rect.height);
+            if in_bottom_status {
+                if app_guard.open_latest_delivery_detail() {
+                    app_guard.set_status_notice("Opened task delivery detail overlay.");
+                }
+                return;
+            }
+
             let click_response_line = app_guard
                 .text_selection
                 .as_ref()
@@ -127,6 +171,12 @@ fn response_activation_notice(activation: Option<ResponseActivation>) -> Option<
         }
         Some(ResponseActivation::StepSubflowDetailOpened(label)) => {
             Some(format!("Opened subflow detail overlay for {label}."))
+        }
+        Some(ResponseActivation::DeliveryDetailOpened) => {
+            Some("Opened task delivery detail overlay.".to_string())
+        }
+        Some(ResponseActivation::SkillLoadDetailOpened) => {
+            Some("Opened routed skills detail overlay.".to_string())
         }
         Some(ResponseActivation::DocumentKnowledgeDetailOpened) => {
             Some("Opened document knowledge detail overlay.".to_string())

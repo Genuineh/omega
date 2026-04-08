@@ -23,7 +23,7 @@ related_prds: []
 - 为后续主线任务提供统一的 TUI 落点，避免面板数量失控。
 - 明确哪些信息应该进入状态栏、Activity 面板、Todo 面板、日志流和 Response 主面板。
 - 保持 `omega-core` / `omega-session` 前端无关，不把 widget 语义或布局决策回灌到核心 crate。
-- 为未来 `15B-11` 搜索、`15B-12` 会话统计与可调面板预留稳定的信息架构。
+- 为未来 `15B-11` 搜索、`15B-12` 可调面板与 task-level delivery observability 预留稳定的信息架构。
 - 为未来统一 runtime UI message/effect contract 预留稳定 target 与 surface 语义。
 
 ## Non-Goals
@@ -109,6 +109,7 @@ related_prds: []
 - `Bg: 1 failed` / `Bg: idle`：后台任务总览
 - `Inbox: 3 unread`：团队/消息未读数
 - `WT: feature-x`：当前活跃 worktree
+- `Delivery: 18k tok · 3 llm · 5 tools · 2 files`：当前或最近一轮任务交付摘要
 
 规则：
 
@@ -137,6 +138,13 @@ related_prds: []
 - 展示本轮或当前会话已加载 skills 列表。
 - 每条包含：skill 名称、来源、加载原因或匹配依据摘要。
 - 若本轮未加载任何 skill，应明确显示 `No skills loaded for this turn.`。
+
+### Delivery View
+
+- 用于 task-level delivery observability。
+- 展示当前 turn 的 token 消耗、LLM 调用次数、使用的模型、tool/skill 数量、document/memory search 次数与 changed files 摘要。
+- 每个聚合条目都应支持进入 detail drill-down，而不是停留在只读统计。
+- 任务完成后，该 view 应与 `Response` 中的统一 completion summary 对齐，避免两套数字口径不一致。
 
 ### Delegations View
 
@@ -179,6 +187,7 @@ related_prds: []
 对短时但需要继续交互的场景，优先使用浮动 overlay，而不是继续扩张常驻面板：
 
 - 搜索输入与搜索结果摘要
+- task delivery 各聚合项的 detail overlay
 - background / inbox / team / worktree 条目详情
 - 中断、关闭、删除等确认流程
 - 少量候选项的快速选择器
@@ -192,6 +201,7 @@ overlay 的职责是“短时聚焦交互”，而不是代替 `Activity` 或 `R
 | workflow | current step / warning | 未来可扩展 `Workflow` | 否 | 否 |
 | tool execution preview | 否 | `Logs` | 否 | 否 |
 | skills | count / warning | `Skills` | 可在回答中简述，但不重复完整列表 | 否 |
+| delivery observability | token/tool/file compact summary | `Delivery` | turn 完成后统一 delivery summary message | 否 |
 | subagent | running count / error | `Delegations` | 保留最终回收结果 | 否 |
 | compression | pressure / compacted | `Logs` 或未来 `Context` | 否 | 否 |
 | tasks | updated count | `Tasks` | 可回显任务操作结果 | 否 |
@@ -210,7 +220,7 @@ overlay 的职责是“短时聚焦交互”，而不是代替 `Activity` 或 `R
 - Activity 内部 view 切换应走 leader 映射和 mode-aware 快捷键，而不是把每个 view 变成独立焦点面板。
 - 若当前存在 overlay，键盘路由应先由 overlay 消费，再决定是否关闭或吞掉事件，而不是继续透传到 panel。
 - `15B-11` 搜索应先面向当前聚焦面板工作；Activity view 只需复用同一搜索框架，不单独设计。
-- `15B-12` 会话统计优先放在底部状态带与 Activity 中，不额外创建第四块永久面板。
+- task-level delivery 统计优先放在底部状态带与 `Delivery` view / overlay 中，不额外创建第四块永久面板。
 
 相关模态与配置规则见 `docs/specs/omega-tui-modal-keymap.md`，overlay 规则见 `docs/specs/omega-tui-overlay-popups.md`。
 

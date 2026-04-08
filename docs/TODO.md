@@ -18,9 +18,14 @@ _任务编号以 `docs/specs/omega-agent-impl-plan.md` 为准；`8A/8B`、`15A/1
 - **2026-04-07 recall quality follow-up**: 最新排查确认 recall planner 现在仍直接把 `latest_user_turn` 原句送去 memory/document recall，而 `omega-memory` 的 query scorer 仍以 whitespace lexical `contains` 为主；这会让中文、长自然语言和弱锚点请求稳定出现空命中。下一轮应按 `11G-7 ~ 11G-10` 的顺序补 deterministic query planning、memory/document retrieval quality 和 bounded LLM rewrite fallback，同时用 `11F-8` 把 `selected summaries` 与真实 memory/observation hits 的 UI 语义拆开。
 - **2026-04-07 document backend test isolation**: `omega-app` 默认 feature 已收回到轻量路径，避免日常 `cargo test` / `cargo test -p omega-app` 无意拉起 `omega-document` / LanceDB / Tantivy / fastembed 编译链；需要文档与检索能力时显式使用 `cargo run -p omega-app --features document-backend`。存储/检索后端回归走 `cargo test-document-backend`，session slash-command 集成走 `cargo test-document-commands`；feature-enabled session 文档测试默认强制 mock embedding backend，避免真实模型下载与 `.fastembed_cache` 污染工作树。
 - **2026-04-07 document supervision semantics follow-up**: document supervision 现会把“backend 已启用但尚无 promoted store version / 尚未跑过 health check”的状态显式标记为 `uninitialized` 和 `pending_health_check`，不再把这类半初始化状态误报成 `idle` 或泛化成治理异常；当 planner/search 已尝试 document recall 但尚无活跃索引或结果快照时，TUI 也会给出区分性提示，而不是统一显示“no document query has populated supervision yet”。
+- **2026-04-08 root skill routing**: 已完成 `Task 5A ~ 5C`。root workflow 现扩展为 `select-workflow -> select-skills` 两步：前者负责 scene/workflow 选择，后者输出 `selected_skill_ids` 并写入 session-owned `SkillRoutingContext`；child workflow step 现优先消费 routed skills，再应用 step-level `skill_request` modifier。repo-local `.omega/workflows/root.toml`、`select-skills` prompt/schema 与回归测试已同步落地，且 root text-routing fallback 会合成结构化 handoff，避免 `select-skills` 因缺少输入合同而中断。详见 `docs/specs/omega-root-skill-routing.md`。
+- **2026-04-08 root skill loading + UI follow-up**: 已完成 `Task 5D ~ 5E` 与 `Task 15B-47 ~ 15B-48`。`omega-session` 现会在 root workflow 结束后、child workflow 启动前执行固定 `load-skills` 动作，把 root 产出的 `selected_skill_ids` 分流为 `recognized / loaded / ignored` 三类 routed skill state；child step 只消费 `loaded_skill_ids`，unknown skill id 只进入 ignored 列表而不会污染 child prompt。Response / Sidebar 的 skills 可见性与统一 detail overlay 也已落地，当前后续重点转向更高层的 task-delivery observability。
+- **2026-04-08 task delivery observability planning**: 下一轮 runtime/TUI 规划应围绕单次任务交付的统一监控展开：以一次 user turn 为 delivery window，统一汇总 token 消耗、LLM 调用次数、model、tool/skill 使用、document/memory search 次数与 changed files，并在任务完成后追加一条统一 `Task Delivery Summary` message；同时在 Sidebar / Bottom status / Overlay 提供可点击的 drill-down。详见 `docs/specs/omega-task-delivery-observability.md`。
+- **2026-04-08 TUI visual refresh**: 当前已完成 `Task 15B-51` 的第一阶段视觉刷新：`omega-theme` 扩展 surface tokens，`Response` / `Sidebar` / rail / section card / 底部控制带 已切换为分层 dark surfaces 与更高权重标题；后续继续按 `Task 15B-52 ~ 15B-54` 做 sidebar density、response rhythm 与主题/密度预设。详见 `docs/specs/omega-tui-visual-refresh.md`。
+- **2026-04-08 message cards planning**: 当前 `Response` 的主要限制已经不再是字体颜色或空行，而是它依旧以 `ResponseDisplayLine` 为最终渲染心智模型。要做成真正的消息卡片，需要新增 card-aware view model，再叠加 semantic header、meta row 与 collapsed summary。详见 `docs/specs/omega-tui-message-cards.md`。
 - **2026-04-07 knowledge UI follow-up**: `Task 11F-5 ~ 11F-7` 已完成。`omega-session` 现会为 step 与 `/document query` command 发出 `StepKnowledgeSummary`，`omega-tui` Response panel 已新增可点击的 document/memory knowledge lane，并把 overlay 文案收敛为按 query、reason、top hits、selected summaries、observations 分组的可浏览视图。验证已通过 `cargo test -p omega-tui --lib --color never`、`cargo test -p omega-session --lib --color never` 与 `cargo test -p omega-session --features document-backend spawn_command_document_query_emits_step_knowledge_summary --color never`。
 - **2026-04-02 context supervision follow-up**: 下一轮 TUI/context 工作应为 document system 与 memory system 规划专门监管面板，统一回答“是否启用、总量/大小、当前命中摘要”三类问题；详细方案见 `docs/specs/omega-tui-document-memory-supervision.md`。
-- **2026-04-02 runtime maintenance**: 默认只读分析已拆为两条 child workflow：`research = explore -> report` 与 `deep-research = explore -> plan -> execute -> report`；root workflow 也已收敛为单步 `select-workflow`，并在一次结构化输出中同时写入 `recognized_scene_id` 与 `selected_workflow_id`。对系统性、全局性、深入式分析优先提升到 `deep-research`，实现类请求仍优先提升到 `feature`。
+- **2026-04-02 runtime maintenance**: 默认只读分析已拆为两条 child workflow：`research = explore -> report` 与 `deep-research = explore -> plan -> execute -> report`；当前 root workflow 基线已进一步扩展为 `select-workflow -> select-skills`，在 child workflow 启动前同时写入 `recognized_scene_id`、`selected_workflow_id` 与 routed `selected_skill_ids`。对系统性、全局性、深入式分析优先提升到 `deep-research`，实现类请求仍优先提升到 `feature`。
 - **2026-04-02 interrupt + provider maintenance**: `omega-tui` 手动中断时会立即把仍在 `streaming` 的 response/thinking section 与运行中的 tool run 收口为 failed；`omega-client` provider transport 现默认启用 pacing（`100ms` 全局节流、并发 `1`、`10s` 的 `429` retry floor）并支持 `Retry-After`，`.omega/model.toml` 的 `[provider]` 也已暴露这些覆盖项。
 - **2026-04-02 documentation hygiene**: `docs/README.md` 与本文件的首屏摘要已改为分组入口和精简状态说明；同时将已完成的 `observability-logging` PRD 与 `omega-tui-non-ui-extraction` 设计基线迁入 `docs/archive/`，避免历史材料继续混入 active spec 路径。
 - **Tool + Prompt optimization follow-up**: 当前任务链为 `Task 8J.0 ~ 8U`。推荐顺序：`8J.0` 先行；manifest track 为 `8J -> 8K -> 8L -> 8M/8N/8O -> 8R -> 8S -> 8T -> 8U`；`8P` 继续等待存储 API 稳定。关键决策保持不变：Manifest-wraps-Handler、`ToolHandler` 签名不变、remediation 结构化、UI effects 复用 `RuntimeUiEffect`、profiles 大多 optional。另：`.omega/workflows/root.toml` 必须与内建默认同步为 `max_iterations = 4`，否则单步 `select-workflow` 会在一次非 JSON 偏航后直接耗尽预算。
@@ -151,6 +156,27 @@ _将 M11 中基础级体验优化前移，确保在开发后续功能时有可�
 - **Blocked by**: Task 15B-16
 - **Blocks**: Task 15B-12
 - **Summary**: `omega-tui` 主布局重排为 `Main content -> Input context bar -> Input box -> Bottom status bar`，原输入框下方的 leader/notice/overlay 提示被统一上移到固定上下文带；原顶部 header 被移除，底部状态带现通过 slot 化 segment 渲染保留模型名与 `Idle / Running` 摘要，为后续会话统计和更多 runtime badge 扩展提供稳定入口；随后又统一引入 rounded 边框、取消输入区与状态条的厚重背景分层，改用线框 / 非线框关系区分结构，并让输入框边框跟随 `NORMAL` / `INSERT` 模式使用语义色联动；补充布局与视觉语义单测，并以 `cargo test -p omega-tui`、`cargo clippy -p omega-tui --all-targets -- -D warnings` 验证通过
+
+### Task 15B-47: omega-session / omega-app / omega-tui — Skill Load Runtime Message And Response Styling
+- **Status**: Completed
+- **Completed**: 2026-04-08
+- **Priority**: Medium
+- **Description**: 把 root `load-skills` 固定动作暴露成显式 runtime-visible message/effect，并在 Response 中为其提供稳定的消息样式，而不是把 skills 加载结果继续藏在普通 routing prose 或隐式 system prompt 中。至少需要展示本轮 `recognized` skills、成功 `loaded` skills，以及 ignored/missing skills 的摘要。
+- **Complexity**: M
+- **Blocked by**: Task 5D
+- **Blocks**: Task 15B-48
+- **Related**: docs/specs/omega-runtime-ui-message-contract.md, docs/specs/omega-tui-message-display-polish.md
+- **Summary**: `omega-session` 现在会在 root → child 固定 `load-skills` 动作时发出显式 `Load Skills` response section，并同步发送 typed `SkillLoadSummary` runtime state；`omega-app` / `omega-tui` 已接通这条 state path，Response 会稳定渲染 recognized/loaded/ignored skills 摘要，不再依赖隐式 routing prose 或 system prompt 才能观察本轮 skills 加载结果。
+
+### Task 15B-48: omega-tui — Sidebar Skills View And Loaded-Skill Drill-Down
+- **Status**: Completed
+- **Completed**: 2026-04-08
+- **Priority**: Medium
+- **Description**: 在现有 Sidebar / Activity 信息架构下新增 `Skills` 视图，持续显示当前 turn 识别到的 skills 与已成功加载的 skills，并支持从 Response 的 load-skills 消息跳转到同一详情视图。需要明确空状态、ignored skills 文案，以及窄屏下的退化策略。
+- **Complexity**: M
+- **Blocked by**: Task 5D, Task 15B-47
+- **Related**: docs/specs/omega-runtime-ui-message-contract.md, docs/specs/omega-tui-document-memory-supervision.md, docs/specs/omega-tui-runtime-experience.md
+- **Summary**: `omega-tui` Sidebar 现新增 `Skills` section，与 Diagnostics / Document / Memory / Todos / Logs 并列；panel 会持续显示当前 turn 的 recognized / loaded / ignored skills 摘要，空状态明确显示尚未发生 routed load。Response 中的 skill lane 与 Sidebar `Enter/x` 现在都会打开同一个 routed skills detail overlay，保持 drill-down 入口一致；对应 focus、search、mouse hit-test 与窄屏 sidebar 退化路径也已接通并补齐回归测试。
 
 ### ── M2: 文件工具 (s02) ── ✅
 
@@ -629,7 +655,7 @@ _2026-03-26 架构评审后收敛：(1) `BeforeAdvance` 在 item loop 下变为 
 - **Complexity**: XL
 - **Planning Note**: 该任务是 execute 稳定性的主收敛点；实现时必须保留共享 `SessionContext`、structured input/output 与现有 hook storage，同时补齐 deterministic matrix tests，覆盖 no-progress、partial progress、all-complete、item fail、budget exhaustion 与 research read-only execute 路径。`BeforeAdvance` 在 item loop 下变为 per-item gate，runtime 接管 item progression（见 lifecycle hooks spec "BeforeAdvance 双层语义过渡"）。如实现复杂度超出单轮收敛范围，可拆为 15F-28a（runtime loop + tests）和 15F-28b（TUI item-level visibility），但优先尝试一次完成。
 - **Completed Note**: `omega-session` 现按当前 todo item 驱动 execute repeat，并在 item 完成后由 runtime 推进到下一个 item；`HookDispatchInput` 已带 `current_item_id / item_index / item_total`；builtin `todo_managed_execute` 改为 per-item gate；新增 deterministic tests 覆盖 execute progress diagnostics 与 `max_item_repeats` exhaustion。2026-03-27 follow-up：`execute` 的 optional structured output contract 现也支持 `max_retries / recovery_mode`，当模型错误地一次关闭 future items 时会先 repair/regenerate，而不是直接整步失败。后续又补了两层容错：itemized execute output 会自动把 future items 从 `completed_tasks` 挪回 `open_tasks`，`parse_json_values()` 也会在保留原数组候选的同时解包 array-of-object repair output，避免 `expected object at $` 这类 schema 失败反复中断 execute。
-- **Completed Note**: `omega-session` 现按当前 todo item 驱动 execute repeat，并在 item 完成后由 runtime 推进到下一个 item；`HookDispatchInput` 已带 `current_item_id / item_index / item_total`；builtin `todo_managed_execute` 改为 per-item gate；新增 deterministic tests 覆盖 execute progress diagnostics 与 `max_item_repeats` exhaustion。2026-03-27 follow-up：`execute` 的 optional structured output contract 现也支持 `max_retries / recovery_mode`，当模型错误地一次关闭 future items 时会先 repair/regenerate，而不是直接整步失败。后续又补了两层容错：itemized execute output 会自动把 future items 从 `completed_tasks` 挪回 `open_tasks`，`parse_json_values()` 也会在保留原数组候选的同时解包 array-of-object repair output，避免 `expected object at $` 这类 schema 失败反复中断 execute。2026-03-31 follow-up：hook-managed itemized execute 现把 JSON execute output 视为 canonical contract，repo-local/default workflow 都改为 required；`runner` 会用修正后的 structured output 生成 execute summary，并在 advance gate exhaustion 前补发最终 output diagnostics，避免 UI 停在 `output pending` 或把已 auto-repair 的 future completions 继续写回 session summary。
+- **Completed Note**: `omega-session` 现按当前 todo item 驱动 execute repeat，并在 item 完成后由 runtime 推进到下一个 item；`HookDispatchInput` 已带 `current_item_id / item_index / item_total`；builtin `todo_managed_execute` 改为 per-item gate；新增 deterministic tests 覆盖 execute progress diagnostics 与 `max_item_repeats` exhaustion。2026-03-27 follow-up：`execute` 的 optional structured output contract 现也支持 `max_retries / recovery_mode`，当模型错误地一次关闭 future items 时会先 repair/regenerate，而不是直接整步失败。后续又补了两层容错：itemized execute output 会自动把 future items 从 `completed_tasks` 挪回 `open_tasks`，`parse_json_values()` 也会在保留原数组候选的同时解包 array-of-object repair output，避免 `expected object at $` 这类 schema 失败反复中断 execute。2026-03-31 follow-up：hook-managed itemized execute 现把 JSON execute output 视为 canonical contract，repo-local/default workflow 都改为 required；`runner` 会用修正后的 structured output 生成 execute summary，并在 advance gate exhaustion 前补发最终 output diagnostics，避免 UI 停在 `output pending` 或把已 auto-repair 的 future completions 继续写回 session summary。2026-04-07 follow-up：execute todo sync 现将 `completed` 视为单调状态，itemized execute output 不再允许把已完成任务重新放回 `open_tasks`；runtime repair 与同步逻辑同步收敛，避免 execute 在两个任务之间来回跳转。
 - **Blocks**: Task 10, Task 11
 - **Related**: docs/specs/omega-step-lifecycle-hooks.md, docs/specs/omega-step-session-asset-model/session-context-and-data-contracts.md, docs/specs/omega-runtime-message-pipeline.md
 
@@ -652,7 +678,7 @@ _2026-03-26 TUI follow-up planning：M2F 已把 execute 收敛为 itemized loop�
 - **Priority**: Medium
 - **Description**: 在 `Response` 的 `execute` step block 内新增 nested subflow lane，把 `execute-1` / `execute-2` 等 item run 渲染为父级 step 的二级卡片；当前项默认展开、已完成项默认折叠、失败项保持展开，并与底部状态带及 `Todo` 当前项高亮共享同一 identity。
 - **Complexity**: M
-- **Completed Note**: `Response` 已将带 `subflow_ref` 的 itemized execute section 聚合为父级 `execute` block 下的 nested subflow lane；当前 item 默认展开、已完成项折叠、未开始项显示 queued token，底部状态带与 `Todo` 当前项高亮已对齐同一 item identity。
+- **Completed Note**: `Response` 已将带 `subflow_ref` 的 itemized execute section 聚合为父级 `execute` block 下的 nested subflow lane；当前 item 默认展开、已完成项折叠、未开始项显示 queued token，底部状态带与 `Todo` 当前项高亮已对齐同一 item identity。2026-04-07 follow-up：当更早的 execute item 仍处于 `running/failed` 时，TUI 现会把后续 stale subflow 状态收敛回 `queued`，避免出现“current execute-1”但 `execute-2` 已显示 done 的误导视图。
 - **Blocked by**: Task 15F-29
 - **Blocks**: Task 15B-29
 - **Related**: docs/specs/omega-tui-step-subflow-visibility.md, docs/specs/omega-tui-response-thinking-experience.md, docs/specs/omega-tui-runtime-experience.md
@@ -739,6 +765,32 @@ _2026-03-31 规划补充：当前仓库已经具备 `omega-client::test_support:
 - **Blocks**: Task 10, Task 12, Task 13, Task 16
 - **Related**: crates/omega-session/src/lib_tests.rs, crates/omega-document/src/lib.rs, crates/omega-tools-builtin/tests/, crates/omega-app/src/runtime_message_policy.rs
 
+### Task 15F-36: omega-session / omega-client / omega-app — Task Delivery Summary Contract And Turn-Scoped Accumulator
+- **Status**: Pending
+- **Priority**: Medium
+- **Description**: 为单次任务交付建立 frontend-neutral `TaskDeliverySummary` contract，并在 `omega-session` 中增加 turn-scoped accumulator，统一累计 token 消耗、LLM 调用次数、model 使用、tool/skill 使用、document/memory search 次数与 changed files 摘要；失败或中断任务也必须产出 partial summary。
+- **Complexity**: L
+- **Blocks**: Task 15F-37, Task 15F-38, Task 15B-49
+- **Related**: docs/specs/omega-task-delivery-observability.md, docs/specs/omega-runtime-message-pipeline.md, docs/specs/omega-runtime-ui-message-contract.md
+
+### Task 15F-37: omega-context / omega-tools / omega-session — Knowledge Search And Workspace Mutation Accounting
+- **Status**: Pending
+- **Priority**: Medium
+- **Description**: 为 task delivery summary 补齐可信来源：document / memory search 次数与 query evidence 需要从 context/recall 路径稳定上报，workspace changed files 需要从 structured tool result / session-owned mutation evidence 中收敛，而不是依赖 turn 结束后的模糊文本或临时 git diff 猜测。
+- **Complexity**: M
+- **Blocked by**: Task 15F-36
+- **Blocks**: Task 15F-38
+- **Related**: docs/specs/omega-task-delivery-observability.md, docs/specs/omega-tui-document-memory-supervision.md, docs/specs/omega-tool-system-upgrade.md
+
+### Task 15F-38: omega-session / omega-app — Delivery Completion Message And Runtime State Wiring
+- **Status**: Pending
+- **Priority**: Medium
+- **Description**: 在 `RuntimeMessageEnvelope -> policy -> TuiEngine` 主路径上新增 task-level delivery summary 的 state/message wiring：turn 运行中持续 upsert summary，turn 完成时冻结为最终快照，并向 `Response` 发出统一的 `Task Delivery Summary` completion message，同时保留可供 Sidebar / Overlay 复用的 detail identity。
+- **Complexity**: M
+- **Blocked by**: Task 15F-36, Task 15F-37
+- **Blocks**: Task 15B-49, Task 15B-50
+- **Related**: docs/specs/omega-task-delivery-observability.md, docs/specs/omega-runtime-message-pipeline.md, docs/specs/omega-runtime-ui-message-contract.md
+
 ### ── M3: Todo 管理 (s03) ──
 
 > 验证方式：`cargo run` → Agent 自动创建/更新/展示 todo
@@ -776,6 +828,54 @@ _2026-03-31 规划补充：当前仓库已经具备 `omega-client::test_support:
 - **Description**: 实现 SkillLoader，扫描 skills 目录，按关键词匹配加载
 - **Related**: docs/specs/omega-agent-impl-plan.md, docs/specs/omega-tui-runtime-experience.md
 - **Summary**: `omega-skills` 新增递归扫描 `.claude/skills` 与 `skills/` 的 `SkillLoader`，支持 frontmatter 读取、技能描述汇总、按任务文本做关键词匹配，并提供 `load_skill` 工具按需返回完整 `<skill ...>` 内容；`omega-core::create_default_tools` 已默认注册该工具，当前主路径上的 `omega-session` 会在每轮按当前输入把匹配到的 skill 正文预装进 system prompt，同时始终附带低成本的 skills 描述列表；相关单测已补齐，并以定向 cargo test 验证通过
+
+### Task 5A: omega-workflow / omega-session — Root Skill Routing Contract
+- **Status**: Completed
+- **Completed**: 2026-04-08
+- **Priority**: Medium
+- **Description**: 为 root workflow 增加 `select-skills` step，并为其定义 required JSON output contract，至少包含 `selected_skill_ids` 与可选 `selection_reason`；同时在 `SessionContext` 中新增 typed skill-routing state，承接 root step 到 child workflow 的 skill handoff。
+- **Complexity**: M
+- **Related**: docs/specs/omega-root-skill-routing.md, docs/specs/omega-scene-routing.md
+- **Summary**: `omega-workflow` 现已把 root workflow 默认形态扩展为 `select-workflow -> select-skills`，并新增 `.omega/schema/step/select-skills.json` required output contract；`omega-session::SessionContext` 也已增加 `SkillRoutingContext { selected_skill_ids, selection_reason, source_step_id }`，作为 root step 到 child workflow 的 typed capability handoff。
+
+### Task 5B: omega-session / omega-skills — Routed Skill Injection And Precedence
+- **Status**: Completed
+- **Completed**: 2026-04-08
+- **Priority**: Medium
+- **Description**: 调整 child workflow step 的 skill 解析顺序：优先消费 root-selected skills，再应用 step-level `skill_request` modifier。要求明确 `Disable`、`Append` 与空 routed baseline 下的 `match_task` fallback 语义，避免 root-selected skills 与 step-local match 双重注入。
+- **Complexity**: M
+- **Related**: docs/specs/omega-root-skill-routing.md
+- **Summary**: `SessionSkillCatalog` 现支持 `routed baseline + step modifier` 解析顺序：`MatchTask` 在存在 routed skills 时直接使用 routed baseline，空 routed baseline 才回退到 task match；`Append` 会在 routed baseline 上追加显式 skills，`Disable` 则完全屏蔽 routed skills。child step prompt 中也已注入 `<skill_routing>` 稳定上下文，避免双重 preload 漂移。
+
+### Task 5C: omega-workflow / omega-session — Root Skill Routing Prompt And Regression Coverage
+- **Status**: Completed
+- **Completed**: 2026-04-08
+- **Priority**: Medium
+- **Description**: 补齐 `.omega/workflows/root.toml`、`select-skills` prompt、JSON schema 与回归测试，覆盖 root-selected skills 写入 session context、child step prompt 继承 routed skills、unknown skill id 被安全忽略，以及缺少 `select-skills` 配置时的兼容 fallback。
+- **Complexity**: M
+- **Related**: docs/specs/omega-root-skill-routing.md, docs/specs/omega-deterministic-test-seams.md
+- **Summary**: repo-local `.omega/workflows/root.toml`、`.omega/prompt/step/select-skills.md` 与 `.omega/schema/step/select-skills.json` 已同步落地；`omega-session` / `omega-workflow` lib tests 已覆盖两步 root workflow、routed skill precedence、compat root fixture 自动补空 `selected_skill_ids`，以及 root JSON 校验失败时通过 text fallback 合成结构化 `select-workflow` 输出，确保 `select-skills` 不会因缺少 input contract 中断 child delegation。
+- **Summary**: repo-local `.omega/workflows/root.toml`、`.omega/prompt/step/select-skills.md` 与 `.omega/schema/step/select-skills.json` 已同步落地；`omega-session` / `omega-workflow` lib tests 已覆盖两步 root workflow、routed skill precedence、compat root fixture 自动补空 `selected_skill_ids`，以及 root JSON 校验失败时通过 text fallback 合成结构化 `select-workflow` 输出。2026-04-08 follow-up：root routing text fallback 现也覆盖 `select-skills` 本身；当模型在该步返回自然语言而不是 JSON 时，turn 会记录 invalid diagnostics 并继续按“空 routed skill selection”前进，而不会在 root 阶段直接中断。
+
+### Task 5D: omega-session / omega-skills — Routed Skill Load Action And Loaded-State Contract
+- **Status**: Completed
+- **Completed**: 2026-04-08
+- **Priority**: Medium
+- **Description**: 当 root `select-skills` 产出非空 `selected_skill_ids` 时，在启动 child workflow 前执行固定 `load-skills` runtime 动作，而不是只靠 child step 懒解析。该动作需要显式区分 `recognized` skills、成功 `loaded` skills 与被忽略/缺失的 skill ids，并把结果写入 session-owned typed state，供后续 step 与 UI 共享。
+- **Complexity**: M
+- **Blocks**: Task 5E, Task 15B-47
+- **Related**: docs/specs/omega-root-skill-routing.md, docs/specs/omega-runtime-ui-message-contract.md
+- **Summary**: `SkillRoutingContext` 现已扩展为 `selected_skill_ids + loaded_skill_ids + ignored_skill_ids`；`omega-session` 会在 root workflow 完成后、child workflow 启动前执行固定 `load-skills` 动作，将识别到的 routed skills 校验并分流为 recognized/loaded/ignored 三类状态，再由 child step 只消费 `loaded_skill_ids` 作为 routed baseline。
+
+### Task 5E: omega-session / omega-workflow — Root Skill Load Regression And Fallback Coverage
+- **Status**: Completed
+- **Completed**: 2026-04-08
+- **Priority**: Medium
+- **Description**: 为固定 `load-skills` 动作补齐回归测试，覆盖 `selected_skill_ids` 为空时跳过加载、存在 unknown skill id 时只记录 ignored/loaded diff 而不终止 turn、root text-routing fallback 仍可驱动 load-skills、以及 child workflow 确认消费的是 `loaded` skills 而不是原始未校验列表。
+- **Complexity**: M
+- **Blocked by**: Task 5D
+- **Related**: docs/specs/omega-root-skill-routing.md, docs/specs/omega-deterministic-test-seams.md
+- **Summary**: `omega-session` 新增了 routed skill load 相关回归：`SessionSkillCatalog` 单测覆盖 recognized/loaded/ignored 分流，runner 单测覆盖空 selection 跳过 load action，集成测试覆盖 root text-routing fallback 仍能驱动 `select-skills -> load-skills -> child workflow`，且 child prompt 只预装实际可加载的 skill，不再消费 unknown/raw ids。
 
 ### ── M6: 上下文管理 (s06) ──
 
@@ -1055,46 +1155,56 @@ _2026-03-31 规划补充：当前仓库已经具备 `omega-client::test_support:
 - **Summary**: 本轮先落低风险 advanced retrieval 基线：planner document recall 现已支持 recent-window temporal bias，并基于 archived changed-path evidence 对 document hits 做 lightweight relation-aware rerank；strategy-specific chunking 保持 heuristic-first 的轻量实现，没有提前引入 AST/graph 级重维护路径。
 
 ### Task 11F-8: omega-session / omega-tui — Recall Source Semantics Split
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-04-07
 - **Priority**: Medium
 - **Complexity**: M
 - **Description**: 把 `selected summaries`、`archived memory hits` 与 `observation hits` 从同一张 Memory Knowledge 卡片中拆开，避免把 step summary selection 误读成真实 memory 命中。需要同步调整 Response / Sidebar / Overlay 三处文案与 diagnostics 来源。
 - **Blocked by**: Task 11F-7
 - **Related**: docs/specs/omega-tui-document-memory-supervision.md, docs/specs/omega-knowledge-evolution.md
+- **Summary**: `ResponseMemoryKnowledge` 现已拆成 `selected summaries`、`archived memory hits` 与 `observation hits` 三种来源；`omega-tui` 的 Response、Sidebar 与 Overlay 同步改用新语义，并展示 planned queries / rewrite recovery metadata，避免把 summary selection 误读成 archived recall 命中。
 
 ### Task 11G-7: omega-context — Deterministic Recall Query Planning
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-04-07
 - **Priority**: High
 - **Complexity**: M
 - **Description**: 在 `omega-context` 内部新增 `RecallQueryBundle`，从 `latest_user_turn`、`step.label`、`current_execute_item`、`structured_input`、`todo_snapshot` 与近期高信号 summaries 中生成 2-5 条 step-aware recall queries，替代当前单条原句 recall。首版必须保持 facade boundary 不变，不新增顶层 public recall request type。
 - **Blocks**: Task 11G-8, Task 11G-9, Task 11G-10
 - **Related**: docs/specs/omega-knowledge-evolution.md §Phase 6, docs/specs/omega-context-management.md
+- **Summary**: `omega-context` 现已在内部生成 `RecallQueryBundle`，从 user turn、step label、execute item、structured input、todo snapshot 与近期 summaries 提炼 2-5 条 recall queries，并把 path/doc-type hints 一并传入后续 memory/document recall，而没有新增 facade 顶层 public recall request type。
 
 ### Task 11G-8: omega-memory / omega-context — Memory Retrieval Scoring Upgrade
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-04-07
 - **Priority**: High
 - **Complexity**: L
 - **Description**: 把 memory / observation query 从 whitespace split + `contains` 升级为更稳健的 lexical retrieval：至少支持 CJK-friendly tokenization、field-weighted scoring（`title > summary > user_intent`）与多 query merge。目标是让中文、长自然语言与同义表达不再稳定空命中。
 - **Blocked by**: Task 11G-7
 - **Blocks**: Task 11G-10
 - **Related**: docs/specs/omega-knowledge-evolution.md §Phase 6
+- **Summary**: `omega-memory` 现已支持 multi-query lexical retrieval、CJK bigram tokenization 与 field-weighted scoring；memory / observation recall 不再只靠 whitespace split + `contains`，并增加了中文与字段排序的回归测试。
 
 ### Task 11G-9: omega-context / omega-document — Multi-Query Document Recall And Merge/Rerank
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-04-07
 - **Priority**: High
 - **Complexity**: L
 - **Description**: 让 document recall 消费 `RecallQueryBundle` 而不是单 query：执行 multi-query search、按 path 去重、保留 recent-window temporal bias，并继续结合 memory/observation path hints 做 lightweight rerank。首版不引入 cross-encoder 或重 relation graph。
 - **Blocked by**: Task 11G-7
 - **Blocks**: Task 11G-10
 - **Related**: docs/specs/omega-knowledge-evolution.md §Phase 6
+- **Summary**: planner document recall 现已消费 multi-query bundle，按 path 去重后再结合 recent-window bias 与 memory/observation/path hints 做 lightweight rerank，并把最终 document summary 直接写回 session supervision / knowledge lane。
 
 ### Task 11G-10: omega-context / omega-session — Bounded LLM Recall Rewrite Fallback
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-04-07
 - **Priority**: Medium
 - **Complexity**: L
 - **Description**: 在 deterministic bundle recall 全空、query 过长或缺少锚点时，增加受控的 LLM-assisted rewrite fallback。fallback 只能补充 query bundle，不能覆盖 deterministic queries；同时必须把触发原因、rewrite 结果与 empty-hit recovery 路径写入 diagnostics / supervision。
 - **Blocked by**: Task 11G-8, Task 11G-9
 - **Related**: docs/specs/omega-knowledge-evolution.md §Phase 6, docs/specs/omega-context-management.md
+- **Summary**: `omega-session` 现已在 report/document-heavy 场景对长查询和弱锚点做一次受控 recall rewrite fallback：先跑 deterministic recall，首轮全空时再向 client 请求 1-3 条补充 queries，并把 `rewrite_reason`、`rewrite_queries` 与 `rewritten_after_initial_empty_hit` recovery path 写入 diagnostics / supervision。
 
 ### ── M7: 任务系统 (s07) ──
 
@@ -1509,8 +1619,103 @@ _基础体验已在 M1.7 完成，此处保留高级特性。_
 ### Task 15B-12: omega-tui — 可调面板与会话统计
 - **Status**: Pending
 - **Priority**: Low
-- **Description**: 拖拽或快捷键调整面板宽度比例；状态栏显示 token 使用量、对话轮次
+- **Description**: 拖拽或快捷键调整面板宽度比例；原“会话统计”目标已升级为 task-level delivery observability 任务链，见 `Task 15F-36 ~ 15F-38` 与 `Task 15B-49 ~ 15B-50`
 - **Blocked by**: Task 15B-16
+
+### Task 15B-49: omega-tui / omega-app — Delivery 监控面板与底部摘要徽章
+- **Status**: Completed
+- **Completed**: 2026-04-08
+- **Priority**: Medium
+- **Description**: 在现有 Sidebar / Bottom status 信息架构上增加统一的 `Delivery` 监控面板与紧凑状态徽章，持续展示当前任务交付的 token、LLM、tool、skill、document/memory search 与 changed files 摘要；同一份 summary 必须同时兼容宽屏常驻面板与窄屏截断展示。
+- **Complexity**: M
+- **Blocked by**: Task 15B-17, Task 15F-38
+- **Blocks**: Task 15B-50
+- **Related**: docs/specs/omega-task-delivery-observability.md, docs/specs/omega-tui-runtime-experience.md, docs/specs/omega-tui-input-status-layout.md
+- **Summary**: `omega-tui` 现已新增 Sidebar `Delivery` section，并在底部状态带追加紧凑 delivery badge；面板会基于当前 turn 的 tool run、skill load、knowledge summary 与 step diagnostics 持续聚合 token / LLM / tool / skill / document-memory search / changed files 摘要，turn 结束后冻结为最终快照，窄屏时则退化为底部紧凑摘要。
+
+### Task 15B-50: omega-tui — Delivery 明细钻取与完成态统一消息展示
+- **Status**: Completed
+- **Completed**: 2026-04-08
+- **Priority**: Medium
+- **Description**: 让 `Response`、`Delivery` 面板和底部状态摘要中的 delivery 聚合项都可点击进入统一 detail overlay，并在任务完成后追加一条统一的 `Task Delivery Summary` message，明确展示最终 status、model、token、LLM、tool、skill、document/memory search 与 changed files 摘要。
+- **Complexity**: M
+- **Blocked by**: Task 15B-49, Task 15F-38
+- **Related**: docs/specs/omega-task-delivery-observability.md, docs/specs/omega-runtime-ui-message-contract.md, docs/specs/omega-tui-overlay-popups.md
+- **Summary**: turn 完成或中断后，`omega-tui` 现在会在 `Response` 末尾追加统一的 `Task Delivery Summary` section；`Response` summary lane、Sidebar `Delivery` panel 与底部状态 delivery badge 都会打开同一个 task-delivery detail overlay，统一展示 model、token、LLM 请求数、tool/skill 使用、document/memory query 与 changed files 明细。当前实现先复用现有 runtime-visible signal 做 TUI-side aggregation，后续 `Task 15F-36 ~ 15F-38` 继续提升跨 crate 合同与统计精度。
+
+### ── M1.9: TUI 视觉刷新 ──
+
+> 验证方式：`cargo run -p omega-tui` → Response / Sidebar / rail / 底部条带呈现统一的分层 dark dashboard 视觉；焦点与摘要 hierarchy 更清晰
+> 对标：终端工作台风格，而非默认 box-stack UI
+> 前置：M1.8 (TUI 消息呈现优化) 已完成
+> 规格：docs/specs/omega-tui-visual-refresh.md
+
+### Task 15B-51: omega-theme / omega-tui — Surface hierarchy 与 dashboard 化基础视觉刷新
+- **Status**: Completed
+- **Completed**: 2026-04-08
+- **Priority**: Medium
+- **Description**: 扩展 `omega-theme` surface tokens，并让 `Response`、`Sidebar` shell、`Sidebar` rail、section card、输入区与 context/status bar 全部切换到更明确的分层深色 surface；标题样式与 rail 选中态同步提升，形成更接近 dashboard 的终端工作台气质。
+- **Complexity**: M
+- **Related**: docs/specs/omega-tui-visual-refresh.md, docs/specs/omega-theme-package.md, docs/specs/omega-tui-runtime-experience.md
+- **Summary**: `omega-theme` 现已新增 `panel_bg / sidebar_bg / sidebar_rail_bg / section_bg / title_fg` 等 surface 级令牌，并把内建 dark theme 调整为更明显的 slate/charcoal 分层；`omega-tui` 的 Response、Sidebar shell、rail、section card、输入框、context bar、status bar 与 overlay 现已消费这些新令牌，右侧辅助区也从纯文本 rail 提升为 badge-like 选中态与 card-like section 视觉。
+
+### Task 15B-52: omega-tui — Sidebar dashboard density 与摘要卡片优化
+- **Status**: Pending
+- **Priority**: Medium
+- **Description**: 继续收敛 Sidebar 的信息密度与层次，为 `Delivery`、`Todos`、`Skills`、`Document/Memory` 设计更像 dashboard summary card 的标题、摘要与默认展开策略，减少同质化列表噪音。
+- **Complexity**: M
+- **Blocked by**: Task 15B-51
+- **Related**: docs/specs/omega-tui-visual-refresh.md, docs/specs/omega-tui-runtime-experience.md
+
+### Task 15B-53: omega-tui — Response timeline rhythm 与报告感强化
+- **Status**: Replaced
+- **Priority**: Medium
+- **Description**: 强化 routing / step / command / final answer / delivery summary 的纵向节奏与分段权重，让长 turn 更像结构化执行报告，而不是连续日志块。
+- **Complexity**: M
+- **Blocked by**: Task 15B-51
+- **Related**: docs/specs/omega-tui-visual-refresh.md, docs/specs/omega-tui-message-display-polish.md, docs/specs/omega-tui-response-thinking-experience.md
+- **Summary**: 原任务过于宽泛，已被真正面向“消息卡片化”的 `Task 15B-55 ~ 15B-57` 替代。
+
+### ── M1.10: TUI 消息卡片化 ──
+
+> 验证方式：`cargo run -p omega-tui` → Response 中的 routing / step / thinking / final answer / delivery summary 以真正的消息卡片呈现，用户可以按卡片而非按散行扫描 turn
+> 对标：结构化 card timeline，而非带样式的日志列表
+> 前置：M1.9 (TUI 视觉刷新) 已建立分层 surface 基线
+> 规格：docs/specs/omega-tui-message-cards.md
+
+### Task 15B-55: omega-tui — Response card view model foundation
+- **Status**: Pending
+- **Priority**: Medium
+- **Description**: 在 `Msg -> ResponseDisplayLine` 之间增加 card-aware assembly 层，为 routing/step/command/final answer/delivery summary/thinking 提供稳定 block identity、card type 与 shared container metadata，解决当前只能按行模拟卡片的问题。
+- **Complexity**: L
+- **Blocked by**: Task 15B-51
+- **Blocks**: Task 15B-56, Task 15B-57
+- **Related**: docs/specs/omega-tui-message-cards.md, docs/specs/omega-tui-response-thinking-experience.md
+
+### Task 15B-56: omega-theme / omega-tui — Message card chrome 与语义化 header
+- **Status**: Pending
+- **Priority**: Medium
+- **Description**: 为 Routing/Step/Command/Thinking/Final Answer/Delivery/Error 卡片提供真正的 header/body/meta chrome，包括统一 card header、accent strip、body inset、meta row 与不同类型的标题语义。
+- **Complexity**: M
+- **Blocked by**: Task 15B-55
+- **Blocks**: Task 15B-57
+- **Related**: docs/specs/omega-tui-message-cards.md, docs/specs/omega-theme-package.md, docs/specs/omega-tui-visual-refresh.md
+
+### Task 15B-57: omega-tui — Card 折叠摘要、密度与长 turn 扫读优化
+- **Status**: Pending
+- **Priority**: Medium
+- **Description**: 把现有 thinking/tool lane 折叠语义提升到 card 级浏览模型，并为 routing、已完成 step、delivery summary 设计更稳的摘要态与 scanability 规则，解决长 turn 中逐行扫读成本过高的问题。
+- **Complexity**: M
+- **Blocked by**: Task 15B-55, Task 15B-56
+- **Related**: docs/specs/omega-tui-message-cards.md, docs/specs/omega-tui-message-display-polish.md
+
+### Task 15B-54: omega-theme / omega-tui — 主题预设与密度模式
+- **Status**: Pending
+- **Priority**: Low
+- **Description**: 把当前视觉方向继续沉淀为可维护的主题/密度系统，评估 compact / comfortable 密度档位以及未来多主题 preset 是否需要进入 `omega-theme` 默认能力。
+- **Complexity**: M
+- **Blocked by**: Task 15B-51
+- **Related**: docs/specs/omega-tui-visual-refresh.md, docs/specs/omega-theme-package.md
 
 ### Task 15B-13: omega-tui — Leader / 模态快捷键基础设施
 - **Status**: Completed

@@ -7,6 +7,7 @@ use omega_session::{
 
 use crate::render::markdown::{parse_markdown_lines, StyledSpan};
 
+use super::delivery::{delivery_section_id, extract_turn_id_from_section_id};
 use super::{
     App, Msg, MsgKind, ResponseActivation, ResponseDisplayLine, ResponseLineAction,
     ThinkingLineKind, WorkflowRunRole,
@@ -54,16 +55,19 @@ impl App {
 
     pub fn begin_tool_run(&mut self, tool_run: ToolRun) {
         self.upsert_tool_run(tool_run, true);
+        self.refresh_delivery_panel();
     }
 
     pub fn update_tool_run(&mut self, tool_run: ToolRun) {
         self.upsert_tool_run(tool_run, true);
+        self.refresh_delivery_panel();
     }
 
     pub fn complete_tool_run(&mut self, id: &str, status: ToolRunStatus) {
         if let Some(tool_run) = self.tool_runs.iter_mut().find(|tool_run| tool_run.id == id) {
             tool_run.status = status;
         }
+        self.refresh_delivery_panel();
     }
 
     pub fn fail_running_tool_runs(&mut self) {
@@ -72,6 +76,7 @@ impl App {
                 tool_run.status = ToolRunStatus::Failed;
             }
         }
+        self.refresh_delivery_panel();
     }
 
     pub fn append_response_section(&mut self, id: &str, delta: &str) {
@@ -168,6 +173,12 @@ impl App {
             ResponseLineAction::OpenStepSubflowDetail(id) => self
                 .open_step_subflow_detail(&id)
                 .map(ResponseActivation::StepSubflowDetailOpened),
+            ResponseLineAction::OpenDeliveryDetail(turn_id) => self
+                .open_delivery_detail_for_turn(turn_id)
+                .then_some(ResponseActivation::DeliveryDetailOpened),
+            ResponseLineAction::OpenSkillLoadDetail(id) => self
+                .open_skill_load_detail_for_section(&id)
+                .then_some(ResponseActivation::SkillLoadDetailOpened),
             ResponseLineAction::OpenDocumentKnowledgeDetail(id) => self
                 .open_document_knowledge_detail(&id)
                 .map(|()| ResponseActivation::DocumentKnowledgeDetailOpened),
@@ -386,6 +397,10 @@ impl App {
                             .as_deref()
                             .map(|section_id| self.tool_runs_for_section(section_id))
                             .unwrap_or_default();
+                        let skill_summary = message
+                            .id
+                            .as_deref()
+                            .and_then(|section_id| self.skill_load_summary_for_section(section_id));
                         let knowledge_summary = message
                             .id
                             .as_deref()
@@ -472,6 +487,13 @@ impl App {
                             }
                         }
                         if let Some(section_id) = message.id.as_deref() {
+                            lines.extend(self.render_delivery_lane(section_id, message.kind, "  "));
+                            lines.extend(self.render_skill_load_lane(
+                                section_id,
+                                skill_summary,
+                                message.kind,
+                                "  ",
+                            ));
                             lines.extend(self.render_knowledge_lane(
                                 section_id,
                                 knowledge_summary,
@@ -733,6 +755,7 @@ impl App {
                 })
             });
         let todo_fallback = self.todo_subflow_fallback(item_index);
+        let active_blocking_status = self.active_blocking_subflow_status(group_ref);
 
         if primary.is_none()
             && thinking.is_none()
@@ -783,6 +806,13 @@ impl App {
             .map(|status| status.status)
             .or_else(|| todo_fallback.as_ref().map(|fallback| fallback.status))
             .unwrap_or(StepSubflowState::Queued);
+        let status = if active_blocking_status
+            .is_some_and(|active| active.item_index < item_index)
+        {
+            StepSubflowState::Queued
+        } else {
+            status
+        };
         let mut header = format!("  subflow  {}", header_ref.subflow_id,);
         if let Some(item_id) = header_ref.item_id.as_deref() {
             header.push_str(&format!("  #{item_id}"));
@@ -791,9 +821,9 @@ impl App {
             header.push_str(&format!("  {}", truncate_preview(item_label, 36)));
         }
         header.push_str(&format!("  [{}]", subflow_status_label(status)));
-        if let Some(status) = known_status {
-            if status.repeat_count_for_item > 0 {
-                header.push_str(&format!("  repeat {}", status.repeat_count_for_item));
+        if let Some(known_status) = known_status {
+            if known_status.status == status && known_status.repeat_count_for_item > 0 {
+                header.push_str(&format!("  repeat {}", known_status.repeat_count_for_item));
             }
         }
 
@@ -997,6 +1027,17 @@ impl App {
             })
     }
 
+    fn active_blocking_subflow_status(
+        &self,
+        subflow_ref: &StepSubflowRef,
+    ) -> Option<&omega_session::StepSubflowStatus> {
+        self.step_subflows.iter().find(|status| {
+            status.workflow_id == subflow_ref.parent_workflow_id
+                && status.step_id == subflow_ref.parent_step_id
+                && matches!(status.status, StepSubflowState::Running | StepSubflowState::Failed)
+        })
+    }
+
     fn todo_subflow_fallback(&self, item_index: usize) -> Option<TodoSubflowFallback> {
         let line = self.todo_lines.get(item_index.checked_sub(1)?)?;
         parse_todo_subflow_fallback(line)
@@ -1022,11 +1063,118 @@ impl App {
             .collect()
     }
 
+    fn skill_load_summary_for_section(
+        &self,
+        section_id: &str,
+    ) -> Option<&omega_session::SkillLoadSummary> {
+        self.skill_load_summaries.get(section_id)
+    }
+
     fn knowledge_summary_for_section(
         &self,
         section_id: &str,
     ) -> Option<&omega_session::StepKnowledgeSummary> {
         self.step_knowledge_summaries.get(section_id)
+    }
+
+    fn render_skill_load_lane(
+        &self,
+        section_id: &str,
+        summary: Option<&omega_session::SkillLoadSummary>,
+        kind: MsgKind,
+        indent: &str,
+    ) -> Vec<ResponseDisplayLine> {
+        let Some(summary) = summary else {
+            return Vec::new();
+        };
+
+        vec![
+            ResponseDisplayLine {
+                kind,
+                text: format!(
+                    "{indent}skills  recognized={} loaded={} ignored={}",
+                    summary.recognized_skill_ids.len(),
+                    summary.loaded_skill_ids.len(),
+                    summary.ignored_skill_ids.len(),
+                ),
+                is_header: false,
+                message_id: Some(section_id.to_string()),
+                action: Some(ResponseLineAction::OpenSkillLoadDetail(section_id.to_string())),
+                is_tool_line: true,
+                tool_status: None,
+                response_state: None,
+                thinking_line_kind: None,
+                spans: Vec::new(),
+            },
+            ResponseDisplayLine {
+                kind,
+                text: format!(
+                    "{indent}  loaded ids: {}",
+                    summarize_skill_ids(&summary.loaded_skill_ids)
+                ),
+                is_header: false,
+                message_id: Some(section_id.to_string()),
+                action: Some(ResponseLineAction::OpenSkillLoadDetail(section_id.to_string())),
+                is_tool_line: true,
+                tool_status: None,
+                response_state: None,
+                thinking_line_kind: None,
+                spans: Vec::new(),
+            },
+        ]
+    }
+
+    fn render_delivery_lane(
+        &self,
+        section_id: &str,
+        kind: MsgKind,
+        indent: &str,
+    ) -> Vec<ResponseDisplayLine> {
+        let Some(turn_id) = extract_turn_id_from_section_id(section_id) else {
+            return Vec::new();
+        };
+        if section_id != delivery_section_id(turn_id) {
+            return Vec::new();
+        }
+        let Some(summary) = self.delivery_summary_for_turn(turn_id) else {
+            return Vec::new();
+        };
+
+        vec![
+            ResponseDisplayLine {
+                kind,
+                text: format!(
+                    "{indent}delivery  {}",
+                    summary.summary_line()
+                ),
+                is_header: false,
+                message_id: Some(section_id.to_string()),
+                action: Some(ResponseLineAction::OpenDeliveryDetail(turn_id)),
+                is_tool_line: true,
+                tool_status: None,
+                response_state: None,
+                thinking_line_kind: None,
+                spans: Vec::new(),
+            },
+            ResponseDisplayLine {
+                kind,
+                text: format!(
+                    "{indent}  knowledge  doc={} · mem={} · obs={}  |  files {}",
+                    summary.document_search_count,
+                    summary.memory_search_count,
+                    summary.observation_search_count,
+                    summary.changed_files.len(),
+                ),
+                is_header: false,
+                message_id: Some(section_id.to_string()),
+                action: Some(ResponseLineAction::OpenDeliveryDetail(turn_id)),
+                is_tool_line: true,
+                tool_status: None,
+                response_state: None,
+                thinking_line_kind: None,
+                spans: Vec::new(),
+            },
+        ]
     }
 
     fn render_knowledge_lane(
@@ -1293,6 +1441,8 @@ fn format_document_knowledge_summary(summary: &ResponseDocumentKnowledge) -> Str
     );
     if !summary.query.trim().is_empty() {
         text.push_str(&format!("  ·  {}", truncate_preview(&summary.query, 28)));
+    } else if let Some(query) = summary.planned_queries.first() {
+        text.push_str(&format!("  ·  {}", truncate_preview(query, 28)));
     }
     if let Some(reason) = summary.reason.as_deref() {
         text.push_str(&format!("  ·  {reason}"));
@@ -1304,16 +1454,18 @@ fn format_document_knowledge_summary(summary: &ResponseDocumentKnowledge) -> Str
 
 fn format_memory_knowledge_summary(summary: &ResponseMemoryKnowledge) -> String {
     let mut text = format!(
-        "memory  {} summaries  ·  {} memory hits  ·  {} observations",
+        "memory  {} selected  ·  {} archived  ·  {} observations",
         summary.selected_summary_count,
         summary.memory_hit_count,
         summary.observation_hit_count,
     );
-    if let Some(query) = summary.memory_query.as_deref() {
+    if let Some(query) = summary.planned_queries.first() {
+        text.push_str(&format!("  ·  {}", truncate_preview(query, 28)));
+    } else if let Some(query) = summary.memory_query.as_deref() {
         text.push_str(&format!("  ·  {}", truncate_preview(query, 28)));
     } else if let Some(query) = summary.observation_query.as_deref() {
         text.push_str(&format!("  ·  {}", truncate_preview(query, 28)));
-    } else if let Some(item) = summary.top_items.first() {
+    } else if let Some(item) = summary.top_selected_summaries.first() {
         text.push_str(&format!("  ·  {}", truncate_preview(&item.title, 28)));
     }
     text
@@ -1321,6 +1473,21 @@ fn format_memory_knowledge_summary(summary: &ResponseMemoryKnowledge) -> String 
 
 fn build_document_knowledge_detail_lines(summary: &ResponseDocumentKnowledge) -> Vec<String> {
     let mut lines = vec![format!("readiness: {}", summary.readiness.as_str())];
+    if !summary.raw_query.trim().is_empty() {
+        lines.push(format!("raw query: {}", summary.raw_query));
+    }
+    if !summary.planned_queries.is_empty() {
+        lines.push(format!("planned queries: {}", summary.planned_queries.join(" | ")));
+    }
+    if let Some(reason) = summary.rewrite_reason.as_deref() {
+        lines.push(format!("rewrite reason: {reason}"));
+    }
+    if !summary.rewrite_queries.is_empty() {
+        lines.push(format!("rewrite queries: {}", summary.rewrite_queries.join(" | ")));
+    }
+    if let Some(path) = summary.recovery_path.as_deref() {
+        lines.push(format!("recovery path: {path}"));
+    }
     if !summary.query.trim().is_empty() {
         lines.push(format!("query: {}", summary.query));
     }
@@ -1349,6 +1516,23 @@ fn build_document_knowledge_detail_lines(summary: &ResponseDocumentKnowledge) ->
 
 fn build_memory_knowledge_detail_lines(summary: &ResponseMemoryKnowledge) -> Vec<String> {
     let mut lines = vec![format!("selected summaries: {}", summary.selected_summary_count)];
+    if let Some(raw_query) = summary.raw_query.as_deref() {
+        if !raw_query.trim().is_empty() {
+            lines.push(format!("raw query: {raw_query}"));
+        }
+    }
+    if !summary.planned_queries.is_empty() {
+        lines.push(format!("planned queries: {}", summary.planned_queries.join(" | ")));
+    }
+    if let Some(reason) = summary.rewrite_reason.as_deref() {
+        lines.push(format!("rewrite reason: {reason}"));
+    }
+    if !summary.rewrite_queries.is_empty() {
+        lines.push(format!("rewrite queries: {}", summary.rewrite_queries.join(" | ")));
+    }
+    if let Some(path) = summary.recovery_path.as_deref() {
+        lines.push(format!("recovery path: {path}"));
+    }
     if let Some(query) = summary.memory_query.as_deref() {
         lines.push(format!("memory query: {query}"));
     }
@@ -1361,11 +1545,22 @@ fn build_memory_knowledge_detail_lines(summary: &ResponseMemoryKnowledge) -> Vec
         summary.observation_hit_count
     ));
 
-    if !summary.top_items.is_empty() {
+    if !summary.top_selected_summaries.is_empty() {
         lines.push(String::new());
-        lines.push("memory hits:".to_string());
-        for item in &summary.top_items {
+        lines.push("selected summaries:".to_string());
+        for item in &summary.top_selected_summaries {
             lines.push(format!("- {}:{}  {}", item.workflow_id, item.step_id, item.title));
+            if !item.preview.trim().is_empty() {
+                lines.push(format!("  {}", item.preview));
+            }
+        }
+    }
+
+    if !summary.top_memory_hits.is_empty() {
+        lines.push(String::new());
+        lines.push("archived memory hits:".to_string());
+        for item in &summary.top_memory_hits {
+            lines.push(format!("- [{}] {}", item.profile, item.title));
             if !item.preview.trim().is_empty() {
                 lines.push(format!("  {}", item.preview));
             }
@@ -1396,6 +1591,14 @@ fn tool_run_status_label(status: ToolRunStatus) -> &'static str {
 
 fn first_non_empty_line(text: &str) -> Option<&str> {
     text.lines().find(|line| !line.trim().is_empty())
+}
+
+fn summarize_skill_ids(skill_ids: &[String]) -> String {
+    if skill_ids.is_empty() {
+        "none".to_string()
+    } else {
+        skill_ids.join(", ")
+    }
 }
 
 fn format_response_header(message: &Msg) -> String {

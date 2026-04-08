@@ -1,7 +1,8 @@
 use omega_session::{
     ContextSupervisionSnapshot, OverlayRequest, ResponseSection, ResponseSectionDelta,
-    ResponseSectionState, RuntimeUiEffect, RuntimeUiEnvelope, SessionRoutingStatus, StatusSlot,
-    StatusValue, StepDiagnostics, StepKnowledgeSummary, StepSubflowStatus, ToolRun,
+    ResponseSectionState, RuntimeUiEffect, RuntimeUiEnvelope, SessionRoutingStatus,
+    SkillLoadSummary, StatusSlot, StatusValue, StepDiagnostics, StepKnowledgeSummary,
+    StepSubflowStatus, ToolRun,
     ToolRunStatus, WorkflowStepStatus,
 };
 
@@ -24,6 +25,7 @@ pub trait TuiSurface {
     fn set_todo_snapshot(&mut self, text: &str);
     fn upsert_diagnostics(&mut self, diagnostics: StepDiagnostics);
     fn set_context_supervision(&mut self, snapshot: ContextSupervisionSnapshot);
+    fn upsert_skill_load_summary(&mut self, section_id: String, summary: SkillLoadSummary);
     fn upsert_step_knowledge_summary(
         &mut self,
         section_id: String,
@@ -128,6 +130,10 @@ impl TuiSurface for TuiEngine<'_> {
 
     fn set_context_supervision(&mut self, snapshot: ContextSupervisionSnapshot) {
         self.app.set_context_supervision(snapshot);
+    }
+
+    fn upsert_skill_load_summary(&mut self, section_id: String, summary: SkillLoadSummary) {
+        self.app.upsert_skill_load_summary(section_id, summary);
     }
 
     fn upsert_step_knowledge_summary(

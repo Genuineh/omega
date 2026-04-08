@@ -39,6 +39,12 @@ pub(super) fn input_context_text(app: &App, sidebar_hidden: bool) -> String {
                 } else if app.focused_panel == Panel::Diagnostics {
                     " Diagnostics: Enter/x=Open detail  Space Tab=Focus  Space b=Sidebar  Space /=Search  Space ↑/↓=Scroll"
                         .to_string()
+                } else if app.focused_panel == Panel::Delivery {
+                    " Delivery: Enter/x=Open detail  Space Tab=Focus  Space b=Sidebar  Space /=Search  Space ↑/↓=Scroll"
+                        .to_string()
+                } else if app.focused_panel == Panel::Skills {
+                    " Skills: Enter/x=Open detail  Space Tab=Focus  Space b=Sidebar  Space /=Search  Space ↑/↓=Scroll"
+                        .to_string()
                 } else if app.focused_panel == Panel::Document {
                     " Document supervision: Enter/x=Open detail  Space Tab=Focus  Space b=Sidebar  Space /=Search  Space ↑/↓=Scroll"
                         .to_string()
@@ -93,6 +99,9 @@ pub(super) fn bottom_status_text(app: &App, model_name: &str, spinner_frames: &[
     }
     if let Some(aux) = segments.aux {
         rendered.push(aux.value);
+    }
+    if let Some(delivery) = segments.delivery {
+        rendered.push(delivery);
     }
 
     format!(" {} ", rendered.join(" │ "))
@@ -217,6 +226,28 @@ pub(super) fn bottom_status_line(
         ));
     }
 
+    if let Some(delivery) = segments.delivery {
+        spans.push(Span::styled(
+            "  ·  ",
+            Style::default()
+                .fg(colors.bar_divider)
+                .bg(colors.status_bar_bg),
+        ));
+        spans.push(Span::styled(
+            " delivery ",
+            Style::default()
+                .fg(colors.status_label)
+                .bg(colors.status_bar_bg),
+        ));
+        spans.push(Span::styled(
+            delivery,
+            Style::default()
+                .fg(colors.text)
+                .bg(colors.status_bar_bg)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+
     Line::from(spans)
 }
 
@@ -225,6 +256,7 @@ struct BottomStatusSegments {
     state: String,
     flow: Option<String>,
     aux: Option<BottomStatusBadge>,
+    delivery: Option<String>,
 }
 
 struct BottomStatusBadge {
@@ -297,6 +329,7 @@ fn bottom_status_segments(
         state,
         flow,
         aux,
+        delivery: app.delivery_badge_text(),
     }
 }
 

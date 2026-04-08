@@ -70,6 +70,8 @@ fn single_activity_section_occupies_sidebar_body() {
     let mut app = App::new();
     let theme = OmegaTheme::dark();
     app.sidebar.diagnostics_expanded = false;
+    app.sidebar.delivery_expanded = false;
+    app.sidebar.skills_expanded = false;
     app.sidebar.document_expanded = false;
     app.sidebar.memory_expanded = false;
     app.sidebar.todos_expanded = false;
@@ -339,6 +341,21 @@ fn bottom_status_renders_session_slot_when_present() {
     let text = bottom_status_text(&app, "test-model", &['⠋', '⠙']);
 
     assert!(text.contains("feature -> feature"));
+}
+
+#[test]
+fn bottom_status_renders_delivery_badge_when_summary_exists() {
+    let mut app = App::new();
+    app.begin_turn();
+    app.remember_delivery_model_name("gpt-5.4");
+    app.set_status_slot(
+        omega_session::StatusSlot::Agent,
+        omega_session::StatusValue::Label("Idle".to_string()),
+    );
+
+    let text = bottom_status_text(&app, "gpt-5.4", &['⠋', '⠙']);
+
+    assert!(text.contains("0 tok · 0 llm · 0 tools · 0 files"));
 }
 
 #[test]

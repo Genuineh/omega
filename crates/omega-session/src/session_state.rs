@@ -9,6 +9,7 @@ use crate::runtime_ui::WorkflowRunRole;
 pub(crate) struct SessionContext {
     pub(crate) latest_user_turn: String,
     pub(crate) routing: RoutingContext,
+    pub(crate) skill_routing: SkillRoutingContext,
     pub(crate) step_summaries: Vec<StepSummary>,
     pub(crate) step_outputs: BTreeMap<String, Value>,
     pub(crate) governance_events: Vec<GovernanceEventSignal>,
@@ -19,6 +20,7 @@ impl SessionContext {
         Self {
             latest_user_turn: String::new(),
             routing: RoutingContext::for_workflow(root_workflow_id.into(), WorkflowRunRole::Root),
+            skill_routing: SkillRoutingContext::default(),
             step_summaries: Vec::new(),
             step_outputs: BTreeMap::new(),
             governance_events: Vec::new(),
@@ -32,9 +34,19 @@ impl SessionContext {
     ) {
         self.latest_user_turn = latest_user_turn.into();
         self.routing = RoutingContext::for_workflow(root_workflow_id.into(), WorkflowRunRole::Root);
+        self.skill_routing = SkillRoutingContext::default();
         self.step_outputs.clear();
         self.governance_events.clear();
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct SkillRoutingContext {
+    pub(crate) selected_skill_ids: Vec<String>,
+    pub(crate) loaded_skill_ids: Vec<String>,
+    pub(crate) ignored_skill_ids: Vec<String>,
+    pub(crate) selection_reason: Option<String>,
+    pub(crate) source_step_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

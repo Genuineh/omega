@@ -25,6 +25,7 @@ pub const FEATURE_SCENE_ID: &str = "feature";
 
 pub const SCENE_RECOGNITION_STEP_ID: &str = "scene-recognition";
 pub const SELECT_WORKFLOW_STEP_ID: &str = "select-workflow";
+pub const SELECT_SKILLS_STEP_ID: &str = "select-skills";
 pub const CHAT_STEP_ID: &str = "chat";
 pub const EXPLORE_STEP_ID: &str = "explore";
 pub const PLAN_STEP_ID: &str = "plan";
@@ -33,11 +34,13 @@ pub const REPORT_STEP_ID: &str = "report";
 
 pub const DEFAULT_SCENE_RECOGNITION_PROMPT_PATH: &str = ".omega/prompt/step/scene-recognition.md";
 pub const DEFAULT_SELECT_WORKFLOW_PROMPT_PATH: &str = ".omega/prompt/step/select-workflow.md";
+pub const DEFAULT_SELECT_SKILLS_PROMPT_PATH: &str = ".omega/prompt/step/select-skills.md";
 pub const DEFAULT_CHAT_PROMPT_PATH: &str = ".omega/prompt/step/chat.md";
 pub const DEFAULT_EXPLORE_PROMPT_PATH: &str = ".omega/prompt/step/explore.md";
 pub const DEFAULT_PLAN_PROMPT_PATH: &str = ".omega/prompt/step/plan.md";
 pub const DEFAULT_EXECUTE_PROMPT_PATH: &str = ".omega/prompt/step/execute.md";
 pub const DEFAULT_REPORT_PROMPT_PATH: &str = ".omega/prompt/step/report.md";
+pub const DEFAULT_SELECT_SKILLS_SCHEMA_PATH: &str = ".omega/schema/step/select-skills.json";
 pub const DEFAULT_EXPLORE_SCHEMA_PATH: &str = ".omega/schema/step/explore.json";
 pub const DEFAULT_PLAN_SCHEMA_PATH: &str = ".omega/schema/step/plan.json";
 pub const DEFAULT_EXECUTE_SCHEMA_PATH: &str = ".omega/schema/step/execute.json";

@@ -21,6 +21,8 @@ pub(super) fn render_sidebar_rail(
 ) {
     let sections = [
         SidebarSection::Diagnostics,
+        SidebarSection::Delivery,
+        SidebarSection::Skills,
         SidebarSection::Document,
         SidebarSection::Memory,
         SidebarSection::Todos,
@@ -30,7 +32,10 @@ pub(super) fn render_sidebar_rail(
 
     for (index, section) in sections.into_iter().enumerate() {
         if index > 0 {
-            spans.push(Span::styled(" | ", Style::default().fg(colors.border_dim)));
+            spans.push(Span::styled(
+                " ",
+                Style::default().bg(colors.sidebar_rail_bg),
+            ));
         }
 
         let selected = app.sidebar.rail_selection == section;
@@ -38,18 +43,28 @@ pub(super) fn render_sidebar_rail(
         let marker = if expanded { "▾" } else { "▸" };
         let style = if selected {
             Style::default()
-                .fg(colors.focus_border)
+                .fg(colors.title_fg)
+                .bg(colors.section_bg)
                 .add_modifier(Modifier::BOLD)
+        } else if expanded {
+            Style::default()
+                .fg(colors.focus_border)
+                .bg(colors.sidebar_rail_bg)
         } else {
-            Style::default().fg(colors.text)
+            Style::default()
+                .fg(colors.context_label)
+                .bg(colors.sidebar_rail_bg)
         };
         spans.push(Span::styled(
-            format!("{marker} {} {}", section.label(), app.rail_badge(section)),
+            format!(" {marker} {} {} ", section.label(), app.rail_badge(section)),
             style,
         ));
     }
 
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(colors.sidebar_rail_bg)),
+        area,
+    );
 }
 
 pub(super) fn render_sidebar_body(
@@ -58,12 +73,16 @@ pub(super) fn render_sidebar_body(
     colors: &ColorScheme,
     area: Rect,
     diagnostics_border: Style,
+    delivery_border: Style,
+    skills_border: Style,
     document_border: Style,
     memory_border: Style,
     todo_border: Style,
     logs_border: Style,
 ) {
     app.diagnostics_rect = Rect::default();
+    app.delivery_rect = Rect::default();
+    app.skills_rect = Rect::default();
     app.document_rect = Rect::default();
     app.memory_rect = Rect::default();
     app.todo_rect = Rect::default();
@@ -71,6 +90,8 @@ pub(super) fn render_sidebar_body(
 
     let expanded_sections = [
         app.sidebar.diagnostics_expanded,
+        app.sidebar.delivery_expanded,
+        app.sidebar.skills_expanded,
         app.sidebar.document_expanded,
         app.sidebar.memory_expanded,
         app.sidebar.todos_expanded,
@@ -128,15 +149,106 @@ pub(super) fn render_sidebar_body(
             .block(
                 Block::default()
                     .border_type(colors.panel_border_type)
-                    .title(diagnostics_title)
+                    .title(styled_title(&diagnostics_title, diagnostics_border, colors))
                     .borders(Borders::ALL)
-                    .border_style(diagnostics_border),
+                    .border_style(diagnostics_border)
+                    .style(Style::default().bg(colors.section_bg)),
             )
             .highlight_style(Style::default())
-            .style(Style::default().fg(colors.text));
+            .style(Style::default().fg(colors.text).bg(colors.section_bg));
         frame.render_stateful_widget(diagnostics_list, rect, &mut app.diagnostics_state);
     } else {
         app.diagnostics_displayed_count = 0;
+    }
+
+    if app.sidebar.delivery_expanded {
+        let rect = sections.get(next_index).copied().unwrap_or_default();
+        next_index += 1;
+        app.delivery_rect = rect;
+        let title = app.delivery_panel_title();
+        let inner_w = (rect.width as usize).saturating_sub(2).max(1);
+        let app_ref: &App = &*app;
+        let items: Vec<ListItem> = app_ref
+            .wrapped_panel_lines(Panel::Delivery, inner_w)
+            .into_iter()
+            .map(|line| {
+                let line_len = line.text.chars().count();
+                list_item_with_selection(
+                    &line.text,
+                    Style::default().fg(colors.text),
+                    app_ref.selection_range_for_segment(
+                        Panel::Delivery,
+                        line.source_line_index,
+                        line.source_column_start,
+                        line.source_column_start + line_len,
+                    ),
+                )
+            })
+            .collect();
+        let total = items.len();
+        app.delivery_displayed_count = total;
+        if !app.delivery_pinned && total > 0 {
+            app.delivery_state.select(Some(total - 1));
+        }
+        let list = List::new(items)
+            .block(
+                Block::default()
+                    .border_type(colors.panel_border_type)
+                    .title(styled_title(&title, delivery_border, colors))
+                    .borders(Borders::ALL)
+                    .border_style(delivery_border)
+                    .style(Style::default().bg(colors.section_bg)),
+            )
+            .highlight_style(Style::default())
+            .style(Style::default().fg(colors.text).bg(colors.section_bg));
+        frame.render_stateful_widget(list, rect, &mut app.delivery_state);
+    } else {
+        app.delivery_displayed_count = 0;
+    }
+
+    if app.sidebar.skills_expanded {
+        let rect = sections.get(next_index).copied().unwrap_or_default();
+        next_index += 1;
+        app.skills_rect = rect;
+        let title = app.skills_panel_title();
+        let inner_w = (rect.width as usize).saturating_sub(2).max(1);
+        let app_ref: &App = &*app;
+        let items: Vec<ListItem> = app_ref
+            .wrapped_panel_lines(Panel::Skills, inner_w)
+            .into_iter()
+            .map(|line| {
+                let line_len = line.text.chars().count();
+                list_item_with_selection(
+                    &line.text,
+                    Style::default().fg(colors.text),
+                    app_ref.selection_range_for_segment(
+                        Panel::Skills,
+                        line.source_line_index,
+                        line.source_column_start,
+                        line.source_column_start + line_len,
+                    ),
+                )
+            })
+            .collect();
+        let total = items.len();
+        app.skills_displayed_count = total;
+        if !app.skills_pinned && total > 0 {
+            app.skills_state.select(Some(total - 1));
+        }
+        let list = List::new(items)
+            .block(
+                Block::default()
+                    .border_type(colors.panel_border_type)
+                    .title(styled_title(&title, skills_border, colors))
+                    .borders(Borders::ALL)
+                    .border_style(skills_border)
+                    .style(Style::default().bg(colors.section_bg)),
+            )
+            .highlight_style(Style::default())
+            .style(Style::default().fg(colors.text).bg(colors.section_bg));
+        frame.render_stateful_widget(list, rect, &mut app.skills_state);
+    } else {
+        app.skills_displayed_count = 0;
     }
 
     if app.sidebar.document_expanded {
@@ -172,12 +284,13 @@ pub(super) fn render_sidebar_body(
             .block(
                 Block::default()
                     .border_type(colors.panel_border_type)
-                    .title(title)
+                    .title(styled_title(&title, document_border, colors))
                     .borders(Borders::ALL)
-                    .border_style(document_border),
+                    .border_style(document_border)
+                    .style(Style::default().bg(colors.section_bg)),
             )
             .highlight_style(Style::default())
-            .style(Style::default().fg(colors.text));
+            .style(Style::default().fg(colors.text).bg(colors.section_bg));
         frame.render_stateful_widget(list, rect, &mut app.document_state);
     } else {
         app.document_displayed_count = 0;
@@ -216,12 +329,13 @@ pub(super) fn render_sidebar_body(
             .block(
                 Block::default()
                     .border_type(colors.panel_border_type)
-                    .title(title)
+                    .title(styled_title(&title, memory_border, colors))
                     .borders(Borders::ALL)
-                    .border_style(memory_border),
+                    .border_style(memory_border)
+                    .style(Style::default().bg(colors.section_bg)),
             )
             .highlight_style(Style::default())
-            .style(Style::default().fg(colors.text));
+            .style(Style::default().fg(colors.text).bg(colors.section_bg));
         frame.render_stateful_widget(list, rect, &mut app.memory_state);
     } else {
         app.memory_displayed_count = 0;
@@ -268,12 +382,13 @@ pub(super) fn render_sidebar_body(
             .block(
                 Block::default()
                     .border_type(colors.panel_border_type)
-                    .title(todo_title)
+                    .title(styled_title(&todo_title, todo_border, colors))
                     .borders(Borders::ALL)
-                    .border_style(todo_border),
+                    .border_style(todo_border)
+                    .style(Style::default().bg(colors.section_bg)),
             )
             .highlight_style(Style::default())
-            .style(Style::default().fg(colors.text));
+            .style(Style::default().fg(colors.text).bg(colors.section_bg));
         frame.render_stateful_widget(todo_list, rect, &mut app.todo_state);
     } else {
         app.todo_displayed_count = 0;
@@ -311,12 +426,13 @@ pub(super) fn render_sidebar_body(
             .block(
                 Block::default()
                     .border_type(colors.panel_border_type)
-                    .title(logs_title)
+                    .title(styled_title(&logs_title, logs_border, colors))
                     .borders(Borders::ALL)
-                    .border_style(logs_border),
+                    .border_style(logs_border)
+                    .style(Style::default().bg(colors.section_bg)),
             )
             .highlight_style(Style::default())
-            .style(Style::default().fg(colors.text));
+            .style(Style::default().fg(colors.text).bg(colors.section_bg));
         frame.render_stateful_widget(log_list, rect, &mut app.logs_state);
     } else {
         app.logs_displayed_count = 0;
@@ -373,4 +489,15 @@ pub(super) fn list_item_with_selection(
     }
 
     ListItem::new(Line::from(spans))
+}
+
+fn styled_title(title: &str, border_style: Style, colors: &ColorScheme) -> Line<'static> {
+    let title_color = border_style.fg.unwrap_or(colors.title_fg);
+    Line::from(vec![Span::styled(
+        title.to_string(),
+        Style::default()
+            .fg(title_color)
+            .bg(colors.section_bg)
+            .add_modifier(Modifier::BOLD),
+    )])
 }

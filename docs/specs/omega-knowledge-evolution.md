@@ -15,7 +15,7 @@ related_prds: []
 
 本规格把 `learn/` 下基于 Hindsight 的调研结论收敛成 Omega 可执行的实现方案。
 
-Status note (2026-04-07): `Phase 1 ~ Phase 5` 的 retention / memory query / observation / unified recall planner 基线已经落地，但当前 recall quality 仍明显不足。最新排查显示，`omega-context::plan_recall()` 仍直接把 `latest_user_turn` 原句送入 memory/document recall，而 `omega-memory` 仍以 whitespace lexical `contains` 为主；因此长自然语言、中文请求和弱锚点问题会稳定产生空命中或低质量命中。下一轮工作应聚焦 query planning、retrieval scoring 和 empty-hit recovery，而不是重复扩大 planner 表面积。
+Status note (2026-04-07): `Phase 1 ~ Phase 6` 的 retention / memory query / observation / unified recall planner / recall quality 基线已经落地。当前实现已补齐 deterministic `RecallQueryBundle`、CJK-friendly memory lexical retrieval、multi-query document merge/rerank、bounded report-step rewrite fallback，以及 Response / Sidebar / Overlay 的 recall semantics split；后续工作应聚焦 trigger policy 微调、命中质量继续评估与更重的 retrieval strategy，而不是回退到单 query recall。
 
 目标不是把 Omega 改造成通用 memory engine，而是在保留当前 `repo-local source of truth + omega-context facade + workflow-first assembly + supervision` 基线的前提下，补齐长期项目知识的保留、整理与召回能力。
 

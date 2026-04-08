@@ -21,6 +21,7 @@ use super::style::response_line_style;
 pub(crate) fn render(frame: &mut Frame, app: &mut App, model_name: &str, theme: &OmegaTheme) {
     let colors = theme.render_palette();
     app.cached_palette = Some(colors);
+    app.remember_delivery_model_name(model_name);
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -57,6 +58,7 @@ pub(crate) fn render(frame: &mut Frame, app: &mut App, model_name: &str, theme: 
     app.sidebar_rect = main_chunks[1];
     app.sidebar_rail_rect = Rect::default();
     app.todo_rect = Rect::default();
+    app.delivery_rect = Rect::default();
     app.document_rect = Rect::default();
     app.memory_rect = Rect::default();
     app.logs_rect = Rect::default();
@@ -66,13 +68,15 @@ pub(crate) fn render(frame: &mut Frame, app: &mut App, model_name: &str, theme: 
 
     const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
     let status = Paragraph::new(bottom_status_line(app, model_name, SPINNER_FRAMES, &colors))
-        .style(Style::default().bg(colors.status_bar_bg));
+        .style(Style::default().fg(colors.text).bg(colors.status_bar_bg));
     frame.render_widget(status, chunks[3]);
 
     let response_border = panel_border_style(app.focused_panel == Panel::Response, &colors);
     let sidebar_border = panel_border_style(app.focused_panel == Panel::SidebarRail, &colors);
     let todo_border = panel_border_style(app.focused_panel == Panel::Todo, &colors);
     let diagnostics_border = panel_border_style(app.focused_panel == Panel::Diagnostics, &colors);
+    let delivery_border = panel_border_style(app.focused_panel == Panel::Delivery, &colors);
+    let skills_border = panel_border_style(app.focused_panel == Panel::Skills, &colors);
     let document_border = panel_border_style(app.focused_panel == Panel::Document, &colors);
     let memory_border = panel_border_style(app.focused_panel == Panel::Memory, &colors);
     let logs_border = panel_border_style(app.focused_panel == Panel::Logs, &colors);
@@ -130,12 +134,19 @@ pub(crate) fn render(frame: &mut Frame, app: &mut App, model_name: &str, theme: 
         .block(
             Block::default()
                 .border_type(colors.panel_border_type)
-                .title(response_title)
+                .title(Line::styled(
+                    response_title,
+                    Style::default()
+                        .fg(colors.title_fg)
+                        .bg(colors.panel_bg)
+                        .add_modifier(Modifier::BOLD),
+                ))
                 .borders(Borders::ALL)
-                .border_style(response_border),
+                .border_style(response_border)
+                .style(Style::default().bg(colors.panel_bg)),
         )
         .highlight_style(Style::default())
-        .style(Style::default().fg(colors.text));
+        .style(Style::default().fg(colors.text).bg(colors.panel_bg));
     frame.render_stateful_widget(output_list, main_chunks[0], &mut app.response_state);
 
     if app.sidebar_rect.width > 0 && app.sidebar_rect.height > 0 {
@@ -146,9 +157,16 @@ pub(crate) fn render(frame: &mut Frame, app: &mut App, model_name: &str, theme: 
         };
         let sidebar_block = Block::default()
             .border_type(colors.panel_border_type)
-            .title(sidebar_title)
+            .title(Line::styled(
+                sidebar_title,
+                Style::default()
+                    .fg(colors.title_fg)
+                    .bg(colors.sidebar_bg)
+                    .add_modifier(Modifier::BOLD),
+            ))
             .borders(Borders::ALL)
-            .border_style(sidebar_border);
+            .border_style(sidebar_border)
+            .style(Style::default().bg(colors.sidebar_bg));
         let sidebar_inner = sidebar_block.inner(app.sidebar_rect);
         frame.render_widget(sidebar_block, app.sidebar_rect);
 
@@ -165,6 +183,8 @@ pub(crate) fn render(frame: &mut Frame, app: &mut App, model_name: &str, theme: 
             &colors,
             sidebar_chunks[1],
             diagnostics_border,
+            delivery_border,
+            skills_border,
             document_border,
             memory_border,
             todo_border,
@@ -237,7 +257,7 @@ pub(crate) fn render(frame: &mut Frame, app: &mut App, model_name: &str, theme: 
     };
 
     let input = Paragraph::new(ratatui::text::Line::from(spans))
-        .style(Style::default().bg(colors.input_bg))
+        .style(Style::default().fg(colors.text).bg(colors.input_bg))
         .block(
             Block::default()
                 .border_type(colors.input_border_type)
@@ -247,7 +267,7 @@ pub(crate) fn render(frame: &mut Frame, app: &mut App, model_name: &str, theme: 
     frame.render_widget(input, chunks[2]);
 
     let context = Paragraph::new(input_context_line(app, main_chunks[1].width == 0, &colors))
-        .style(Style::default().bg(colors.context_bar_bg));
+        .style(Style::default().fg(colors.text).bg(colors.context_bar_bg));
     frame.render_widget(context, chunks[1]);
 
     render_overlay(frame, app, &colors);

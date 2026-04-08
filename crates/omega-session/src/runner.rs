@@ -14,7 +14,7 @@ use omega_context::{
 };
 use omega_core::{
     Agent, ChatRequest, CoreSharedTodoManager, CoreToolExecutionContext, CoreToolResult,
-    DynLlmClient, TodoItem, TodoStatus,
+    DynLlmClient, Message, TodoItem, TodoStatus,
 };
 use omega_hooks::{HookAdvanceOutcome, HookHost};
 use omega_workflow::{
@@ -22,7 +22,8 @@ use omega_workflow::{
     StepOutputContract, WorkflowCatalog, WorkflowPromptCatalog, WorkflowPrompts, WorkflowStep,
     DEEP_RESEARCH_SCENE_ID, DEEP_RESEARCH_WORKFLOW_ID, EXECUTE_STEP_ID, FEATURE_SCENE_ID,
     FEATURE_WORKFLOW_ID, PLAN_STEP_ID, RESEARCH_SCENE_ID, RESEARCH_WORKFLOW_ID,
-    ROOT_WORKFLOW_ID, SCENE_RECOGNITION_STEP_ID, SELECT_WORKFLOW_STEP_ID,
+    ROOT_WORKFLOW_ID, SCENE_RECOGNITION_STEP_ID, SELECT_SKILLS_STEP_ID,
+    SELECT_WORKFLOW_STEP_ID,
 };
 use serde_json::Value;
 use tokio::runtime::Handle;
@@ -39,7 +40,8 @@ use crate::routing::{
     latest_user_turn_prefers_research_scene,
     latest_user_turn_requires_feature_scene, parse_structured_id, parse_structured_id_from_value,
 };
-use crate::session_state::{SessionContext, StepSummary};
+use crate::session_state::{SessionContext, SkillRoutingContext, StepSummary};
+use crate::skill_catalog::normalize_skill_ids;
 use crate::ui_emit::{
     maybe_emit_context_observability, send_routing_log, send_session_status,
     send_step_subflow_status, send_step_text, send_system_log_text, send_todo_snapshot,
@@ -63,6 +65,7 @@ pub(crate) struct StepExecutionInput {
     pub(crate) resolved_tools: ResolvedToolSet,
     pub(crate) resolved_skills: ResolvedSkillSet,
     pub(crate) system_blocks: Vec<omega_core::SystemBlock>,
+    pub(crate) document_hits: Option<DocumentHitSummary>,
     pub(crate) context_diagnostics: ContextDiagnostics,
     pub(crate) cache_diagnostics: CacheDiagnostics,
     pub(crate) session_context: SessionContext,
@@ -87,6 +90,13 @@ struct StepRunOutput {
     stage_text: String,
     usage: Option<omega_core::Usage>,
     tool_capabilities: Option<ToolCapabilityDiagnostics>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RecallRewriteDecision {
+    reason: String,
+    queries: Vec<String>,
+    recovery_path: String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -297,6 +307,8 @@ impl<'a> WorkflowTurnRunner<'a> {
             hook_session.clone(),
         )?;
 
+        self.ensure_turn_active()?;
+        self.apply_routed_skill_load_action(session_context);
         self.ensure_turn_active()?;
 
         let selected_workflow_id = self.ensure_selected_workflow(session_context);
@@ -1096,10 +1108,14 @@ impl<'a> WorkflowTurnRunner<'a> {
         let resolved_tools = self.tool_catalog.resolve_for_step(&step.tool_request);
         let resolved_skills = self
             .skill_catalog
-            .resolve_for_step(self.input, &step.skill_request);
+            .resolve_for_step(
+                self.input,
+                &session_context.skill_routing.loaded_skill_ids,
+                &step.skill_request,
+            );
         let structured_input = resolve_structured_input(session_context, step)?;
         let todo_snapshot = self.todo_snapshot_for_step(session_context, step);
-        let step_request = self.build_step_context_request(
+        let mut step_request = self.build_step_context_request(
             agent_messages,
             session_context,
             step,
@@ -1114,14 +1130,30 @@ impl<'a> WorkflowTurnRunner<'a> {
             handle: self.handle,
             client: self.client,
         };
-        let assembled = self
+        let mut assembled = self
             .context_facade
-            .assemble_step_context(step_request, &token_counter)?;
+            .assemble_step_context(step_request.clone(), &token_counter)?;
+        let initial_context = self.context_facade.diagnostics.context_diagnostics();
+        if let Some(rewrite) = self.maybe_rewrite_recall_queries(
+            step,
+            &step_request,
+            &assembled,
+            &initial_context,
+        )? {
+            step_request.recall_rewrite_reason = Some(rewrite.reason);
+            step_request.recall_rewrite_queries = rewrite.queries;
+            step_request.recall_recovery_path = Some(rewrite.recovery_path);
+            assembled = self
+                .context_facade
+                .assemble_step_context(step_request, &token_counter)?;
+        }
+        let final_context_diagnostics = self.context_facade.diagnostics.context_diagnostics();
         self.context_facade.diagnostics.record_context_assembly(
             &assembled.cache_diagnostics,
             &assembled.selected_step_summaries,
             session_context.step_summaries.len(),
         );
+        self.supervision_state.lock().unwrap().document_hits = assembled.document_summary.clone();
         self.log_context_assembly(
             step,
             session_context,
@@ -1134,11 +1166,13 @@ impl<'a> WorkflowTurnRunner<'a> {
             resolved_tools,
             resolved_skills,
             system_blocks: assembled.system_blocks,
-            context_diagnostics: self.context_facade.diagnostics.context_diagnostics(),
+            document_hits: assembled.document_summary,
+            context_diagnostics: final_context_diagnostics,
             cache_diagnostics: cache_diagnostics_from_context(&assembled.cache_diagnostics),
             session_context: SessionContext {
                 latest_user_turn: session_context.latest_user_turn.clone(),
                 routing: session_context.routing.clone(),
+                skill_routing: session_context.skill_routing.clone(),
                 step_summaries: assembled
                     .selected_step_summaries
                     .iter()
@@ -1203,6 +1237,9 @@ impl<'a> WorkflowTurnRunner<'a> {
             tool_manifests: resolved_tools.tool_manifests().to_vec(),
             tool_definitions: resolved_tools.tool_definitions().to_vec(),
             messages: agent_messages.to_vec(),
+            recall_rewrite_reason: None,
+            recall_rewrite_queries: Vec::new(),
+            recall_recovery_path: None,
             context_window: self.context_window,
             max_output_tokens: self.max_output_tokens,
             safety_margin_tokens: CONTEXT_SAFETY_MARGIN_TOKENS,
@@ -1259,6 +1296,9 @@ impl<'a> WorkflowTurnRunner<'a> {
                 tool_manifests: step_input.resolved_tools.tool_manifests().to_vec(),
                 tool_definitions: step_input.resolved_tools.tool_definitions().to_vec(),
                 messages: Vec::new(),
+                recall_rewrite_reason: None,
+                recall_rewrite_queries: Vec::new(),
+                recall_recovery_path: None,
                 context_window: self.context_window,
                 max_output_tokens: self.max_output_tokens,
                 safety_margin_tokens: CONTEXT_SAFETY_MARGIN_TOKENS,
@@ -1276,6 +1316,34 @@ impl<'a> WorkflowTurnRunner<'a> {
                 extracted_json_preview: failure.extracted_json_preview(),
             },
         }
+    }
+
+    fn maybe_rewrite_recall_queries(
+        &self,
+        step: &WorkflowStep,
+        request: &StepContextRequest,
+        assembled: &omega_context::AssembledContext,
+        context: &ContextDiagnostics,
+    ) -> anyhow::Result<Option<RecallRewriteDecision>> {
+        let Some(reason) = recall_rewrite_reason(step, request, assembled, context) else {
+            return Ok(None);
+        };
+
+        let prompt = build_recall_rewrite_request(step, request, assembled, context, &reason);
+        let response = self
+            .handle
+            .block_on(self.client.chat(prompt))
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        let queries = parse_recall_rewrite_queries(&response.text_content());
+        if queries.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(RecallRewriteDecision {
+            reason,
+            queries,
+            recovery_path: "rewritten_after_initial_empty_hit".to_string(),
+        }))
     }
 
     fn log_context_assembly(
@@ -1682,26 +1750,12 @@ impl<'a> WorkflowTurnRunner<'a> {
         let workflow_id = session_context.routing.active_workflow_id.clone();
         let role = session_context.routing.active_workflow_role;
         let mut session_writes = Vec::new();
+        let mut structured_output = structured_output;
         let mut transition = if role == WorkflowRunRole::Child && is_final_step {
             StepTransition::FinishTurn
         } else {
             StepTransition::Continue
         };
-
-        if let Some(output) = structured_output.as_ref() {
-            let previous_output = session_context.step_outputs.get(&step.id);
-            if let Some(write) = build_context_write(
-                format!("step_outputs.{}", step.id),
-                previous_output.map(|value| crate::preview_json_value(value, 160)),
-                Some(crate::preview_json_value(output, 160)),
-            ) {
-                session_writes.push(write);
-            }
-            session_context
-                .step_outputs
-                .insert(step.id.clone(), output.clone());
-            session_writes.extend(self.sync_todo_state_from_step(&workflow_id, step, output)?);
-        }
 
         let summary_text = match (role, step.id.as_str()) {
             (WorkflowRunRole::Root, SCENE_RECOGNITION_STEP_ID) => {
@@ -1733,18 +1787,72 @@ impl<'a> WorkflowTurnRunner<'a> {
                     &session_context.latest_user_turn,
                 );
                 session_context.routing.selected_workflow_id = Some(selected_workflow_id.clone());
+                if structured_output.is_none() {
+                    structured_output = Some(serde_json::json!({
+                        "recognized_scene_id": scene_id,
+                        "selected_workflow_id": selected_workflow_id,
+                    }));
+                }
                 self.send_session_status(session_context);
                 self.send_routing_log(format!(
                     "Recognized scene '{}' and selected workflow '{}'.",
                     scene_id, selected_workflow_id
                 ));
-                transition = StepTransition::StartWorkflow {
-                    workflow_id: selected_workflow_id.clone(),
-                };
                 format!("Recognized scene: {scene_id}. Selected workflow: {selected_workflow_id}.")
+            }
+            (WorkflowRunRole::Root, SELECT_SKILLS_STEP_ID) => {
+                let recognized_skill_ids = normalize_skill_ids(&self.resolve_selected_skill_ids_from_output(
+                    structured_output.as_ref(),
+                    &final_text,
+                ));
+                let selection_reason = selection_reason_from_output(structured_output.as_ref());
+                session_context.skill_routing = SkillRoutingContext {
+                    selected_skill_ids: recognized_skill_ids.clone(),
+                    loaded_skill_ids: Vec::new(),
+                    ignored_skill_ids: Vec::new(),
+                    selection_reason,
+                    source_step_id: Some(SELECT_SKILLS_STEP_ID.to_string()),
+                };
+                let selected_workflow_id = session_context
+                    .routing
+                    .selected_workflow_id
+                    .clone()
+                    .unwrap_or_else(|| self.ensure_selected_workflow(session_context));
+                self.send_routing_log(format!(
+                    "Recognized routed skills [{}] before load-skills action for workflow '{}'.",
+                    if recognized_skill_ids.is_empty() {
+                        "none".to_string()
+                    } else {
+                        recognized_skill_ids.join(", ")
+                    },
+                    selected_workflow_id
+                ));
+                transition = StepTransition::StartWorkflow {
+                    workflow_id: selected_workflow_id,
+                };
+                if recognized_skill_ids.is_empty() {
+                    "Recognized routed skills: none.".to_string()
+                } else {
+                    format!("Recognized routed skills: {}.", recognized_skill_ids.join(", "))
+                }
             }
             _ => canonical_step_summary_text(step, &final_text, structured_output.as_ref()),
         };
+
+        if let Some(output) = structured_output.as_ref() {
+            let previous_output = session_context.step_outputs.get(&step.id);
+            if let Some(write) = build_context_write(
+                format!("step_outputs.{}", step.id),
+                previous_output.map(|value| crate::preview_json_value(value, 160)),
+                Some(crate::preview_json_value(output, 160)),
+            ) {
+                session_writes.push(write);
+            }
+            session_context
+                .step_outputs
+                .insert(step.id.clone(), output.clone());
+            session_writes.extend(self.sync_todo_state_from_step(&workflow_id, step, output)?);
+        }
 
         Ok(StepExecutionResult {
             final_text,
@@ -1947,7 +2055,7 @@ impl<'a> WorkflowTurnRunner<'a> {
             .cloned()
             .map(|mut item| {
                 let item_id = item.id.as_deref().unwrap_or_default();
-                if completed.contains(item_id) {
+                if item.status == TodoStatus::Completed || completed.contains(item_id) {
                     item.status = TodoStatus::Completed;
                     item.active_form = None;
                 } else if preserve_current_in_progress
@@ -2304,6 +2412,18 @@ impl<'a> WorkflowTurnRunner<'a> {
             .chain(std::iter::once(current_item.item_id.as_str()))
             .collect::<std::collections::BTreeSet<_>>();
 
+        if let Some(reopened_open_id) = open
+            .iter()
+            .map(String::as_str)
+            .find(|task_id| already_completed.contains(task_id))
+        {
+            anyhow::bail!(
+                "itemized execute output reopened previously completed todo item '{}' in open_tasks while current todo item is '{}'",
+                reopened_open_id,
+                current_item.item_id
+            );
+        }
+
         for task_id in completed.iter().map(String::as_str) {
             if !allowed_completed.contains(task_id) {
                 anyhow::bail!(
@@ -2380,23 +2500,38 @@ impl<'a> WorkflowTurnRunner<'a> {
             .filter_map(|item| item.id.as_deref())
             .chain(std::iter::once(current_item.item_id.as_str()))
             .collect();
+        let already_completed: std::collections::BTreeSet<&str> = manager
+            .items()
+            .iter()
+            .filter(|item| item.status == TodoStatus::Completed)
+            .filter_map(|item| item.id.as_deref())
+            .collect();
 
         let mut repaired_completed = Vec::new();
-        let mut stripped = Vec::new();
+        let mut stripped_future_completed = Vec::new();
         for task_id in &execute.completed_tasks {
             if allowed_completed.contains(task_id.trim()) {
                 repaired_completed.push(task_id.clone());
             } else {
-                stripped.push(task_id.clone());
+                stripped_future_completed.push(task_id.clone());
             }
         }
 
-        if stripped.is_empty() {
+        let mut removed_reopened_open = Vec::new();
+        let mut repaired_open = Vec::new();
+        for id in &execute.open_tasks {
+            if already_completed.contains(id.trim()) {
+                removed_reopened_open.push(id.clone());
+            } else {
+                repaired_open.push(id.clone());
+            }
+        }
+
+        if stripped_future_completed.is_empty() && removed_reopened_open.is_empty() {
             return None;
         }
 
-        let mut repaired_open = execute.open_tasks.clone();
-        for id in &stripped {
+        for id in &stripped_future_completed {
             if !repaired_open.iter().any(|oid| oid.trim() == id.trim()) {
                 repaired_open.push(id.clone());
             }
@@ -2412,8 +2547,9 @@ impl<'a> WorkflowTurnRunner<'a> {
         info!(
             step_id = %step.id,
             current_item = %current_item.item_id,
-            stripped_count = stripped.len(),
-            "auto-repaired itemized execute output: stripped future items from completed_tasks"
+            stripped_future_completed = stripped_future_completed.len(),
+            removed_reopened_open = removed_reopened_open.len(),
+            "auto-repaired itemized execute output: removed invalid future/open todo references"
         );
 
         Some(Value::Object(obj))
@@ -2521,6 +2657,119 @@ impl<'a> WorkflowTurnRunner<'a> {
                 latest_user_turn,
             ),
         }
+    }
+
+    fn resolve_selected_skill_ids_from_output(
+        &self,
+        structured_output: Option<&Value>,
+        stage_text: &str,
+    ) -> Vec<String> {
+        if let Some(structured_output) = structured_output {
+            let skill_ids = parse_selected_skill_ids(structured_output);
+            if !skill_ids.is_empty() || structured_output.get("selected_skill_ids").is_some() {
+                return skill_ids;
+            }
+        }
+
+        parse_structured_output_candidates(DataFormat::Json, stage_text)
+            .into_iter()
+            .find_map(|value| {
+                let skill_ids = parse_selected_skill_ids(&value);
+                (!skill_ids.is_empty() || value.get("selected_skill_ids").is_some())
+                    .then_some(skill_ids)
+            })
+            .unwrap_or_default()
+    }
+
+    fn apply_routed_skill_load_action(&self, session_context: &mut SessionContext) {
+        if session_context.skill_routing.selected_skill_ids.is_empty() {
+            session_context.skill_routing.loaded_skill_ids.clear();
+            session_context.skill_routing.ignored_skill_ids.clear();
+            return;
+        }
+
+        let load_result = self
+            .skill_catalog
+            .load_routed_skills(&session_context.skill_routing.selected_skill_ids);
+        session_context.skill_routing.selected_skill_ids = load_result.recognized_skill_ids;
+        session_context.skill_routing.loaded_skill_ids = load_result.loaded_skill_ids;
+        session_context.skill_routing.ignored_skill_ids = load_result.ignored_skill_ids;
+
+        let section_id = format!(
+            "turn-{}:{}:{}:load-skills",
+            self.turn_id,
+            WorkflowRunRole::Root.as_str(),
+            self.scene_catalog.root_workflow_id,
+        );
+        self.emit_skill_load_response_section(&section_id, session_context);
+        self.tx_result.send(crate::RuntimeMessageEnvelope::state(
+            self.turn_id,
+            crate::StateMessage::SkillLoadSummary {
+                section_id: section_id.clone(),
+                summary: Box::new(crate::SkillLoadSummary {
+                    source_step_id: session_context.skill_routing.source_step_id.clone(),
+                    recognized_skill_ids: session_context.skill_routing.selected_skill_ids.clone(),
+                    loaded_skill_ids: session_context.skill_routing.loaded_skill_ids.clone(),
+                    ignored_skill_ids: session_context.skill_routing.ignored_skill_ids.clone(),
+                    selection_reason: session_context.skill_routing.selection_reason.clone(),
+                }),
+            },
+        ));
+
+        let loaded = if session_context.skill_routing.loaded_skill_ids.is_empty() {
+            "none".to_string()
+        } else {
+            session_context.skill_routing.loaded_skill_ids.join(", ")
+        };
+        if session_context.skill_routing.ignored_skill_ids.is_empty() {
+            self.send_routing_log(format!(
+                "Loaded routed skills [{}] before child workflow start.",
+                loaded
+            ));
+        } else {
+            self.send_routing_log(format!(
+                "Loaded routed skills [{}] before child workflow start; ignored [{}].",
+                loaded,
+                session_context.skill_routing.ignored_skill_ids.join(", ")
+            ));
+        }
+    }
+
+    fn emit_skill_load_response_section(
+        &self,
+        section_id: &str,
+        session_context: &SessionContext,
+    ) {
+        let section = crate::ResponseSection {
+            id: section_id.to_string(),
+            parent_id: None,
+            kind: crate::ResponseSectionKind::Step,
+            title: "Load Skills".to_string(),
+            state: crate::ResponseSectionState::Streaming,
+            metadata: crate::ResponseSectionMetadata {
+                scene_id: session_context.routing.recognized_scene_id.clone(),
+                origin: crate::SectionOrigin::Workflow {
+                    workflow_id: self.scene_catalog.root_workflow_id.clone(),
+                    workflow_role: WorkflowRunRole::Root,
+                },
+                step_id: Some("load-skills".to_string()),
+                step_label: Some("Load Skills".to_string()),
+                subflow_ref: None,
+            },
+        };
+        crate::ui_emit::send_begin_response_section(&*self.tx_result, self.turn_id, section);
+        crate::ui_emit::send_append_response_section(
+            &*self.tx_result,
+            self.turn_id,
+            section_id,
+            crate::ResponseSectionDelta::Text(format_skill_load_response_text(session_context)),
+        );
+        crate::ui_emit::send_complete_response_section(
+            &*self.tx_result,
+            self.turn_id,
+            section_id,
+            crate::ResponseSectionState::Complete,
+        );
     }
 
     fn maybe_align_scene_for_request_intent(
@@ -2788,6 +3037,56 @@ fn step_input_sources(step: &WorkflowStep) -> Vec<String> {
     }
 }
 
+fn parse_selected_skill_ids(value: &Value) -> Vec<String> {
+    value
+        .get("selected_skill_ids")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn selection_reason_from_output(output: Option<&Value>) -> Option<String> {
+    output
+        .and_then(|value| value.get("selection_reason"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn format_skill_load_response_text(session_context: &SessionContext) -> String {
+    let recognized = if session_context.skill_routing.selected_skill_ids.is_empty() {
+        "none".to_string()
+    } else {
+        session_context.skill_routing.selected_skill_ids.join(", ")
+    };
+    let loaded = if session_context.skill_routing.loaded_skill_ids.is_empty() {
+        "none".to_string()
+    } else {
+        session_context.skill_routing.loaded_skill_ids.join(", ")
+    };
+    let ignored = if session_context.skill_routing.ignored_skill_ids.is_empty() {
+        "none".to_string()
+    } else {
+        session_context.skill_routing.ignored_skill_ids.join(", ")
+    };
+
+    let mut lines = vec![
+        format!("recognized: {recognized}"),
+        format!("loaded: {loaded}"),
+        format!("ignored: {ignored}"),
+    ];
+    if let Some(reason) = session_context.skill_routing.selection_reason.as_deref() {
+        lines.push(format!("reason: {reason}"));
+    }
+    lines.join("\n")
+}
+
 fn cache_diagnostics_from_context(diagnostics: &ContextCacheDiagnostics) -> CacheDiagnostics {
     CacheDiagnostics {
         token_count_source: match diagnostics.token_count_source {
@@ -2804,11 +3103,168 @@ fn cache_diagnostics_from_context(diagnostics: &ContextCacheDiagnostics) -> Cach
     }
 }
 
+fn recall_rewrite_reason(
+    step: &WorkflowStep,
+    request: &StepContextRequest,
+    assembled: &omega_context::AssembledContext,
+    context: &ContextDiagnostics,
+) -> Option<String> {
+    if !request.recall_rewrite_queries.is_empty() {
+        return None;
+    }
+
+    let raw_query = request.session.latest_user_turn.trim();
+    if raw_query.is_empty() {
+        return None;
+    }
+
+    let memory_empty = context
+        .memory
+        .current_query
+        .as_ref()
+        .map(|query| query.result_count == 0)
+        .unwrap_or(true);
+    let observation_empty = context
+        .memory
+        .current_observations
+        .as_ref()
+        .map(|query| query.result_count == 0)
+        .unwrap_or(true);
+    let document_empty = assembled
+        .document_summary
+        .as_ref()
+        .map(|summary| summary.result_count == 0)
+        .unwrap_or(true);
+    let long_query = raw_query.chars().count() > 120;
+    let weak_anchor = recall_query_lacks_anchor(raw_query);
+
+    if step_depends_on_recall(step)
+        && (long_query || weak_anchor)
+        && memory_empty
+        && observation_empty
+        && document_empty
+    {
+        return Some("initial recall returned no hits for a recall-dependent step".to_string());
+    }
+
+    None
+}
+
+fn step_depends_on_recall(step: &WorkflowStep) -> bool {
+    matches!(step.id.as_str(), crate::REPORT_STEP_ID)
+        || step.label.to_lowercase().contains("report")
+        || step.label.to_lowercase().contains("document")
+}
+
+fn recall_query_lacks_anchor(query: &str) -> bool {
+    let lowered = query.to_lowercase();
+    !lowered.contains("/")
+        && !lowered.contains("::")
+        && !lowered.contains("omega-")
+        && !lowered.contains(".rs")
+        && !lowered.contains(".md")
+        && query.split_whitespace().count() >= 10
+}
+
+fn build_recall_rewrite_request(
+    step: &WorkflowStep,
+    request: &StepContextRequest,
+    assembled: &omega_context::AssembledContext,
+    context: &ContextDiagnostics,
+    reason: &str,
+) -> ChatRequest {
+    let mut prompt = vec![
+        format!("reason: {reason}"),
+        format!("step_id: {}", step.id),
+        format!("step_label: {}", step.label),
+        format!("raw_query: {}", request.session.latest_user_turn.trim()),
+        format!(
+            "initial_hits: document={} memory={} observations={}",
+            assembled
+                .document_summary
+                .as_ref()
+                .map(|summary| summary.result_count)
+                .unwrap_or_default(),
+            context
+                .memory
+                .current_query
+                .as_ref()
+                .map(|query| query.result_count)
+                .unwrap_or_default(),
+            context
+                .memory
+                .current_observations
+                .as_ref()
+                .map(|query| query.result_count)
+                .unwrap_or_default()
+        ),
+    ];
+    if let Some(structured_input) = request.structured_input.as_ref() {
+        prompt.push(format!(
+            "structured_input: {}",
+            serde_json::to_string_pretty(structured_input)
+                .unwrap_or_else(|_| structured_input.to_string())
+        ));
+    }
+    if let Some(todo_snapshot) = request.todo_snapshot.as_deref() {
+        if !todo_snapshot.trim().is_empty() {
+            prompt.push(format!("todo_snapshot: {todo_snapshot}"));
+        }
+    }
+
+    ChatRequest::new(vec![Message::user(prompt.join("\n"))])
+        .with_system_blocks(vec![omega_core::SystemBlock::text(
+            "Return ONLY a JSON object {\"queries\": [\"...\"]}. Produce 1-3 short repository recall queries. Keep deterministic anchors like file paths, crate names, task labels, or concepts. Do not explain.",
+        )])
+        .with_max_tokens(256)
+}
+
+fn parse_recall_rewrite_queries(text: &str) -> Vec<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+
+    let value = serde_json::from_str::<Value>(trimmed).ok().or_else(|| {
+        parse_structured_output_candidates(DataFormat::Json, trimmed)
+            .into_iter()
+            .next()
+    });
+    let Some(value) = value else {
+        return Vec::new();
+    };
+    let queries = value
+        .get("queries")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    dedupe_recall_queries(
+        &queries
+            .into_iter()
+            .filter_map(|value| value.as_str().map(str::trim).map(ToOwned::to_owned))
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn dedupe_recall_queries(values: &[String]) -> Vec<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut deduped = Vec::new();
+    for value in values {
+        let trimmed = value.trim();
+        if trimmed.is_empty() || !seen.insert(trimmed.to_string()) {
+            continue;
+        }
+        deduped.push(trimmed.to_string());
+    }
+    deduped.truncate(3);
+    deduped
+}
+
 fn allows_root_routing_text_fallback(role: WorkflowRunRole, step: &WorkflowStep) -> bool {
     role == WorkflowRunRole::Root
         && matches!(
             step.id.as_str(),
-            SCENE_RECOGNITION_STEP_ID | SELECT_WORKFLOW_STEP_ID
+            SCENE_RECOGNITION_STEP_ID | SELECT_WORKFLOW_STEP_ID | SELECT_SKILLS_STEP_ID
         )
 }
 
@@ -3496,6 +3952,15 @@ fn build_response_document_knowledge(
     };
 
     Some(ResponseDocumentKnowledge {
+        raw_query: hits.map(|summary| summary.raw_query.clone()).unwrap_or_default(),
+        planned_queries: hits
+            .map(|summary| summary.planned_queries.clone())
+            .unwrap_or_default(),
+        rewrite_reason: hits.and_then(|summary| summary.rewrite_reason.clone()),
+        rewrite_queries: hits
+            .map(|summary| summary.rewrite_queries.clone())
+            .unwrap_or_default(),
+        recovery_path: hits.and_then(|summary| summary.recovery_path.clone()),
         readiness,
         query: hits.map(|summary| summary.query.clone()).unwrap_or_default(),
         mode: hits
@@ -3523,14 +3988,34 @@ fn build_response_memory_knowledge(
     }
 
     Some(ResponseMemoryKnowledge {
+        raw_query: current_query
+            .map(|query| query.raw_query.clone())
+            .or_else(|| current_observations.map(|query| query.raw_query.clone())),
+        planned_queries: current_query
+            .map(|query| query.planned_queries.clone())
+            .or_else(|| current_observations.map(|query| query.planned_queries.clone()))
+            .unwrap_or_default(),
+        rewrite_reason: current_query
+            .and_then(|query| query.rewrite_reason.clone())
+            .or_else(|| current_observations.and_then(|query| query.rewrite_reason.clone())),
+        rewrite_queries: current_query
+            .map(|query| query.rewrite_queries.clone())
+            .or_else(|| current_observations.map(|query| query.rewrite_queries.clone()))
+            .unwrap_or_default(),
+        recovery_path: current_query
+            .and_then(|query| query.recovery_path.clone())
+            .or_else(|| current_observations.and_then(|query| query.recovery_path.clone())),
         memory_query: current_query.map(|query| query.query.clone()),
         observation_query: current_observations.map(|query| query.query.clone()),
         selected_summary_count: hits.map(|summary| summary.selected_count).unwrap_or_default(),
+        top_selected_summaries: hits
+            .map(|summary| summary.top_hits.iter().take(3).cloned().collect())
+            .unwrap_or_default(),
         memory_hit_count: current_query.map(|query| query.result_count).unwrap_or_default(),
         observation_hit_count: current_observations
             .map(|query| query.result_count)
             .unwrap_or_default(),
-        top_items: hits
+        top_memory_hits: current_query
             .map(|summary| summary.top_hits.iter().take(3).cloned().collect())
             .unwrap_or_default(),
         top_observations: current_observations
@@ -3669,6 +4154,11 @@ fn build_document_hit_summary(tool_result: &CoreToolResult) -> DocumentHitSummar
         .unwrap_or(results.len() as u64) as u32;
 
     DocumentHitSummary {
+        raw_query: query.clone(),
+        planned_queries: (!query.is_empty()).then_some(vec![query.clone()]).unwrap_or_default(),
+        rewrite_reason: None,
+        rewrite_queries: Vec::new(),
+        recovery_path: None,
         query,
         mode,
         degraded_from,
@@ -4076,7 +4566,8 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
 
-    use omega_client::test_support::IdleLlmClient;
+    use omega_client::test_support::{IdleLlmClient, ScriptedLlmClientBuilder};
+    use omega_client::{ChatResponse, ContentBlock, STOP_REASON_END_TURN};
     use omega_context::{ContextCacheDiagnostics, ContextTokenCountSource, OmegaContextFacade};
     use omega_core::{DynLlmClient, TodoManager};
     use omega_hooks::HookHost;
@@ -4104,6 +4595,8 @@ mod tests {
         ContextDiagnostics, ContextDocumentDiagnostics, ContextMemoryDiagnostics,
         ContextStoreDiagnostics, SupervisionReadiness,
     };
+    use omega_core::{TodoItem, TodoStatus};
+    use serde_json::json;
 
     fn workflow_step(step_id: &str, sources: Vec<&str>) -> WorkflowStep {
         WorkflowStep {
@@ -4369,6 +4862,240 @@ mod tests {
                 }) if text.contains("Ignoring root workflow as child target")
             )
         }));
+    }
+
+    #[test]
+    fn apply_routed_skill_load_action_skips_when_no_selected_skills() {
+        let client: DynLlmClient = Arc::new(IdleLlmClient::new(
+            "chat should not run in routed skill load skip test",
+        ));
+        let cwd = persistent_test_root("session-runner-skip-routed-skill-load");
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let loaded_catalog = LoadedWorkflowCatalog::load(&cwd);
+        let context_facade = Arc::new(OmegaContextFacade::local(cwd.clone()));
+        let skill_catalog = Arc::new(SessionSkillCatalog::default());
+        let tool_catalog = Arc::new(SessionToolCatalog::new(Vec::new()));
+        let todo_manager = Arc::new(Mutex::new(TodoManager::new()));
+        let hook_host = Arc::new(HookHost::load(&cwd).unwrap());
+        let (_cancel_tx, cancel_rx) = watch::channel(0u64);
+        let recorder = RuntimeEnvelopeRecorder::new();
+        let bridge = recorder.runtime_bridge();
+        let runner = WorkflowTurnRunner::new(
+            runtime.handle(),
+            &client,
+            &context_facade,
+            &skill_catalog,
+            &tool_catalog,
+            "system",
+            "inspect routing",
+            &cwd,
+            &todo_manager,
+            &hook_host,
+            &loaded_catalog.scene_catalog,
+            &loaded_catalog.workflow_catalog,
+            &loaded_catalog.prompt_catalog,
+            200_000,
+            32_000,
+            92,
+            cancel_rx,
+            bridge.clone(),
+            bridge,
+        );
+        let mut session_context = SessionContext::new(ROOT_WORKFLOW_ID);
+        session_context.skill_routing.loaded_skill_ids = vec!["stale".to_string()];
+        session_context.skill_routing.ignored_skill_ids = vec!["missing".to_string()];
+
+        runner.apply_routed_skill_load_action(&mut session_context);
+
+        assert!(session_context.skill_routing.selected_skill_ids.is_empty());
+        assert!(session_context.skill_routing.loaded_skill_ids.is_empty());
+        assert!(session_context.skill_routing.ignored_skill_ids.is_empty());
+        let messages = recorder.runtime_messages();
+        assert!(!messages.iter().any(|envelope| {
+            matches!(
+                &envelope.message,
+                RuntimeMessage::State(StateMessage::Activity {
+                    source: RuntimeSource::SessionRouting,
+                    kind: RuntimeContentKind::Summary,
+                    text,
+                    ..
+                }) if text.contains("Loaded routed skills")
+            )
+        }));
+    }
+
+    #[test]
+    fn build_step_execution_input_rewrites_recall_queries_after_initial_empty_hits() {
+        let client = Arc::new(
+            ScriptedLlmClientBuilder::default()
+                .push_response(ChatResponse {
+                    id: "msg-recall-rewrite".to_string(),
+                    model: Some("test-model".to_string()),
+                    content: vec![ContentBlock::text(
+                        r#"{"queries":["omega-context recall planner","memory query planner"]}"#,
+                    )],
+                    stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                    usage: None,
+                })
+                .build(),
+        );
+        let client_dyn: DynLlmClient = client.clone();
+        let cwd = persistent_test_root("session-runner-recall-rewrite");
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let loaded_catalog = LoadedWorkflowCatalog::load(&cwd);
+        let context_facade = Arc::new(OmegaContextFacade::local(cwd.clone()));
+        let skill_catalog = Arc::new(SessionSkillCatalog::default());
+        let tool_catalog = Arc::new(SessionToolCatalog::new(Vec::new()));
+        let todo_manager = Arc::new(Mutex::new(TodoManager::new()));
+        let hook_host = Arc::new(HookHost::load(&cwd).unwrap());
+        let (_cancel_tx, cancel_rx) = watch::channel(0u64);
+        let recorder = RuntimeEnvelopeRecorder::new();
+        let bridge = recorder.runtime_bridge();
+        let runner = WorkflowTurnRunner::new(
+            runtime.handle(),
+            &client_dyn,
+            &context_facade,
+            &skill_catalog,
+            &tool_catalog,
+            "system",
+            "write the final report",
+            &cwd,
+            &todo_manager,
+            &hook_host,
+            &loaded_catalog.scene_catalog,
+            &loaded_catalog.workflow_catalog,
+            &loaded_catalog.prompt_catalog,
+            200_000,
+            32_000,
+            92,
+            cancel_rx,
+            bridge.clone(),
+            bridge,
+        );
+        let mut session_context = SessionContext::new(ROOT_WORKFLOW_ID);
+        session_context.latest_user_turn = "Please produce a very detailed final report about how the memory and document recall system should improve over time without assuming any exact file anchor or crate name yet".to_string();
+        session_context.routing.recognized_scene_id = Some("research".to_string());
+        session_context.routing.selected_workflow_id = Some(RESEARCH_WORKFLOW_ID.to_string());
+        session_context.routing.active_workflow_id = RESEARCH_WORKFLOW_ID.to_string();
+        session_context.routing.active_workflow_role = crate::WorkflowRunRole::Child;
+
+        let step_input = runner
+            .build_step_execution_input(
+                &[omega_core::Message::user("report please")],
+                &session_context,
+                &workflow_step(crate::REPORT_STEP_ID, vec![PLAN_STEP_ID]),
+                "Write the report",
+                None,
+            )
+            .unwrap();
+
+        let query = step_input
+            .context_diagnostics
+            .memory
+            .current_query
+            .expect("expected memory query diagnostics after rewrite");
+        assert_eq!(
+            query.recovery_path.as_deref(),
+            Some("rewritten_after_initial_empty_hit")
+        );
+        assert!(query
+            .rewrite_queries
+            .iter()
+            .any(|value| value == "omega-context recall planner"));
+        assert_eq!(client.recorded_requests().len(), 1);
+    }
+
+    #[test]
+    fn sync_execute_output_does_not_reopen_previously_completed_items() {
+        let client: DynLlmClient = Arc::new(IdleLlmClient::new(
+            "execute reopen regression test should not call LLM",
+        ));
+        let cwd = persistent_test_root("session-runner-execute-does-not-reopen-completed");
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let loaded_catalog = LoadedWorkflowCatalog::load(&cwd);
+        let context_facade = Arc::new(OmegaContextFacade::local(cwd.clone()));
+        let skill_catalog = Arc::new(SessionSkillCatalog::default());
+        let tool_catalog = Arc::new(SessionToolCatalog::new(Vec::new()));
+        let todo_manager = Arc::new(Mutex::new(TodoManager::new()));
+        {
+            let mut manager = todo_manager.lock().unwrap();
+            manager
+                .update(vec![
+                    TodoItem {
+                        id: Some("task-1".to_string()),
+                        text: "Inspect diagnostics path".to_string(),
+                        status: TodoStatus::Completed,
+                        active_form: None,
+                    },
+                    TodoItem {
+                        id: Some("task-2".to_string()),
+                        text: "Trace tool callback path".to_string(),
+                        status: TodoStatus::InProgress,
+                        active_form: Some("working on Trace tool callback path".to_string()),
+                    },
+                    TodoItem {
+                        id: Some("task-3".to_string()),
+                        text: "Compare archive paths".to_string(),
+                        status: TodoStatus::Pending,
+                        active_form: None,
+                    },
+                ])
+                .unwrap();
+        }
+        let hook_host = Arc::new(HookHost::load(&cwd).unwrap());
+        let (_cancel_tx, cancel_rx) = watch::channel(0u64);
+        let recorder = RuntimeEnvelopeRecorder::new();
+        let bridge = recorder.runtime_bridge();
+        let runner = WorkflowTurnRunner::new(
+            runtime.handle(),
+            &client,
+            &context_facade,
+            &skill_catalog,
+            &tool_catalog,
+            "system",
+            "continue execute",
+            &cwd,
+            &todo_manager,
+            &hook_host,
+            &loaded_catalog.scene_catalog,
+            &loaded_catalog.workflow_catalog,
+            &loaded_catalog.prompt_catalog,
+            200_000,
+            32_000,
+            93,
+            cancel_rx,
+            bridge.clone(),
+            bridge,
+        );
+
+        runner
+            .sync_todo_manager_from_execute_output(&json!({
+                "completed_tasks": ["task-2"],
+                "open_tasks": ["task-1", "task-3"],
+                "validation_results": [],
+                "changed_paths": []
+            }))
+            .unwrap();
+
+        let manager = todo_manager.lock().unwrap();
+        let statuses = manager
+            .items()
+            .iter()
+            .map(|item| {
+                (
+                    item.id.clone().unwrap_or_default(),
+                    item.status.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            statuses,
+            vec![
+                ("task-1".to_string(), TodoStatus::Completed),
+                ("task-2".to_string(), TodoStatus::Completed),
+                ("task-3".to_string(), TodoStatus::InProgress),
+            ]
+        );
     }
 
     #[test]

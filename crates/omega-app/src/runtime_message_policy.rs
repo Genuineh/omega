@@ -70,6 +70,10 @@ fn apply_state(surface: &mut dyn TuiSurface, message: StateMessage) {
         StateMessage::ContextSupervision { snapshot } => {
             surface.set_context_supervision(*snapshot)
         }
+        StateMessage::SkillLoadSummary {
+            section_id,
+            summary,
+        } => surface.upsert_skill_load_summary(section_id, *summary),
         StateMessage::StepKnowledgeSummary {
             section_id,
             summary,
@@ -176,6 +180,7 @@ mod tests {
         Diagnostics(String),
         ContextSupervision,
         StepKnowledgeSummary(String),
+        SkillLoadSummary(String),
         StepSubflow(String, String),
         Activity(String),
         ShowOverlay(OverlayTarget, String),
@@ -261,6 +266,14 @@ mod tests {
             _summary: omega_session::StepKnowledgeSummary,
         ) {
             self.ops.push(SurfaceOp::StepKnowledgeSummary(section_id));
+        }
+
+        fn upsert_skill_load_summary(
+            &mut self,
+            section_id: String,
+            _summary: omega_session::SkillLoadSummary,
+        ) {
+            self.ops.push(SurfaceOp::SkillLoadSummary(section_id));
         }
 
         fn upsert_step_subflow(&mut self, subflow: StepSubflowStatus) {
@@ -522,6 +535,11 @@ mod tests {
                     section_id: "turn-42:child:feature:plan".to_string(),
                     summary: Box::new(omega_session::StepKnowledgeSummary {
                         document: Some(omega_session::ResponseDocumentKnowledge {
+                            raw_query: "roadmap".to_string(),
+                            planned_queries: vec!["roadmap".to_string()],
+                            rewrite_reason: None,
+                            rewrite_queries: Vec::new(),
+                            recovery_path: None,
                             readiness: SupervisionReadiness::Ready,
                             query: "roadmap".to_string(),
                             mode: "hybrid".to_string(),

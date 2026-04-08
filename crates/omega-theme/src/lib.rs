@@ -31,6 +31,11 @@ running_fg = "#ffc468"
 text_fg = "#d4d4d4"
 focus_border_fg = "#4ec9b0"
 border_dim_fg = "#303030"
+panel_bg = "#11161d"
+sidebar_bg = "#0d1117"
+sidebar_rail_bg = "#131922"
+section_bg = "#171e28"
+title_fg = "#eef2f6"
 
 [messages]
 tool_fg = "#dcdcaa"
@@ -53,6 +58,11 @@ pub struct SurfaceTheme {
     pub muted_text_fg: Color,
     pub border_dim_fg: Color,
     pub focus_border_fg: Color,
+    pub panel_bg: Color,
+    pub sidebar_bg: Color,
+    pub sidebar_rail_bg: Color,
+    pub section_bg: Color,
+    pub title_fg: Color,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,6 +122,11 @@ pub struct RenderPalette {
     pub text: Color,
     pub border_dim: Color,
     pub focus_border: Color,
+    pub panel_bg: Color,
+    pub sidebar_bg: Color,
+    pub sidebar_rail_bg: Color,
+    pub section_bg: Color,
+    pub title_fg: Color,
     pub input_bg: Color,
     pub input_text: Color,
     pub input_placeholder: Color,
@@ -193,49 +208,54 @@ impl OmegaTheme {
         Self {
             surfaces: SurfaceTheme {
                 panel_border_type: BorderType::Rounded,
-                text_fg: Color::Rgb(212, 212, 212),
-                muted_text_fg: Color::Rgb(172, 179, 189),
-                border_dim_fg: Color::Rgb(48, 48, 48),
-                focus_border_fg: Color::Rgb(78, 201, 176),
+                text_fg: Color::Rgb(219, 229, 238),
+                muted_text_fg: Color::Rgb(151, 163, 179),
+                border_dim_fg: Color::Rgb(44, 56, 70),
+                focus_border_fg: Color::Rgb(113, 210, 194),
+                panel_bg: Color::Rgb(17, 22, 29),
+                sidebar_bg: Color::Rgb(13, 17, 23),
+                sidebar_rail_bg: Color::Rgb(19, 25, 34),
+                section_bg: Color::Rgb(23, 30, 40),
+                title_fg: Color::Rgb(238, 242, 246),
             },
             input: InputTheme {
                 border_type: BorderType::Rounded,
-                bg: Color::Reset,
-                text_fg: Color::Rgb(86, 156, 214),
-                placeholder_fg: Color::Rgb(172, 179, 189),
-                normal_border_fg: Color::Rgb(163, 187, 214),
-                insert_border_fg: Color::Rgb(78, 201, 176),
+                bg: Color::Rgb(12, 17, 23),
+                text_fg: Color::Rgb(138, 180, 248),
+                placeholder_fg: Color::Rgb(151, 163, 179),
+                normal_border_fg: Color::Rgb(86, 102, 120),
+                insert_border_fg: Color::Rgb(113, 210, 194),
                 cursor_fg: Color::Reset,
-                cursor_bg: Color::Rgb(86, 156, 214),
+                cursor_bg: Color::Rgb(138, 180, 248),
             },
             context_bar: ContextBarTheme {
-                bg: Color::Reset,
-                label_fg: Color::Rgb(116, 126, 140),
-                hint_fg: Color::Rgb(172, 179, 189),
+                bg: Color::Rgb(12, 17, 23),
+                label_fg: Color::Rgb(110, 124, 143),
+                hint_fg: Color::Rgb(182, 190, 199),
             },
             status_bar: StatusBarTheme {
-                bg: Color::Reset,
-                label_fg: Color::Rgb(116, 126, 140),
-                divider_fg: Color::Rgb(98, 107, 120),
-                normal_mode_fg: Color::Rgb(163, 187, 214),
-                insert_mode_fg: Color::Rgb(78, 201, 176),
-                idle_fg: Color::Rgb(123, 199, 143),
-                running_fg: Color::Rgb(255, 196, 104),
+                bg: Color::Rgb(12, 17, 23),
+                label_fg: Color::Rgb(110, 124, 143),
+                divider_fg: Color::Rgb(70, 84, 101),
+                normal_mode_fg: Color::Rgb(138, 180, 248),
+                insert_mode_fg: Color::Rgb(113, 210, 194),
+                idle_fg: Color::Rgb(128, 201, 149),
+                running_fg: Color::Rgb(243, 196, 110),
             },
             messages: MessageTheme {
-                user_fg: Color::Green,
-                agent_fg: Color::Rgb(212, 212, 212),
-                tool_fg: Color::Rgb(220, 220, 170),
-                error_fg: Color::Red,
-                separator_fg: Color::Rgb(48, 48, 48),
+                user_fg: Color::Rgb(128, 201, 149),
+                agent_fg: Color::Rgb(219, 229, 238),
+                tool_fg: Color::Rgb(229, 215, 141),
+                error_fg: Color::Rgb(255, 113, 113),
+                separator_fg: Color::Rgb(44, 56, 70),
             },
             overlay: OverlayTheme {
                 border_type: BorderType::Rounded,
-                bg: Color::Reset,
-                mask_bg: Color::Rgb(12, 12, 12),
-                button_fg: Color::Rgb(212, 212, 212),
-                selected_button_fg: Color::Rgb(30, 30, 30),
-                selected_button_bg: Color::Rgb(78, 201, 176),
+                bg: Color::Rgb(23, 30, 40),
+                mask_bg: Color::Rgb(6, 8, 12),
+                button_fg: Color::Rgb(219, 229, 238),
+                selected_button_fg: Color::Rgb(12, 17, 23),
+                selected_button_bg: Color::Rgb(113, 210, 194),
             },
         }
     }
@@ -252,6 +272,11 @@ impl OmegaTheme {
             text: self.surfaces.text_fg,
             border_dim: self.surfaces.border_dim_fg,
             focus_border: self.surfaces.focus_border_fg,
+            panel_bg: self.surfaces.panel_bg,
+            sidebar_bg: self.surfaces.sidebar_bg,
+            sidebar_rail_bg: self.surfaces.sidebar_rail_bg,
+            section_bg: self.surfaces.section_bg,
+            title_fg: self.surfaces.title_fg,
             input_bg: self.input.bg,
             input_text: self.input.text_fg,
             input_placeholder: self.input.placeholder_fg,
@@ -403,6 +428,23 @@ impl OmegaTheme {
                 surfaces.focus_border_fg,
                 &mut self.surfaces.focus_border_fg,
             )?;
+            apply_color("surfaces.panel_bg", surfaces.panel_bg, &mut self.surfaces.panel_bg)?;
+            apply_color(
+                "surfaces.sidebar_bg",
+                surfaces.sidebar_bg,
+                &mut self.surfaces.sidebar_bg,
+            )?;
+            apply_color(
+                "surfaces.sidebar_rail_bg",
+                surfaces.sidebar_rail_bg,
+                &mut self.surfaces.sidebar_rail_bg,
+            )?;
+            apply_color(
+                "surfaces.section_bg",
+                surfaces.section_bg,
+                &mut self.surfaces.section_bg,
+            )?;
+            apply_color("surfaces.title_fg", surfaces.title_fg, &mut self.surfaces.title_fg)?;
         }
 
         if let Some(input) = config.input {
@@ -561,6 +603,11 @@ struct SurfaceOverrides {
     muted_text_fg: Option<String>,
     border_dim_fg: Option<String>,
     focus_border_fg: Option<String>,
+    panel_bg: Option<String>,
+    sidebar_bg: Option<String>,
+    sidebar_rail_bg: Option<String>,
+    section_bg: Option<String>,
+    title_fg: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]

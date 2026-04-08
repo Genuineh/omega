@@ -97,6 +97,10 @@ pub enum RuntimeUiEffect {
     UpsertContextSupervision {
         snapshot: Box<ContextSupervisionSnapshot>,
     },
+    UpsertSkillLoadSummary {
+        section_id: String,
+        summary: Box<SkillLoadSummary>,
+    },
     UpsertStepKnowledgeSummary {
         section_id: String,
         summary: Box<StepKnowledgeSummary>,
@@ -115,6 +119,16 @@ pub enum UiTarget {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActivityTarget {
     Log,
+    Skills,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillLoadSummary {
+    pub source_step_id: Option<String>,
+    pub recognized_skill_ids: Vec<String>,
+    pub loaded_skill_ids: Vec<String>,
+    pub ignored_skill_ids: Vec<String>,
+    pub selection_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

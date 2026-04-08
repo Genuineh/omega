@@ -31,6 +31,8 @@ impl App {
                 .iter()
                 .map(|line| line.text.clone())
                 .collect(),
+            Panel::Delivery => self.delivery_lines.clone(),
+            Panel::Skills => self.skill_lines.clone(),
             Panel::Document => self.document_lines.clone(),
             Panel::Memory => self.memory_lines.clone(),
             Panel::Todo => self.todo_lines.clone(),
@@ -218,6 +220,8 @@ impl App {
     pub fn panel_scroll_offset(&self, panel: Panel) -> usize {
         match panel {
             Panel::Response => self.response_state.offset(),
+            Panel::Delivery => self.delivery_state.offset(),
+            Panel::Skills => self.skills_state.offset(),
             Panel::Document => self.document_state.offset(),
             Panel::Memory => self.memory_state.offset(),
             Panel::Todo => self.todo_state.offset(),
@@ -230,6 +234,8 @@ impl App {
     pub fn panel_inner_rect(&self, panel: Panel) -> Option<Rect> {
         let rect = match panel {
             Panel::Response => self.response_rect,
+            Panel::Delivery => self.delivery_rect,
+            Panel::Skills => self.skills_rect,
             Panel::Document => self.document_rect,
             Panel::Memory => self.memory_rect,
             Panel::Todo => self.todo_rect,

@@ -27,6 +27,7 @@ impl TuiUpdateReducer {
         match message.target {
             UiTarget::Response => Self::apply_response_message(app, message),
             UiTarget::Activity(ActivityTarget::Log) => Self::apply_log_message(app, message),
+            UiTarget::Activity(ActivityTarget::Skills) => Self::apply_log_message(app, message),
             UiTarget::Todo => {
                 let UiContent::Text(text) = message.content;
                 app.set_todo_snapshot(app.active_turn_id, &text);
@@ -123,6 +124,10 @@ impl TuiUpdateReducer {
             RuntimeUiEffect::UpsertContextSupervision { snapshot } => {
                 app.set_context_supervision(*snapshot)
             }
+            RuntimeUiEffect::UpsertSkillLoadSummary {
+                section_id,
+                summary,
+            } => app.upsert_skill_load_summary(section_id, *summary),
             RuntimeUiEffect::UpsertStepKnowledgeSummary {
                 section_id,
                 summary,
@@ -204,6 +209,11 @@ impl TuiUpdateReducer {
             UiTarget::Activity(ActivityTarget::Log) => {
                 if app.logs_visible() {
                     app.focused_panel = Panel::Logs;
+                }
+            }
+            UiTarget::Activity(ActivityTarget::Skills) => {
+                if app.skills_visible() {
+                    app.focused_panel = Panel::Skills;
                 }
             }
             UiTarget::Todo => {

@@ -326,8 +326,13 @@ pub struct ArchivedTurnRecord {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MemoryQuery {
     pub text: Option<String>,
+    pub queries: Vec<String>,
+    pub raw_query: Option<String>,
     pub profiles: Vec<RetentionProfile>,
     pub max_results: usize,
+    pub rewrite_reason: Option<String>,
+    pub rewrite_queries: Vec<String>,
+    pub recovery_path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -342,8 +347,13 @@ pub struct MemoryQueryHit {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ObservationQuery {
     pub text: Option<String>,
+    pub queries: Vec<String>,
+    pub raw_query: Option<String>,
     pub max_results: usize,
     pub include_stale: bool,
+    pub rewrite_reason: Option<String>,
+    pub rewrite_queries: Vec<String>,
+    pub recovery_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -467,22 +477,26 @@ impl LocalMemoryStore {
 
     pub fn query(&self, query: &MemoryQuery) -> Result<Vec<MemoryQueryHit>> {
         let _guard = self.io_lock.lock().unwrap();
-        let terms = query_terms(query.text.as_deref());
-        let terms_empty = terms.is_empty();
+        let planned_queries = planned_query_texts(query.text.as_deref(), &query.queries);
+        let queries_empty = planned_queries.is_empty();
         let allowed_profiles = allowed_profiles(&query.profiles);
         let mut hits = self
             .read_turns_locked()?
             .into_iter()
             .flat_map(|turn| {
-                let terms = terms.clone();
+                let planned_queries = planned_queries.clone();
                 turn.retention_candidates
                     .into_iter()
                     .filter(|candidate| candidate.accepted)
                     .filter(|candidate| allowed_profiles.contains(candidate.profile.as_str()))
                     .map(move |candidate| {
                         let title = derive_candidate_title(candidate.profile.as_str(), &candidate.text);
-                        let searchable = format!("{}\n{}\n{}", title, candidate.text, turn.user_intent);
-                        let score = match_score(&searchable, &terms);
+                        let score = memory_query_score(
+                            &title,
+                            &candidate.text,
+                            &turn.user_intent,
+                            &planned_queries,
+                        );
                         (
                             score,
                             MemoryQueryHit {
@@ -495,7 +509,7 @@ impl LocalMemoryStore {
                         )
                     })
             })
-            .filter(|(score, _)| *score > 0 || terms_empty)
+                    .filter(|(score, _)| *score > 0 || queries_empty)
             .collect::<Vec<_>>();
 
         hits.sort_by(|left, right| {
@@ -515,7 +529,7 @@ impl LocalMemoryStore {
 
     pub fn query_observations(&self, query: &ObservationQuery) -> Result<Vec<ProjectObservation>> {
         let _guard = self.io_lock.lock().unwrap();
-        let terms = query_terms(query.text.as_deref());
+        let planned_queries = planned_query_texts(query.text.as_deref(), &query.queries);
         let mut hits = self
             .read_observations_locked()?
             .into_iter()
@@ -528,11 +542,14 @@ impl LocalMemoryStore {
                     )
             })
             .map(|observation| {
-                let searchable = format!("{}\n{}", observation.title, observation.summary);
-                let score = match_score(&searchable, &terms);
+                let score = observation_query_score(
+                    &observation.title,
+                    &observation.summary,
+                    &planned_queries,
+                );
                 (score, observation)
             })
-            .filter(|(score, _)| *score > 0 || terms.is_empty())
+            .filter(|(score, _)| *score > 0 || planned_queries.is_empty())
             .collect::<Vec<_>>();
 
         hits.sort_by(|left, right| {
@@ -1080,19 +1097,147 @@ fn normalized_text(text: &str) -> String {
 }
 
 fn query_terms(text: Option<&str>) -> Vec<String> {
-    text.unwrap_or_default()
-        .split_whitespace()
-        .map(normalized_text)
-        .filter(|term| !term.is_empty())
-        .collect()
+    let mut seen = BTreeSet::new();
+    let mut terms = Vec::new();
+    let text = text.unwrap_or_default().trim();
+    if text.is_empty() {
+        return terms;
+    }
+
+    push_query_term(text, &mut seen, &mut terms);
+    for segment in text.split_whitespace() {
+        push_query_term(segment, &mut seen, &mut terms);
+        push_cjk_bigrams(segment, &mut seen, &mut terms);
+    }
+    if text.chars().any(is_cjk_char) {
+        push_cjk_bigrams(text, &mut seen, &mut terms);
+    }
+    terms
 }
 
-fn match_score(haystack: &str, terms: &[String]) -> u32 {
-    if terms.is_empty() {
+fn planned_query_texts(primary: Option<&str>, queries: &[String]) -> Vec<String> {
+    let mut values = queries.iter().cloned().collect::<Vec<_>>();
+    if let Some(primary) = primary {
+        values.insert(0, primary.to_string());
+    }
+    dedupe_strings(&values)
+}
+
+fn memory_query_score(title: &str, summary: &str, user_intent: &str, queries: &[String]) -> u32 {
+    aggregate_query_scores(queries, |query| {
+        field_weighted_match_score(
+            query,
+            &[(title, 14), (summary, 8), (user_intent, 4)],
+        )
+    })
+}
+
+fn observation_query_score(title: &str, summary: &str, queries: &[String]) -> u32 {
+    aggregate_query_scores(queries, |query| {
+        field_weighted_match_score(query, &[(title, 12), (summary, 7)])
+    })
+}
+
+fn aggregate_query_scores(queries: &[String], mut scorer: impl FnMut(&str) -> u32) -> u32 {
+    if queries.is_empty() {
         return 1;
     }
-    let normalized = normalized_text(haystack);
-    terms.iter().filter(|term| normalized.contains(term.as_str())).count() as u32
+    let mut scores = queries
+        .iter()
+        .map(|query| scorer(query))
+        .filter(|score| *score > 0)
+        .collect::<Vec<_>>();
+    if scores.is_empty() {
+        return 0;
+    }
+    scores.sort_unstable_by(|left, right| right.cmp(left));
+    let bonus = scores.iter().skip(1).take(2).sum::<u32>() / 4;
+    scores[0]
+        .saturating_add(bonus)
+        .saturating_add((scores.len().saturating_sub(1) as u32).min(2))
+}
+
+fn field_weighted_match_score(query: &str, fields: &[(&str, u32)]) -> u32 {
+    let terms = query_terms(Some(query));
+    if terms.is_empty() {
+        return 0;
+    }
+
+    let normalized_query = normalized_text(query);
+    let mut total = 0_u32;
+    for (field, weight) in fields {
+        let normalized_field = normalized_text(field);
+        if normalized_field.is_empty() {
+            continue;
+        }
+        if !normalized_query.is_empty() && normalized_field.contains(&normalized_query) {
+            total = total.saturating_add(weight.saturating_mul(3));
+        }
+        let matches = terms
+            .iter()
+            .filter(|term| normalized_field.contains(term.as_str()))
+            .count() as u32;
+        if matches == 0 {
+            continue;
+        }
+        total = total.saturating_add(matches.saturating_mul(*weight));
+        total = total.saturating_add(
+            matches
+                .saturating_mul(weight.saturating_mul(2))
+                .div_ceil(terms.len() as u32),
+        );
+    }
+    total
+}
+
+fn push_query_term(text: &str, seen: &mut BTreeSet<String>, terms: &mut Vec<String>) {
+    let normalized = normalized_text(text);
+    if !normalized.is_empty() && seen.insert(normalized.clone()) {
+        terms.push(normalized);
+    }
+}
+
+fn push_cjk_bigrams(text: &str, seen: &mut BTreeSet<String>, terms: &mut Vec<String>) {
+    let mut sequence = Vec::new();
+    for ch in text.chars() {
+        if is_cjk_char(ch) {
+            sequence.push(ch);
+        } else {
+            flush_cjk_sequence(&sequence, seen, terms);
+            sequence.clear();
+        }
+    }
+    flush_cjk_sequence(&sequence, seen, terms);
+}
+
+fn flush_cjk_sequence(sequence: &[char], seen: &mut BTreeSet<String>, terms: &mut Vec<String>) {
+    if sequence.is_empty() {
+        return;
+    }
+    if sequence.len() == 1 {
+        let value = sequence[0].to_string();
+        if seen.insert(value.clone()) {
+            terms.push(value);
+        }
+        return;
+    }
+    for window in sequence.windows(2) {
+        let value = window.iter().collect::<String>();
+        if seen.insert(value.clone()) {
+            terms.push(value);
+        }
+    }
+}
+
+fn is_cjk_char(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{3400}'..='\u{4DBF}'
+            | '\u{4E00}'..='\u{9FFF}'
+            | '\u{3040}'..='\u{309F}'
+            | '\u{30A0}'..='\u{30FF}'
+            | '\u{AC00}'..='\u{D7AF}'
+    )
 }
 
 fn normalized_max_results(max_results: usize) -> usize {
@@ -1360,8 +1505,13 @@ mod tests {
         let hits = store
             .query(&MemoryQuery {
                 text: Some("planner memory query".to_string()),
+                queries: vec!["planner memory query".to_string()],
+                raw_query: Some("Wire memory query into the planner".to_string()),
                 profiles: vec![RetentionProfile::ProjectFacts, RetentionProfile::OpenThreads],
                 max_results: 5,
+                rewrite_reason: None,
+                rewrite_queries: Vec::new(),
+                recovery_path: None,
             })
             .unwrap();
         assert!(!hits.is_empty());
@@ -1370,8 +1520,13 @@ mod tests {
         let observations = store
             .query_observations(&ObservationQuery {
                 text: Some("memory query".to_string()),
+                queries: vec!["memory query".to_string()],
+                raw_query: Some("Wire memory query into the planner".to_string()),
                 max_results: 5,
                 include_stale: true,
+                rewrite_reason: None,
+                rewrite_queries: Vec::new(),
+                recovery_path: None,
             })
             .unwrap();
         assert!(!observations.is_empty());
@@ -1421,12 +1576,109 @@ mod tests {
         let observations = store
             .query_observations(&ObservationQuery {
                 text: Some("task keep open".to_string()),
+                queries: vec!["task keep open".to_string()],
+                raw_query: Some("Close task-keep-open".to_string()),
                 max_results: 5,
                 include_stale: true,
+                rewrite_reason: None,
+                rewrite_queries: Vec::new(),
+                recovery_path: None,
             })
             .unwrap();
         assert!(observations.iter().any(|observation| {
             observation.freshness == ObservationFreshness::Superseded
         }));
+    }
+
+    #[test]
+    fn query_tokenization_handles_cjk_memory_queries() {
+        let root = temp_root();
+        let store = LocalMemoryStore::new(root);
+        store
+            .archive_turn(ArchivedTurnInput {
+                turn_id: 31,
+                workflow_id: "feature".to_string(),
+                user_intent: "修复记忆查询规划空命中问题".to_string(),
+                summaries: vec![summary("feature", "plan", "修复记忆查询规划")],
+                signals: TurnRetentionSignals {
+                    changed_paths: Vec::new(),
+                    completed_tasks: Vec::new(),
+                    open_tasks: Vec::new(),
+                    validation_targets: Vec::new(),
+                    developer_preferences: vec!["保持记忆查询规划稳定".to_string()],
+                    governance_events: Vec::new(),
+                },
+            })
+            .unwrap();
+
+        let hits = store
+            .query(&MemoryQuery {
+                text: Some("记忆查询规划".to_string()),
+                queries: vec!["记忆查询规划".to_string()],
+                raw_query: Some("记忆查询规划".to_string()),
+                profiles: vec![RetentionProfile::DeveloperPreferences],
+                max_results: 5,
+                rewrite_reason: None,
+                rewrite_queries: Vec::new(),
+                recovery_path: None,
+            })
+            .unwrap();
+
+        assert!(!hits.is_empty());
+        assert!(hits[0].preview.contains("记忆查询规划"));
+    }
+
+    #[test]
+    fn query_prefers_title_and_summary_matches_over_user_intent_only_matches() {
+        let root = temp_root();
+        let store = LocalMemoryStore::new(root);
+        store
+            .archive_turn(ArchivedTurnInput {
+                turn_id: 41,
+                workflow_id: "feature".to_string(),
+                user_intent: "Investigate planner follow-up".to_string(),
+                summaries: vec![summary("feature", "plan", "Use recall bundle naming")],
+                signals: TurnRetentionSignals {
+                    changed_paths: Vec::new(),
+                    completed_tasks: Vec::new(),
+                    open_tasks: Vec::new(),
+                    validation_targets: Vec::new(),
+                    developer_preferences: vec!["Prefer recall bundle naming in diagnostics".to_string()],
+                    governance_events: Vec::new(),
+                },
+            })
+            .unwrap();
+        store
+            .archive_turn(ArchivedTurnInput {
+                turn_id: 42,
+                workflow_id: "feature".to_string(),
+                user_intent: "Need recall bundle naming for the final report".to_string(),
+                summaries: vec![summary("feature", "report", "Close out remaining work")],
+                signals: TurnRetentionSignals {
+                    changed_paths: Vec::new(),
+                    completed_tasks: Vec::new(),
+                    open_tasks: vec!["task-generic".to_string()],
+                    validation_targets: Vec::new(),
+                    developer_preferences: Vec::new(),
+                    governance_events: Vec::new(),
+                },
+            })
+            .unwrap();
+
+        let hits = store
+            .query(&MemoryQuery {
+                text: Some("recall bundle naming".to_string()),
+                queries: vec!["recall bundle naming".to_string()],
+                raw_query: Some("recall bundle naming".to_string()),
+                profiles: vec![RetentionProfile::DeveloperPreferences, RetentionProfile::OpenThreads],
+                max_results: 5,
+                rewrite_reason: None,
+                rewrite_queries: Vec::new(),
+                recovery_path: None,
+            })
+            .unwrap();
+
+        assert!(hits.len() >= 2);
+        assert!(hits[0].title.contains("recall bundle naming"));
     }
 }

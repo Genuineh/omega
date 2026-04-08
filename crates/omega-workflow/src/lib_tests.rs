@@ -10,6 +10,7 @@ use super::{
     DEFAULT_HOOK_MANIFEST_FILE, DEFAULT_PLAN_SCHEMA_PATH, DEFAULT_SCENES_PATH,
     DEFAULT_WORKFLOW_PATH, EXECUTE_STEP_ID, EXPLORE_STEP_ID, FEATURE_SCENE_ID, FEATURE_WORKFLOW_ID,
     PLAN_STEP_ID, REPORT_STEP_ID, RESEARCH_SCENE_ID, RESEARCH_WORKFLOW_ID, ROOT_WORKFLOW_ID,
+    SELECT_SKILLS_STEP_ID,
 };
 
 #[test]
@@ -262,7 +263,10 @@ fn builtin_workflows_default_to_agent_loop_with_step_budgets() {
             "search_codebase".to_string(),
         ])
     );
-    assert_eq!(root_steps.len(), 1);
+    assert_eq!(root_steps.len(), 2);
+    assert_eq!(root_steps[1].id, SELECT_SKILLS_STEP_ID);
+    assert_eq!(root_steps[1].max_iterations, 4);
+    assert_eq!(root_steps[1].skill_request, StepSkillRequest::Disable);
 
     let feature_steps = feature.enabled_steps().collect::<Vec<_>>();
     assert_eq!(

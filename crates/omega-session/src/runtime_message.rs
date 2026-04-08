@@ -4,7 +4,8 @@ use omega_context::{ContextSupervisionSnapshot, StepKnowledgeSummary};
 
 use crate::runtime_ui::{
     OverlayRequest, ResponseSection, ResponseSectionDelta, ResponseSectionState, RuntimeUiEffect,
-    RuntimeUiEnvelope, RuntimeUiMessage, StatusSlot, StatusValue, StepDiagnostics,
+    RuntimeUiEnvelope, RuntimeUiMessage, SkillLoadSummary, StatusSlot, StatusValue,
+    StepDiagnostics,
     StepSubflowStatus, ToolRun, ToolRunStatus, UiContent, UiMessageKind, UiPriority, UiSource,
     UiTarget, WorkflowRunRole,
 };
@@ -103,6 +104,10 @@ pub enum StateMessage {
     },
     ContextSupervision {
         snapshot: Box<ContextSupervisionSnapshot>,
+    },
+    SkillLoadSummary {
+        section_id: String,
+        summary: Box<SkillLoadSummary>,
     },
     StepKnowledgeSummary {
         section_id: String,
@@ -373,6 +378,16 @@ fn legacy_ui_envelopes_from_state(turn_id: u64, message: StateMessage) -> Vec<Ru
             turn_id,
             RuntimeUiEffect::UpsertContextSupervision { snapshot },
         )],
+        StateMessage::SkillLoadSummary {
+            section_id,
+            summary,
+        } => vec![RuntimeUiEnvelope::effect(
+            turn_id,
+            RuntimeUiEffect::UpsertSkillLoadSummary {
+                section_id,
+                summary,
+            },
+        )],
         StateMessage::StepKnowledgeSummary {
             section_id,
             summary,
@@ -543,6 +558,11 @@ mod tests {
                 section_id: "turn-14:child:feature:execute".to_string(),
                 summary: Box::new(StepKnowledgeSummary {
                     document: Some(ResponseDocumentKnowledge {
+                        raw_query: "roadmap".to_string(),
+                        planned_queries: vec!["roadmap".to_string()],
+                        rewrite_reason: None,
+                        rewrite_queries: Vec::new(),
+                        recovery_path: Some("deterministic_bundle".to_string()),
                         readiness: SupervisionReadiness::Ready,
                         query: "roadmap".to_string(),
                         mode: "hybrid".to_string(),
@@ -564,6 +584,11 @@ mod tests {
                     section_id: "turn-14:child:feature:execute".to_string(),
                     summary: Box::new(StepKnowledgeSummary {
                         document: Some(ResponseDocumentKnowledge {
+                            raw_query: "roadmap".to_string(),
+                            planned_queries: vec!["roadmap".to_string()],
+                            rewrite_reason: None,
+                            rewrite_queries: Vec::new(),
+                            recovery_path: Some("deterministic_bundle".to_string()),
                             readiness: SupervisionReadiness::Ready,
                             query: "roadmap".to_string(),
                             mode: "hybrid".to_string(),
@@ -573,6 +598,43 @@ mod tests {
                             top_hits: Vec::new(),
                         }),
                         memory: None,
+                    }),
+                },
+            )]
+        );
+    }
+
+    #[test]
+    fn skill_load_summary_state_message_maps_to_runtime_ui_effect() {
+        let envelopes = legacy_runtime_ui_envelopes(RuntimeMessageEnvelope::state(
+            15,
+            StateMessage::SkillLoadSummary {
+                section_id: "turn-15:root:root:load-skills".to_string(),
+                summary: Box::new(SkillLoadSummary {
+                    source_step_id: Some("select-skills".to_string()),
+                    recognized_skill_ids: vec!["docs-specs".to_string(), "plan".to_string()],
+                    loaded_skill_ids: vec!["docs-specs".to_string()],
+                    ignored_skill_ids: vec!["plan".to_string()],
+                    selection_reason: Some("spec-writing request".to_string()),
+                }),
+            },
+        ));
+
+        assert_eq!(
+            envelopes,
+            vec![RuntimeUiEnvelope::effect(
+                15,
+                RuntimeUiEffect::UpsertSkillLoadSummary {
+                    section_id: "turn-15:root:root:load-skills".to_string(),
+                    summary: Box::new(SkillLoadSummary {
+                        source_step_id: Some("select-skills".to_string()),
+                        recognized_skill_ids: vec![
+                            "docs-specs".to_string(),
+                            "plan".to_string()
+                        ],
+                        loaded_skill_ids: vec!["docs-specs".to_string()],
+                        ignored_skill_ids: vec!["plan".to_string()],
+                        selection_reason: Some("spec-writing request".to_string()),
                     }),
                 },
             )]
