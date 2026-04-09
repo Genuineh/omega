@@ -9,7 +9,8 @@ _任务编号以 `docs/specs/omega-agent-impl-plan.md` 为准；`8A/8B`、`15A/1
 ### High
 
 - **Task 10**: `omega-subagent` 是当前主线，但要建立在已完成的上下文管理基线之上，避免调度再次被上下文膨胀拖垮。
-- **Task 17 / Task 17A**: 建立独立 command system，当前 scope 收窄为 builtin + tool-extension commands；先以 `/document` 验证 slash hint UX、Response panel 的 command-special rendering，以及 command-result contract；首期必须直接覆盖仓库向量索引初始化、RAG 查询和项目级知识库维护，而不是再叠一层平行文档工具。
+- **Task 18 / Task 18A ~ 18F**: 建立 `omega-project` 仓库级边界，把 project 变成 document/memory/session 的正式 owner，并为 `/project` command、`/document` project 绑定、context ownership shift 和底部状态栏 project 详情提供统一落点；`omega-todo` 继续保持 runtime/session 级 working state，不并入 project ownership。这是后续多 session、项目切换和知识库治理显式化的前置。
+- **Task 17 / Task 17A**: 建立独立 command system，当前 scope 收窄为 builtin + tool-extension commands；先以 `/document` 验证 slash hint UX、Response panel 的 command-special rendering，以及 command-result contract；下一阶段需与 `Task 18` 对齐，把 `/project` 作为 project-owned control plane 接入，而不是继续让 repo state 隐含挂在 `omega-context` 上。
 - **Task 11A ~ 11F-3**: 已完成并转入基线能力，不再作为独立主线推进；原 Task 11 的上下文压缩需求已被这条子任务链替代。
 
 ### Medium
@@ -21,8 +22,17 @@ _任务编号以 `docs/specs/omega-agent-impl-plan.md` 为准；`8A/8B`、`15A/1
 - **2026-04-08 root skill routing**: 已完成 `Task 5A ~ 5C`。root workflow 现扩展为 `select-workflow -> select-skills` 两步：前者负责 scene/workflow 选择，后者输出 `selected_skill_ids` 并写入 session-owned `SkillRoutingContext`；child workflow step 现优先消费 routed skills，再应用 step-level `skill_request` modifier。repo-local `.omega/workflows/root.toml`、`select-skills` prompt/schema 与回归测试已同步落地，且 root text-routing fallback 会合成结构化 handoff，避免 `select-skills` 因缺少输入合同而中断。详见 `docs/specs/omega-root-skill-routing.md`。
 - **2026-04-08 root skill loading + UI follow-up**: 已完成 `Task 5D ~ 5E` 与 `Task 15B-47 ~ 15B-48`。`omega-session` 现会在 root workflow 结束后、child workflow 启动前执行固定 `load-skills` 动作，把 root 产出的 `selected_skill_ids` 分流为 `recognized / loaded / ignored` 三类 routed skill state；child step 只消费 `loaded_skill_ids`，unknown skill id 只进入 ignored 列表而不会污染 child prompt。Response / Sidebar 的 skills 可见性与统一 detail overlay 也已落地，当前后续重点转向更高层的 task-delivery observability。
 - **2026-04-08 task delivery observability planning**: 下一轮 runtime/TUI 规划应围绕单次任务交付的统一监控展开：以一次 user turn 为 delivery window，统一汇总 token 消耗、LLM 调用次数、model、tool/skill 使用、document/memory search 次数与 changed files，并在任务完成后追加一条统一 `Task Delivery Summary` message；同时在 Sidebar / Bottom status / Overlay 提供可点击的 drill-down。详见 `docs/specs/omega-task-delivery-observability.md`。
-- **2026-04-08 TUI visual refresh**: 当前已完成 `Task 15B-51` 的第一阶段视觉刷新：`omega-theme` 扩展 surface tokens，`Response` / `Sidebar` / rail / section card / 底部控制带 已切换为分层 dark surfaces 与更高权重标题；后续继续按 `Task 15B-52 ~ 15B-54` 做 sidebar density、response rhythm 与主题/密度预设。详见 `docs/specs/omega-tui-visual-refresh.md`。
-- **2026-04-08 message cards planning**: 当前 `Response` 的主要限制已经不再是字体颜色或空行，而是它依旧以 `ResponseDisplayLine` 为最终渲染心智模型。要做成真正的消息卡片，需要新增 card-aware view model，再叠加 semantic header、meta row 与 collapsed summary。详见 `docs/specs/omega-tui-message-cards.md`。
+- **2026-04-08 TUI visual refresh**: 当前已完成 `Task 15B-51` 的第一阶段视觉刷新：`omega-theme` 扩展 surface tokens，`Response` / `Sidebar` / rail / section card / 底部控制带 已切换为分层 dark surfaces 与更高权重标题；下一轮 `Task 15B-52 ~ 15B-54` 现明确收敛到 `Modern TUI / Rich CLI` 的 `Dark Industrial Report Console` 路线，重点是 quiet bento-like sidebar、结果优先的 report surfaces 与更明确的主题/密度语法。详见 `docs/specs/omega-tui-visual-refresh.md`。
+- **2026-04-08 TUI UI reference baseline**: 已新增 `docs/specs/omega-tui-ui-reference.md`，集中盘点当前 `omega-tui` 的默认颜色 token、派生 render token、Response/Sidebar/Overlay 样式细节、布局比例、preview/density 规则与控制带行为，作为后续统一美化和 theme/density 调整的实现基线。
+- **2026-04-08 TUI readability + accent tuning follow-up**: 在 `Task 15B-61 ~ 15B-64` 完成后，`omega-tui` 又补了一轮首屏阅读压缩与重点样式回拉：未聚焦 `Sidebar` 现在会以更低 preview line budget + 保留前几个字的短预告来减少初次阅读字数，collapsed command summary 也收敛为更短的 leading preview；同时 `Response` 的 route/step/command header、status cue 与 section/metric accent 从纯黑白灰中重新拉开层级。剩余主题 preset / density mode 系统化工作继续收敛到 `Task 15B-54`。
+- **2026-04-09 TUI status glyph polish**: `omega-tui` 的 response timeline 现已把状态标记进一步收敛为无括号的纯符号样式；streaming 黄色状态只让状态点本身闪烁，不再让整条 header/tool/subflow 行一起闪烁，`expand/collapse` 文案也同步去掉方括号，减少视觉噪声并保留状态可扫描性。
+- **2026-04-09 TUI sidebar focus + keyboard navigation**: 修复了 `normalize_focus()` 在每帧渲染起始时早于 `render_sidebar_body` 执行、导致 sidebar panel focus 每帧被错误重置为 `Response` 的根本 bug；`normalize_focus` 现在移至 sidebar 渲染块结束后调用，确保 panel rects 已全部落地。新增 `Ctrl+Left/Right` 快捷键在当前可见 sidebar panel 间循环切换 focus；panel 高度足够容纳全部内容时自动抑制 `… more lines` overflow hint。
+- **2026-04-09 TUI rail top-scroll layout**: rail 回到与 body 的上下级关系，位于 Sidebar 顶部并恢复 `▾/▸ + icon + count` 的单行样式；当 rail 总宽度超过可用宽度时，渲染窗口会自动随当前 `rail_selection` 横向滚动，保证选中项保持可见。Knowledge icon 更新为 `📚`，`💡` 与 `📚` 的宽字符宽度已纳入滚动计算。
+- **2026-04-09 TUI panel layout + sidebar interaction polish**: `omega-tui` 现已把主布局重排为“左列 Response + 2 行 Context bar + 6 行 Input / 右列 full-height Sidebar”，避免 Sidebar 下方再出现横跨全宽的输入区；同时 route/step header 与 sidebar section card 的浅灰底色已去除，sidebar child panels 保持顶部文字标题，整个 Sidebar 与顶部 rail 均进一步收窄；rail 当前使用紧凑的单行 `▾/▸ + icon + count` 样式，并保留自动横向滚动；`panel_at()` 右边界命中问题也已修复，`more lines` 溢出提示仍可点击并聚焦对应 panel。
+- **2026-04-09 TUI control band surface polish**: `Context bar` 与 `Status bar` 的默认 theme token 已去除旧灰色 label/divider 前景，并把两条 bar 的背景统一贴齐 `Agent Response` 的 dark panel surface；相关 UI reference 与 layout spec 也已同步更新，避免实现与文档继续漂移。
+- **2026-04-09 sidebar usability + knowledge dashboard completion**: `Task 15B-65 ~ 15B-69` 已完成。Sidebar 现已收紧为显式选中 contract：`Delivery` / `Skills` 默认收起，rail 进入 child panel 会自动 seed 选中项，未聚焦 preview 统一改为 `focus panel for detail`；当 section 过多时，body 会按 rail / focused section 锚定到可见 viewport，而不是把下方 panel 直接挤没。原 `Document + Memory` 已合并为带 mini-bar 命中摘要的 `Knowledge` 面板，`Todos` 使用 `✓ / → / ○` checklist glyph，`Detail/SearchResults` overlay 也已支持鼠标滚轮、`PgUp/PgDn`、`Home/End` 与可见的 scroll footer。
+- **2026-04-08 message cards planning**: 已完成 `Task 15B-55 ~ 15B-57`。`omega-tui` 现已把 response assembly 从 `Msg -> ResponseDisplayLine` 提升为 `Msg -> ResponseCard -> section -> lines`，并补齐报告型 section header、scanable summary badge、Markdown table 渲染与 report token；`omega-theme` 也新增了 report-oriented 颜色角色，默认输出已明显从“带样式的日志列表”转向“结果优先的结构化报告”。详见 `docs/specs/omega-tui-message-cards.md`。
+- **2026-04-08 response/sidebar readability follow-up**: 下一轮 TUI 设计优化重点不再是“有没有卡片”，而是“卡片和侧栏读起来是否足够清楚”。建议按 `Task 15B-58 ~ 15B-60` 推进：`15B-58` 专注 `Response` 卡片内部主次与阅读节奏，`15B-59` 为 `Sidebar` 建立 row taxonomy 和语义样式，`15B-60` 收敛默认密度、截断与 drill-down 策略。详见 `docs/specs/omega-tui-message-cards.md` 与 `docs/specs/omega-tui-visual-refresh.md`。
 - **2026-04-07 knowledge UI follow-up**: `Task 11F-5 ~ 11F-7` 已完成。`omega-session` 现会为 step 与 `/document query` command 发出 `StepKnowledgeSummary`，`omega-tui` Response panel 已新增可点击的 document/memory knowledge lane，并把 overlay 文案收敛为按 query、reason、top hits、selected summaries、observations 分组的可浏览视图。验证已通过 `cargo test -p omega-tui --lib --color never`、`cargo test -p omega-session --lib --color never` 与 `cargo test -p omega-session --features document-backend spawn_command_document_query_emits_step_knowledge_summary --color never`。
 - **2026-04-02 context supervision follow-up**: 下一轮 TUI/context 工作应为 document system 与 memory system 规划专门监管面板，统一回答“是否启用、总量/大小、当前命中摘要”三类问题；详细方案见 `docs/specs/omega-tui-document-memory-supervision.md`。
 - **2026-04-02 runtime maintenance**: 默认只读分析已拆为两条 child workflow：`research = explore -> report` 与 `deep-research = explore -> plan -> execute -> report`；当前 root workflow 基线已进一步扩展为 `select-workflow -> select-skills`，在 child workflow 启动前同时写入 `recognized_scene_id`、`selected_workflow_id` 与 routed `selected_skill_ids`。对系统性、全局性、深入式分析优先提升到 `deep-research`，实现类请求仍优先提升到 `feature`。
@@ -44,6 +54,73 @@ _任务编号以 `docs/specs/omega-agent-impl-plan.md` 为准；`8A/8B`、`15A/1
 ## Detailed Tasks
 
 _以下保留详细里程碑与历史记录；待办项的 `Priority` 字段已按上面的新顺序同步更新。_
+
+### ── M3A: Project System And Knowledge Ownership ──
+
+> 验证方式：`cargo test -p omega-project -p omega-session -p omega-context -p omega-app -p omega-tui --color never`
+> 对标：项目作为仓库级根对象，稳定承接 document/memory/session/command/UI 的所有权边界；`omega-todo` 继续保持 runtime/session 级 working state，不进入 project 账本
+> 前置：`Task 11A ~ 11F-3` 已完成，`Task 17` command system 基线已立项
+
+### Task 18: omega-project — 项目级根对象与所有权边界
+- **Status**: Pending
+- **Priority**: High
+- **Description**: 新增 `omega-project` crate，建立 project detection、project registry、project-bound document/memory ownership 和 session catalog 的正式边界，并给上层暴露稳定的 project handle / summary surface；`omega-todo` 保持 runtime/session 级 manager，不迁入 `omega-project`。
+- **Complexity**: L
+- **Related**: docs/specs/omega-project-system.md
+- **Blocks**: Task 17A, Task 18B, Task 18C, Task 18D, Task 18E
+
+### Task 18A: omega-project / omega-app — 基于当前文件的 project 识别与激活
+- **Status**: Pending
+- **Priority**: High
+- **Description**: 基于 current file、cwd 和显式选择实现 project resolution；解析 canonical root、生成稳定 `project_id`，并在 app/runtime 中维护当前 active project。
+- **Complexity**: M
+- **Blocked by**: Task 18
+- **Blocks**: Task 18B, Task 18D, Task 18E
+- **Related**: docs/specs/omega-project-system.md
+
+### Task 18B: omega-session / omega-project — 多 session 关联与 project session catalog
+- **Status**: Pending
+- **Priority**: High
+- **Description**: 让 session 创建、归档和恢复显式带上 `project_id` 与 `session_id`；支持一个 project 下登记多个 session，并维护 active/idle/archived 状态与最近摘要。
+- **Complexity**: L
+- **Blocked by**: Task 18, Task 18A
+- **Blocks**: Task 18C, Task 18D, Task 18E
+- **Related**: docs/specs/omega-project-system.md
+
+### Task 18C: omega-context — 从 repo owner 收敛为 session-local context assembly
+- **Status**: Pending
+- **Priority**: High
+- **Description**: 去掉 `omega-context` 对 project-bound document/memory 的 concrete ownership，引入 project-facing provider traits，让 context 只负责当前 session 对话、step 资产与上下文装配。
+- **Complexity**: L
+- **Blocked by**: Task 18, Task 18B
+- **Blocks**: Task 18D, Task 18F
+- **Related**: docs/specs/omega-project-system.md, docs/specs/omega-context-management.md
+
+### Task 18D: omega-command / omega-app — `/project` 命令族与 `/document` project 绑定
+- **Status**: Pending
+- **Priority**: High
+- **Description**: 新增 `/project list|switch|info|sessions|knowledge|delete` 命令；同时把 `/document` command 从 session cwd 改为 current project handle 驱动。
+- **Complexity**: M
+- **Blocked by**: Task 18A, Task 18B, Task 18C
+- **Blocks**: Task 18E, Task 18F
+- **Related**: docs/specs/omega-project-system.md, docs/specs/omega-command-system.md
+
+### Task 18E: omega-session / omega-tui — 底部状态栏 project slot 与详情弹窗
+- **Status**: Pending
+- **Priority**: High
+- **Description**: 为 runtime UI 增加 `StatusSlot::Project` 与对应 summary/value，渲染当前 project 到底部状态栏，并支持点击打开 project detail overlay，展示关联 sessions 与 document/memory 摘要。
+- **Complexity**: M
+- **Blocked by**: Task 18A, Task 18B, Task 18D
+- **Blocks**: Task 18F
+- **Related**: docs/specs/omega-project-system.md, docs/specs/omega-tui-document-memory-supervision.md
+
+### Task 18F: 测试与文档迁移 — project-aware command/context/session 回归
+- **Status**: Pending
+- **Priority**: Medium
+- **Description**: 为 project detection、session association、context provider wiring、`/project` commands 与 TUI project overlay 补齐单测/集成测试，并同步更新相关规格与开发文档。
+- **Complexity**: M
+- **Blocked by**: Task 18C, Task 18D, Task 18E
+- **Related**: docs/specs/omega-project-system.md, docs/guide/omega-dev-guide.md
 
 ### ── M1.7: TUI 基础美化 ──
 
@@ -1662,9 +1739,10 @@ _基础体验已在 M1.7 完成，此处保留高级特性。_
 ### Task 15B-52: omega-tui — Sidebar dashboard density 与摘要卡片优化
 - **Status**: Pending
 - **Priority**: Medium
-- **Description**: 继续收敛 Sidebar 的信息密度与层次，为 `Delivery`、`Todos`、`Skills`、`Document/Memory` 设计更像 dashboard summary card 的标题、摘要与默认展开策略，减少同质化列表噪音。
+- **Description**: 继续把 `Sidebar` 从“信息很多的功能区”收敛为 quiet bento dashboard：减少内部边框感、稳定 section padding、压缩重复标签与摘要噪音，并把重点转向更克制的卡片面与更可靠的首屏信息优先级。
 - **Complexity**: M
 - **Blocked by**: Task 15B-51
+- **Blocks**: Task 15B-62
 - **Related**: docs/specs/omega-tui-visual-refresh.md, docs/specs/omega-tui-runtime-experience.md
 
 ### Task 15B-53: omega-tui — Response timeline rhythm 与报告感强化
@@ -1684,38 +1762,173 @@ _基础体验已在 M1.7 完成，此处保留高级特性。_
 > 规格：docs/specs/omega-tui-message-cards.md
 
 ### Task 15B-55: omega-tui — Response card view model foundation
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-04-08
 - **Priority**: Medium
-- **Description**: 在 `Msg -> ResponseDisplayLine` 之间增加 card-aware assembly 层，为 routing/step/command/final answer/delivery summary/thinking 提供稳定 block identity、card type 与 shared container metadata，解决当前只能按行模拟卡片的问题。
+- **Description**: 在 `Msg -> ResponseDisplayLine` 之间增加 report-aware card assembly 层，为 routing/step/command/final answer/delivery summary/thinking 提供稳定 block identity、card type、section ordering 与 shared container metadata，解决当前只能按行模拟结构化报告的问题。
 - **Complexity**: L
 - **Blocked by**: Task 15B-51
 - **Blocks**: Task 15B-56, Task 15B-57
 - **Related**: docs/specs/omega-tui-message-cards.md, docs/specs/omega-tui-response-thinking-experience.md
+- **Summary**: `omega-tui` 现已新增 `ResponseCard` / `ResponseCardSection` 内部 view model，并将 response 主路径重构为 `Msg -> ResponseCard -> section -> lines`。final answer / step / command 现在会先做 report-aware section 装配，再投影成 `ResponseDisplayLine`；相关回归已覆盖 section ordering 与 line projection。
 
 ### Task 15B-56: omega-theme / omega-tui — Message card chrome 与语义化 header
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-04-08
 - **Priority**: Medium
-- **Description**: 为 Routing/Step/Command/Thinking/Final Answer/Delivery/Error 卡片提供真正的 header/body/meta chrome，包括统一 card header、accent strip、body inset、meta row 与不同类型的标题语义。
+- **Description**: 为结构化报告卡片提供真正的 section/header/body/meta 渲染能力，包括二级标题语义、bullet key points、Markdown 表格、强调文本、code-style token，以及符合 `Dark Industrial Report Console` 的 quiet premium header/meta 语义。
 - **Complexity**: M
 - **Blocked by**: Task 15B-55
 - **Blocks**: Task 15B-57
 - **Related**: docs/specs/omega-tui-message-cards.md, docs/specs/omega-theme-package.md, docs/specs/omega-tui-visual-refresh.md
+- **Summary**: `omega-theme` 现已新增 report tokens（section header / metric emphasis / code / muted meta / table border / summary badge），`omega-tui` response section header 会消费这些语义色；Markdown table 现会被识别并渲染为真正的终端表格，而不是退化为普通段落。
 
 ### Task 15B-57: omega-tui — Card 折叠摘要、密度与长 turn 扫读优化
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-04-08
 - **Priority**: Medium
-- **Description**: 把现有 thinking/tool lane 折叠语义提升到 card 级浏览模型，并为 routing、已完成 step、delivery summary 设计更稳的摘要态与 scanability 规则，解决长 turn 中逐行扫读成本过高的问题。
+- **Description**: 把现有 thinking/tool lane 折叠语义提升到 card/section 级浏览模型，并为 `Results Summary`、`Changes Made`、`Usage`、`Optional Next Step`、routing 与 delivery summary 设计更稳的摘要态、长表格退化与 scanability 规则，解决长 turn 中逐行扫读成本过高的问题。
 - **Complexity**: M
 - **Blocked by**: Task 15B-55, Task 15B-56
 - **Related**: docs/specs/omega-tui-message-cards.md, docs/specs/omega-tui-message-display-polish.md
+- **Summary**: 结果区块现在会按 section kind 生成可扫读的 summary badge，例如 item/command/row 统计；thinking/tool lane 原有折叠仍保留，报告 section 也补齐了更轻量的 summary-first 浏览语义。新增回归覆盖了 section summary 与表格输出，`cargo test -p omega-tui --color never` 与 `cargo test -p omega-theme --color never` 已通过。
+
+### Task 15B-58: omega-tui / omega-theme — Response 主次层级与阅读节奏打磨
+- **Status**: Completed 2026-04-08
+- **Priority**: Medium
+- **Description**: 在现有 message card foundation 之上，继续收敛 `Response` 卡片内部的 header / meta / section title / summary badge / body copy 节奏，让最终结果、过程内容和辅助说明之间拥有更强的主次关系与更流畅的纵向阅读路径。
+- **Complexity**: M
+- **Blocked by**: Task 15B-55, Task 15B-56, Task 15B-57
+- **Related**: docs/specs/omega-tui-message-cards.md, docs/specs/omega-tui-visual-refresh.md
+- **Summary**: `Response` header 现在使用更稳定的 surface/background 层级，routing/step/final/command 的 meta 行会自动降噪，subflow 状态也有更明确的完成/运行/失败区分；新增渲染回归覆盖了 header surface 与 muted meta 风格。
+
+### Task 15B-59: omega-tui / omega-theme — Sidebar 行型语义与文本样式分层
+- **Status**: Completed 2026-04-08
+- **Priority**: Medium
+- **Description**: 为 `Sidebar` 内的 `Delivery`、`Todos`、`Skills`、`Document/Memory`、`Logs` 建立统一 row taxonomy，把摘要、状态、条目标题、meta、empty state、preview、hint 等内容从“同一种文本行”提升为有稳定语义差异的阅读系统，降低文本混淆。
+- **Complexity**: M
+- **Blocked by**: Task 15B-51, Task 15B-52
+- **Blocks**: Task 15B-60
+- **Related**: docs/specs/omega-tui-visual-refresh.md, docs/specs/omega-tui-collapsible-sidebar.md
+- **Summary**: `Sidebar` 已引入 row taxonomy，按 status / metric / section label / preview / hint / todo state / log severity 等行型分配稳定样式；新增单测覆盖了 taxonomy、preview hint 与 section weight 优先级。
+
+### Task 15B-60: omega-tui — Sidebar 默认密度、截断与 drill-down 策略
+- **Status**: Completed 2026-04-08
+- **Priority**: Medium
+- **Description**: 为 `Sidebar` 规划更稳的默认展开策略、长文本截断/换行规则、preview 长度、section 首屏预算，以及何时应把细节推到 overlay/detail drill-down，避免“信息都在，但读起来很乱”的状态。
+- **Complexity**: M
+- **Blocked by**: Task 15B-52, Task 15B-59
+- **Related**: docs/specs/omega-tui-visual-refresh.md, docs/specs/omega-tui-collapsible-sidebar.md
+- **Summary**: `Sidebar` 高度分配已从平均切分改为带权重的 section budget，未聚焦面板会默认进入 preview 模式，并在 overflow 时给出 `Enter` detail 或 focus/scroll 提示，减少首屏文本堆叠。
 
 ### Task 15B-54: omega-theme / omega-tui — 主题预设与密度模式
 - **Status**: Pending
 - **Priority**: Low
-- **Description**: 把当前视觉方向继续沉淀为可维护的主题/密度系统，评估 compact / comfortable 密度档位以及未来多主题 preset 是否需要进入 `omega-theme` 默认能力。
+- **Description**: 把当前视觉方向继续沉淀为可维护的主题/密度系统，明确默认主题的 monochrome foundation、single accent discipline、compact / comfortable 密度档位，以及未来多主题 preset 是否需要进入 `omega-theme` 默认能力。
+- **Complexity**: M
+- **Related**: docs/specs/omega-tui-visual-refresh.md, docs/specs/omega-theme-package.md
+
+### Task 15B-61: omega-theme / omega-tui — Monochrome foundation 与单一强调色收敛
+- **Status**: Completed
+- **Completed**: 2026-04-08
+- **Priority**: Medium
+- **Description**: 把当前偏 editor-theme 的多强调色体系收敛为更克制的黑白灰基础层，并把青绿色保留为全局唯一 primary accent；Markdown heading、badge、warning/error、final answer 等现有多彩 token 需要重新归并，避免主界面继续像代码编辑器主题。
 - **Complexity**: M
 - **Blocked by**: Task 15B-51
-- **Related**: docs/specs/omega-tui-visual-refresh.md, docs/specs/omega-theme-package.md
+- **Blocks**: Task 15B-63, Task 15B-64, Task 15B-54
+- **Related**: docs/specs/omega-tui-visual-refresh.md, docs/specs/omega-tui-ui-reference.md, docs/specs/omega-theme-package.md
+- **Summary**: `omega-theme` 默认 palette 已收敛为 monochrome foundation + single accent，并补齐 `section_outline` / `overlay_edge` / `overlay_shadow` token；`omega-tui` 侧同步减少 status、section header、heading 与语义色的并行强调。
+
+### Task 15B-62: omega-tui — Bento spacing、内边距与边框减法
+- **Status**: Completed
+- **Completed**: 2026-04-08
+- **Priority**: Medium
+- **Description**: 在字符网格约束下继续推进 quiet bento box 体验：统一 `Response` / `Sidebar` / `Input` / overlay 的 padding 节奏，减少 section 内部生硬边框，更多依赖背景层次与留白而非边线来切分结构，并让窄宽度下也保持稳定呼吸感。
+- **Complexity**: M
+- **Blocked by**: Task 15B-52, Task 15B-61
+- **Blocks**: Task 15B-64, Task 15B-54
+- **Related**: docs/specs/omega-tui-visual-refresh.md, docs/specs/omega-tui-ui-reference.md
+- **Summary**: `Sidebar` shell 现在在 rail 与 body 之间保留呼吸间距，section card 改为更弱的 outline；overlay 内容区新增内边距，整体切分更依赖面层与留白而不是重复强边框。
+
+### Task 15B-63: omega-tui / omega-theme — Meta、Thinking 与语义色降噪
+- **Status**: Completed
+- **Completed**: 2026-04-08
+- **Priority**: Medium
+- **Description**: 进一步降低 `muted_meta`、thinking body、log text、warning/error 大面积着色对主阅读路径的干扰，把视觉重心更彻底地收回到 final answer、关键 metric 与当前 focus；错误/警告色优先只保留在 badge、prefix 或极小面积重点文本上。
+- **Complexity**: M
+- **Blocked by**: Task 15B-58, Task 15B-61
+- **Blocks**: Task 15B-54
+- **Related**: docs/specs/omega-tui-message-cards.md, docs/specs/omega-tui-visual-refresh.md, docs/specs/omega-tui-ui-reference.md
+- **Summary**: step header、bottom status flow、thinking body、sidebar summary/meta/log 内容进一步降噪，未聚焦 section 与低信号文本默认更 dim，把视线优先级拉回结果与当前 focus。
+
+### Task 15B-64: omega-tui / omega-theme — Focus 失焦层次与 Overlay 景深打磨
+- **Status**: Completed
+- **Completed**: 2026-04-08
+- **Priority**: Medium
+- **Description**: 为焦点切换补齐更接近原生窗口系统的失焦感与层次感：非焦点区可进一步 `DIM`，overlay 增强极细高亮边、遮罩颗粒/阴影感和更清楚的 Z 轴分离，让界面在深色模式下更具工业级质感而不是平面 box 叠加。
+- **Complexity**: M
+- **Blocked by**: Task 15B-61, Task 15B-62
+- **Blocks**: Task 15B-54
+- **Related**: docs/specs/omega-tui-visual-refresh.md, docs/specs/omega-tui-ui-reference.md, docs/specs/omega-tui-overlay-popups.md
+- **Summary**: panel title/body 在失焦时整体退后，sidebar rail 只在聚焦时使用主强调色；overlay 新增 edge/shadow token、细边与遮罩阴影，Z 轴层次更清楚。
+
+### ── M1.11: Sidebar / Overlay 可用性与 Knowledge 仪表化收敛 ──
+
+> 验证方式：`cargo run -p omega-tui` → Sidebar 在 section 过多、长摘要和长详情下仍可稳定浏览；`Enter` drill-down 只对已选中条目生效；Knowledge / Todos / Detail overlay 的信息密度更直观
+> 对标：真正可滚动、可钻取、可扫读的终端工作台，而不是“能显示很多字”的静态侧栏
+> 前置：M1.9 / M1.10 已建立 Sidebar row taxonomy、preview clamp、overlay 基础设施与当前视觉基线
+> 规格：docs/specs/omega-tui-ui-reference.md, docs/specs/omega-tui-runtime-experience.md, docs/specs/omega-tui-overlay-popups.md
+
+### Task 15B-65: omega-tui — Sidebar 显式选中模型与默认折叠策略
+- **Status**: Completed
+- **Completed**: 2026-04-09
+- **Priority**: Medium
+- **Description**: 把 `Sidebar` 从“hover/read-only preview”继续收敛为显式可选择的辅助工作区：`press Enter for detail` 只在当前 section 内确有已选中条目时出现并生效；同时把 `Delivery` 与 `Skills` 调整为默认收起，减少首屏噪音并给 section overflow 留出稳定预算。需要统一键盘、鼠标单击、rail 切换与 focus 恢复后的 selected-item 语义。
+- **Complexity**: M
+- **Blocked by**: Task 15B-48, Task 15B-60
+- **Blocks**: Task 15B-66, Task 15B-67, Task 15B-69
+- **Related**: docs/specs/omega-tui-ui-reference.md, docs/specs/omega-tui-runtime-experience.md, docs/specs/omega-tui-collapsible-sidebar.md
+- **Summary**: `Delivery` 与 `Skills` 现默认收起；从 rail 进入 sidebar child panel 时会自动 seed 当前 section 的选中行；未聚焦 preview 的长内容提示统一收敛为 `focus panel for detail`，不再错误暗示 `Enter` 在无选中状态下也可打开 detail。键盘、鼠标单击与 focus 恢复现共享同一套 selected-item 语义。
+
+### Task 15B-66: omega-tui — Sidebar section overflow 与滚动视口协调
+- **Status**: Completed
+- **Completed**: 2026-04-09
+- **Priority**: Medium
+- **Description**: 当 `Sidebar` section 数量过多、展开 section 过高或当前窗口高度不足时，引入稳定的 section-level viewport 与滚动策略，避免下方 panel 被直接挤出可见区。需要明确 rail 是否固定、section body 如何进入整体滚动、何时优先滚动 panel 内部内容，以及 overflow hint 何时显示 `focus panel to scroll`、何时显示 `press Enter for detail`。
+- **Complexity**: L
+- **Blocked by**: Task 15B-65
+- **Blocks**: Task 15B-67
+- **Related**: docs/specs/omega-tui-ui-reference.md, docs/specs/omega-tui-runtime-experience.md, docs/specs/omega-tui-collapsible-sidebar.md
+- **Summary**: 当 sidebar body 高度不足时，`omega-tui` 现会基于 rail 选中项或当前 focused section 计算一个稳定的 section viewport，只渲染当前窗口能装下的一段 expanded sections；rail 保持固定，切到下方 section 时 body 会自动滑到相应窗口，避免下方 panel 被无提示地压出可见区。
+
+### Task 15B-67: omega-tui / omega-session — Knowledge 面板合并与图表化摘要
+- **Status**: Completed
+- **Completed**: 2026-04-09
+- **Priority**: Medium
+- **Description**: 把当前独立的 `Document` / `Memory` section 合并为统一 `Knowledge` 面板，以一次 turn 的 knowledge 使用情况为主轴展示 document hits、memory hits、query 次数、store/recall 健康度与 freshness；默认主视图优先使用更直观的 chart-like 摘要（计数条、占比、mini bar、状态 badge），减少大段 prose，同时保留 drill-down 到 document / memory 细分详情的能力。
+- **Complexity**: L
+- **Blocked by**: Task 15B-65, Task 15B-66
+- **Related**: docs/specs/omega-tui-ui-reference.md, docs/specs/omega-tui-document-memory-supervision.md, docs/specs/omega-tui-runtime-experience.md
+- **Summary**: Sidebar 中原独立的 `Document` / `Memory` section 已合并为统一 `Knowledge` 面板；主视图优先展示 `doc / mem / obs` 命中 mini-bar、store/summary 总量与 query/correction 摘要，并保留统一 detail overlay 继续 drill down 到 document lane 与 memory lane 细节。
+
+### Task 15B-68: omega-tui — Todo checklist glyph 与完成态样式收敛
+- **Status**: Completed
+- **Completed**: 2026-04-09
+- **Priority**: Low
+- **Description**: 把 `Todos` 面板的完成态从文本型 `[x]` 收敛为更直观的勾选样式，并同步调整 active / pending glyph、对齐与 emphasis，保证 preview、full panel 与 detail drill-down 中都能一眼分辨 `done / current / pending`，同时不破坏现有 stale/summary 语义。
+- **Complexity**: S
+- **Related**: docs/specs/omega-tui-ui-reference.md, docs/specs/omega-tui-todo-sidebar-layout.md, docs/specs/omega-tui-step-subflow-visibility.md
+- **Summary**: `Todos` 现已把 checklist 显示语法统一为 `✓`（done）、`→`（current）与 `○`（pending）；runtime 仍可接收旧 `[x]/[>]/[ ]` 文本，但 TUI 接收后会归一化成新的 glyph，并同步用于 sidebar 样式分类、todo summary 与 response subflow fallback。
+
+### Task 15B-69: omega-tui — 可滚动 Detail overlay 与长内容导航
+- **Status**: Completed
+- **Completed**: 2026-04-09
+- **Priority**: Medium
+- **Description**: 为 `Detail` 类 overlay 引入可滚动视口，支持键盘与鼠标滚动、页跳转、回到顶部/底部以及明显的 overflow affordance，避免 `Diagnostics` / `Delivery` / `Knowledge` / `Logs` 等长详情在当前弹窗尺寸下被截断。需要保持 overlay-first 事件路由与关闭后焦点恢复语义不变。
+- **Complexity**: M
+- **Blocked by**: Task 15B-16A, Task 15B-65
+- **Related**: docs/specs/omega-tui-overlay-popups.md, docs/specs/omega-tui-ui-reference.md, docs/specs/omega-tui-runtime-experience.md
+- **Summary**: `Detail` 与 `SearchResults` overlay 现都支持鼠标滚轮、`↑/↓`、`PgUp/PgDn`、`Home/End` 导航，并在内容超出视口时显示 `lines X-Y/N` scroll footer；事件仍保持 overlay-first 路由，关闭后继续恢复之前的 focus panel。
 
 ### Task 15B-13: omega-tui — Leader / 模态快捷键基础设施
 - **Status**: Completed
