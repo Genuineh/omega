@@ -1,8 +1,9 @@
 ---
 status: implemented
+last_verified_commit: N/A
 owner: omega-team
 created: 2026-03-19
-updated: 2026-03-19
+updated: 2026-04-09
 version: 0.2
 supersedes: []
 related_prds: []
@@ -14,7 +15,7 @@ related_prds: []
 
 当前 `omega-tui` 的底部区域仍沿用“输入框下方 hint bar + 顶部 header 状态条”的双源布局。随着 `Sidebar`、`Overlay`、后续 runtime badges 与会话统计继续增长，这种布局会把输入上下文、快捷键提示、模型状态和系统摘要拆散到屏幕两端，既增加视觉往返，也让后续状态接入缺少稳定落点。
 
-本规格定义一套新的底部布局：把原先输入框下方承载提示与状态的内容，上移为“输入框上方、位于 `Response` / `Sidebar` 下方的固定上下文带”；再把原先顶部 header 中真正需要持续显示的底部状态信息，下移为“输入框下方的固定状态带”。新状态带只保留模型名与运行态摘要，并封装为便于后续扩展的底部状态槽。
+本规格定义一套新的底部布局：把原先输入框下方承载提示与状态的内容，上移为“输入框上方、位于左列 `Response` 下方的固定上下文带”；再把原先顶部 header 中真正需要持续显示的底部状态信息，下移为“输入框下方的固定状态带”。最新实现里，`Sidebar` 已保持右列全高，`Context bar` 固定为两行并允许换行，`Input` 固定为 6 行高；两条 bar 的背景也已与 `Agent Response` 的 dark panel surface 对齐。
 
 ## Goals
 
@@ -31,17 +32,15 @@ related_prds: []
 
 ## Layout Model
 
-终端主布局调整为五段：
+终端主布局现收敛为两层：
 
-1. `Main content`: `Response | Sidebar`
-2. `Input context bar`: 输入框上方的固定上下文带
-3. `Input box`: 主输入区
-4. `Bottom status bar`: 输入框下方的固定状态带
-5. `Overlay`: 若激活则浮于以上区域之上
+1. 整体纵向：`Main shell -> Bottom status bar`
+2. `Main shell` 横向：左列 `Response -> Input context bar -> Input box`，右列 full-height `Sidebar`
+3. `Overlay`: 若激活则浮于以上区域之上
 
 ### Input Context Bar
 
-该区域位于主体区和输入框之间，用于承载：
+该区域位于左列 `Response` 和输入框之间，用于承载：
 
 - leader pending 提示
 - 当前输入模式下的快捷键提示
@@ -52,7 +51,7 @@ related_prds: []
 
 - 优先显示当前交互上下文，而不是系统级长周期状态。
 - 文案应短、面向当前操作，避免堆叠多个 badge。
-- 若终端高度紧张，该区域优先保留单行，不应扩展成多行面板。
+- 当前实现固定为 `2` 行，并允许在长度不足时自动换行；不再要求强制单行。
 
 ### Bottom Status Bar
 
@@ -94,7 +93,7 @@ related_prds: []
 - `Input context bar` 负责“当前正在发生什么”，例如 leader 序列等待、当前模式下的快捷键提示、局部 notice。
 - `Bottom status bar` 负责“系统当前处于什么状态”，例如模型、运行中/空闲、当前 workflow step 与未来的统计和运行态摘要。
 - overlay 激活时，上下文带可切换为 overlay 专属提示；底部状态带仍保留基础状态摘要。
-- `Sidebar` 收起或展开不应影响底部两条固定区域的结构。
+- `Sidebar` 收起或展开不应影响左列 `Context bar + Input` 与全宽 `Bottom status bar` 的结构。
 
 ## Relationship To Existing Specs
 
@@ -143,6 +142,7 @@ related_prds: []
 ---
 
 ### Change Log
+- 2026-04-09: 现行实现已进一步收敛为 `Main shell(左列 Response/Context/Input + 右列 full-height Sidebar) -> Bottom status bar`；`Context bar` 固定两行并允许换行，`Input` 固定 6 行高，且 `Context bar` / `Bottom status bar` 背景都与 `Agent Response` panel 对齐。
 - 2026-03-19: `Task 15B-17` 完成实现，主布局改为 `Main content -> Input context bar -> Input box -> Bottom status bar`，底部状态带以 slot 化 segment 渲染模型名与运行态。
 - 2026-03-19: 新增输入上下文带与底部状态带布局规格，规划 TUI 底部区域的统一重构方向。
 - 2026-03-19: 补充与 `omega-theme` 的关系，明确输入框和上下状态条的视觉令牌后续应由独立主题包统一管理。

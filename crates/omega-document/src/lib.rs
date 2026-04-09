@@ -845,14 +845,21 @@ impl OmegaDocument {
         }
 
         for record in &active_docs {
-            if rules
-                .lifecycle
-                .required_frontmatter
-                .iter()
-                .any(|field| field == "status")
-                && !file_has_frontmatter_status(&self.root.join(&record.path))?
-            {
-                missing_frontmatter.push(record.path.clone());
+            // ADR docs use a legacy format with different frontmatter requirements
+            let is_adr = record.path.starts_with("docs/decisions/") && record.path.ends_with(".md");
+            let missing = if is_adr {
+                get_missing_frontmatter_fields(
+                    &self.root.join(&record.path),
+                    &rules.adr.required_frontmatter,
+                )?
+            } else {
+                get_missing_frontmatter_fields(
+                    &self.root.join(&record.path),
+                    &rules.lifecycle.required_frontmatter,
+                )?
+            };
+            for field in missing {
+                missing_frontmatter.push(format!("{}: missing '{}'", record.path, field));
             }
         }
 
@@ -962,15 +969,10 @@ impl OmegaDocument {
             validation_issues
                 .push("documentation directories must use lowercase names".to_string());
         }
-        if rules
-            .lifecycle
-            .required_frontmatter
-            .iter()
-            .any(|field| field == "status")
-            && !content_starts_with_frontmatter_status(content)
-        {
+        let missing_fields = find_missing_frontmatter_fields(content, &rules.lifecycle.required_frontmatter);
+        for field in &missing_fields {
             validation_issues
-                .push("content is missing required frontmatter field 'status'".to_string());
+                .push(format!("content is missing required frontmatter field '{field}'"));
         }
         let plan = DocumentChangePlan {
             primary_path: path.to_string(),
@@ -2353,6 +2355,8 @@ struct DocGovernanceRules {
     naming: NamingRules,
     lifecycle: LifecycleRules,
     cross_ref: CrossRefRules,
+    #[serde(default)]
+    adr: AdrRules,
 }
 
 impl Default for DocGovernanceRules {
@@ -2388,7 +2392,11 @@ impl Default for DocGovernanceRules {
                     "Update docs/TODO.md".to_string(),
                     "Record in CHANGELOG.md if milestone".to_string(),
                 ],
-                required_frontmatter: vec!["status".to_string()],
+                required_frontmatter: vec![
+                    "status".to_string(),
+                    "last_verified_commit".to_string(),
+                    "owner".to_string(),
+                ],
             },
             cross_ref: CrossRefRules {
                 readme_must_index: vec![
@@ -2399,6 +2407,7 @@ impl Default for DocGovernanceRules {
                 archive_update_targets: vec!["README.md".to_string(), "docs/TODO.md".to_string()],
                 replacement_must_backlink: true,
             },
+            adr: AdrRules::default(),
         }
     }
 }
@@ -2444,6 +2453,24 @@ struct CrossRefRules {
     readme_must_index: Vec<String>,
     archive_update_targets: Vec<String>,
     replacement_must_backlink: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct AdrRules {
+    required_frontmatter: Vec<String>,
+}
+
+impl Default for AdrRules {
+    fn default() -> Self {
+        Self {
+            required_frontmatter: vec![
+                "adr_number".to_string(),
+                "date".to_string(),
+                "status".to_string(),
+                "author".to_string(),
+            ],
+        }
+    }
 }
 
 pub struct ChunkManager;
@@ -2756,6 +2783,40 @@ fn content_starts_with_frontmatter_status(content: &str) -> bool {
         }
     }
     false
+}
+
+fn get_missing_frontmatter_fields(path: &Path, required_fields: &[String]) -> Result<Vec<String>> {
+    if !path.exists() {
+        return Ok(required_fields.iter().cloned().collect());
+    }
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("failed to read document {}", path.display()))?;
+    let missing = find_missing_frontmatter_fields(&content, required_fields);
+    Ok(missing)
+}
+
+fn find_missing_frontmatter_fields(content: &str, required_fields: &[String]) -> Vec<String> {
+    let mut lines = content.lines();
+    if lines.next() != Some("---") {
+        // No frontmatter at all
+        return required_fields.iter().cloned().collect();
+    }
+    
+    let mut found_fields = BTreeSet::new();
+    for line in lines.by_ref() {
+        if line == "---" {
+            break;
+        }
+        if let Some((key, _)) = line.split_once(':') {
+            found_fields.insert(key.trim().to_string());
+        }
+    }
+    
+    required_fields
+        .iter()
+        .filter(|field| !found_fields.contains(*field))
+        .cloned()
+        .collect()
 }
 
 fn find_broken_crossrefs(root: &Path, docs: &[FileRecord]) -> Result<Vec<CrossRefIssue>> {

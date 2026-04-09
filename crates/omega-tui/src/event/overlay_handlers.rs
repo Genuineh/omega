@@ -6,6 +6,8 @@ pub(super) fn handle_overlay_key_event(
     session: &AgentSession,
 ) -> anyhow::Result<bool> {
     let mut app_guard = app.lock().unwrap();
+    let page_step = app_guard.overlay_page_step();
+    let viewport_lines = app_guard.overlay_viewport_lines();
     let Some(overlay) = app_guard.overlay.as_mut() else {
         return Ok(false);
     };
@@ -73,6 +75,18 @@ pub(super) fn handle_overlay_key_event(
             KeyCode::Down => {
                 overlay.scroll = overlay.scroll.saturating_add(1);
             }
+            KeyCode::PageUp => {
+                overlay.scroll = overlay.scroll.saturating_sub(page_step);
+            }
+            KeyCode::PageDown => {
+                overlay.scroll = overlay.scroll.saturating_add(page_step);
+            }
+            KeyCode::Home => {
+                overlay.scroll = 0;
+            }
+            KeyCode::End => {
+                overlay.scroll = overlay.lines.len().saturating_sub(viewport_lines);
+            }
             _ => {}
         },
         OverlayState::Confirm(overlay) => match key.code {
@@ -117,6 +131,18 @@ pub(super) fn handle_overlay_key_event(
             }
             KeyCode::Down => {
                 overlay.scroll = overlay.scroll.saturating_add(1);
+            }
+            KeyCode::PageUp => {
+                overlay.scroll = overlay.scroll.saturating_sub(page_step);
+            }
+            KeyCode::PageDown => {
+                overlay.scroll = overlay.scroll.saturating_add(page_step);
+            }
+            KeyCode::Home => {
+                overlay.scroll = 0;
+            }
+            KeyCode::End => {
+                overlay.scroll = overlay.lines.len().saturating_sub(viewport_lines);
             }
             _ => {}
         },

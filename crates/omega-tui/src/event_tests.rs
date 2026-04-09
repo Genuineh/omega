@@ -6,11 +6,14 @@ use omega_session::{
     ConversationMessage, ResponseSectionKind, ResponseSectionState, RuntimeMessage, StateMessage,
     WorkflowRunRole,
 };
+use omega_theme::OmegaTheme;
 use omega_test_support::persistent_test_root;
 use omega_workflow::LoadedWorkflowCatalog;
+use ratatui::{backend::TestBackend, Terminal};
 use std::time::Duration;
 
 use crate::app::{Msg, Panel};
+use crate::render::render;
 
 use super::*;
 
@@ -398,6 +401,217 @@ fn mouse_click_on_bottom_status_opens_delivery_detail() {
             assert!(detail.lines.iter().any(|line| line.contains("model: gpt-5.4")));
         }
         other => panic!("expected delivery detail overlay, got {other:?}"),
+    }
+}
+
+#[test]
+fn mouse_click_on_sidebar_child_panel_selects_item() {
+    let app = Arc::new(Mutex::new(App::new()));
+    {
+        let mut app_guard = app.lock().unwrap();
+        app_guard.todo_rect = ratatui::layout::Rect::new(60, 1, 20, 8);
+        app_guard.todo_lines = vec![
+            "○ first item".to_string(),
+            "→ active item".to_string(),
+        ];
+        app_guard.todo_displayed_count = 2;
+    }
+
+    handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 62,
+            row: 3,
+            modifiers: KeyModifiers::NONE,
+        },
+        &app,
+    );
+    handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 62,
+            row: 3,
+            modifiers: KeyModifiers::NONE,
+        },
+        &app,
+    );
+
+    let app_guard = app.lock().unwrap();
+    assert_eq!(app_guard.focused_panel, Panel::Todo);
+    assert_eq!(app_guard.todo_state.selected(), Some(1));
+    assert!(app_guard.todo_pinned);
+}
+
+#[test]
+fn mouse_click_on_sidebar_child_panel_header_focuses_panel() {
+    let app = Arc::new(Mutex::new(App::new()));
+    {
+        let mut app_guard = app.lock().unwrap();
+        app_guard.todo_rect = ratatui::layout::Rect::new(60, 1, 20, 8);
+        app_guard.todo_lines = vec![
+            "○ first item".to_string(),
+            "→ active item".to_string(),
+        ];
+        app_guard.todo_displayed_count = 2;
+    }
+
+    handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 62,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        },
+        &app,
+    );
+    handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 62,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        },
+        &app,
+    );
+
+    let app_guard = app.lock().unwrap();
+    assert_eq!(app_guard.focused_panel, Panel::Todo);
+    assert_eq!(app_guard.todo_state.selected(), Some(0));
+}
+
+#[test]
+fn mouse_click_on_sidebar_more_lines_hint_focuses_panel() {
+    let app = Arc::new(Mutex::new(App::new()));
+    {
+        let mut app_guard = app.lock().unwrap();
+        app_guard.todo_rect = ratatui::layout::Rect::new(60, 1, 20, 10);
+        app_guard.todo_lines = (0..10)
+            .map(|index| format!("○ item {index}"))
+            .collect();
+        app_guard.todo_displayed_count = 7;
+    }
+
+    handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 62,
+            row: 8,
+            modifiers: KeyModifiers::NONE,
+        },
+        &app,
+    );
+    handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 62,
+            row: 8,
+            modifiers: KeyModifiers::NONE,
+        },
+        &app,
+    );
+
+    let app_guard = app.lock().unwrap();
+    assert_eq!(app_guard.focused_panel, Panel::Todo);
+    assert!(app_guard.todo_pinned);
+    assert_eq!(app_guard.todo_state.selected(), Some(6));
+}
+
+#[test]
+fn rendered_sidebar_panel_click_focuses_real_layout_panel() {
+    let backend = TestBackend::new(120, 30);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let theme = OmegaTheme::dark();
+    let mut app_state = App::new();
+    app_state.sidebar.delivery_expanded = true;
+    app_state.delivery_lines = vec!["status: running".to_string(), "llm: 2".to_string()];
+
+    terminal
+        .draw(|frame| render(frame, &mut app_state, "test-model", &theme))
+        .unwrap();
+
+    let click_col = app_state.delivery_rect.x + 2;
+    let click_row = app_state.delivery_rect.y + 2;
+    let app = Arc::new(Mutex::new(app_state));
+
+    handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: click_col,
+            row: click_row,
+            modifiers: KeyModifiers::NONE,
+        },
+        &app,
+    );
+    handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: click_col,
+            row: click_row,
+            modifiers: KeyModifiers::NONE,
+        },
+        &app,
+    );
+
+    let app_guard = app.lock().unwrap();
+    assert_eq!(app_guard.focused_panel, Panel::Delivery);
+    assert_eq!(app_guard.delivery_state.selected(), Some(1));
+}
+
+#[test]
+fn rendered_sidebar_clicks_can_focus_multiple_visible_panels() {
+    let backend = TestBackend::new(120, 30);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let theme = OmegaTheme::dark();
+    let mut app_state = App::new();
+    app_state.sidebar.diagnostics_expanded = false;
+    app_state.sidebar.delivery_expanded = true;
+    app_state.sidebar.skills_expanded = false;
+    app_state.sidebar.knowledge_expanded = true;
+    app_state.sidebar.todos_expanded = true;
+    app_state.sidebar.logs_expanded = true;
+    app_state.delivery_lines = vec!["status: running".to_string()];
+    app_state.document_lines = vec!["status: doc on".to_string()];
+    app_state.todo_lines = vec!["○ item 0".to_string()];
+    app_state.log_lines = vec!["[tool] cargo test".to_string()];
+
+    terminal
+        .draw(|frame| render(frame, &mut app_state, "test-model", &theme))
+        .unwrap();
+
+    let targets = [
+        (Panel::Delivery, app_state.delivery_rect),
+        (Panel::Document, app_state.document_rect),
+        (Panel::Todo, app_state.todo_rect),
+        (Panel::Logs, app_state.logs_rect),
+    ];
+
+    let app = Arc::new(Mutex::new(app_state));
+
+    for (panel, rect) in targets {
+        let click_col = rect.x + 2;
+        let click_row = rect.y + 2.min(rect.height.saturating_sub(1));
+        handle_mouse_event(
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: click_col,
+                row: click_row,
+                modifiers: KeyModifiers::NONE,
+            },
+            &app,
+        );
+        handle_mouse_event(
+            MouseEvent {
+                kind: MouseEventKind::Up(MouseButton::Left),
+                column: click_col,
+                row: click_row,
+                modifiers: KeyModifiers::NONE,
+            },
+            &app,
+        );
+
+        let app_guard = app.lock().unwrap();
+        assert_eq!(app_guard.focused_panel, panel);
+        drop(app_guard);
     }
 }
 
@@ -935,6 +1149,99 @@ fn overlay_esc_restores_previous_focus() {
 }
 
 #[test]
+fn detail_overlay_supports_page_and_edge_navigation() {
+    let client: DynLlmClient = Arc::new(IdleClient);
+    let root = event_test_root("detail-overlay-scroll-test");
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let session = test_session(client, root, &runtime);
+    let app = Arc::new(Mutex::new(App::new()));
+    let (tx, _rx) = mpsc::channel();
+    let keymap = KeymapManager::default();
+    {
+        let mut app_guard = app.lock().unwrap();
+        app_guard.focused_panel = Panel::Logs;
+        app_guard.overlay_rect = ratatui::layout::Rect::new(0, 0, 80, 16);
+        app_guard.open_detail_overlay(
+            " Detail ",
+            (0..30).map(|index| format!("line {index}")).collect(),
+        );
+    }
+
+    handle_key_event(
+        press_key(KeyCode::PageDown, KeyModifiers::NONE),
+        &app,
+        &session,
+        &tx,
+        &keymap,
+    )
+    .unwrap();
+
+    {
+        let app_guard = app.lock().unwrap();
+        match app_guard.overlay.as_ref() {
+            Some(OverlayState::Detail(detail)) => assert_eq!(detail.scroll, 11),
+            other => panic!("expected detail overlay, got {other:?}"),
+        }
+    }
+
+    handle_key_event(
+        press_key(KeyCode::End, KeyModifiers::NONE),
+        &app,
+        &session,
+        &tx,
+        &keymap,
+    )
+    .unwrap();
+    handle_key_event(
+        press_key(KeyCode::Home, KeyModifiers::NONE),
+        &app,
+        &session,
+        &tx,
+        &keymap,
+    )
+    .unwrap();
+
+    let app_guard = app.lock().unwrap();
+    match app_guard.overlay.as_ref() {
+        Some(OverlayState::Detail(detail)) => assert_eq!(detail.scroll, 0),
+        other => panic!("expected detail overlay, got {other:?}"),
+    }
+}
+
+#[test]
+fn mouse_wheel_scrolls_detail_overlay_without_touching_background_panel() {
+    let app = Arc::new(Mutex::new(App::new()));
+    {
+        let mut app_guard = app.lock().unwrap();
+        app_guard.focused_panel = Panel::Logs;
+        app_guard.logs_rect = ratatui::layout::Rect::new(60, 8, 20, 8);
+        app_guard.logs_state.select(Some(4));
+        app_guard.overlay_rect = ratatui::layout::Rect::new(10, 4, 60, 16);
+        app_guard.open_detail_overlay(
+            " Detail ",
+            (0..30).map(|index| format!("line {index}")).collect(),
+        );
+    }
+
+    handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 20,
+            row: 10,
+            modifiers: KeyModifiers::NONE,
+        },
+        &app,
+    );
+
+    let app_guard = app.lock().unwrap();
+    match app_guard.overlay.as_ref() {
+        Some(OverlayState::Detail(detail)) => assert_eq!(detail.scroll, 3),
+        other => panic!("expected detail overlay, got {other:?}"),
+    }
+    assert_eq!(app_guard.logs_state.selected(), Some(4));
+}
+
+#[test]
 fn overlay_blocks_background_tab_focus_changes() {
     let client: DynLlmClient = Arc::new(IdleClient);
     let root = event_test_root("overlay-block-focus-test");
@@ -1027,6 +1334,7 @@ fn sidebar_rail_cycles_and_toggles_selected_section() {
         app_guard.todo_rect = ratatui::layout::Rect::new(61, 5, 18, 6);
         app_guard.logs_rect = ratatui::layout::Rect::new(61, 11, 18, 7);
         app_guard.focused_panel = Panel::SidebarRail;
+        app_guard.sidebar.delivery_expanded = true;
     }
 
     handle_key_event(
@@ -1053,6 +1361,43 @@ fn sidebar_rail_cycles_and_toggles_selected_section() {
     );
     assert!(!app_guard.sidebar.delivery_expanded);
     assert_eq!(app_guard.focused_panel, Panel::SidebarRail);
+}
+
+#[test]
+fn sidebar_rail_enter_focuses_collapsed_delivery_with_selection() {
+    let client: DynLlmClient = Arc::new(IdleClient);
+    let root = event_test_root("sidebar-rail-enter-test");
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let session = test_session(client, root, &runtime);
+    let app = Arc::new(Mutex::new(App::new()));
+    let (tx, _rx) = mpsc::channel();
+    let keymap = KeymapManager::default();
+    {
+        let mut app_guard = app.lock().unwrap();
+        app_guard.sidebar_rect = ratatui::layout::Rect::new(60, 1, 20, 18);
+        app_guard.sidebar_rail_rect = ratatui::layout::Rect::new(61, 2, 18, 3);
+        app_guard.focused_panel = Panel::SidebarRail;
+        app_guard.sidebar.rail_selection = crate::sidebar::SidebarSection::Delivery;
+        app_guard.sidebar.delivery_expanded = false;
+        app_guard.delivery_lines = vec![
+            "status: running".to_string(),
+            "activity: 1 llm / 2 tools".to_string(),
+        ];
+    }
+
+    handle_key_event(
+        press_key(KeyCode::Enter, KeyModifiers::NONE),
+        &app,
+        &session,
+        &tx,
+        &keymap,
+    )
+    .unwrap();
+
+    let app_guard = app.lock().unwrap();
+    assert!(app_guard.sidebar.delivery_expanded);
+    assert_eq!(app_guard.focused_panel, Panel::Delivery);
+    assert_eq!(app_guard.delivery_state.selected(), Some(0));
 }
 
 #[test]

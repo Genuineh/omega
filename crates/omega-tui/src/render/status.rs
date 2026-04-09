@@ -46,10 +46,7 @@ pub(super) fn input_context_text(app: &App, sidebar_hidden: bool) -> String {
                     " Skills: Enter/x=Open detail  Space Tab=Focus  Space b=Sidebar  Space /=Search  Space ↑/↓=Scroll"
                         .to_string()
                 } else if app.focused_panel == Panel::Document {
-                    " Document supervision: Enter/x=Open detail  Space Tab=Focus  Space b=Sidebar  Space /=Search  Space ↑/↓=Scroll"
-                        .to_string()
-                } else if app.focused_panel == Panel::Memory {
-                    " Memory supervision: Enter/x=Open detail  Space Tab=Focus  Space b=Sidebar  Space /=Search  Space ↑/↓=Scroll"
+                    " Knowledge: Enter/x=Open detail  Space Tab=Focus  Space b=Sidebar  Space /=Search  Space ↑/↓=Scroll"
                         .to_string()
                 } else if app.focused_panel == Panel::Response && app.show_thinking {
                     " Response: Enter/x=Toggle thinking or open subflow/tool detail  Space Tab=Focus  Space b=Sidebar  Space /=Search  Space ↑/↓=Scroll"
@@ -198,7 +195,7 @@ pub(super) fn bottom_status_line(
         spans.push(Span::styled(
             flow,
             Style::default()
-                .fg(colors.focus_border)
+                .fg(colors.context_hint)
                 .bg(colors.status_bar_bg)
                 .add_modifier(Modifier::BOLD),
         ));

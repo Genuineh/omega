@@ -5,12 +5,13 @@ use omega_session::{
     StepSubflowState, ToolRun, ToolRunStatus,
 };
 
-use crate::render::markdown::{parse_markdown_lines, StyledSpan};
+use crate::render::markdown::{parse_markdown_lines, MdLineKind, StyledSpan};
 
 use super::delivery::{delivery_section_id, extract_turn_id_from_section_id};
 use super::{
-    App, Msg, MsgKind, ResponseActivation, ResponseDisplayLine, ResponseLineAction,
-    ThinkingLineKind, WorkflowRunRole,
+    App, Msg, MsgKind, ResponseActivation, ResponseCard, ResponseCardSection,
+    ResponseCardSectionKind, ResponseDisplayLine, ResponseLineAction, ThinkingLineKind,
+    WorkflowRunRole,
 };
 
 impl App {
@@ -215,8 +216,8 @@ impl App {
             .collect()
     }
 
-    pub fn response_display_lines(&self) -> Vec<ResponseDisplayLine> {
-        let mut lines = Vec::new();
+    pub(crate) fn response_cards(&self) -> Vec<ResponseCard> {
+        let mut cards = Vec::new();
         let mut index = 0usize;
         while let Some(message) = self.output_msgs.get(index) {
             if message.kind == MsgKind::Thinking && !self.show_thinking {
@@ -238,14 +239,22 @@ impl App {
                     group.push(candidate);
                     index += 1;
                 }
-                lines.extend(self.render_subflow_group(&group));
+                cards.push(self.build_subflow_card(&group));
                 continue;
             }
 
-            lines.extend(self.render_message_lines(message));
+            cards.push(self.build_message_card(message));
             index += 1;
         }
-        lines
+
+        cards
+    }
+
+    pub fn response_display_lines(&self) -> Vec<ResponseDisplayLine> {
+        self.response_cards()
+            .into_iter()
+            .flat_map(project_response_card)
+            .collect()
     }
 
     fn toggle_thinking_section(&mut self, id: &str) -> Option<bool> {
@@ -273,10 +282,10 @@ impl App {
         Some(message.tool_lane_collapsed)
     }
 
-    fn render_message_lines(&self, message: &Msg) -> Vec<ResponseDisplayLine> {
+    fn build_message_card(&self, message: &Msg) -> ResponseCard {
         match message.kind {
             MsgKind::User | MsgKind::Agent | MsgKind::Error | MsgKind::Separator => {
-                split_or_empty(&message.text)
+                let lines = split_or_empty(&message.text)
                     .into_iter()
                     .enumerate()
                     .map(|(i, text)| {
@@ -307,14 +316,14 @@ impl App {
                             spans: Vec::new(),
                         }
                     })
-                    .collect()
+                    .collect::<Vec<_>>();
+                card_from_rendered_lines(message.id.clone(), message.kind, lines)
             }
             MsgKind::Routing
             | MsgKind::Step
             | MsgKind::FinalAnswer
             | MsgKind::Thinking
             | MsgKind::Command => {
-                let mut lines = Vec::new();
                 let message_state = message.state.unwrap_or(ResponseSectionState::Complete);
                 let default_action = match message.kind {
                     MsgKind::Thinking => message
@@ -327,10 +336,12 @@ impl App {
                         .map(ResponseLineAction::ToggleCommandSection),
                     _ => None,
                 };
+                let mut prelude_lines = Vec::new();
+                let mut sections = Vec::new();
 
                 // Final Answer: decorative top rule (15B-43)
                 if message.kind == MsgKind::FinalAnswer {
-                    lines.push(ResponseDisplayLine {
+                    prelude_lines.push(ResponseDisplayLine {
                         kind: message.kind,
                         text: "━".repeat(40),
                         is_header: false,
@@ -344,7 +355,7 @@ impl App {
                     });
                 }
 
-                lines.push(ResponseDisplayLine {
+                let header_line = ResponseDisplayLine {
                     kind: message.kind,
                     text: format_response_header(message),
                     is_header: true,
@@ -355,31 +366,17 @@ impl App {
                     response_state: message.state,
                     thinking_line_kind: None,
                     spans: Vec::new(),
-                });
+                };
 
                 if !matches!(message.kind, MsgKind::Thinking | MsgKind::Command) {
                     if let Some(scene_id) = message.scene_id.as_deref() {
-                        lines.push(ResponseDisplayLine {
-                            kind: message.kind,
-                            text: format!("  scene {scene_id}"),
-                            is_header: false,
-                            message_id: message.id.clone(),
-                            action: None,
-                            is_tool_line: false,
-                            tool_status: None,
-                            response_state: None,
-                            thinking_line_kind: None,
-                            spans: Vec::new(),
-                        });
-                    }
-                }
-
-                match message.kind {
-                    MsgKind::Routing => {
-                        if let Some(preview) = first_non_empty_line(&message.text) {
-                            lines.push(ResponseDisplayLine {
+                        sections.push(ResponseCardSection {
+                            kind: ResponseCardSectionKind::Meta,
+                            title: None,
+                            header_line: None,
+                            lines: vec![ResponseDisplayLine {
                                 kind: message.kind,
-                                text: format!("  result {preview}"),
+                                text: format!("  scene {scene_id}"),
                                 is_header: false,
                                 message_id: message.id.clone(),
                                 action: None,
@@ -388,6 +385,30 @@ impl App {
                                 response_state: None,
                                 thinking_line_kind: None,
                                 spans: Vec::new(),
+                            }],
+                        });
+                    }
+                }
+
+                match message.kind {
+                    MsgKind::Routing => {
+                        if let Some(preview) = first_non_empty_line(&message.text) {
+                            sections.push(ResponseCardSection {
+                                kind: ResponseCardSectionKind::ResultsSummary,
+                                title: None,
+                                header_line: None,
+                                lines: vec![ResponseDisplayLine {
+                                    kind: message.kind,
+                                    text: format!("  result {preview}"),
+                                    is_header: false,
+                                    message_id: message.id.clone(),
+                                    action: None,
+                                    is_tool_line: false,
+                                    tool_status: None,
+                                    response_state: None,
+                                    thinking_line_kind: None,
+                                    spans: Vec::new(),
+                                }],
                             });
                         }
                     }
@@ -425,56 +446,38 @@ impl App {
                             base_style
                         };
                         if message.kind == MsgKind::Command && message.collapsed {
-                            lines.push(ResponseDisplayLine {
-                                kind: message.kind,
-                                text: format!(
-                                    "{body_indent}▸ {}",
-                                    summarize_command_text(&message.text, message_state)
-                                ),
-                                is_header: false,
-                                message_id: message.id.clone(),
-                                action: default_action.clone(),
-                                is_tool_line: false,
-                                tool_status: None,
-                                response_state: Some(message_state),
-                                thinking_line_kind: None,
-                                spans: Vec::new(),
+                            sections.push(ResponseCardSection {
+                                kind: ResponseCardSectionKind::RawDetail,
+                                title: None,
+                                header_line: None,
+                                lines: vec![ResponseDisplayLine {
+                                    kind: message.kind,
+                                    text: format!(
+                                        "{body_indent}▸ {}",
+                                        summarize_command_text(&message.text, message_state)
+                                    ),
+                                    is_header: false,
+                                    message_id: message.id.clone(),
+                                    action: default_action.clone(),
+                                    is_tool_line: false,
+                                    tool_status: None,
+                                    response_state: Some(message_state),
+                                    thinking_line_kind: None,
+                                    spans: Vec::new(),
+                                }],
                             });
                         } else if body_lines.len() == 1
                             && body_lines[0].is_empty()
                             && tool_runs.is_empty()
                             && knowledge_summary.is_none()
                         {
-                            lines.push(ResponseDisplayLine {
-                                kind: message.kind,
-                                text: format!("{body_indent}…"),
-                                is_header: false,
-                                message_id: message.id.clone(),
-                                action: None,
-                                is_tool_line: false,
-                                tool_status: None,
-                                response_state: None,
-                                thinking_line_kind: None,
-                                spans: Vec::new(),
-                            });
-                        } else if !(body_lines.len() == 1 && body_lines[0].is_empty()) {
-                            // Markdown rendering (15B-40 / 15B-41 / 15B-46)
-                            let md_lines =
-                                parse_markdown_lines(&message.text, base_style, &colors);
-                            for md_line in md_lines {
-                                let plain: String =
-                                    md_line.spans.iter().map(|s| s.text.as_str()).collect();
-                                let prefixed_spans: Vec<StyledSpan> = {
-                                    let mut s = vec![StyledSpan {
-                                        text: body_indent.to_string(),
-                                        style: body_indent_style,
-                                    }];
-                                    s.extend(md_line.spans);
-                                    s
-                                };
-                                lines.push(ResponseDisplayLine {
+                            sections.push(ResponseCardSection {
+                                kind: ResponseCardSectionKind::RawDetail,
+                                title: None,
+                                header_line: None,
+                                lines: vec![ResponseDisplayLine {
                                     kind: message.kind,
-                                    text: format!("{body_indent}{plain}"),
+                                    text: format!("{body_indent}…"),
                                     is_header: false,
                                     message_id: message.id.clone(),
                                     action: None,
@@ -482,30 +485,64 @@ impl App {
                                     tool_status: None,
                                     response_state: None,
                                     thinking_line_kind: None,
-                                    spans: prefixed_spans,
-                                });
-                            }
+                                    spans: Vec::new(),
+                                }],
+                            });
+                        } else if !(body_lines.len() == 1 && body_lines[0].is_empty()) {
+                            sections.extend(render_report_body_sections(
+                                message,
+                                &message.text,
+                                body_indent,
+                                body_indent_style,
+                                base_style,
+                                &colors,
+                            ));
                         }
                         if let Some(section_id) = message.id.as_deref() {
-                            lines.extend(self.render_delivery_lane(section_id, message.kind, "  "));
-                            lines.extend(self.render_skill_load_lane(
+                            let delivery_lines =
+                                self.render_delivery_lane(section_id, message.kind, "  ");
+                            if !delivery_lines.is_empty() {
+                                sections.push(ResponseCardSection {
+                                    kind: ResponseCardSectionKind::Delivery,
+                                    title: None,
+                                    header_line: None,
+                                    lines: delivery_lines,
+                                });
+                            }
+                            let skill_lines = self.render_skill_load_lane(
                                 section_id,
                                 skill_summary,
                                 message.kind,
                                 "  ",
-                            ));
-                            lines.extend(self.render_knowledge_lane(
+                            );
+                            if !skill_lines.is_empty() {
+                                sections.push(ResponseCardSection {
+                                    kind: ResponseCardSectionKind::SkillLoad,
+                                    title: None,
+                                    header_line: None,
+                                    lines: skill_lines,
+                                });
+                            }
+                            let knowledge_lines = self.render_knowledge_lane(
                                 section_id,
                                 knowledge_summary,
                                 message.kind,
                                 "  ",
-                            ));
+                            );
+                            if !knowledge_lines.is_empty() {
+                                sections.push(ResponseCardSection {
+                                    kind: ResponseCardSectionKind::Knowledge,
+                                    title: None,
+                                    header_line: None,
+                                    lines: knowledge_lines,
+                                });
+                            }
                         }
                         // Tool lane with folding (15B-44)
                         if !tool_runs.is_empty() {
                             let can_toggle = tool_runs.len() >= 6;
                             let collapsed = can_toggle && message.tool_lane_collapsed;
-                            lines.push(ResponseDisplayLine {
+                            let mut tool_lines = vec![ResponseDisplayLine {
                                 kind: message.kind,
                                 text: format_tool_lane_header(&tool_runs, can_toggle, collapsed),
                                 is_header: false,
@@ -520,10 +557,10 @@ impl App {
                                 response_state: None,
                                 thinking_line_kind: None,
                                 spans: Vec::new(),
-                            });
+                            }];
                             if !collapsed {
                                 let name_width = tool_name_width(&tool_runs);
-                                lines.extend(tool_runs.into_iter().map(|tool_run| {
+                                tool_lines.extend(tool_runs.into_iter().map(|tool_run| {
                                     ResponseDisplayLine {
                                         kind: message.kind,
                                         text: format_tool_summary(tool_run, name_width),
@@ -540,12 +577,17 @@ impl App {
                                     }
                                 }));
                             }
+                            sections.push(ResponseCardSection {
+                                kind: ResponseCardSectionKind::ToolRuns,
+                                title: None,
+                                header_line: None,
+                                lines: tool_lines,
+                            });
                         }
                     }
                     MsgKind::Thinking => {
-                        if message.collapsed {
-                            // 15B-45: ▸ prefix for collapsed (expandable)
-                            lines.push(ResponseDisplayLine {
+                        let lines = if message.collapsed {
+                            vec![ResponseDisplayLine {
                                 kind: message.kind,
                                 text: format!(
                                     "    ▸ {}",
@@ -559,12 +601,12 @@ impl App {
                                 response_state: Some(message_state),
                                 thinking_line_kind: Some(ThinkingLineKind::Summary),
                                 spans: Vec::new(),
-                            });
+                            }]
                         } else {
                             let body_lines = visible_thinking_body_lines(&message.text, message_state);
                             let thinking_prefix = thinking_body_prefix(message_state, self.spinner_tick);
                             if body_lines.len() == 1 && body_lines[0].is_empty() {
-                                lines.push(ResponseDisplayLine {
+                                vec![ResponseDisplayLine {
                                     kind: message.kind,
                                     text: format!(
                                         "    {thinking_prefix} {}",
@@ -578,11 +620,11 @@ impl App {
                                     response_state: Some(message_state),
                                     thinking_line_kind: Some(ThinkingLineKind::Placeholder),
                                     spans: Vec::new(),
-                                });
+                                }]
                             } else {
-                                // 15B-45: spinner while streaming, │ once complete/failed
-                                lines.extend(body_lines.into_iter().map(|line| {
-                                    ResponseDisplayLine {
+                                body_lines
+                                    .into_iter()
+                                    .map(|line| ResponseDisplayLine {
                                         kind: message.kind,
                                         text: format!("    {thinking_prefix} {line}"),
                                         is_header: false,
@@ -593,16 +635,54 @@ impl App {
                                         response_state: Some(message_state),
                                         thinking_line_kind: Some(ThinkingLineKind::Body),
                                         spans: Vec::new(),
-                                    }
-                                }));
+                                    })
+                                    .collect()
                             }
-                        }
+                        };
+                        sections.push(ResponseCardSection {
+                            kind: ResponseCardSectionKind::Thinking,
+                            title: None,
+                            header_line: None,
+                            lines,
+                        });
                     }
                     _ => {}
                 }
 
-                lines
+                ResponseCard {
+                    id: message.id.clone(),
+                    kind: message.kind,
+                    prelude_lines,
+                    header_line,
+                    sections,
+                }
             }
+        }
+    }
+
+    fn build_subflow_card(&self, messages: &[&Msg]) -> ResponseCard {
+        let mut rendered = self.render_subflow_group(messages);
+        if rendered.is_empty() {
+            return ResponseCard {
+                id: None,
+                kind: MsgKind::Step,
+                prelude_lines: Vec::new(),
+                header_line: ResponseDisplayLine::plain(MsgKind::Step, String::new()),
+                sections: Vec::new(),
+            };
+        }
+        let header_line = rendered.remove(0);
+        ResponseCard {
+            id: header_line.message_id.clone(),
+            kind: MsgKind::Step,
+            prelude_lines: Vec::new(),
+            header_line,
+            sections: vec![ResponseCardSection {
+                kind: ResponseCardSectionKind::Subflow,
+                title: None,
+                header_line: None,
+                lines: rendered,
+            }],
         }
     }
 
@@ -765,7 +845,7 @@ impl App {
             return vec![ResponseDisplayLine {
                 kind: MsgKind::Step,
                 text: format!(
-                    "  subflow  {}-{}  [queued]",
+                    "  subflow  {}-{}  ◦",
                     group_ref.parent_step_id, item_index
                 ),
                 is_header: false,
@@ -820,7 +900,7 @@ impl App {
         if let Some(item_label) = header_ref.item_label.as_deref() {
             header.push_str(&format!("  {}", truncate_preview(item_label, 36)));
         }
-        header.push_str(&format!("  [{}]", subflow_status_label(status)));
+        header.push_str(&format!("  {}", subflow_status_label(status)));
         if let Some(known_status) = known_status {
             if known_status.status == status && known_status.repeat_count_for_item > 0 {
                 header.push_str(&format!("  repeat {}", known_status.repeat_count_for_item));
@@ -1318,10 +1398,10 @@ impl Msg {
 
 fn subflow_status_label(status: StepSubflowState) -> &'static str {
     match status {
-        StepSubflowState::Queued => "queued",
-        StepSubflowState::Running => "running",
-        StepSubflowState::Complete => "done",
-        StepSubflowState::Failed => "failed",
+        StepSubflowState::Queued => "◦",
+        StepSubflowState::Running => "◉",
+        StepSubflowState::Complete => "●",
+        StepSubflowState::Failed => "✕",
     }
 }
 
@@ -1336,9 +1416,15 @@ fn parse_todo_subflow_fallback(line: &str) -> Option<TodoSubflowFallback> {
     let trimmed = line.trim_start();
     let (status, remainder) = if let Some(rest) = trimmed.strip_prefix("[x] ") {
         (StepSubflowState::Complete, rest)
+    } else if let Some(rest) = trimmed.strip_prefix("✓ ") {
+        (StepSubflowState::Complete, rest)
     } else if let Some(rest) = trimmed.strip_prefix("[>] ") {
         (StepSubflowState::Running, rest)
+    } else if let Some(rest) = trimmed.strip_prefix("→ ") {
+        (StepSubflowState::Running, rest)
     } else if let Some(rest) = trimmed.strip_prefix("[ ] ") {
+        (StepSubflowState::Queued, rest)
+    } else if let Some(rest) = trimmed.strip_prefix("○ ") {
         (StepSubflowState::Queued, rest)
     } else {
         return None;
@@ -1363,6 +1449,648 @@ fn parse_todo_subflow_fallback(line: &str) -> Option<TodoSubflowFallback> {
         item_id,
         item_label,
     })
+}
+
+fn project_response_card(card: ResponseCard) -> Vec<ResponseDisplayLine> {
+    let mut lines = card.prelude_lines;
+    lines.push(card.header_line);
+    for section in card.sections {
+        if let Some(header_line) = section.header_line {
+            lines.push(header_line);
+        }
+        lines.extend(section.lines);
+    }
+    lines
+}
+
+fn card_from_rendered_lines(
+    id: Option<String>,
+    kind: MsgKind,
+    mut lines: Vec<ResponseDisplayLine>,
+) -> ResponseCard {
+    let header_line = if lines.is_empty() {
+        ResponseDisplayLine::plain(kind, String::new())
+    } else {
+        lines.remove(0)
+    };
+
+    let sections = if lines.is_empty() {
+        Vec::new()
+    } else {
+        vec![ResponseCardSection {
+            kind: ResponseCardSectionKind::RawDetail,
+            title: None,
+            header_line: None,
+            lines,
+        }]
+    };
+
+    ResponseCard {
+        id,
+        kind,
+        prelude_lines: Vec::new(),
+        header_line,
+        sections,
+    }
+}
+
+fn render_report_body_sections(
+    message: &Msg,
+    text: &str,
+    body_indent: &str,
+    body_indent_style: ratatui::style::Style,
+    base_style: ratatui::style::Style,
+    colors: &omega_theme::RenderPalette,
+) -> Vec<ResponseCardSection> {
+    split_report_sections(text)
+        .into_iter()
+        .filter_map(|(title, body)| {
+            let lines = render_markdown_body_lines(
+                message,
+                &body,
+                body_indent,
+                body_indent_style,
+                base_style,
+                colors,
+            );
+            if lines.is_empty() {
+                return None;
+            }
+
+            let kind = title
+                .as_deref()
+                .map(classify_report_section)
+                .unwrap_or(ResponseCardSectionKind::RawDetail);
+            let header_line = title.as_deref().map(|section_title| {
+                build_report_section_header_line(
+                    message,
+                    section_title,
+                    summarize_report_section(kind, &body),
+                    colors,
+                )
+            });
+
+            Some(ResponseCardSection {
+                kind,
+                title,
+                header_line,
+                lines,
+            })
+        })
+        .collect()
+}
+
+fn render_markdown_body_lines(
+    message: &Msg,
+    text: &str,
+    body_indent: &str,
+    body_indent_style: ratatui::style::Style,
+    base_style: ratatui::style::Style,
+    colors: &omega_theme::RenderPalette,
+) -> Vec<ResponseDisplayLine> {
+    if text.trim().is_empty() {
+        return Vec::new();
+    }
+
+    let raw_lines: Vec<&str> = text.lines().collect();
+    let mut rendered = Vec::new();
+    let mut markdown_buffer = Vec::new();
+    let mut index = 0usize;
+
+    while index < raw_lines.len() {
+        let line = raw_lines[index];
+        if is_markdown_table_header(raw_lines.as_slice(), index) {
+            if !markdown_buffer.is_empty() {
+                rendered.extend(render_markdown_buffer(
+                    message,
+                    &markdown_buffer.join("\n"),
+                    body_indent,
+                    body_indent_style,
+                    base_style,
+                    colors,
+                ));
+                markdown_buffer.clear();
+            }
+
+            let mut table_block = vec![raw_lines[index].to_string(), raw_lines[index + 1].to_string()];
+            index += 2;
+            while index < raw_lines.len() && is_markdown_table_row(raw_lines[index]) {
+                table_block.push(raw_lines[index].to_string());
+                index += 1;
+            }
+            rendered.extend(render_markdown_table_lines(
+                message,
+                body_indent,
+                body_indent_style,
+                colors,
+                &table_block,
+            ));
+            continue;
+        }
+
+        markdown_buffer.push(line.to_string());
+        index += 1;
+    }
+
+    if !markdown_buffer.is_empty() {
+        rendered.extend(render_markdown_buffer(
+            message,
+            &markdown_buffer.join("\n"),
+            body_indent,
+            body_indent_style,
+            base_style,
+            colors,
+        ));
+    }
+
+    rendered
+}
+
+fn split_report_sections(text: &str) -> Vec<(Option<String>, String)> {
+    let mut sections = Vec::new();
+    let mut current_title: Option<String> = None;
+    let mut current_lines: Vec<String> = Vec::new();
+    let mut saw_heading = false;
+
+    for line in text.lines() {
+        if let Some(title) = parse_section_heading(line) {
+            saw_heading = true;
+            push_report_section(&mut sections, current_title.take(), &mut current_lines);
+            current_title = Some(title);
+            continue;
+        }
+        current_lines.push(line.to_string());
+    }
+
+    push_report_section(&mut sections, current_title.take(), &mut current_lines);
+
+    if !saw_heading {
+        return vec![(None, text.to_string())];
+    }
+
+    sections
+}
+
+fn push_report_section(
+    sections: &mut Vec<(Option<String>, String)>,
+    title: Option<String>,
+    lines: &mut Vec<String>,
+) {
+    let body = lines.join("\n");
+    lines.clear();
+    if title.is_none() && body.trim().is_empty() {
+        return;
+    }
+    if title.is_some() && body.trim().is_empty() {
+        return;
+    }
+    sections.push((title, body));
+}
+
+fn parse_section_heading(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    for prefix in ["## ", "### ", "# "] {
+        if let Some(rest) = trimmed.strip_prefix(prefix) {
+            let title = rest.trim();
+            if !title.is_empty() {
+                return Some(title.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn classify_report_section(title: &str) -> ResponseCardSectionKind {
+    let normalized = normalize_section_title(title);
+    match normalized.as_str() {
+        "results summary" | "result summary" | "summary" => {
+            ResponseCardSectionKind::ResultsSummary
+        }
+        "changes made" | "changes" | "change summary" => ResponseCardSectionKind::ChangesMade,
+        "verification" | "validation" | "tests" | "test results" => {
+            ResponseCardSectionKind::Verification
+        }
+        "usage" | "how to use" => ResponseCardSectionKind::Usage,
+        "optional next step" | "optional next steps" | "next step" | "next steps" => {
+            ResponseCardSectionKind::OptionalNextStep
+        }
+        "key points" | "highlights" | "key takeaways" => ResponseCardSectionKind::KeyPoints,
+        _ => ResponseCardSectionKind::Custom,
+    }
+}
+
+fn normalize_section_title(title: &str) -> String {
+    let mut normalized = String::with_capacity(title.len());
+    let mut previous_space = false;
+    for ch in title.chars() {
+        if ch.is_ascii_alphanumeric() {
+            normalized.push(ch.to_ascii_lowercase());
+            previous_space = false;
+        } else if !previous_space {
+            normalized.push(' ');
+            previous_space = true;
+        }
+    }
+    normalized.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn build_report_section_header_line(
+    message: &Msg,
+    title: &str,
+    summary: Option<String>,
+    colors: &omega_theme::RenderPalette,
+) -> ResponseDisplayLine {
+    let title_style = ratatui::style::Style::default()
+        .fg(colors.section_header_fg)
+        .add_modifier(ratatui::style::Modifier::BOLD);
+    let divider_style = ratatui::style::Style::default().fg(colors.table_border_fg);
+    let summary_style = ratatui::style::Style::default()
+        .fg(colors.muted_meta_fg)
+        .bg(colors.summary_badge_bg)
+        .add_modifier(ratatui::style::Modifier::BOLD);
+    let text = if let Some(summary) = summary.as_deref() {
+        format!("  {title}  {summary}")
+    } else {
+        format!("  {title}")
+    };
+    let mut spans = vec![
+        StyledSpan {
+            text: "  ".to_string(),
+            style: divider_style,
+        },
+        StyledSpan {
+            text: title.to_string(),
+            style: title_style,
+        },
+    ];
+    if let Some(summary) = summary {
+        spans.push(StyledSpan {
+            text: "  ".to_string(),
+            style: ratatui::style::Style::default(),
+        });
+        spans.push(StyledSpan {
+            text: summary,
+            style: summary_style,
+        });
+    }
+    ResponseDisplayLine {
+        kind: message.kind,
+        text,
+        is_header: false,
+        message_id: message.id.clone(),
+        action: None,
+        is_tool_line: false,
+        tool_status: None,
+        response_state: None,
+        thinking_line_kind: None,
+        spans,
+    }
+}
+
+fn render_markdown_buffer(
+    message: &Msg,
+    text: &str,
+    body_indent: &str,
+    body_indent_style: ratatui::style::Style,
+    base_style: ratatui::style::Style,
+    colors: &omega_theme::RenderPalette,
+) -> Vec<ResponseDisplayLine> {
+    parse_markdown_lines(text, base_style, colors)
+        .into_iter()
+        .map(|md_line| {
+            let plain: String = md_line.spans.iter().map(|span| span.text.as_str()).collect();
+            let prefixed_spans = {
+                let mut spans = vec![StyledSpan {
+                    text: body_indent.to_string(),
+                    style: body_indent_style,
+                }];
+                spans.extend(md_line.spans);
+                spans
+            };
+            ResponseDisplayLine {
+                kind: message.kind,
+                text: format!("{body_indent}{plain}"),
+                is_header: false,
+                message_id: message.id.clone(),
+                action: None,
+                is_tool_line: false,
+                tool_status: None,
+                response_state: None,
+                thinking_line_kind: md_line
+                    .kind
+                    .eq(&MdLineKind::BlankLine)
+                    .then_some(ThinkingLineKind::Body),
+                spans: prefixed_spans,
+            }
+        })
+        .collect()
+}
+
+fn is_markdown_table_header(lines: &[&str], index: usize) -> bool {
+    index + 1 < lines.len()
+        && is_markdown_table_row(lines[index])
+        && is_markdown_table_separator(lines[index + 1])
+}
+
+fn is_markdown_table_row(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.starts_with('|') && trimmed.ends_with('|') && trimmed[1..trimmed.len() - 1].contains('|')
+}
+
+fn is_markdown_table_separator(line: &str) -> bool {
+    let trimmed = line.trim();
+    if !trimmed.starts_with('|') || !trimmed.ends_with('|') {
+        return false;
+    }
+    trimmed
+        .trim_matches('|')
+        .split('|')
+        .map(str::trim)
+        .all(|part| !part.is_empty() && part.chars().all(|ch| matches!(ch, '-' | ':' | ' ')))
+}
+
+fn render_markdown_table_lines(
+    message: &Msg,
+    body_indent: &str,
+    body_indent_style: ratatui::style::Style,
+    colors: &omega_theme::RenderPalette,
+    block: &[String],
+) -> Vec<ResponseDisplayLine> {
+    if block.len() < 2 {
+        return Vec::new();
+    }
+
+    let rows: Vec<Vec<String>> = block.iter().map(|line| parse_markdown_table_row(line)).collect();
+    let Some(header) = rows.first() else {
+        return Vec::new();
+    };
+    let data_rows = &rows[2..];
+    let column_count = rows.iter().map(Vec::len).max().unwrap_or(0);
+    let widths = (0..column_count)
+        .map(|column| {
+            rows.iter()
+                .filter_map(|row| row.get(column))
+                .map(|cell| cell.chars().count())
+                .max()
+                .unwrap_or(0)
+        })
+        .collect::<Vec<_>>();
+
+    let border_style = ratatui::style::Style::default().fg(colors.table_border_fg);
+    let header_style = ratatui::style::Style::default()
+        .fg(colors.section_header_fg)
+        .add_modifier(ratatui::style::Modifier::BOLD);
+
+    let mut lines = vec![table_border_line(
+        message,
+        body_indent,
+        body_indent_style,
+        border_style,
+        &widths,
+        '╭',
+        '┬',
+        '╮',
+    )];
+    lines.push(table_content_line(
+        message,
+        body_indent,
+        body_indent_style,
+        border_style,
+        &widths,
+        header,
+        header_style,
+        colors,
+    ));
+    lines.push(table_border_line(
+        message,
+        body_indent,
+        body_indent_style,
+        border_style,
+        &widths,
+        '├',
+        '┼',
+        '┤',
+    ));
+    for row in data_rows {
+        lines.push(table_content_line(
+            message,
+            body_indent,
+            body_indent_style,
+            border_style,
+            &widths,
+            row,
+            ratatui::style::Style::default().fg(colors.text),
+            colors,
+        ));
+    }
+    lines.push(table_border_line(
+        message,
+        body_indent,
+        body_indent_style,
+        border_style,
+        &widths,
+        '╰',
+        '┴',
+        '╯',
+    ));
+    lines
+}
+
+fn parse_markdown_table_row(line: &str) -> Vec<String> {
+    line.trim()
+        .trim_matches('|')
+        .split('|')
+        .map(|cell| cell.trim().to_string())
+        .collect()
+}
+
+fn table_border_line(
+    message: &Msg,
+    body_indent: &str,
+    body_indent_style: ratatui::style::Style,
+    border_style: ratatui::style::Style,
+    widths: &[usize],
+    left: char,
+    middle: char,
+    right: char,
+) -> ResponseDisplayLine {
+    let mut text = String::from(body_indent);
+    text.push(left);
+    for (index, width) in widths.iter().enumerate() {
+        text.push_str(&"─".repeat(width + 2));
+        if index + 1 < widths.len() {
+            text.push(middle);
+        }
+    }
+    text.push(right);
+    ResponseDisplayLine {
+        kind: message.kind,
+        text: text.clone(),
+        is_header: false,
+        message_id: message.id.clone(),
+        action: None,
+        is_tool_line: false,
+        tool_status: None,
+        response_state: None,
+        thinking_line_kind: None,
+        spans: vec![
+            StyledSpan {
+                text: body_indent.to_string(),
+                style: body_indent_style,
+            },
+            StyledSpan {
+                text: text.trim_start_matches(body_indent).to_string(),
+                style: border_style,
+            },
+        ],
+    }
+}
+
+fn table_content_line(
+    message: &Msg,
+    body_indent: &str,
+    body_indent_style: ratatui::style::Style,
+    border_style: ratatui::style::Style,
+    widths: &[usize],
+    row: &[String],
+    default_cell_style: ratatui::style::Style,
+    colors: &omega_theme::RenderPalette,
+) -> ResponseDisplayLine {
+    let mut text = String::from(body_indent);
+    let mut spans = vec![StyledSpan {
+        text: body_indent.to_string(),
+        style: body_indent_style,
+    }];
+    for (index, width) in widths.iter().enumerate() {
+        let cell = row.get(index).cloned().unwrap_or_default();
+        let padded = format!(" {:width$} ", cell, width = width);
+        text.push('│');
+        text.push_str(&padded);
+        spans.push(StyledSpan {
+            text: "│".to_string(),
+            style: border_style,
+        });
+        spans.push(StyledSpan {
+            text: padded,
+            style: table_cell_style(&cell, default_cell_style, colors),
+        });
+    }
+    text.push('│');
+    spans.push(StyledSpan {
+        text: "│".to_string(),
+        style: border_style,
+    });
+
+    ResponseDisplayLine {
+        kind: message.kind,
+        text,
+        is_header: false,
+        message_id: message.id.clone(),
+        action: None,
+        is_tool_line: false,
+        tool_status: None,
+        response_state: None,
+        thinking_line_kind: None,
+        spans,
+    }
+}
+
+fn table_cell_style(
+    cell: &str,
+    default_style: ratatui::style::Style,
+    colors: &omega_theme::RenderPalette,
+) -> ratatui::style::Style {
+    if looks_like_metric(cell) {
+        ratatui::style::Style::default()
+            .fg(colors.metric_emphasis_fg)
+            .add_modifier(ratatui::style::Modifier::BOLD)
+    } else if looks_like_code_token(cell) {
+        ratatui::style::Style::default().fg(colors.code_fg)
+    } else {
+        default_style
+    }
+}
+
+fn summarize_report_section(kind: ResponseCardSectionKind, body: &str) -> Option<String> {
+    let non_empty_lines: Vec<&str> = body.lines().filter(|line| !line.trim().is_empty()).collect();
+    if non_empty_lines.is_empty() {
+        return None;
+    }
+
+    let bullet_count = non_empty_lines
+        .iter()
+        .filter(|line| is_bullet_or_ordered_item(line.trim_start()))
+        .count();
+    let table_rows = count_markdown_table_rows(body);
+    let command_count = non_empty_lines
+        .iter()
+        .filter(|line| line.trim_start().starts_with('$') || line.contains('`'))
+        .count();
+
+    match kind {
+        ResponseCardSectionKind::ResultsSummary
+        | ResponseCardSectionKind::ChangesMade
+        | ResponseCardSectionKind::KeyPoints
+        | ResponseCardSectionKind::OptionalNextStep => Some(if bullet_count > 0 {
+            format!("{} items", bullet_count)
+        } else {
+            format!("{} lines", non_empty_lines.len())
+        }),
+        ResponseCardSectionKind::Verification => Some(if table_rows > 0 {
+            format!("{} rows", table_rows)
+        } else {
+            format!("{} checks", non_empty_lines.len())
+        }),
+        ResponseCardSectionKind::Usage => Some(if command_count > 0 {
+            format!("{} commands", command_count)
+        } else {
+            format!("{} lines", non_empty_lines.len())
+        }),
+        ResponseCardSectionKind::Custom => Some(format!("{} lines", non_empty_lines.len())),
+        _ => None,
+    }
+}
+
+fn count_markdown_table_rows(body: &str) -> usize {
+    let lines: Vec<&str> = body.lines().collect();
+    let mut index = 0usize;
+    let mut rows = 0usize;
+    while index < lines.len() {
+        if is_markdown_table_header(lines.as_slice(), index) {
+            index += 2;
+            while index < lines.len() && is_markdown_table_row(lines[index]) {
+                rows += 1;
+                index += 1;
+            }
+            continue;
+        }
+        index += 1;
+    }
+    rows
+}
+
+fn is_bullet_or_ordered_item(line: &str) -> bool {
+    line.starts_with("- ")
+        || line.starts_with("* ")
+        || line
+            .find(". ")
+            .is_some_and(|index| index > 0 && line[..index].chars().all(|ch| ch.is_ascii_digit()))
+}
+
+fn looks_like_metric(text: &str) -> bool {
+    let trimmed = text.trim();
+    trimmed.contains('%')
+        || trimmed.chars().any(|ch| ch.is_ascii_digit())
+        || matches!(trimmed, "pass" | "passed" | "failed" | "complete" | "eliminated")
+}
+
+fn looks_like_code_token(text: &str) -> bool {
+    let trimmed = text.trim();
+    trimmed.starts_with('/')
+        || trimmed.contains("::")
+        || trimmed.contains('.')
+        || trimmed.contains('_')
+        || trimmed.starts_with('$')
 }
 
 fn split_or_empty(text: &str) -> Vec<String> {
@@ -1405,7 +2133,7 @@ fn format_tool_lane_header(tool_runs: &[&ToolRun], can_toggle: bool, collapsed: 
         format!("  tools  {total} total")
     };
     if can_toggle {
-        text.push_str(if collapsed { "  [expand]" } else { "  [collapse]" });
+        text.push_str(if collapsed { "  expand" } else { "  collapse" });
     }
     text
 }
@@ -1420,7 +2148,7 @@ fn tool_name_width(tool_runs: &[&ToolRun]) -> usize {
 
 fn format_tool_summary(tool_run: &ToolRun, name_width: usize) -> String {
     let mut summary = format!(
-        "    {tool_name:<name_width$}  [{status}]  {invoke}",
+        "    {tool_name:<name_width$}  {status}  {invoke}",
         tool_name = tool_run.tool_name,
         status = tool_run_status_label(tool_run.status),
         invoke = tool_run.invocation_preview,
@@ -1583,9 +2311,9 @@ fn build_memory_knowledge_detail_lines(summary: &ResponseMemoryKnowledge) -> Vec
 
 fn tool_run_status_label(status: ToolRunStatus) -> &'static str {
     match status {
-        ToolRunStatus::Running => "running",
-        ToolRunStatus::Complete => "done",
-        ToolRunStatus::Failed => "failed",
+        ToolRunStatus::Running => "◉",
+        ToolRunStatus::Complete => "●",
+        ToolRunStatus::Failed => "✕",
     }
 }
 
@@ -1616,22 +2344,22 @@ fn format_response_header(message: &Msg) -> String {
         _ => message.title.as_deref().unwrap_or("Section"),
     };
     let state = match state {
-        ResponseSectionState::Streaming => "streaming",
-        ResponseSectionState::Complete => "done",
-        ResponseSectionState::Failed => "failed",
+        ResponseSectionState::Streaming => "◉",
+        ResponseSectionState::Complete => "●",
+        ResponseSectionState::Failed => "✕",
     };
 
     if message.kind == MsgKind::Command {
         let source = message.workflow_id.as_deref().unwrap_or("builtin");
-        let toggle = if message.collapsed { "  [expand]" } else { "  [collapse]" };
-        format!("{badge}  {source}  {title}  [{state}]{toggle}")
+        let toggle = if message.collapsed { "  expand" } else { "  collapse" };
+        format!("{badge}  {source}  {title}  {state}{toggle}")
     } else {
         let workflow_role = message
             .workflow_role
             .map(WorkflowRunRole::as_str)
             .unwrap_or("unknown");
         let workflow_id = message.workflow_id.as_deref().unwrap_or("workflow");
-        format!("{badge}  {workflow_role}:{workflow_id}  {title}  [{state}]")
+        format!("{badge}  {workflow_role}:{workflow_id}  {title}  {state}")
     }
 }
 
@@ -1639,7 +2367,7 @@ fn summarize_command_text(text: &str, state: ResponseSectionState) -> String {
     let preview = first_non_empty_line(text)
         .map(str::trim)
         .filter(|line| !line.is_empty())
-        .map(|line| truncate_preview(line, 56))
+        .map(|line| truncate_preview(line, 28))
         .unwrap_or_else(|| command_placeholder_text(state).to_string());
     let line_count = text.lines().filter(|line| !line.trim().is_empty()).count();
 
@@ -1664,7 +2392,7 @@ fn summarize_thinking_text(text: &str, state: ResponseSectionState) -> String {
     let preview = first_non_empty_line(text)
         .map(str::trim)
         .filter(|line| !line.is_empty())
-        .map(|line| truncate_preview(line, 56))
+        .map(|line| truncate_preview(line, 24))
         .unwrap_or_else(|| thinking_placeholder_text(state).to_string());
     let line_count = text.lines().filter(|line| !line.trim().is_empty()).count();
     let label = thinking_summary_label(state);

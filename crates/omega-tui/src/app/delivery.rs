@@ -118,7 +118,7 @@ impl App {
     }
 
     pub fn delivery_panel_title(&self) -> String {
-        let mut title = " Delivery ".to_string();
+        let mut title = "Delivery".to_string();
         if self.focused_panel == Panel::Delivery {
             title.push('◆');
             title.push(' ');

@@ -1,5 +1,5 @@
 use ratatui::text::Span;
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
@@ -10,13 +10,13 @@ use ratatui::{
 use omega_keymap::InteractionMode;
 use omega_theme::{OmegaTheme, RenderPalette as ColorScheme};
 
-use crate::app::{wrap_text_segments, App, Panel};
+use crate::app::{App, Panel, ResponseDisplayLine};
 use crate::render::markdown::StyledSpan;
 
 use super::overlay::render_overlay;
-use super::sidebar::{list_item_with_selection, render_sidebar_body, render_sidebar_rail};
+use super::sidebar::{render_sidebar_body, render_sidebar_rail};
 use super::status::{bottom_status_line, input_context_line};
-use super::style::response_line_style;
+use super::style::{response_line_style, response_status_symbol_style};
 
 pub(crate) fn render(frame: &mut Frame, app: &mut App, model_name: &str, theme: &OmegaTheme) {
     let colors = theme.render_palette();
@@ -25,21 +25,16 @@ pub(crate) fn render(frame: &mut Frame, app: &mut App, model_name: &str, theme: 
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(0),
-            Constraint::Length(1),
-            Constraint::Length(3),
-            Constraint::Length(1),
-        ])
+        .constraints([Constraint::Min(0), Constraint::Length(1)])
         .split(frame.area());
 
     let term_width = frame.area().width;
     let sidebar_pct: u16 = if term_width < 60 || app.sidebar.shell_collapsed {
         0
     } else if term_width < 100 {
-        34
+        30
     } else {
-        40
+        34
     };
     let resp_pct = 100 - sidebar_pct;
 
@@ -51,10 +46,19 @@ pub(crate) fn render(frame: &mut Frame, app: &mut App, model_name: &str, theme: 
         ])
         .split(chunks[0]);
 
-    app.response_rect = main_chunks[0];
-    app.input_context_rect = chunks[1];
+    let left_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(0),
+            Constraint::Length(2),
+            Constraint::Length(6),
+        ])
+        .split(main_chunks[0]);
+
+    app.response_rect = left_chunks[0];
+    app.input_context_rect = left_chunks[1];
     app.input_gap_rect = Rect::default();
-    app.input_rect = chunks[2];
+    app.input_rect = left_chunks[2];
     app.sidebar_rect = main_chunks[1];
     app.sidebar_rail_rect = Rect::default();
     app.todo_rect = Rect::default();
@@ -62,24 +66,16 @@ pub(crate) fn render(frame: &mut Frame, app: &mut App, model_name: &str, theme: 
     app.document_rect = Rect::default();
     app.memory_rect = Rect::default();
     app.logs_rect = Rect::default();
-    app.bottom_status_rect = chunks[3];
-    app.normalize_focus();
+    app.bottom_status_rect = chunks[1];
     app.normalize_mode();
 
     const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
     let status = Paragraph::new(bottom_status_line(app, model_name, SPINNER_FRAMES, &colors))
         .style(Style::default().fg(colors.text).bg(colors.status_bar_bg));
-    frame.render_widget(status, chunks[3]);
+    frame.render_widget(status, chunks[1]);
 
     let response_border = panel_border_style(app.focused_panel == Panel::Response, &colors);
     let sidebar_border = panel_border_style(app.focused_panel == Panel::SidebarRail, &colors);
-    let todo_border = panel_border_style(app.focused_panel == Panel::Todo, &colors);
-    let diagnostics_border = panel_border_style(app.focused_panel == Panel::Diagnostics, &colors);
-    let delivery_border = panel_border_style(app.focused_panel == Panel::Delivery, &colors);
-    let skills_border = panel_border_style(app.focused_panel == Panel::Skills, &colors);
-    let document_border = panel_border_style(app.focused_panel == Panel::Document, &colors);
-    let memory_border = panel_border_style(app.focused_panel == Panel::Memory, &colors);
-    let logs_border = panel_border_style(app.focused_panel == Panel::Logs, &colors);
 
     let response_title = if app.focused_panel == Panel::Response {
         " Agent Response ◆ "
@@ -87,42 +83,32 @@ pub(crate) fn render(frame: &mut Frame, app: &mut App, model_name: &str, theme: 
         " Agent Response "
     };
     let app_ref: &App = &*app;
-    let resp_inner_w = (main_chunks[0].width as usize).saturating_sub(2).max(1);
+    let resp_inner_w = (left_chunks[0].width as usize).saturating_sub(2).max(1);
     let response_lines = app_ref.response_display_lines();
     let output_items: Vec<ListItem> = response_lines
         .iter()
         .enumerate()
         .flat_map(|(line_index, line)| {
             let fallback_style = response_line_style(line, &colors);
-            if line.spans.is_empty() {
-                // Legacy path: single-style text
-                wrap_text_segments(&line.text, resp_inner_w)
-                    .into_iter()
-                    .map(move |(source_column_start, wrapped)| {
-                        list_item_with_selection(
-                            &wrapped,
-                            fallback_style,
-                            app_ref.selection_range_for_segment(
-                                Panel::Response,
-                                line_index,
-                                source_column_start,
-                                source_column_start + wrapped.chars().count(),
-                            ),
-                        )
-                    })
-                    .collect::<Vec<_>>()
-            } else {
-                wrap_styled_spans(&line.spans, resp_inner_w)
-                    .into_iter()
-                    .map(|wrapped_spans| {
-                        let ratatui_spans: Vec<Span<'static>> = wrapped_spans
-                            .into_iter()
-                            .map(|span| Span::styled(span.text, span.style))
-                            .collect();
-                        ListItem::new(Line::from(ratatui_spans))
-                    })
-                    .collect::<Vec<_>>()
-            }
+            let selection = app_ref.selection_range_for_segment(
+                Panel::Response,
+                line_index,
+                0,
+                line.text.chars().count(),
+            );
+            let source_spans = response_display_spans(line, fallback_style, &colors);
+            let selected_spans = apply_selection_to_styled_spans(&source_spans, selection);
+
+            wrap_styled_spans(&selected_spans, resp_inner_w)
+                .into_iter()
+                .map(|wrapped_spans| {
+                    let ratatui_spans: Vec<Span<'static>> = wrapped_spans
+                        .into_iter()
+                        .map(|span| Span::styled(span.text, span.style))
+                        .collect();
+                    ListItem::new(Line::from(ratatui_spans))
+                })
+                .collect::<Vec<_>>()
         })
         .collect();
     let resp_total = output_items.len();
@@ -136,33 +122,41 @@ pub(crate) fn render(frame: &mut Frame, app: &mut App, model_name: &str, theme: 
                 .border_type(colors.panel_border_type)
                 .title(Line::styled(
                     response_title,
-                    Style::default()
-                        .fg(colors.title_fg)
-                        .bg(colors.panel_bg)
-                        .add_modifier(Modifier::BOLD),
+                    panel_title_style(
+                        app.focused_panel == Panel::Response,
+                        colors.title_fg,
+                        colors.context_hint,
+                        colors.panel_bg,
+                    ),
                 ))
                 .borders(Borders::ALL)
                 .border_style(response_border)
                 .style(Style::default().bg(colors.panel_bg)),
         )
         .highlight_style(Style::default())
-        .style(Style::default().fg(colors.text).bg(colors.panel_bg));
-    frame.render_stateful_widget(output_list, main_chunks[0], &mut app.response_state);
+        .style(panel_content_style(
+            app.focused_panel == Panel::Response,
+            colors.text,
+            colors.panel_bg,
+        ));
+    frame.render_stateful_widget(output_list, left_chunks[0], &mut app.response_state);
 
     if app.sidebar_rect.width > 0 && app.sidebar_rect.height > 0 {
         let sidebar_title = if app.focused_panel == Panel::SidebarRail {
-            " Sidebar ◆ "
+            "Sidebar ◆"
         } else {
-            " Sidebar "
+            "Sidebar"
         };
         let sidebar_block = Block::default()
             .border_type(colors.panel_border_type)
             .title(Line::styled(
                 sidebar_title,
-                Style::default()
-                    .fg(colors.title_fg)
-                    .bg(colors.sidebar_bg)
-                    .add_modifier(Modifier::BOLD),
+                panel_title_style(
+                    app.focused_panel == Panel::SidebarRail,
+                    colors.title_fg,
+                    colors.context_hint,
+                    colors.sidebar_bg,
+                ),
             ))
             .borders(Borders::ALL)
             .border_style(sidebar_border)
@@ -172,30 +166,24 @@ pub(crate) fn render(frame: &mut Frame, app: &mut App, model_name: &str, theme: 
 
         let sidebar_chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Min(0)])
+            .constraints([Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)])
             .split(sidebar_inner);
         app.sidebar_rail_rect = sidebar_chunks[0];
 
         render_sidebar_rail(frame, app, &colors, sidebar_chunks[0]);
-        render_sidebar_body(
-            frame,
-            app,
-            &colors,
+        frame.render_widget(
+            Paragraph::new("").style(Style::default().bg(colors.sidebar_bg)),
             sidebar_chunks[1],
-            diagnostics_border,
-            delivery_border,
-            skills_border,
-            document_border,
-            memory_border,
-            todo_border,
-            logs_border,
         );
+        render_sidebar_body(frame, app, &colors, sidebar_chunks[2]);
     }
+    // normalize_focus after sidebar rects are fully populated (or zeroed if sidebar hidden)
+    app.normalize_focus();
 
     let chars: Vec<char> = app.input_buffer.chars().collect();
     let cursor_pos = app.cursor_pos;
     let char_count = chars.len();
-    let avail_w = (chunks[2].width as usize).saturating_sub(5).max(1);
+    let avail_w = (left_chunks[2].width as usize).saturating_sub(5).max(1);
     let scroll_offset = if cursor_pos < avail_w {
         0
     } else {
@@ -264,11 +252,12 @@ pub(crate) fn render(frame: &mut Frame, app: &mut App, model_name: &str, theme: 
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(input_border_color)),
         );
-    frame.render_widget(input, chunks[2]);
+    frame.render_widget(input, left_chunks[2]);
 
     let context = Paragraph::new(input_context_line(app, main_chunks[1].width == 0, &colors))
+        .wrap(Wrap { trim: false })
         .style(Style::default().fg(colors.text).bg(colors.context_bar_bg));
-    frame.render_widget(context, chunks[1]);
+    frame.render_widget(context, left_chunks[1]);
 
     render_overlay(frame, app, &colors);
 }
@@ -330,6 +319,116 @@ fn wrap_styled_spans(spans: &[StyledSpan], width: usize) -> Vec<Vec<StyledSpan>>
     lines
 }
 
+fn response_display_spans(
+    line: &ResponseDisplayLine,
+    fallback_style: Style,
+    colors: &ColorScheme,
+) -> Vec<StyledSpan> {
+    if !line.spans.is_empty() {
+        return line.spans.clone();
+    }
+
+    let Some((start, end)) = find_status_symbol_range(&line.text) else {
+        return vec![StyledSpan {
+            text: line.text.clone(),
+            style: fallback_style,
+        }];
+    };
+    let Some(symbol_style) = response_status_symbol_style(line, colors) else {
+        return vec![StyledSpan {
+            text: line.text.clone(),
+            style: fallback_style,
+        }];
+    };
+
+    let mut spans = Vec::new();
+    if start > 0 {
+        spans.push(StyledSpan {
+            text: line.text[..start].to_string(),
+            style: fallback_style,
+        });
+    }
+    spans.push(StyledSpan {
+        text: line.text[start..end].to_string(),
+        style: symbol_style,
+    });
+    if end < line.text.len() {
+        spans.push(StyledSpan {
+            text: line.text[end..].to_string(),
+            style: fallback_style,
+        });
+    }
+    spans
+}
+
+fn find_status_symbol_range(text: &str) -> Option<(usize, usize)> {
+    for symbol in ["◉", "●", "✕", "◦"] {
+        for (start, _) in text.match_indices(symbol) {
+            let end = start + symbol.len();
+            let before = &text[..start];
+            let after = &text[end..];
+            if before.ends_with("  ") && (after.is_empty() || after.starts_with("  ")) {
+                return Some((start, end));
+            }
+        }
+    }
+    None
+}
+
+fn apply_selection_to_styled_spans(
+    spans: &[StyledSpan],
+    selection: Option<(usize, usize)>,
+) -> Vec<StyledSpan> {
+    let Some((selection_start, selection_end)) = selection else {
+        return spans.to_vec();
+    };
+    if selection_start >= selection_end {
+        return spans.to_vec();
+    }
+
+    let mut output = Vec::new();
+    let mut current = 0usize;
+    for span in spans {
+        let span_len = span.text.chars().count();
+        let span_start = current;
+        let span_end = current + span_len;
+        current = span_end;
+
+        if span_len == 0 {
+            output.push(span.clone());
+            continue;
+        }
+        if selection_end <= span_start || selection_start >= span_end {
+            output.push(span.clone());
+            continue;
+        }
+
+        let local_start = selection_start.saturating_sub(span_start).min(span_len);
+        let local_end = selection_end.saturating_sub(span_start).min(span_len);
+        let chars: Vec<char> = span.text.chars().collect();
+
+        if local_start > 0 {
+            output.push(StyledSpan {
+                text: chars[..local_start].iter().collect(),
+                style: span.style,
+            });
+        }
+        if local_start < local_end {
+            output.push(StyledSpan {
+                text: chars[local_start..local_end].iter().collect(),
+                style: span.style.add_modifier(Modifier::REVERSED),
+            });
+        }
+        if local_end < span_len {
+            output.push(StyledSpan {
+                text: chars[local_end..].iter().collect(),
+                style: span.style,
+            });
+        }
+    }
+    output
+}
+
 fn panel_border_style(selected: bool, colors: &ColorScheme) -> Style {
     if selected {
         Style::default()
@@ -337,5 +436,30 @@ fn panel_border_style(selected: bool, colors: &ColorScheme) -> Style {
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(colors.border_dim)
+    }
+}
+
+fn panel_title_style(
+    selected: bool,
+    active_fg: ratatui::style::Color,
+    inactive_fg: ratatui::style::Color,
+    bg: ratatui::style::Color,
+) -> Style {
+    let style = Style::default()
+        .fg(if selected { active_fg } else { inactive_fg })
+        .bg(bg);
+    if selected {
+        style.add_modifier(Modifier::BOLD)
+    } else {
+        style
+    }
+}
+
+fn panel_content_style(selected: bool, fg: ratatui::style::Color, bg: ratatui::style::Color) -> Style {
+    let style = Style::default().fg(fg).bg(bg);
+    if selected {
+        style
+    } else {
+        style.add_modifier(Modifier::DIM)
     }
 }

@@ -1,5 +1,6 @@
 ---
 status: draft
+last_verified_commit: N/A
 owner: omega-team
 created: 2026-03-19
 updated: 2026-03-20
@@ -56,7 +57,7 @@ related_prds: []
 | `Todos` | 当前任务的局部执行计划 | short-lived task plan |
 | `Activity` | 与运行时能力相关的可切换详情视图 | runtime secondary state |
 | `Overlay` | 搜索、确认、详情查看等短时浮动交互 | transient focused interaction |
-| `Input context bar` | 输入框上方的当前交互提示与短消息 | input-adjacent context |
+| `Input context bar` | 左列输入框上方的当前交互提示与短消息 | input-adjacent context |
 | `Bottom status bar` | 输入框下方的持续状态摘要与扩展槽 | compact badges |
 
 `Response` 的详细规划见 `docs/specs/omega-tui-response-thinking-experience.md`。当前该面板已经按 `route / step / final / thinking` 结构化渲染 turn timeline；provider-exposed thinking 现已作为独立、低噪音且可折叠的 block 接入，并支持通过 `.omega/tui.toml` 关闭可见性。
@@ -65,7 +66,7 @@ related_prds: []
 
 底部区域应采用稳定的双层结构，而不是继续把提示和系统状态拆散到顶部与底部：
 
-- `Input context bar`：位于 `Response` / `Sidebar` 下方、输入框上方，承载 leader 提示、当前模式提示和局部短消息。
+- `Input context bar`：位于左列 `Response` 下方、输入框上方，承载 leader 提示、当前模式提示和局部短消息；当前固定为两行并允许换行，不再横跨 full-height `Sidebar` 下方。
 - `Bottom status bar`：位于输入框下方，承载模型名、运行态和未来可扩展状态槽。
 
 原顶部 header 不再作为主要状态承载区。模型名与 `Idle / Running` 等持续状态应下移到底部状态带；`KM / Focus / Mode / Omega Agent` 这类高噪音信息不应继续作为固定 header 保留。具体布局规则见 `docs/specs/omega-tui-input-status-layout.md`。
@@ -77,8 +78,9 @@ related_prds: []
 对当前阶段，这意味着：
 
 - 整个右侧辅助区可以被快捷键整体收起或展开。
-- `Todos` 与 `Logs` 可以在侧边栏内部折叠为顶部图标入口。
-- 展开状态下，多个 section 在侧边栏主体区域做垂直弹性排列。
+- `Delivery` 与 `Skills` 默认收起，减少首屏噪音并为下游 section 留出稳定预算。
+- 当前 section 现收敛为 `Diagnostics / Delivery / Skills / Knowledge / Todos / Logs`；其中 `Knowledge` 统一承接 document + memory supervision 摘要。
+- 当展开 section 过多、窗口高度不足时，sidebar body 会按 rail 或当前 focused section 锚定到一个稳定 viewport，只显示当前窗口能装下的一段 sections，而不是让下方 panel 直接被挤出可见区。
 
 具体交互与布局规则见 `docs/specs/omega-tui-collapsible-sidebar.md`。
 
@@ -90,6 +92,7 @@ related_prds: []
 
 - 左侧：`Response`
 - 右侧：统一 `Sidebar`
+- 左列底部：`Context bar + Input`
 - `Sidebar` 顶部：section/view rail
 - `Sidebar` 主体：`Todos` + `Activity` 的一个或多个展开 section
 - `Activity` 内部可切换 `Logs / Skills / Delegations / Tasks / Background / Inbox / Team / Worktree`
@@ -145,6 +148,12 @@ related_prds: []
 - 展示当前 turn 的 token 消耗、LLM 调用次数、使用的模型、tool/skill 数量、document/memory search 次数与 changed files 摘要。
 - 每个聚合条目都应支持进入 detail drill-down，而不是停留在只读统计。
 - 任务完成后，该 view 应与 `Response` 中的统一 completion summary 对齐，避免两套数字口径不一致。
+
+### Knowledge View
+
+- 当前 sidebar 已把原 `Document` / `Memory` supervision 合并为统一 `Knowledge` 面板。
+- 主视图优先展示一次 turn 的 `doc / mem / obs` 命中 mini-bar、store/summary 总量与 query/correction 摘要，避免继续以大段 prose 堆满侧栏。
+- drill-down 仍保留 document lane 与 memory lane 两条细分详情，但入口统一为同一个 knowledge detail overlay。
 
 ### Delegations View
 

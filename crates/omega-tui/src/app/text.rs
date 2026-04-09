@@ -217,6 +217,25 @@ impl App {
         })
     }
 
+    pub fn wrapped_panel_line_index_at(&self, panel: Panel, col: u16, row: u16) -> Option<usize> {
+        let inner = self.panel_inner_rect(panel)?;
+        if inner.width == 0 || inner.height == 0 {
+            return None;
+        }
+        if col < inner.x
+            || col >= inner.x.saturating_add(inner.width)
+            || row < inner.y
+            || row >= inner.y.saturating_add(inner.height)
+        {
+            return None;
+        }
+
+        let viewport_index = self.panel_scroll_offset(panel) + (row - inner.y) as usize;
+        let wrapped_lines = self.wrapped_panel_lines(panel, inner.width as usize);
+        wrapped_lines.get(viewport_index)?;
+        Some(viewport_index)
+    }
+
     pub fn panel_scroll_offset(&self, panel: Panel) -> usize {
         match panel {
             Panel::Response => self.response_state.offset(),

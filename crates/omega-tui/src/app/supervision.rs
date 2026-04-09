@@ -2,8 +2,8 @@ use omega_session::{ContextSupervisionSnapshot, DocumentHealthStatus, HealthScor
 
 use super::{App, Panel};
 
-pub(crate) fn document_placeholder_lines() -> Vec<String> {
-    vec!["No document supervision snapshot yet.".to_string()]
+pub(crate) fn knowledge_placeholder_lines() -> Vec<String> {
+    vec!["No knowledge supervision snapshot yet.".to_string()]
 }
 
 pub(crate) fn memory_placeholder_lines() -> Vec<String> {
@@ -13,13 +13,13 @@ pub(crate) fn memory_placeholder_lines() -> Vec<String> {
 impl App {
     pub fn set_context_supervision(&mut self, snapshot: ContextSupervisionSnapshot) {
         self.context_supervision = Some(snapshot);
-        self.rebuild_document_supervision_lines();
+        self.rebuild_knowledge_supervision_lines();
         self.rebuild_memory_supervision_lines();
     }
 
     pub(super) fn clear_context_supervision(&mut self) {
         self.context_supervision = None;
-        self.document_lines = document_placeholder_lines();
+        self.document_lines = knowledge_placeholder_lines();
         self.memory_lines = memory_placeholder_lines();
         self.document_state.select(None);
         self.memory_state.select(None);
@@ -29,8 +29,8 @@ impl App {
         self.memory_pinned = false;
     }
 
-    pub fn document_panel_title(&self) -> String {
-        let mut title = " Document Supervision ".to_string();
+    pub fn knowledge_panel_title(&self) -> String {
+        let mut title = "Knowledge".to_string();
         if self.focused_panel == Panel::Document {
             title.push('◆');
             title.push(' ');
@@ -39,7 +39,7 @@ impl App {
     }
 
     pub fn memory_panel_title(&self) -> String {
-        let mut title = " Memory Supervision ".to_string();
+        let mut title = "Memory Supervision".to_string();
         if self.focused_panel == Panel::Memory {
             title.push('◆');
             title.push(' ');
@@ -47,14 +47,11 @@ impl App {
         title
     }
 
-    pub fn open_document_supervision_detail(&mut self) -> bool {
+    pub fn open_knowledge_supervision_detail(&mut self) -> bool {
         let Some(snapshot) = self.context_supervision.as_ref() else {
             return false;
         };
-        self.open_detail_overlay(
-            " Document Supervision ",
-            build_document_lines(snapshot),
-        );
+        self.open_detail_overlay(" Knowledge ", build_knowledge_detail_lines(snapshot));
         true
     }
 
@@ -66,12 +63,12 @@ impl App {
         true
     }
 
-    fn rebuild_document_supervision_lines(&mut self) {
+    fn rebuild_knowledge_supervision_lines(&mut self) {
         self.document_lines = self
             .context_supervision
             .as_ref()
-            .map(build_document_lines)
-            .unwrap_or_else(document_placeholder_lines);
+            .map(build_knowledge_lines)
+            .unwrap_or_else(knowledge_placeholder_lines);
     }
 
     fn rebuild_memory_supervision_lines(&mut self) {
@@ -81,6 +78,85 @@ impl App {
             .map(build_memory_lines)
             .unwrap_or_else(memory_placeholder_lines);
     }
+}
+
+fn build_knowledge_lines(snapshot: &ContextSupervisionSnapshot) -> Vec<String> {
+    let document = &snapshot.document;
+    let memory = &snapshot.memory;
+
+    let doc_hits = document
+        .current_hits
+        .as_ref()
+        .map(|hits| hits.result_count as u64)
+        .unwrap_or(0);
+    let mem_hits = memory
+        .current_query
+        .as_ref()
+        .map(|query| query.result_count as u64)
+        .unwrap_or(0);
+    let obs_hits = memory
+        .current_observations
+        .as_ref()
+        .map(|observations| observations.result_count as u64)
+        .unwrap_or(0);
+    let doc_queries: u64 = document.operator_usage.iter().map(|usage| usage.count as u64).sum();
+    let mem_queries = memory.totals.memory_query_count as u64;
+    let max_hits = doc_hits.max(mem_hits).max(obs_hits).max(1);
+
+    let mut lines = vec![
+        format!(
+            "status: doc {} ({}) · mem {} ({})",
+            if document.enabled { "on" } else { "off" },
+            document.readiness.as_str(),
+            if memory.enabled { "on" } else { "off" },
+            memory.readiness.as_str()
+        ),
+        format!(
+            "stores: files={} chunks={} turns={} summaries={}",
+            document.totals.total_files_indexed,
+            document.totals.total_chunks,
+            memory.totals.total_turns_archived,
+            memory.totals.current_summary_count
+        ),
+        format!(
+            "health: doc={} govern={} obs={}",
+            document.health_status.as_str(),
+            governance_label(document.health_status, document.totals.governance_health),
+            memory.totals.observation_count
+        ),
+        "hits:".to_string(),
+        format!("  doc {} {}", compact_bar(doc_hits, max_hits, 6), doc_hits),
+        format!("  mem {} {}", compact_bar(mem_hits, max_hits, 6), mem_hits),
+        format!("  obs {} {}", compact_bar(obs_hits, max_hits, 6), obs_hits),
+        format!("queries: doc={} mem={} corrections={}", doc_queries, mem_queries, memory.totals.observation_correction_activity),
+    ];
+
+    if let Some(hits) = document.current_hits.as_ref() {
+        if let Some(hit) = hits.top_hits.first() {
+            lines.push(format!("doc lead: {}", hit.path));
+        }
+    }
+    if let Some(query) = memory.current_query.as_ref() {
+        if let Some(hit) = query.top_hits.first() {
+            lines.push(format!("mem lead: [{}] {}", hit.profile, hit.title));
+        }
+    }
+    if let Some(observations) = memory.current_observations.as_ref() {
+        if let Some(hit) = observations.top_hits.first() {
+            lines.push(format!("obs lead: [{}] {}", hit.freshness.as_str(), hit.title));
+        }
+    }
+
+    lines
+}
+
+fn build_knowledge_detail_lines(snapshot: &ContextSupervisionSnapshot) -> Vec<String> {
+    let mut lines = vec!["Document lane".to_string()];
+    lines.extend(build_document_lines(snapshot));
+    lines.push(String::new());
+    lines.push("Memory lane".to_string());
+    lines.extend(build_memory_lines(snapshot));
+    lines
 }
 
 fn build_document_lines(snapshot: &ContextSupervisionSnapshot) -> Vec<String> {
@@ -378,6 +454,17 @@ fn build_memory_lines(snapshot: &ContextSupervisionSnapshot) -> Vec<String> {
     lines
 }
 
+fn compact_bar(value: u64, max: u64, width: usize) -> String {
+    let filled = if max == 0 {
+        0
+    } else {
+        ((value.saturating_mul(width as u64) + max - 1) / max) as usize
+    }
+    .min(width);
+
+    format!("{}{}", "█".repeat(filled), "░".repeat(width.saturating_sub(filled)))
+}
+
 fn format_kv_counts(counts: &std::collections::BTreeMap<String, impl std::fmt::Display>) -> String {
     if counts.is_empty() {
         return "none".to_string();
@@ -433,7 +520,7 @@ mod tests {
         SupervisionReadiness,
     };
 
-    use super::build_document_lines;
+    use super::{build_document_lines, build_knowledge_lines};
 
     #[test]
     fn document_lines_explain_uninitialized_store_and_pending_health_check() {
@@ -478,5 +565,57 @@ mod tests {
         assert!(lines.iter().any(|line| {
             line.contains("recent document recall attempts ran before any promoted store version was available")
         }));
+    }
+
+    #[test]
+    fn knowledge_lines_show_compact_hit_dashboard() {
+        let lines = build_knowledge_lines(&ContextSupervisionSnapshot {
+            document: DocumentSupervisionSnapshot {
+                enabled: true,
+                current_hits: Some(omega_session::DocumentHitSummary {
+                    query: "policy".to_string(),
+                    raw_query: "policy".to_string(),
+                    planned_queries: vec![],
+                    rewrite_reason: None,
+                    rewrite_queries: vec![],
+                    recovery_path: None,
+                    result_count: 3,
+                    mode: "semantic".to_string(),
+                    degraded_from: None,
+                    top_hits: vec![],
+                }),
+                ..DocumentSupervisionSnapshot::default()
+            },
+            memory: MemorySupervisionSnapshot {
+                current_query: Some(omega_session::MemoryQueryDiagnostics {
+                    raw_query: "policy".to_string(),
+                    planned_queries: vec![],
+                    rewrite_reason: None,
+                    rewrite_queries: vec![],
+                    recovery_path: None,
+                    query: "policy".to_string(),
+                    result_count: 2,
+                    hit_mix: std::collections::BTreeMap::new(),
+                    top_hits: vec![],
+                }),
+                current_observations: Some(omega_session::ObservationRecallDiagnostics {
+                    raw_query: "policy".to_string(),
+                    planned_queries: vec![],
+                    rewrite_reason: None,
+                    rewrite_queries: vec![],
+                    recovery_path: None,
+                    query: "policy".to_string(),
+                    result_count: 1,
+                    freshness_mix: std::collections::BTreeMap::new(),
+                    top_hits: vec![],
+                }),
+                ..MemorySupervisionSnapshot::default()
+            },
+        });
+
+        assert!(lines.iter().any(|line| line == "hits:"));
+        assert!(lines.iter().any(|line| line.contains("doc ██████ 3")));
+        assert!(lines.iter().any(|line| line.contains("mem ████░░ 2")));
+        assert!(lines.iter().any(|line| line.contains("obs ██░░░░ 1")));
     }
 }

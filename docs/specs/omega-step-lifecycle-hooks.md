@@ -1,5 +1,6 @@
 ---
 status: implemented
+last_verified_commit: N/A
 owner: omega-team
 created: 2026-03-25
 updated: 2026-03-25

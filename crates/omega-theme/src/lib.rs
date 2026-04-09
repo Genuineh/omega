@@ -13,32 +13,63 @@ theme = "dark"
 
 [input]
 border_type = "rounded"
-text_fg = "#569cd6"
-normal_border_fg = "#a3bbd6"
-insert_border_fg = "#4ec9b0"
+bg = "#0b1016"
+text_fg = "#e2e8f0"
+placeholder_fg = "#697383"
+normal_border_fg = "#5b6470"
+insert_border_fg = "#71d2c2"
+cursor_bg = "#f8fafc"
 
 [context_bar]
-label_fg = "#747e8c"
-hint_fg = "#acb3bd"
+bg = "#0c1117"
+label_fg = "#d7dde5"
+hint_fg = "#9eb6ff"
 
 [status_bar]
-label_fg = "#747e8c"
-divider_fg = "#626b78"
-idle_fg = "#7bc78f"
-running_fg = "#ffc468"
+bg = "#0c1117"
+label_fg = "#d7dde5"
+divider_fg = "#d7dde5"
+normal_mode_fg = "#cbd5df"
+insert_mode_fg = "#71d2c2"
+idle_fg = "#7ddc8b"
+running_fg = "#f2d089"
 
 [surfaces]
-text_fg = "#d4d4d4"
-focus_border_fg = "#4ec9b0"
-border_dim_fg = "#303030"
-panel_bg = "#11161d"
-sidebar_bg = "#0d1117"
-sidebar_rail_bg = "#131922"
-section_bg = "#171e28"
-title_fg = "#eef2f6"
+text_fg = "#d7dde5"
+muted_text_fg = "#6b7280"
+focus_border_fg = "#71d2c2"
+border_dim_fg = "#1f2937"
+section_outline_fg = "#243247"
+panel_bg = "#0c1117"
+sidebar_bg = "#101722"
+sidebar_rail_bg = "#141d2a"
+section_bg = "#182231"
+title_fg = "#f8fafc"
+
+[report]
+section_header_fg = "#cfe0ff"
+metric_emphasis_fg = "#f2d089"
+code_fg = "#d7dde5"
+muted_meta_fg = "#525865"
+table_border_fg = "#2a3440"
+summary_badge_bg = "#162235"
 
 [messages]
-tool_fg = "#dcdcaa"
+user_fg = "#e2e8f0"
+agent_fg = "#d7dde5"
+tool_fg = "#a8b0bc"
+error_fg = "#c97b7b"
+separator_fg = "#1f2937"
+
+[overlay]
+border_type = "rounded"
+bg = "#121823"
+mask_bg = "#05070a"
+edge_fg = "#334155"
+shadow_fg = "#1a2230"
+button_fg = "#e2e8f0"
+selected_button_fg = "#0b1016"
+selected_button_bg = "#71d2c2"
 "##;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,6 +78,7 @@ pub struct OmegaTheme {
     pub input: InputTheme,
     pub context_bar: ContextBarTheme,
     pub status_bar: StatusBarTheme,
+    pub report: ReportTheme,
     pub messages: MessageTheme,
     pub overlay: OverlayTheme,
 }
@@ -57,6 +89,7 @@ pub struct SurfaceTheme {
     pub text_fg: Color,
     pub muted_text_fg: Color,
     pub border_dim_fg: Color,
+    pub section_outline_fg: Color,
     pub focus_border_fg: Color,
     pub panel_bg: Color,
     pub sidebar_bg: Color,
@@ -96,6 +129,16 @@ pub struct StatusBarTheme {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReportTheme {
+    pub section_header_fg: Color,
+    pub metric_emphasis_fg: Color,
+    pub code_fg: Color,
+    pub muted_meta_fg: Color,
+    pub table_border_fg: Color,
+    pub summary_badge_bg: Color,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MessageTheme {
     pub user_fg: Color,
     pub agent_fg: Color,
@@ -109,6 +152,8 @@ pub struct OverlayTheme {
     pub border_type: BorderType,
     pub bg: Color,
     pub mask_bg: Color,
+    pub edge_fg: Color,
+    pub shadow_fg: Color,
     pub button_fg: Color,
     pub selected_button_fg: Color,
     pub selected_button_bg: Color,
@@ -121,6 +166,7 @@ pub struct RenderPalette {
     pub overlay_border_type: BorderType,
     pub text: Color,
     pub border_dim: Color,
+    pub section_outline: Color,
     pub focus_border: Color,
     pub panel_bg: Color,
     pub sidebar_bg: Color,
@@ -140,6 +186,12 @@ pub struct RenderPalette {
     pub mode_insert_fg: Color,
     pub status_idle_fg: Color,
     pub status_running_fg: Color,
+    pub section_header_fg: Color,
+    pub metric_emphasis_fg: Color,
+    pub code_fg: Color,
+    pub muted_meta_fg: Color,
+    pub table_border_fg: Color,
+    pub summary_badge_bg: Color,
     pub user_message: Color,
     pub agent_message: Color,
     pub tool_message: Color,
@@ -147,6 +199,8 @@ pub struct RenderPalette {
     pub separator_message: Color,
     pub overlay_bg: Color,
     pub overlay_mask_bg: Color,
+    pub overlay_edge_fg: Color,
+    pub overlay_shadow_fg: Color,
     pub overlay_button_fg: Color,
     pub overlay_button_selected_fg: Color,
     pub overlay_button_selected_bg: Color,
@@ -208,53 +262,64 @@ impl OmegaTheme {
         Self {
             surfaces: SurfaceTheme {
                 panel_border_type: BorderType::Rounded,
-                text_fg: Color::Rgb(219, 229, 238),
-                muted_text_fg: Color::Rgb(151, 163, 179),
-                border_dim_fg: Color::Rgb(44, 56, 70),
+                text_fg: Color::Rgb(215, 221, 229),
+                muted_text_fg: Color::Rgb(107, 114, 128),
+                border_dim_fg: Color::Rgb(31, 41, 55),
+                section_outline_fg: Color::Rgb(36, 50, 71),
                 focus_border_fg: Color::Rgb(113, 210, 194),
-                panel_bg: Color::Rgb(17, 22, 29),
-                sidebar_bg: Color::Rgb(13, 17, 23),
-                sidebar_rail_bg: Color::Rgb(19, 25, 34),
-                section_bg: Color::Rgb(23, 30, 40),
-                title_fg: Color::Rgb(238, 242, 246),
+                panel_bg: Color::Rgb(12, 17, 23),
+                sidebar_bg: Color::Rgb(16, 23, 34),
+                sidebar_rail_bg: Color::Rgb(20, 29, 42),
+                section_bg: Color::Rgb(24, 34, 49),
+                title_fg: Color::Rgb(248, 250, 252),
             },
             input: InputTheme {
                 border_type: BorderType::Rounded,
-                bg: Color::Rgb(12, 17, 23),
-                text_fg: Color::Rgb(138, 180, 248),
-                placeholder_fg: Color::Rgb(151, 163, 179),
-                normal_border_fg: Color::Rgb(86, 102, 120),
+                bg: Color::Rgb(11, 16, 22),
+                text_fg: Color::Rgb(226, 232, 240),
+                placeholder_fg: Color::Rgb(105, 115, 131),
+                normal_border_fg: Color::Rgb(91, 100, 112),
                 insert_border_fg: Color::Rgb(113, 210, 194),
                 cursor_fg: Color::Reset,
-                cursor_bg: Color::Rgb(138, 180, 248),
+                cursor_bg: Color::Rgb(248, 250, 252),
             },
             context_bar: ContextBarTheme {
                 bg: Color::Rgb(12, 17, 23),
-                label_fg: Color::Rgb(110, 124, 143),
-                hint_fg: Color::Rgb(182, 190, 199),
+                label_fg: Color::Rgb(215, 221, 229),
+                hint_fg: Color::Rgb(158, 182, 255),
             },
             status_bar: StatusBarTheme {
                 bg: Color::Rgb(12, 17, 23),
-                label_fg: Color::Rgb(110, 124, 143),
-                divider_fg: Color::Rgb(70, 84, 101),
-                normal_mode_fg: Color::Rgb(138, 180, 248),
+                label_fg: Color::Rgb(215, 221, 229),
+                divider_fg: Color::Rgb(215, 221, 229),
+                normal_mode_fg: Color::Rgb(203, 213, 223),
                 insert_mode_fg: Color::Rgb(113, 210, 194),
-                idle_fg: Color::Rgb(128, 201, 149),
-                running_fg: Color::Rgb(243, 196, 110),
+                idle_fg: Color::Rgb(125, 220, 139),
+                running_fg: Color::Rgb(242, 208, 137),
+            },
+            report: ReportTheme {
+                section_header_fg: Color::Rgb(207, 224, 255),
+                metric_emphasis_fg: Color::Rgb(242, 208, 137),
+                code_fg: Color::Rgb(215, 221, 229),
+                muted_meta_fg: Color::Rgb(82, 88, 101),
+                table_border_fg: Color::Rgb(42, 52, 64),
+                summary_badge_bg: Color::Rgb(22, 34, 53),
             },
             messages: MessageTheme {
-                user_fg: Color::Rgb(128, 201, 149),
-                agent_fg: Color::Rgb(219, 229, 238),
-                tool_fg: Color::Rgb(229, 215, 141),
-                error_fg: Color::Rgb(255, 113, 113),
-                separator_fg: Color::Rgb(44, 56, 70),
+                user_fg: Color::Rgb(226, 232, 240),
+                agent_fg: Color::Rgb(215, 221, 229),
+                tool_fg: Color::Rgb(168, 176, 188),
+                error_fg: Color::Rgb(201, 123, 123),
+                separator_fg: Color::Rgb(31, 41, 55),
             },
             overlay: OverlayTheme {
                 border_type: BorderType::Rounded,
-                bg: Color::Rgb(23, 30, 40),
-                mask_bg: Color::Rgb(6, 8, 12),
-                button_fg: Color::Rgb(219, 229, 238),
-                selected_button_fg: Color::Rgb(12, 17, 23),
+                bg: Color::Rgb(18, 24, 35),
+                mask_bg: Color::Rgb(5, 7, 10),
+                edge_fg: Color::Rgb(51, 65, 85),
+                shadow_fg: Color::Rgb(26, 34, 48),
+                button_fg: Color::Rgb(226, 232, 240),
+                selected_button_fg: Color::Rgb(11, 16, 22),
                 selected_button_bg: Color::Rgb(113, 210, 194),
             },
         }
@@ -271,6 +336,7 @@ impl OmegaTheme {
             overlay_border_type: self.overlay.border_type,
             text: self.surfaces.text_fg,
             border_dim: self.surfaces.border_dim_fg,
+            section_outline: self.surfaces.section_outline_fg,
             focus_border: self.surfaces.focus_border_fg,
             panel_bg: self.surfaces.panel_bg,
             sidebar_bg: self.surfaces.sidebar_bg,
@@ -290,6 +356,12 @@ impl OmegaTheme {
             mode_insert_fg: self.status_bar.insert_mode_fg,
             status_idle_fg: self.status_bar.idle_fg,
             status_running_fg: self.status_bar.running_fg,
+            section_header_fg: self.report.section_header_fg,
+            metric_emphasis_fg: self.report.metric_emphasis_fg,
+            code_fg: self.report.code_fg,
+            muted_meta_fg: self.report.muted_meta_fg,
+            table_border_fg: self.report.table_border_fg,
+            summary_badge_bg: self.report.summary_badge_bg,
             user_message: self.messages.user_fg,
             agent_message: self.messages.agent_fg,
             tool_message: self.messages.tool_fg,
@@ -297,31 +369,33 @@ impl OmegaTheme {
             separator_message: self.messages.separator_fg,
             overlay_bg: self.overlay.bg,
             overlay_mask_bg: self.overlay.mask_bg,
+            overlay_edge_fg: self.overlay.edge_fg,
+            overlay_shadow_fg: self.overlay.shadow_fg,
             overlay_button_fg: self.overlay.button_fg,
             overlay_button_selected_fg: self.overlay.selected_button_fg,
             overlay_button_selected_bg: self.overlay.selected_button_bg,
             // Markdown rendering
-            heading_1_fg: Color::Rgb(86, 156, 214),   // bright blue
-            heading_2_fg: Color::Rgb(78, 201, 176),   // teal
-            heading_3_fg: Color::Rgb(172, 179, 189),  // muted
-            inline_code_fg: Color::Rgb(206, 145, 120),// orange-ish
-            inline_code_bg: Color::Rgb(40, 40, 48),   // subtle dark
-            hr_fg: Color::Rgb(98, 107, 120),           // dim
+            heading_1_fg: self.surfaces.title_fg,
+            heading_2_fg: self.report.section_header_fg,
+            heading_3_fg: self.report.metric_emphasis_fg,
+            inline_code_fg: self.report.code_fg,
+            inline_code_bg: Color::Rgb(20, 26, 36),
+            hr_fg: self.status_bar.divider_fg,
             // Code block
-            code_block_bg: Color::Rgb(30, 30, 46),    // dark surface
-            code_lang_fg: Color::Rgb(116, 126, 140),  // muted label
-            code_border_fg: Color::Rgb(68, 71, 90),   // dim border
+            code_block_bg: Color::Rgb(15, 21, 30),
+            code_lang_fg: self.context_bar.label_fg,
+            code_border_fg: self.surfaces.border_dim_fg,
             // Message badges
-            user_badge_fg: Color::Rgb(80, 250, 123),   // green
-            assistant_badge_fg: Color::Rgb(139, 148, 158),// muted
-            warning_badge_fg: Color::Rgb(255, 196, 104), // amber
-            error_badge_fg: Color::Rgb(255, 85, 85),     // red
+            user_badge_fg: self.surfaces.title_fg,
+            assistant_badge_fg: self.report.section_header_fg,
+            warning_badge_fg: Color::Rgb(232, 190, 96),
+            error_badge_fg: Color::Rgb(214, 120, 120),
             // Final answer
-            final_answer_accent_fg: Color::Rgb(80, 250, 123), // bright green
-            final_answer_border_fg: Color::Rgb(68, 71, 90),   // dim
+            final_answer_accent_fg: self.surfaces.focus_border_fg,
+            final_answer_border_fg: self.surfaces.border_dim_fg,
             // Thinking
-            thinking_summary_fg: Color::Rgb(98, 114, 164),    // muted blue
-            thinking_body_fg: Color::Rgb(68, 71, 90),         // very dim
+            thinking_summary_fg: self.report.muted_meta_fg,
+            thinking_body_fg: Color::Rgb(75, 85, 99),
         }
     }
 
@@ -422,6 +496,11 @@ impl OmegaTheme {
                 "surfaces.border_dim_fg",
                 surfaces.border_dim_fg,
                 &mut self.surfaces.border_dim_fg,
+            )?;
+            apply_color(
+                "surfaces.section_outline_fg",
+                surfaces.section_outline_fg,
+                &mut self.surfaces.section_outline_fg,
             )?;
             apply_color(
                 "surfaces.focus_border_fg",
@@ -526,6 +605,35 @@ impl OmegaTheme {
             )?;
         }
 
+        if let Some(report) = config.report {
+            apply_color(
+                "report.section_header_fg",
+                report.section_header_fg,
+                &mut self.report.section_header_fg,
+            )?;
+            apply_color(
+                "report.metric_emphasis_fg",
+                report.metric_emphasis_fg,
+                &mut self.report.metric_emphasis_fg,
+            )?;
+            apply_color("report.code_fg", report.code_fg, &mut self.report.code_fg)?;
+            apply_color(
+                "report.muted_meta_fg",
+                report.muted_meta_fg,
+                &mut self.report.muted_meta_fg,
+            )?;
+            apply_color(
+                "report.table_border_fg",
+                report.table_border_fg,
+                &mut self.report.table_border_fg,
+            )?;
+            apply_color(
+                "report.summary_badge_bg",
+                report.summary_badge_bg,
+                &mut self.report.summary_badge_bg,
+            )?;
+        }
+
         if let Some(messages) = config.messages {
             apply_color(
                 "messages.user_fg",
@@ -563,6 +671,16 @@ impl OmegaTheme {
                 &mut self.overlay.mask_bg,
             )?;
             apply_color(
+                "overlay.edge_fg",
+                overlay.edge_fg,
+                &mut self.overlay.edge_fg,
+            )?;
+            apply_color(
+                "overlay.shadow_fg",
+                overlay.shadow_fg,
+                &mut self.overlay.shadow_fg,
+            )?;
+            apply_color(
                 "overlay.button_fg",
                 overlay.button_fg,
                 &mut self.overlay.button_fg,
@@ -591,6 +709,7 @@ struct ThemeConfig {
     input: Option<InputOverrides>,
     context_bar: Option<ContextBarOverrides>,
     status_bar: Option<StatusBarOverrides>,
+    report: Option<ReportOverrides>,
     messages: Option<MessageOverrides>,
     overlay: Option<OverlayOverrides>,
 }
@@ -602,6 +721,7 @@ struct SurfaceOverrides {
     text_fg: Option<String>,
     muted_text_fg: Option<String>,
     border_dim_fg: Option<String>,
+    section_outline_fg: Option<String>,
     focus_border_fg: Option<String>,
     panel_bg: Option<String>,
     sidebar_bg: Option<String>,
@@ -645,6 +765,17 @@ struct StatusBarOverrides {
 
 #[derive(Debug, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
+struct ReportOverrides {
+    section_header_fg: Option<String>,
+    metric_emphasis_fg: Option<String>,
+    code_fg: Option<String>,
+    muted_meta_fg: Option<String>,
+    table_border_fg: Option<String>,
+    summary_badge_bg: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 struct MessageOverrides {
     user_fg: Option<String>,
     agent_fg: Option<String>,
@@ -659,6 +790,8 @@ struct OverlayOverrides {
     border_type: Option<BorderTypeValue>,
     bg: Option<String>,
     mask_bg: Option<String>,
+    edge_fg: Option<String>,
+    shadow_fg: Option<String>,
     button_fg: Option<String>,
     selected_button_fg: Option<String>,
     selected_button_bg: Option<String>,
@@ -814,6 +947,56 @@ mod tests {
             theme.overlay.selected_button_bg,
             OmegaTheme::dark().overlay.selected_button_bg
         );
+        assert_eq!(theme.overlay.edge_fg, OmegaTheme::dark().overlay.edge_fg);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn overlay_overrides_customize_depth_tokens() {
+        let root = temp_root("overlay");
+        let omega_dir = root.join(".omega");
+        fs::create_dir_all(&omega_dir).unwrap();
+        let path = omega_dir.join("theme.toml");
+        fs::write(
+            &path,
+            "theme = \"dark\"\n\n[surfaces]\nsection_outline_fg = \"#101820\"\n\n[overlay]\nedge_fg = \"#223344\"\nshadow_fg = \"#112233\"\n",
+        )
+        .unwrap();
+
+        let theme = OmegaTheme::load_from_file(&path).unwrap();
+        let palette = theme.render_palette();
+
+        assert_eq!(theme.surfaces.section_outline_fg, Color::Rgb(16, 24, 32));
+        assert_eq!(theme.overlay.edge_fg, Color::Rgb(34, 51, 68));
+        assert_eq!(theme.overlay.shadow_fg, Color::Rgb(17, 34, 51));
+        assert_eq!(palette.section_outline, Color::Rgb(16, 24, 32));
+        assert_eq!(palette.overlay_edge_fg, Color::Rgb(34, 51, 68));
+        assert_eq!(palette.overlay_shadow_fg, Color::Rgb(17, 34, 51));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn report_overrides_customize_structured_output_tokens() {
+        let root = temp_root("report");
+        let omega_dir = root.join(".omega");
+        fs::create_dir_all(&omega_dir).unwrap();
+        let path = omega_dir.join("theme.toml");
+        fs::write(
+            &path,
+            "theme = \"dark\"\n\n[report]\nsection_header_fg = \"#123456\"\nmetric_emphasis_fg = \"#654321\"\n",
+        )
+        .unwrap();
+
+        let theme = OmegaTheme::load_from_file(&path).unwrap();
+        let palette = theme.render_palette();
+
+        assert_eq!(theme.report.section_header_fg, Color::Rgb(18, 52, 86));
+        assert_eq!(theme.report.metric_emphasis_fg, Color::Rgb(101, 67, 33));
+        assert_eq!(palette.section_header_fg, Color::Rgb(18, 52, 86));
+        assert_eq!(palette.metric_emphasis_fg, Color::Rgb(101, 67, 33));
+        assert_eq!(palette.inline_code_fg, theme.report.code_fg);
 
         let _ = fs::remove_dir_all(root);
     }

@@ -27,6 +27,12 @@ pub(super) fn handle_mouse_event(mouse: MouseEvent, app: &Arc<Mutex<App>>) {
                     app_guard.set_status_notice("Overlay closed.");
                 }
             }
+            MouseEventKind::ScrollUp if inside_overlay => {
+                app_guard.scroll_active_overlay_up(3);
+            }
+            MouseEventKind::ScrollDown if inside_overlay => {
+                app_guard.scroll_active_overlay_down(3);
+            }
             _ => {}
         }
         return;
@@ -58,31 +64,31 @@ pub(super) fn handle_mouse_event(mouse: MouseEvent, app: &Arc<Mutex<App>>) {
                     app_guard.focus_sidebar_rail();
                 }
                 Panel::Diagnostics if app_guard.diagnostics_visible() => {
-                    app_guard.focused_panel = Panel::Diagnostics;
+                    app_guard.focus_sidebar_panel_from_pointer(Panel::Diagnostics);
                     app_guard.begin_mouse_selection(Panel::Diagnostics, mouse.column, mouse.row);
                 }
                 Panel::Delivery if app_guard.delivery_visible() => {
-                    app_guard.focused_panel = Panel::Delivery;
+                    app_guard.focus_sidebar_panel_from_pointer(Panel::Delivery);
                     app_guard.begin_mouse_selection(Panel::Delivery, mouse.column, mouse.row);
                 }
                 Panel::Skills if app_guard.skills_visible() => {
-                    app_guard.focused_panel = Panel::Skills;
+                    app_guard.focus_sidebar_panel_from_pointer(Panel::Skills);
                     app_guard.begin_mouse_selection(Panel::Skills, mouse.column, mouse.row);
                 }
                 Panel::Document if app_guard.document_visible() => {
-                    app_guard.focused_panel = Panel::Document;
+                    app_guard.focus_sidebar_panel_from_pointer(Panel::Document);
                     app_guard.begin_mouse_selection(Panel::Document, mouse.column, mouse.row);
                 }
                 Panel::Memory if app_guard.memory_visible() => {
-                    app_guard.focused_panel = Panel::Memory;
+                    app_guard.focus_sidebar_panel_from_pointer(Panel::Memory);
                     app_guard.begin_mouse_selection(Panel::Memory, mouse.column, mouse.row);
                 }
                 Panel::Todo if app_guard.todo_visible() => {
-                    app_guard.focused_panel = Panel::Todo;
+                    app_guard.focus_sidebar_panel_from_pointer(Panel::Todo);
                     app_guard.begin_mouse_selection(Panel::Todo, mouse.column, mouse.row);
                 }
                 Panel::Logs if app_guard.logs_visible() => {
-                    app_guard.focused_panel = Panel::Logs;
+                    app_guard.focus_sidebar_panel_from_pointer(Panel::Logs);
                     app_guard.begin_mouse_selection(Panel::Logs, mouse.column, mouse.row);
                 }
                 _ => {
@@ -125,6 +131,31 @@ pub(super) fn handle_mouse_event(mouse: MouseEvent, app: &Arc<Mutex<App>>) {
                         app_guard.panel_text_point_at(Panel::Response, mouse.column, mouse.row)?;
                     (point == selection.anchor).then_some(point.line_index)
                 });
+            let click_sidebar_line = app_guard
+                .text_selection
+                .as_ref()
+                .and_then(|selection| match selection.panel {
+                    Panel::Diagnostics
+                    | Panel::Delivery
+                    | Panel::Skills
+                    | Panel::Document
+                    | Panel::Memory
+                    | Panel::Todo
+                    | Panel::Logs => {
+                        let point = app_guard.panel_text_point_at(
+                            selection.panel,
+                            mouse.column,
+                            mouse.row,
+                        )?;
+                        let display_index = app_guard.wrapped_panel_line_index_at(
+                            selection.panel,
+                            mouse.column,
+                            mouse.row,
+                        )?;
+                        (point == selection.anchor).then_some((selection.panel, display_index))
+                    }
+                    Panel::Response | Panel::SidebarRail => None,
+                });
 
             if let Some(text) = app_guard.finish_mouse_selection(mouse.column, mouse.row) {
                 app_guard.set_status_notice(format!(
@@ -139,6 +170,34 @@ pub(super) fn handle_mouse_event(mouse: MouseEvent, app: &Arc<Mutex<App>>) {
                     response_activation_notice(app_guard.activate_response_item_at_line(line_index))
                 {
                     app_guard.set_status_notice(notice);
+                }
+            } else if let Some((panel, display_index)) = click_sidebar_line {
+                app_guard.select_sidebar_panel_item(panel, display_index);
+            } else {
+                let panel = app_guard.panel_at(mouse.column, mouse.row);
+                match panel {
+                    Panel::Diagnostics if app_guard.diagnostics_visible() => {
+                        app_guard.focus_sidebar_panel_from_pointer(Panel::Diagnostics);
+                    }
+                    Panel::Delivery if app_guard.delivery_visible() => {
+                        app_guard.focus_sidebar_panel_from_pointer(Panel::Delivery);
+                    }
+                    Panel::Skills if app_guard.skills_visible() => {
+                        app_guard.focus_sidebar_panel_from_pointer(Panel::Skills);
+                    }
+                    Panel::Document if app_guard.document_visible() => {
+                        app_guard.focus_sidebar_panel_from_pointer(Panel::Document);
+                    }
+                    Panel::Memory if app_guard.memory_visible() => {
+                        app_guard.focus_sidebar_panel_from_pointer(Panel::Memory);
+                    }
+                    Panel::Todo if app_guard.todo_visible() => {
+                        app_guard.focus_sidebar_panel_from_pointer(Panel::Todo);
+                    }
+                    Panel::Logs if app_guard.logs_visible() => {
+                        app_guard.focus_sidebar_panel_from_pointer(Panel::Logs);
+                    }
+                    _ => {}
                 }
             }
         }

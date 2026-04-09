@@ -34,7 +34,7 @@ pub(crate) use text::wrap_text_segments;
 pub(crate) use todo::todo_empty_lines;
 use skills::skill_placeholder_lines;
 use delivery::{delivery_placeholder_lines, DeliverySummary};
-use supervision::{document_placeholder_lines, memory_placeholder_lines};
+use supervision::{knowledge_placeholder_lines, memory_placeholder_lines};
 use todo::todo_unsynced_lines;
 
 const TODO_UNSYNCED_LINES: &[&str] = &[
@@ -176,6 +176,42 @@ pub enum ResponseActivation {
     SkillLoadDetailOpened,
     DocumentKnowledgeDetailOpened,
     MemoryKnowledgeDetailOpened,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResponseCardSectionKind {
+    Meta,
+    ResultsSummary,
+    ChangesMade,
+    Verification,
+    Usage,
+    OptionalNextStep,
+    KeyPoints,
+    RawDetail,
+    Delivery,
+    SkillLoad,
+    Knowledge,
+    ToolRuns,
+    Thinking,
+    Subflow,
+    Custom,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResponseCardSection {
+    pub kind: ResponseCardSectionKind,
+    pub title: Option<String>,
+    pub header_line: Option<ResponseDisplayLine>,
+    pub lines: Vec<ResponseDisplayLine>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResponseCard {
+    pub id: Option<String>,
+    pub kind: MsgKind,
+    pub prelude_lines: Vec<ResponseDisplayLine>,
+    pub header_line: ResponseDisplayLine,
+    pub sections: Vec<ResponseCardSection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -329,7 +365,7 @@ impl App {
             diagnostics_lines: vec![],
             delivery_lines: delivery_placeholder_lines(),
             skill_lines: skill_placeholder_lines(),
-            document_lines: document_placeholder_lines(),
+            document_lines: knowledge_placeholder_lines(),
             memory_lines: memory_placeholder_lines(),
             todo_lines: todo_unsynced_lines(),
             todo_status: TodoPanelStatus::NeverSynced,
@@ -830,6 +866,11 @@ impl App {
     pub fn panel_at(&self, col: u16, row: u16) -> Panel {
         if self.sidebar_rail_rect.width > 0
             && col >= self.sidebar_rail_rect.x
+            && col
+                < self
+                    .sidebar_rail_rect
+                    .x
+                    .saturating_add(self.sidebar_rail_rect.width)
             && row >= self.sidebar_rail_rect.y
             && row
                 < self
@@ -840,6 +881,11 @@ impl App {
             Panel::SidebarRail
         } else if self.diagnostics_rect.width > 0
             && col >= self.diagnostics_rect.x
+            && col
+                < self
+                    .diagnostics_rect
+                    .x
+                    .saturating_add(self.diagnostics_rect.width)
             && row >= self.diagnostics_rect.y
             && row
                 < self
@@ -850,42 +896,96 @@ impl App {
             Panel::Diagnostics
         } else if self.delivery_rect.width > 0
             && col >= self.delivery_rect.x
+            && col < self.delivery_rect.x.saturating_add(self.delivery_rect.width)
             && row >= self.delivery_rect.y
             && row < self.delivery_rect.y.saturating_add(self.delivery_rect.height)
         {
             Panel::Delivery
         } else if self.skills_rect.width > 0
             && col >= self.skills_rect.x
+            && col < self.skills_rect.x.saturating_add(self.skills_rect.width)
             && row >= self.skills_rect.y
             && row < self.skills_rect.y.saturating_add(self.skills_rect.height)
         {
             Panel::Skills
         } else if self.document_rect.width > 0
             && col >= self.document_rect.x
+            && col < self.document_rect.x.saturating_add(self.document_rect.width)
             && row >= self.document_rect.y
             && row < self.document_rect.y.saturating_add(self.document_rect.height)
         {
             Panel::Document
         } else if self.memory_rect.width > 0
             && col >= self.memory_rect.x
+            && col < self.memory_rect.x.saturating_add(self.memory_rect.width)
             && row >= self.memory_rect.y
             && row < self.memory_rect.y.saturating_add(self.memory_rect.height)
         {
             Panel::Memory
         } else if self.logs_rect.width > 0
             && col >= self.logs_rect.x
+            && col < self.logs_rect.x.saturating_add(self.logs_rect.width)
             && row >= self.logs_rect.y
             && row < self.logs_rect.y.saturating_add(self.logs_rect.height)
         {
             Panel::Logs
         } else if self.todo_rect.width > 0
             && col >= self.todo_rect.x
+            && col < self.todo_rect.x.saturating_add(self.todo_rect.width)
             && row >= self.todo_rect.y
             && row < self.todo_rect.y.saturating_add(self.todo_rect.height)
         {
             Panel::Todo
         } else {
             Panel::Response
+        }
+    }
+
+    pub fn select_sidebar_panel_item(&mut self, panel: Panel, index: usize) -> bool {
+        match panel {
+            Panel::Diagnostics if self.diagnostics_visible() && self.diagnostics_displayed_count > 0 => {
+                self.focused_panel = Panel::Diagnostics;
+                self.diagnostics_pinned = true;
+                self.diagnostics_state.select(Some(index.min(self.diagnostics_displayed_count - 1)));
+                true
+            }
+            Panel::Delivery if self.delivery_visible() && self.delivery_displayed_count > 0 => {
+                self.focused_panel = Panel::Delivery;
+                self.delivery_pinned = true;
+                self.delivery_state.select(Some(index.min(self.delivery_displayed_count - 1)));
+                true
+            }
+            Panel::Skills if self.skills_visible() && self.skills_displayed_count > 0 => {
+                self.focused_panel = Panel::Skills;
+                self.skills_pinned = true;
+                self.skills_state.select(Some(index.min(self.skills_displayed_count - 1)));
+                true
+            }
+            Panel::Document if self.document_visible() && self.document_displayed_count > 0 => {
+                self.focused_panel = Panel::Document;
+                self.document_pinned = true;
+                self.document_state.select(Some(index.min(self.document_displayed_count - 1)));
+                true
+            }
+            Panel::Memory if self.memory_visible() && self.memory_displayed_count > 0 => {
+                self.focused_panel = Panel::Memory;
+                self.memory_pinned = true;
+                self.memory_state.select(Some(index.min(self.memory_displayed_count - 1)));
+                true
+            }
+            Panel::Todo if self.todo_visible() && self.todo_displayed_count > 0 => {
+                self.focused_panel = Panel::Todo;
+                self.todo_pinned = true;
+                self.todo_state.select(Some(index.min(self.todo_displayed_count - 1)));
+                true
+            }
+            Panel::Logs if self.logs_visible() && self.logs_displayed_count > 0 => {
+                self.focused_panel = Panel::Logs;
+                self.logs_pinned = true;
+                self.logs_state.select(Some(index.min(self.logs_displayed_count - 1)));
+                true
+            }
+            _ => false,
         }
     }
 
@@ -1157,6 +1257,54 @@ impl App {
         self.sidebar.cycle_previous();
     }
 
+    pub fn visible_sidebar_panels(&self) -> Vec<Panel> {
+        let mut panels = Vec::new();
+        if self.diagnostics_visible() {
+            panels.push(Panel::Diagnostics);
+        }
+        if self.delivery_visible() {
+            panels.push(Panel::Delivery);
+        }
+        if self.skills_visible() {
+            panels.push(Panel::Skills);
+        }
+        if self.document_visible() {
+            panels.push(Panel::Document);
+        }
+        if self.todo_visible() {
+            panels.push(Panel::Todo);
+        }
+        if self.logs_visible() {
+            panels.push(Panel::Logs);
+        }
+        panels
+    }
+
+    pub fn cycle_focused_sidebar_panel_next(&mut self) {
+        let panels = self.visible_sidebar_panels();
+        if panels.is_empty() {
+            return;
+        }
+        let next = match panels.iter().position(|&p| p == self.focused_panel) {
+            Some(i) => (i + 1) % panels.len(),
+            None => 0,
+        };
+        self.focus_sidebar_panel(panels[next]);
+    }
+
+    pub fn cycle_focused_sidebar_panel_previous(&mut self) {
+        let panels = self.visible_sidebar_panels();
+        if panels.is_empty() {
+            return;
+        }
+        let prev = match panels.iter().position(|&p| p == self.focused_panel) {
+            Some(0) => panels.len() - 1,
+            Some(i) => i - 1,
+            None => panels.len() - 1,
+        };
+        self.focus_sidebar_panel(panels[prev]);
+    }
+
     pub fn toggle_selected_sidebar_section(&mut self) {
         if !self.sidebar.toggle_selected_section() {
             self.set_status_notice("At least one sidebar section must remain open.");
@@ -1170,58 +1318,79 @@ impl App {
                 if !self.sidebar.diagnostics_expanded {
                     self.sidebar.diagnostics_expanded = true;
                 }
-                if self.diagnostics_visible() {
-                    self.focused_panel = Panel::Diagnostics;
-                }
+                self.focus_sidebar_panel(Panel::Diagnostics);
             }
             SidebarSection::Delivery => {
                 if !self.sidebar.delivery_expanded {
                     self.sidebar.delivery_expanded = true;
                 }
-                if self.delivery_visible() {
-                    self.focused_panel = Panel::Delivery;
-                }
+                self.focus_sidebar_panel(Panel::Delivery);
             }
             SidebarSection::Skills => {
                 if !self.sidebar.skills_expanded {
                     self.sidebar.skills_expanded = true;
                 }
-                if self.skills_visible() {
-                    self.focused_panel = Panel::Skills;
-                }
+                self.focus_sidebar_panel(Panel::Skills);
             }
-            SidebarSection::Document => {
-                if !self.sidebar.document_expanded {
-                    self.sidebar.document_expanded = true;
+            SidebarSection::Knowledge => {
+                if !self.sidebar.knowledge_expanded {
+                    self.sidebar.knowledge_expanded = true;
                 }
-                if self.document_visible() {
-                    self.focused_panel = Panel::Document;
-                }
-            }
-            SidebarSection::Memory => {
-                if !self.sidebar.memory_expanded {
-                    self.sidebar.memory_expanded = true;
-                }
-                if self.memory_visible() {
-                    self.focused_panel = Panel::Memory;
-                }
+                self.focus_sidebar_panel(Panel::Document);
             }
             SidebarSection::Todos => {
                 if !self.sidebar.todos_expanded {
                     self.sidebar.todos_expanded = true;
                 }
-                if self.todo_visible() {
-                    self.focused_panel = Panel::Todo;
-                }
+                self.focus_sidebar_panel(Panel::Todo);
             }
             SidebarSection::Logs => {
                 if !self.sidebar.logs_expanded {
                     self.sidebar.logs_expanded = true;
                 }
-                if self.logs_visible() {
-                    self.focused_panel = Panel::Logs;
-                }
+                self.focus_sidebar_panel(Panel::Logs);
             }
+        }
+    }
+
+    fn focus_sidebar_panel(&mut self, panel: Panel) {
+        self.focused_panel = panel;
+        self.seed_sidebar_panel_selection(panel);
+    }
+
+    pub fn focus_sidebar_panel_from_pointer(&mut self, panel: Panel) {
+        self.focus_sidebar_panel(panel);
+    }
+
+    fn seed_sidebar_panel_selection(&mut self, panel: Panel) {
+        let total = self.panel_lines(panel).len();
+        if total == 0 {
+            return;
+        }
+
+        match panel {
+            Panel::Diagnostics if self.diagnostics_state.selected().is_none() => {
+                self.diagnostics_state.select(Some(0));
+            }
+            Panel::Delivery if self.delivery_state.selected().is_none() => {
+                self.delivery_state.select(Some(0));
+            }
+            Panel::Skills if self.skills_state.selected().is_none() => {
+                self.skills_state.select(Some(0));
+            }
+            Panel::Document if self.document_state.selected().is_none() => {
+                self.document_state.select(Some(0));
+            }
+            Panel::Memory if self.memory_state.selected().is_none() => {
+                self.memory_state.select(Some(0));
+            }
+            Panel::Todo if self.todo_state.selected().is_none() => {
+                self.todo_state.select(Some(0));
+            }
+            Panel::Logs if self.logs_state.selected().is_none() => {
+                self.logs_state.select(Some(0));
+            }
+            Panel::Response | Panel::SidebarRail | _ => {}
         }
     }
 
@@ -1278,24 +1447,26 @@ impl App {
                     .unwrap_or_else(|| "S --".to_string()),
                 None => "S --".to_string(),
             },
-            SidebarSection::Document => match self.context_supervision.as_ref() {
-                Some(snapshot) if !snapshot.document.enabled => "off".to_string(),
-                Some(snapshot) => snapshot
-                    .document
-                    .current_hits
-                    .as_ref()
-                    .map(|hits| hits.result_count.to_string())
-                    .unwrap_or_else(|| snapshot.document.readiness.as_str().to_string()),
-                None => "--".to_string(),
-            },
-            SidebarSection::Memory => match self.context_supervision.as_ref() {
-                Some(snapshot) => snapshot
-                    .memory
-                    .current_hits
-                    .as_ref()
-                    .map(|hits| format!("{}/{}", hits.selected_count, snapshot.memory.totals.total_turns_archived))
-                    .unwrap_or_else(|| snapshot.memory.readiness.as_str().to_string()),
-                None => "--".to_string(),
+            SidebarSection::Knowledge => match self.context_supervision.as_ref() {
+                Some(snapshot) if !snapshot.document.enabled && !snapshot.memory.enabled => {
+                    "K off".to_string()
+                }
+                Some(snapshot) => {
+                    let doc = snapshot
+                        .document
+                        .current_hits
+                        .as_ref()
+                        .map(|hits| hits.result_count.to_string())
+                        .unwrap_or_else(|| snapshot.document.readiness.as_str().to_string());
+                    let mem = snapshot
+                        .memory
+                        .current_query
+                        .as_ref()
+                        .map(|query| query.result_count.to_string())
+                        .unwrap_or_else(|| snapshot.memory.readiness.as_str().to_string());
+                    format!("K {doc}/{mem}")
+                }
+                None => "K --".to_string(),
             },
             SidebarSection::Todos => match self.todo_summary {
                 Some(summary) => format!("T {}/{}", summary.completed, summary.total),
@@ -1419,6 +1590,72 @@ impl App {
         if let Some(overlay) = self.overlay.take() {
             self.focused_panel = overlay.origin_panel();
             self.normalize_focus();
+        }
+    }
+
+    pub fn overlay_viewport_lines(&self) -> usize {
+        let height = self.overlay_rect.height.saturating_sub(4) as usize;
+        height.max(8)
+    }
+
+    pub fn overlay_page_step(&self) -> usize {
+        self.overlay_viewport_lines().saturating_sub(1).max(1)
+    }
+
+    pub fn scroll_active_overlay_up(&mut self, amount: usize) -> bool {
+        match self.overlay.as_mut() {
+            Some(OverlayState::SearchResults(overlay)) => {
+                overlay.scroll = overlay.scroll.saturating_sub(amount);
+                true
+            }
+            Some(OverlayState::Detail(overlay)) => {
+                overlay.scroll = overlay.scroll.saturating_sub(amount);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub fn scroll_active_overlay_down(&mut self, amount: usize) -> bool {
+        match self.overlay.as_mut() {
+            Some(OverlayState::SearchResults(overlay)) => {
+                overlay.scroll = overlay.scroll.saturating_add(amount);
+                true
+            }
+            Some(OverlayState::Detail(overlay)) => {
+                overlay.scroll = overlay.scroll.saturating_add(amount);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub fn scroll_active_overlay_to_start(&mut self) -> bool {
+        match self.overlay.as_mut() {
+            Some(OverlayState::SearchResults(overlay)) => {
+                overlay.scroll = 0;
+                true
+            }
+            Some(OverlayState::Detail(overlay)) => {
+                overlay.scroll = 0;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub fn scroll_active_overlay_to_end(&mut self) -> bool {
+        let viewport_lines = self.overlay_viewport_lines();
+        match self.overlay.as_mut() {
+            Some(OverlayState::SearchResults(overlay)) => {
+                overlay.scroll = overlay.lines.len().saturating_sub(viewport_lines);
+                true
+            }
+            Some(OverlayState::Detail(overlay)) => {
+                overlay.scroll = overlay.lines.len().saturating_sub(viewport_lines);
+                true
+            }
+            _ => false,
         }
     }
 

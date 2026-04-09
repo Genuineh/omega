@@ -26,6 +26,35 @@ pub(super) fn handle_key_event(
     {
         let mut app_guard = app.lock().unwrap();
         if app_guard.interaction_mode == InteractionMode::Normal
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(
+                app_guard.focused_panel,
+                Panel::Diagnostics
+                    | Panel::Delivery
+                    | Panel::Skills
+                    | Panel::Document
+                    | Panel::Memory
+                    | Panel::Todo
+                    | Panel::Logs
+            )
+        {
+            match key.code {
+                KeyCode::Left => {
+                    app_guard.cycle_focused_sidebar_panel_previous();
+                    return Ok(false);
+                }
+                KeyCode::Right => {
+                    app_guard.cycle_focused_sidebar_panel_next();
+                    return Ok(false);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    {
+        let mut app_guard = app.lock().unwrap();
+        if app_guard.interaction_mode == InteractionMode::Normal
             && app_guard.focused_panel == Panel::SidebarRail
         {
             match key.code {
@@ -182,27 +211,10 @@ pub(super) fn handle_key_event(
             && app_guard.focused_panel == Panel::Document
         {
             if matches!(key.code, KeyCode::Enter | KeyCode::Char('x')) {
-                let notice = if app_guard.open_document_supervision_detail() {
-                    "Opened document supervision overlay."
+                let notice = if app_guard.open_knowledge_supervision_detail() {
+                    "Opened knowledge overlay."
                 } else {
-                    "Document supervision snapshot is not available yet."
-                };
-                app_guard.set_status_notice(notice);
-                return Ok(false);
-            }
-        }
-    }
-
-    {
-        let mut app_guard = app.lock().unwrap();
-        if app_guard.interaction_mode == InteractionMode::Normal
-            && app_guard.focused_panel == Panel::Memory
-        {
-            if matches!(key.code, KeyCode::Enter | KeyCode::Char('x')) {
-                let notice = if app_guard.open_memory_supervision_detail() {
-                    "Opened memory supervision overlay."
-                } else {
-                    "Memory supervision snapshot is not available yet."
+                    "Knowledge supervision snapshot is not available yet."
                 };
                 app_guard.set_status_notice(notice);
                 return Ok(false);

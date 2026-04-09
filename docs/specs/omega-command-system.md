@@ -1,5 +1,6 @@
 ---
 status: draft
+last_verified_commit: N/A
 owner: omega-team
 created: 2026-04-02
 updated: 2026-04-03

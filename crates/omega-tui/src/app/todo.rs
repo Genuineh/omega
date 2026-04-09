@@ -36,6 +36,7 @@ impl App {
         if lines.last().is_some_and(|line| line.is_empty()) {
             lines.pop();
         }
+        lines = lines.into_iter().map(normalize_todo_line).collect();
 
         self.todo_status = TodoPanelStatus::Ready;
         self.todo_summary = summary;
@@ -44,11 +45,11 @@ impl App {
 
     pub fn todo_panel_title(&self) -> String {
         let mut title = match self.todo_status {
-            TodoPanelStatus::NeverSynced => " Todos ".to_string(),
-            TodoPanelStatus::Empty => " Todos empty ".to_string(),
+            TodoPanelStatus::NeverSynced => "Todos".to_string(),
+            TodoPanelStatus::Empty => "Todos empty".to_string(),
             TodoPanelStatus::Ready => match self.todo_summary {
-                Some(summary) => format!(" Todos {}/{} ", summary.completed, summary.total),
-                None => " Todos ".to_string(),
+                Some(summary) => format!("Todos {}/{}", summary.completed, summary.total),
+                None => "Todos".to_string(),
             },
         };
 
@@ -88,9 +89,15 @@ fn summarize_todo_lines(lines: &[String]) -> Option<TodoSummary> {
 
     for line in lines {
         let trimmed = line.trim_start();
-        if trimmed.starts_with("[ ]") || trimmed.starts_with("[>]") || trimmed.starts_with("[x]") {
+        if trimmed.starts_with("[ ]")
+            || trimmed.starts_with("[>]")
+            || trimmed.starts_with("[x]")
+            || trimmed.starts_with("○ ")
+            || trimmed.starts_with("→ ")
+            || trimmed.starts_with("✓ ")
+        {
             total += 1;
-            if trimmed.starts_with("[x]") {
+            if trimmed.starts_with("[x]") || trimmed.starts_with("✓ ") {
                 completed += 1;
             }
         }
@@ -100,5 +107,21 @@ fn summarize_todo_lines(lines: &[String]) -> Option<TodoSummary> {
         None
     } else {
         Some(TodoSummary { completed, total })
+    }
+}
+
+fn normalize_todo_line(line: String) -> String {
+    let trimmed = line.trim_start();
+    let leading_ws_len = line.len().saturating_sub(trimmed.len());
+    let leading_ws = &line[..leading_ws_len];
+
+    if let Some(rest) = trimmed.strip_prefix("[x] ") {
+        format!("{leading_ws}✓ {rest}")
+    } else if let Some(rest) = trimmed.strip_prefix("[>] ") {
+        format!("{leading_ws}→ {rest}")
+    } else if let Some(rest) = trimmed.strip_prefix("[ ] ") {
+        format!("{leading_ws}○ {rest}")
+    } else {
+        line
     }
 }

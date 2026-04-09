@@ -44,9 +44,9 @@ impl App {
             .filter(|diagnostics| diagnostics.output.status == StepOutputStatus::Invalid)
             .count();
         let mut title = if invalid > 0 {
-            format!(" Contract Diagnostics (!{}) ", invalid)
+            format!("Contract Diagnostics (!{})", invalid)
         } else {
-            " Contract Diagnostics ".to_string()
+            "Contract Diagnostics".to_string()
         };
         if self.focused_panel == Panel::Diagnostics {
             title.push('◆');

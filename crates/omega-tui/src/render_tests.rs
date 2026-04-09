@@ -14,10 +14,11 @@ use crate::app::{
     App, MsgKind, Panel, PendingKeySequenceState, ResponseDisplayLine, SessionRoutingSummary,
     SessionStatusSummary, ThinkingLineKind,
 };
+use crate::sidebar::SidebarSection;
 
 use super::{
     bottom_status_line, bottom_status_text, input_context_line, input_context_text, render,
-    response_line_style, wrap_text,
+    response_line_style, response_status_symbol_style, wrap_text,
 };
 
 fn workflow_metadata(
@@ -72,8 +73,7 @@ fn single_activity_section_occupies_sidebar_body() {
     app.sidebar.diagnostics_expanded = false;
     app.sidebar.delivery_expanded = false;
     app.sidebar.skills_expanded = false;
-    app.sidebar.document_expanded = false;
-    app.sidebar.memory_expanded = false;
+    app.sidebar.knowledge_expanded = false;
     app.sidebar.todos_expanded = false;
     app.sidebar.logs_expanded = true;
 
@@ -83,10 +83,34 @@ fn single_activity_section_occupies_sidebar_body() {
 
     assert_eq!(app.todo_rect.height, 0);
     assert!(app.logs_rect.height > 0);
-    assert_eq!(
-        app.logs_rect.height + app.sidebar_rail_rect.height,
-        app.sidebar_rect.height - 2
-    );
+    assert_eq!(app.sidebar_rail_rect.width, app.sidebar_rect.width - 2);
+    assert_eq!(app.sidebar_rail_rect.height, 1);
+    assert_eq!(app.logs_rect.width, app.sidebar_rect.width - 2);
+    assert!(app.sidebar_rail_rect.y < app.logs_rect.y);
+}
+
+#[test]
+fn crowded_sidebar_viewport_tracks_lower_rail_selection() {
+    let backend = TestBackend::new(120, 18);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut app = App::new();
+    let theme = OmegaTheme::dark();
+    app.sidebar.diagnostics_expanded = true;
+    app.sidebar.delivery_expanded = true;
+    app.sidebar.skills_expanded = true;
+    app.sidebar.knowledge_expanded = true;
+    app.sidebar.todos_expanded = true;
+    app.sidebar.logs_expanded = true;
+    app.sidebar.rail_selection = SidebarSection::Logs;
+    app.focused_panel = Panel::SidebarRail;
+
+    terminal
+        .draw(|frame| render(frame, &mut app, "test-model", &theme))
+        .unwrap();
+
+    assert_eq!(app.diagnostics_rect.height, 0);
+    assert!(app.todo_rect.height > 0);
+    assert!(app.logs_rect.height > 0);
 }
 
 #[test]
@@ -162,10 +186,12 @@ fn input_context_and_bottom_status_bars_have_stable_heights() {
         .unwrap();
 
     assert_eq!(app.response_rect.y, 0);
-    assert_eq!(app.input_context_rect.height, 1);
+    assert_eq!(app.input_context_rect.height, 2);
     assert_eq!(app.input_gap_rect.height, 0);
-    assert_eq!(app.input_rect.height, 3);
+    assert_eq!(app.input_rect.height, 6);
     assert_eq!(app.bottom_status_rect.height, 1);
+    assert_eq!(app.sidebar_rect.y, 0);
+    assert_eq!(app.sidebar_rect.height, app.bottom_status_rect.y);
     assert_eq!(
         app.input_rect.y,
         app.input_context_rect.y + app.input_context_rect.height
@@ -179,7 +205,7 @@ fn thinking_lines_use_stateful_styles() {
 
     let header = ResponseDisplayLine {
         kind: MsgKind::Thinking,
-        text: "  reasoning  child:chat  Reasoning live  [streaming]".to_string(),
+        text: "  reasoning  child:chat  Reasoning live  ◉".to_string(),
         is_header: true,
         message_id: Some("thinking-1".to_string()),
         action: None,
@@ -217,8 +243,16 @@ fn thinking_lines_use_stateful_styles() {
     assert_eq!(
         response_line_style(&header, &colors),
         Style::default()
-            .fg(colors.focus_border)
+            .fg(colors.status_running_fg)
             .add_modifier(Modifier::BOLD)
+    );
+    assert_eq!(
+        response_status_symbol_style(&header, &colors),
+        Some(
+            Style::default()
+                .fg(colors.status_running_fg)
+                .add_modifier(Modifier::BOLD | Modifier::SLOW_BLINK)
+        )
     );
     assert_eq!(
         response_line_style(&summary, &colors),
@@ -229,6 +263,98 @@ fn thinking_lines_use_stateful_styles() {
     assert_eq!(
         response_line_style(&failed_body, &colors),
         Style::default().fg(colors.error_message)
+    );
+}
+
+#[test]
+fn response_meta_lines_use_muted_styles_and_header_surfaces() {
+    let colors = OmegaTheme::dark().render_palette();
+
+    let final_header = ResponseDisplayLine {
+        kind: MsgKind::FinalAnswer,
+        text: " final  child:chat  Final Answer  ●".to_string(),
+        is_header: true,
+        message_id: Some("final-1".to_string()),
+        action: None,
+        is_tool_line: false,
+        tool_status: None,
+        response_state: Some(ResponseSectionState::Complete),
+        thinking_line_kind: None,
+        spans: Vec::new(),
+    };
+    let meta_line = ResponseDisplayLine {
+        kind: MsgKind::Step,
+        text: "  scene child:report Report".to_string(),
+        is_header: false,
+        message_id: Some("step-1".to_string()),
+        action: None,
+        is_tool_line: false,
+        tool_status: None,
+        response_state: Some(ResponseSectionState::Complete),
+        thinking_line_kind: None,
+        spans: Vec::new(),
+    };
+
+    assert_eq!(
+        response_line_style(&final_header, &colors),
+        Style::default()
+            .fg(colors.status_idle_fg)
+            .add_modifier(Modifier::BOLD)
+    );
+    assert_eq!(
+        response_line_style(&meta_line, &colors),
+        Style::default().fg(colors.muted_meta_fg)
+    );
+}
+
+#[test]
+fn step_and_command_headers_use_distinct_accent_roles() {
+    let colors = OmegaTheme::dark().render_palette();
+
+    let step_header = ResponseDisplayLine {
+        kind: MsgKind::Step,
+        text: "step  child:chat  Research  ◉".to_string(),
+        is_header: true,
+        message_id: Some("step-2".to_string()),
+        action: None,
+        is_tool_line: false,
+        tool_status: None,
+        response_state: Some(ResponseSectionState::Streaming),
+        thinking_line_kind: None,
+        spans: Vec::new(),
+    };
+    let command_header = ResponseDisplayLine {
+        kind: MsgKind::Command,
+        text: "command  builtin  /document init  ●  collapse".to_string(),
+        is_header: true,
+        message_id: Some("command-2".to_string()),
+        action: None,
+        is_tool_line: false,
+        tool_status: None,
+        response_state: Some(ResponseSectionState::Complete),
+        thinking_line_kind: None,
+        spans: Vec::new(),
+    };
+
+    assert_eq!(
+        response_line_style(&step_header, &colors),
+        Style::default()
+            .fg(colors.status_running_fg)
+            .add_modifier(Modifier::BOLD)
+    );
+    assert_eq!(
+        response_status_symbol_style(&step_header, &colors),
+        Some(
+            Style::default()
+                .fg(colors.status_running_fg)
+                .add_modifier(Modifier::BOLD | Modifier::SLOW_BLINK)
+        )
+    );
+    assert_eq!(
+        response_line_style(&command_header, &colors),
+        Style::default()
+            .fg(colors.status_idle_fg)
+            .add_modifier(Modifier::BOLD)
     );
 }
 
@@ -305,8 +431,12 @@ fn input_surfaces_use_symmetric_visual_bars() {
     assert_eq!(status.spans[0].content, " mode ");
     assert_eq!(status.spans[1].style.fg, Some(colors.mode_normal_fg));
     assert_eq!(status.spans[7].style.fg, Some(colors.status_running_fg));
+    assert_eq!(colors.context_label, colors.text);
+    assert_eq!(colors.status_label, colors.text);
+    assert_eq!(colors.bar_divider, colors.text);
     assert_eq!(colors.context_bar_bg, colors.status_bar_bg);
-    assert_eq!(colors.input_bg, colors.context_bar_bg);
+    assert_eq!(colors.context_bar_bg, colors.panel_bg);
+    assert_ne!(colors.input_bg, colors.panel_bg);
 }
 
 #[test]

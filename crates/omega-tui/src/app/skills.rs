@@ -25,7 +25,7 @@ impl App {
     }
 
     pub fn skills_panel_title(&self) -> String {
-        let mut title = " Skills ".to_string();
+        let mut title = "Skills".to_string();
         if self.focused_panel == Panel::Skills {
             title.push('◆');
             title.push(' ');

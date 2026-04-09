@@ -330,14 +330,14 @@ mod tests {
         assert_eq!(
             app.response_lines(),
             vec![
-                "step  child:feature  Plan  [done]".to_string(),
+                "step  child:feature  Plan  ●".to_string(),
                 "  scene feature".to_string(),
                 "  draft patch".to_string(),
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".to_string(),
-                "final  child:feature  Final Answer  [done]".to_string(),
+                "final  child:feature  Final Answer  ●".to_string(),
                 "  scene feature".to_string(),
                 "  │ hello".to_string(),
-                "step  child:delivery-1  Task Delivery Summary  [done]".to_string(),
+                "step  child:delivery-1  Task Delivery Summary  ●".to_string(),
                 "  scene delivery".to_string(),
                 "  complete · model unknown · 0 tok · 0 llm · 0 tools · 0 skills · 0 files".to_string(),
                 "  document searches: 0 · memory searches: 0 · observations: 0".to_string(),
@@ -346,7 +346,7 @@ mod tests {
                 "    knowledge  doc=0 · mem=0 · obs=0  |  files 0".to_string(),
             ]
         );
-        assert_eq!(app.todo_lines, vec!["[>] #1: Code"]);
+        assert_eq!(app.todo_lines, vec!["→ #1: Code"]);
         assert_eq!(
             app.log_lines,
             vec![

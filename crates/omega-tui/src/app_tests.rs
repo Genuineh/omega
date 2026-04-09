@@ -514,7 +514,7 @@ fn todo_snapshot_replaces_lines() {
     let mut app = App::new();
     app.set_todo_snapshot(1, "[ ] #1: Plan\n[>] #2: Code\n\n(0/2 completed)");
 
-    assert_eq!(app.todo_lines, vec!["[ ] #1: Plan", "[>] #2: Code"]);
+    assert_eq!(app.todo_lines, vec!["○ #1: Plan", "→ #2: Code"]);
     assert_eq!(
         app.todo_summary,
         Some(TodoSummary {
@@ -696,7 +696,7 @@ fn step_text_routes_to_response_with_step_label() {
     assert_eq!(
         app.response_lines(),
         vec![
-            "step  child:feature  Plan  [done]".to_string(),
+            "step  child:feature  Plan  ●".to_string(),
             "  scene feature".to_string(),
             "  Line one".to_string(),
             "  Line two".to_string(),
@@ -752,7 +752,7 @@ fn command_sections_render_in_response_panel() {
     assert_eq!(
         app.response_lines(),
         vec![
-            "command  builtin  /document health  [done]  [collapse]".to_string(),
+            "command  builtin  /document health  ●  collapse".to_string(),
             "  » Overall health: good".to_string(),
             "  » Total docs: 12".to_string(),
         ]
@@ -800,7 +800,7 @@ fn command_sections_can_be_collapsed_from_response_panel() {
     let header_index = app
         .response_display_lines()
         .iter()
-        .position(|line| line.text == "command  builtin  /document init  [streaming]  [collapse]")
+        .position(|line| line.text == "command  builtin  /document init  ◉  collapse")
         .unwrap();
     app.response_state.select(Some(header_index));
     assert_eq!(
@@ -811,8 +811,65 @@ fn command_sections_can_be_collapsed_from_response_panel() {
     assert_eq!(
         app.response_lines(),
         vec![
-            "command  builtin  /document init  [streaming]  [expand]".to_string(),
+            "command  builtin  /document init  ◉  expand".to_string(),
             "  » ▸ 3 lines · Running /document init...".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn collapsed_command_sections_keep_only_a_short_leading_preview() {
+    let mut app = App::new();
+    let turn_id = app.begin_turn();
+
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::BeginResponseSection {
+            section: ResponseSection {
+                id: "turn-1:command-long".to_string(),
+                parent_id: None,
+                kind: ResponseSectionKind::Command,
+                title: "/document refresh".to_string(),
+                state: ResponseSectionState::Streaming,
+                metadata: ResponseSectionMetadata {
+                    scene_id: None,
+                    origin: SectionOrigin::Command {
+                        command_name: "/document refresh".to_string(),
+                        source: "builtin".to_string(),
+                    },
+                    step_id: None,
+                    step_label: None,
+                    subflow_ref: None,
+                },
+            },
+        },
+    ));
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::AppendResponseSection {
+            id: "turn-1:command-long".to_string(),
+            delta: ResponseSectionDelta::Text(
+                "Running /document refresh with an intentionally verbose first line\nIndexed 12 files".to_string(),
+            ),
+        },
+    ));
+
+    let header_index = app
+        .response_display_lines()
+        .iter()
+        .position(|line| line.text == "command  builtin  /document refresh  ◉  collapse")
+        .unwrap();
+    app.response_state.select(Some(header_index));
+    assert_eq!(
+        app.activate_selected_response_item(),
+        Some(ResponseActivation::CommandCollapsed)
+    );
+
+    assert_eq!(
+        app.response_lines(),
+        vec![
+            "command  builtin  /document refresh  ◉  expand".to_string(),
+            "  » ▸ 2 lines · Running /document refresh wi...".to_string(),
         ]
     );
 }
@@ -894,10 +951,10 @@ fn routing_and_final_answer_sections_form_response_timeline() {
     assert_eq!(
         app.response_lines(),
         vec![
-            "route  root:root  Scene Recognition  [done]".to_string(),
+            "route  root:root  Scene Recognition  ●".to_string(),
             "  result chat".to_string(),
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".to_string(),
-            "final  child:chat  Final Answer  [done]".to_string(),
+            "final  child:chat  Final Answer  ●".to_string(),
             "  scene chat".to_string(),
             "  │ hello".to_string(),
         ]
@@ -961,10 +1018,10 @@ fn thinking_sections_stream_then_collapse_on_complete() {
         app.response_lines(),
         vec![
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".to_string(),
-            "final  child:chat  Final Answer  [streaming]".to_string(),
+            "final  child:chat  Final Answer  ◉".to_string(),
             "  scene chat".to_string(),
             "  │ …".to_string(),
-            "  reasoning  child:chat  Reasoning live  [streaming]".to_string(),
+            "  reasoning  child:chat  Reasoning live  ◉".to_string(),
             "    ⠋ outline answer".to_string(),
             "    ⠋ check tone".to_string(),
         ]
@@ -982,10 +1039,10 @@ fn thinking_sections_stream_then_collapse_on_complete() {
         app.response_lines(),
         vec![
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".to_string(),
-            "final  child:chat  Final Answer  [streaming]".to_string(),
+            "final  child:chat  Final Answer  ◉".to_string(),
             "  scene chat".to_string(),
             "  │ …".to_string(),
-            "  reasoning  child:chat  Reasoning  [done]".to_string(),
+            "  reasoning  child:chat  Reasoning  ●".to_string(),
             "    ▸ reasoning · 2 lines · outline answer".to_string(),
         ]
     );
@@ -993,7 +1050,7 @@ fn thinking_sections_stream_then_collapse_on_complete() {
     let thinking_index = app
         .response_display_lines()
         .iter()
-        .position(|line| line.text == "  reasoning  child:chat  Reasoning  [done]")
+        .position(|line| line.text == "  reasoning  child:chat  Reasoning  ●")
         .unwrap();
     app.response_state.select(Some(thinking_index));
 
@@ -1002,10 +1059,10 @@ fn thinking_sections_stream_then_collapse_on_complete() {
         app.response_lines(),
         vec![
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".to_string(),
-            "final  child:chat  Final Answer  [streaming]".to_string(),
+            "final  child:chat  Final Answer  ◉".to_string(),
             "  scene chat".to_string(),
             "  │ …".to_string(),
-            "  reasoning  child:chat  Reasoning  [done]".to_string(),
+            "  reasoning  child:chat  Reasoning  ●".to_string(),
             "    │ outline answer".to_string(),
             "    │ check tone".to_string(),
         ]
@@ -1071,10 +1128,10 @@ fn thinking_sections_limit_streaming_body_to_recent_lines() {
         app.response_lines(),
         vec![
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".to_string(),
-            "final  child:chat  Final Answer  [streaming]".to_string(),
+            "final  child:chat  Final Answer  ◉".to_string(),
             "  scene chat".to_string(),
             "  │ …".to_string(),
-            "  reasoning  child:chat  Reasoning live  [streaming]".to_string(),
+            "  reasoning  child:chat  Reasoning live  ◉".to_string(),
             "    ⠋ second thought".to_string(),
             "    ⠋ third thought".to_string(),
         ]
@@ -1124,7 +1181,7 @@ fn failed_thinking_sections_surface_failure_summary() {
     assert_eq!(
         app.response_lines(),
         vec![
-            "  reasoning  child:chat  Reasoning failed  [failed]".to_string(),
+            "  reasoning  child:chat  Reasoning failed  ✕".to_string(),
             "    ▸ reasoning failed · 1 line · tool result mismatched".to_string(),
         ]
     );
@@ -1202,9 +1259,9 @@ fn interrupt_turn_stops_streaming_reasoning_and_running_tool_styles() {
 
     app.interrupt_turn();
 
-    assert!(app.response_lines().iter().any(|line| line.contains("Reasoning failed  [failed]")));
+    assert!(app.response_lines().iter().any(|line| line.contains("Reasoning failed  ✕")));
     assert!(app.response_lines().iter().any(|line| line.contains("reasoning failed")));
-    assert!(!app.response_lines().iter().any(|line| line.contains("Reasoning live  [streaming]")));
+    assert!(!app.response_lines().iter().any(|line| line.contains("Reasoning live  ◉")));
     assert!(app
         .tool_runs
         .iter()
@@ -1324,10 +1381,10 @@ fn tool_run_effects_render_inside_step_block() {
     assert_eq!(
         app.response_lines(),
         vec![
-            "step  child:feature  Execute  [streaming]".to_string(),
+            "step  child:feature  Execute  ◉".to_string(),
             "  scene feature".to_string(),
             "  tools  1 total".to_string(),
-            "    bash  [done]  $ echo hi -> hi".to_string(),
+            "    bash  ●  $ echo hi -> hi".to_string(),
         ]
     );
 }
@@ -1383,7 +1440,7 @@ fn activating_tool_summary_opens_detail_overlay() {
     let selected_index = app
         .response_display_lines()
         .iter()
-        .position(|line| line.text == "    read_file  [done]  src/main.rs -> 12 lines")
+        .position(|line| line.text == "    read_file  ●  src/main.rs -> 12 lines")
         .unwrap();
     app.response_state.select(Some(selected_index));
 
@@ -1489,7 +1546,7 @@ fn response_lines_include_knowledge_lane_for_section_summary() {
     assert_eq!(
         app.response_lines(),
         vec![
-            "step  child:feature  Execute  [streaming]".to_string(),
+            "step  child:feature  Execute  ◉".to_string(),
             "  scene feature".to_string(),
             "  knowledge".to_string(),
             "    document  [ready]  2 hits  ·  roadmap  ·  docs/TODO.md".to_string(),
@@ -1751,16 +1808,16 @@ fn tool_lane_defaults_to_collapsed_for_six_or_more_tools_and_can_toggle() {
     assert_eq!(
         app.response_lines(),
         vec![
-            "step  child:feature  Execute  [streaming]".to_string(),
+            "step  child:feature  Execute  ◉".to_string(),
             "  scene feature".to_string(),
-            "  tools  6 total  [expand]".to_string(),
+            "  tools  6 total  expand".to_string(),
         ]
     );
 
     let header_index = app
         .response_display_lines()
         .iter()
-        .position(|line| line.text == "  tools  6 total  [expand]")
+        .position(|line| line.text == "  tools  6 total  expand")
         .unwrap();
     app.response_state.select(Some(header_index));
     assert_eq!(
@@ -1769,14 +1826,14 @@ fn tool_lane_defaults_to_collapsed_for_six_or_more_tools_and_can_toggle() {
     );
 
     let expanded_lines = app.response_lines();
-    assert_eq!(expanded_lines[2], "  tools  6 total  [collapse]");
-    assert!(expanded_lines.iter().any(|line| line == "    tool_1  [done]  arg-1 -> ok-1"));
-    assert!(expanded_lines.iter().any(|line| line == "    tool_6  [done]  arg-6 -> ok-6"));
+    assert_eq!(expanded_lines[2], "  tools  6 total  collapse");
+    assert!(expanded_lines.iter().any(|line| line == "    tool_1  ●  arg-1 -> ok-1"));
+    assert!(expanded_lines.iter().any(|line| line == "    tool_6  ●  arg-6 -> ok-6"));
 
     let header_index = app
         .response_display_lines()
         .iter()
-        .position(|line| line.text == "  tools  6 total  [collapse]")
+        .position(|line| line.text == "  tools  6 total  collapse")
         .unwrap();
     app.response_state.select(Some(header_index));
     assert_eq!(
@@ -1787,9 +1844,9 @@ fn tool_lane_defaults_to_collapsed_for_six_or_more_tools_and_can_toggle() {
     assert_eq!(
         app.response_lines(),
         vec![
-            "step  child:feature  Execute  [streaming]".to_string(),
+            "step  child:feature  Execute  ◉".to_string(),
             "  scene feature".to_string(),
-            "  tools  6 total  [expand]".to_string(),
+            "  tools  6 total  expand".to_string(),
         ]
     );
 }
@@ -1901,13 +1958,13 @@ fn step_subflow_sections_render_as_nested_timeline() {
     assert_eq!(
         app.response_lines(),
         vec![
-            "step  child:feature  Execute  [streaming]".to_string(),
+            "step  child:feature  Execute  ◉".to_string(),
             "  scene feature".to_string(),
             "  items 2/3 · current execute-2 · todo #risk-2 · repeat 1".to_string(),
-            "  subflow  execute-1  #risk-1  Inspect state  [done]".to_string(),
-            "  subflow  execute-2  #risk-2  Validate risk  [running]  repeat 1".to_string(),
+            "  subflow  execute-1  #risk-1  Inspect state  ●".to_string(),
+            "  subflow  execute-2  #risk-2  Validate risk  ◉  repeat 1".to_string(),
             "    validating current risk".to_string(),
-            "  subflow  execute-3  #risk-3  Ship  [queued]".to_string(),
+            "  subflow  execute-3  #risk-3  Ship  ◦".to_string(),
         ]
     );
     assert_eq!(app.highlighted_todo_line_index(), Some(1));
@@ -1972,7 +2029,7 @@ fn activating_subflow_header_opens_detail_overlay() {
         .response_display_lines()
         .iter()
         .position(|line| {
-            line.text == "  subflow  execute-2  #risk-2  Validate risk  [running]  repeat 1"
+            line.text == "  subflow  execute-2  #risk-2  Validate risk  ◉  repeat 1"
         })
         .unwrap();
     app.response_state.select(Some(selected_index));
@@ -2063,15 +2120,15 @@ fn todo_snapshot_backfills_prior_subflow_statuses_without_replayed_sections() {
     assert_eq!(
         app.response_lines(),
         vec![
-            "step  child:research  Execute  [streaming]".to_string(),
+            "step  child:research  Execute  ◉".to_string(),
             "  scene research".to_string(),
             "  items 4/5 · current execute-4 · todo #risk-4 · repeat 3".to_string(),
-            "  subflow  execute-1  #risk-1  FFI audit  [done]".to_string(),
-            "  subflow  execute-2  #risk-2  Bash boundary  [done]".to_string(),
-            "  subflow  execute-3  #risk-3  API fallback  [done]".to_string(),
-            "  subflow  execute-4  #risk-4  Coverage analysis  [running]  repeat 3".to_string(),
+            "  subflow  execute-1  #risk-1  FFI audit  ●".to_string(),
+            "  subflow  execute-2  #risk-2  Bash boundary  ●".to_string(),
+            "  subflow  execute-3  #risk-3  API fallback  ●".to_string(),
+            "  subflow  execute-4  #risk-4  Coverage analysis  ◉  repeat 3".to_string(),
             "    collecting coverage gaps".to_string(),
-            "  subflow  execute-5  #risk-5  Dependency audit  [queued]".to_string(),
+            "  subflow  execute-5  #risk-5  Dependency audit  ◦".to_string(),
         ]
     );
 }
@@ -2158,14 +2215,14 @@ fn later_subflows_do_not_render_done_while_earlier_item_is_still_running() {
     assert_eq!(
         app.response_lines(),
         vec![
-            "step  child:feature  Execute  [streaming]".to_string(),
+            "step  child:feature  Execute  ◉".to_string(),
             "  scene feature".to_string(),
             "  items 1/3 · current execute-1 · todo #plan-1".to_string(),
-            "  subflow  execute-1  #plan-1  Verify duplicated diagnostics path  [running]"
+            "  subflow  execute-1  #plan-1  Verify duplicated diagnostics path  ◉"
                 .to_string(),
             "    …".to_string(),
-            "  subflow  execute-2  #plan-2  Trace tool callback path  [queued]".to_string(),
-            "  subflow  execute-3  #plan-3  Compare archive paths  [queued]".to_string(),
+            "  subflow  execute-2  #plan-2  Trace tool callback path  ◦".to_string(),
+            "  subflow  execute-3  #plan-3  Compare archive paths  ◦".to_string(),
         ]
     );
 }
@@ -2386,6 +2443,17 @@ fn panel_hit_testing_distinguishes_todo_and_logs() {
 }
 
 #[test]
+fn panel_hit_testing_respects_sidebar_panel_right_edges() {
+    let mut app = App::new();
+    app.diagnostics_rect = Rect::new(60, 1, 20, 8);
+    app.sidebar_rail_rect = Rect::new(82, 1, 10, 12);
+
+    assert_eq!(app.panel_at(79, 4), Panel::Diagnostics);
+    assert_eq!(app.panel_at(81, 4), Panel::Response);
+    assert_eq!(app.panel_at(85, 4), Panel::SidebarRail);
+}
+
+#[test]
 fn normalize_focus_returns_to_response_when_sidebar_hides() {
     let mut app = App::new();
     app.focused_panel = Panel::Todo;
@@ -2469,4 +2537,140 @@ fn panel_text_point_accounts_for_scroll_offset() {
 
     assert_eq!(point.line_index, 1);
     assert_eq!(point.column, 0);
+}
+
+#[test]
+fn final_answer_sections_are_assembled_before_line_projection() {
+    let mut app = App::new();
+    let turn_id = app.begin_turn();
+
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::BeginResponseSection {
+            section: ResponseSection {
+                id: "turn-99:child:chat:final".to_string(),
+                parent_id: None,
+                kind: ResponseSectionKind::FinalAnswer,
+                title: "Final Answer".to_string(),
+                state: ResponseSectionState::Streaming,
+                metadata: workflow_metadata(
+                    Some("chat"),
+                    "chat",
+                    WorkflowRunRole::Child,
+                    Some("report"),
+                    Some("Report"),
+                    None,
+                ),
+            },
+        },
+    ));
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::AppendResponseSection {
+            id: "turn-99:child:chat:final".to_string(),
+            delta: ResponseSectionDelta::Text(
+                "## Results Summary\n- Reduced noise\n- Added report sections\n\n## Usage\n`cargo test -p omega-tui`".to_string(),
+            ),
+        },
+    ));
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::CompleteResponseSection {
+            id: "turn-99:child:chat:final".to_string(),
+            state: ResponseSectionState::Complete,
+        },
+    ));
+
+    let cards = app.response_cards();
+    assert_eq!(cards.len(), 1);
+    assert_eq!(cards[0].sections.len(), 3);
+    assert_eq!(cards[0].sections[0].kind, ResponseCardSectionKind::Meta);
+    assert_eq!(cards[0].sections[1].kind, ResponseCardSectionKind::ResultsSummary);
+    assert_eq!(cards[0].sections[2].kind, ResponseCardSectionKind::Usage);
+}
+
+#[test]
+fn report_section_headers_include_scanable_summaries() {
+    let mut app = App::new();
+    let turn_id = app.begin_turn();
+
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::BeginResponseSection {
+            section: ResponseSection {
+                id: "turn-100:child:chat:final".to_string(),
+                parent_id: None,
+                kind: ResponseSectionKind::FinalAnswer,
+                title: "Final Answer".to_string(),
+                state: ResponseSectionState::Streaming,
+                metadata: workflow_metadata(
+                    Some("chat"),
+                    "chat",
+                    WorkflowRunRole::Child,
+                    Some("report"),
+                    Some("Report"),
+                    None,
+                ),
+            },
+        },
+    ));
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::AppendResponseSection {
+            id: "turn-100:child:chat:final".to_string(),
+            delta: ResponseSectionDelta::Text(
+                "## Results Summary\n- First\n- Second\n\n## Optional Next Step\n1. Ship it".to_string(),
+            ),
+        },
+    ));
+
+    assert!(app
+        .response_lines()
+        .iter()
+        .any(|line| line.contains("Results Summary") && line.contains("2 items")));
+    assert!(app
+        .response_lines()
+        .iter()
+        .any(|line| line.contains("Optional Next Step") && line.contains("1 items")));
+}
+
+#[test]
+fn markdown_tables_render_as_tabular_report_blocks() {
+    let mut app = App::new();
+    let turn_id = app.begin_turn();
+
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::BeginResponseSection {
+            section: ResponseSection {
+                id: "turn-101:child:chat:final".to_string(),
+                parent_id: None,
+                kind: ResponseSectionKind::FinalAnswer,
+                title: "Final Answer".to_string(),
+                state: ResponseSectionState::Streaming,
+                metadata: workflow_metadata(
+                    Some("chat"),
+                    "chat",
+                    WorkflowRunRole::Child,
+                    Some("report"),
+                    Some("Report"),
+                    None,
+                ),
+            },
+        },
+    ));
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::AppendResponseSection {
+            id: "turn-101:child:chat:final".to_string(),
+            delta: ResponseSectionDelta::Text(
+                "## Verification\n| Metric | Before | After |\n| --- | --- | --- |\n| Pass rate | 80.0% | 100% |\n| Noise | 12 | 0 |".to_string(),
+            ),
+        },
+    ));
+
+    let lines = app.response_lines();
+    assert!(lines.iter().any(|line| line.contains("Verification") && line.contains("2 rows")));
+    assert!(lines.iter().any(|line| line.contains("╭") && line.contains("┬")));
+    assert!(lines.iter().any(|line| line.contains("Pass rate") && line.contains("100%")));
 }

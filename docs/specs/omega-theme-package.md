@@ -1,8 +1,9 @@
 ---
 status: implemented
+last_verified_commit: N/A
 owner: omega-team
 created: 2026-03-19
-updated: 2026-03-19
+updated: 2026-04-08
 version: 0.2
 supersedes: []
 related_prds: []
@@ -23,6 +24,7 @@ related_prds: []
 - 保持 `omega-tui` 只负责状态到视觉语义的映射，不负责维护整套样式常量表。
 - 支持通过用户可编辑的 `.omega/theme.toml` 对默认主题做仓库级或工作目录级覆盖，并在非法配置下安全回退。
 - 为未来命名主题或高对比度主题预留结构，而不要求首期就实现多主题切换。
+- 为 `Modern TUI / Rich CLI` 风格提供稳定的 token grammar，而不是只提供泛化的暗色配色表。
 
 ## Non-Goals
 
@@ -30,6 +32,28 @@ related_prds: []
 - 不要求首期支持运行时热重载 `.omega/theme.toml` 或主题市场。
 - 不把运行时状态机逻辑下沉到主题包，例如 `InteractionMode`、焦点、overlay 生命周期仍属于 `omega-tui`。
 - 不要求一开始就覆盖仓库内所有 crate；首个消费者仅为 `omega-tui`。
+- 不提供“随意上色”的自由调色盘接口；主题系统应优先保护信息层级和语义一致性。
+
+## Design Language
+
+`omega-theme` 的默认主题不应被理解成抽象的 `dark theme`，而应被理解成终端里的 `Dark Industrial Report Console`：
+
+- 深色 surface 稳定，层级分明，但不靠纯黑和纯白硬顶对比。
+- accent 克制，默认只服务 focus、status、section hierarchy 和关键数据。
+- 正文尽量安静，把亮色预算留给 header、summary metrics、code-style token 和异常状态。
+- 表格、列表、divider、badge 与 section title 都应有明确 token，而不是共享同一组文本颜色。
+
+### Semantic Accent Roles
+
+推荐至少拆出以下角色：
+
+- `structure accent`: section title、card header、次级 divider。
+- `metric accent`: 核心数字、百分比、时长、token 成本。
+- `status accent`: success / running / warning / error / interrupted。
+- `code accent`: 文件名、命令、代码、标识符。
+- `muted support`: meta row、说明文、折叠摘要、弱提示。
+
+这些角色的目标是避免“标题、状态、文件名、指标全都抢同一种亮色”。
 
 ## Problem Statement
 
@@ -131,6 +155,12 @@ running_fg = "#ffc468"
 [surfaces]
 focus_border_fg = "#4ec9b0"
 border_dim_fg = "#303030"
+
+[report]
+section_header_fg = "#b7a7ff"
+metric_emphasis_fg = "#ffb454"
+code_fg = "#7fd1b9"
+muted_meta_fg = "#8b93a1"
 ```
 
 格式要求：
@@ -148,11 +178,21 @@ pub struct OmegaTheme {
     pub surfaces: SurfaceTokens,
     pub text: TextTokens,
     pub status: StatusTokens,
+    pub report: ReportTokens,
     pub input: InputTheme,
     pub status_bar: StatusBarTheme,
     pub context_bar: ContextBarTheme,
     pub sidebar: SidebarTheme,
     pub overlay: OverlayTheme,
+}
+
+pub struct ReportTokens {
+    pub section_header_fg: Color,
+    pub metric_emphasis_fg: Color,
+    pub code_fg: Color,
+    pub muted_meta_fg: Color,
+    pub table_border_fg: Color,
+    pub summary_badge_bg: Color,
 }
 
 impl OmegaTheme {
@@ -216,6 +256,7 @@ pub enum ThemeSource {
 - 为 `Task 15B-8` Markdown 渲染定义标题、列表、引用、代码块令牌。
 - 为 `Task 15B-9` 代码高亮定义基础语法类别映射和 fallback 颜色。
 - 为 `Task 15B-12` 会话统计和 badge 扩展定义更多状态语义色。
+- 为 `Task 15B-56 ~ 15B-57` 的结构化报告输出补齐 section header、table、metric emphasis 和 quiet-meta token。
 
 ## Task Planning
 
@@ -244,6 +285,7 @@ pub enum ThemeSource {
 | token granularity | semantic + component-level | 避免只有原始颜色表，也避免 widget 逻辑下沉 |
 | theme count in phase 1 | one named theme (`dark`) | 先解决所有权，再扩展多主题 |
 | runtime mapping | keep in `omega-tui` | 主题包不拥有应用状态机 |
+| default visual language | `Dark Industrial Report Console` | 让默认 dark theme 有明确的审美和语义约束 |
 
 ## Risks
 
@@ -258,11 +300,12 @@ pub enum ThemeSource {
 - `omega-theme` 单测：验证默认主题能构造出完整令牌集。
 - `omega-theme` 单测：验证 `.omega/theme.toml` 缺失、合法、非法三种场景下的创建、加载、校验与回退。
 - `omega-theme` 单测：验证覆盖式合并不会清空未声明字段。
+- `omega-theme` 单测：验证 report tokens 缺失时仍能回退到安全、可读的默认值，而不是把结构标题和指标高亮退化成普通正文色。
+
+## Change Log
+
+- 2026-04-08: 为主题系统补充 `Dark Industrial Report Console` 设计语言与 report token 方向，支撑结构化报告型 TUI 输出。
 - `omega-tui` 回归测试：迁移到 `omega-theme` 后，现有输入区、状态带、sidebar 和 overlay 的视觉语义测试保持通过。
 - 针对未来 Markdown / 高亮接入，优先增加“语义样式选择正确”的测试，而不是依赖截图式验证。
-
----
-
-### Change Log
 - 2026-03-19: 初版规格，规划新增 `omega-theme` crate，集中管理 `omega-tui` 的共享视觉令牌与组件级主题定义。
 - 2026-03-19: 补充 `.omega/theme.toml` 用户配置加载设计，明确默认文件生成、覆盖合并、校验与回退策略。
