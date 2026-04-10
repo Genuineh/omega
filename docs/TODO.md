@@ -1,3 +1,9 @@
+---
+status: active
+owner: omega-team
+last_verified_commit: N/A
+---
+
 # TODO
 
 ## Current Priorities
@@ -9,7 +15,7 @@ _任务编号以 `docs/specs/omega-agent-impl-plan.md` 为准；`8A/8B`、`15A/1
 ### High
 
 - **Task 10**: `omega-subagent` 是当前主线，但要建立在已完成的上下文管理基线之上，避免调度再次被上下文膨胀拖垮。
-- **Task 17 / Task 17A**: 建立独立 command system，当前 scope 收窄为 builtin + tool-extension commands；先以 `/document` 验证 slash hint UX、Response panel 的 command-special rendering，以及 command-result contract；下一阶段需与 `Task 18` 对齐，把 `/project` 作为 project-owned control plane 接入，而不是继续让 repo state 隐含挂在 `omega-context` 上。
+- **Task 15B-70 + Task 17C ~ 17H**: 已完成并转入基线能力；`/session` picker/control plane 现已具备 overlay-first operator flow、`session_id` scoped recall、typed restore hydration，以及 picker 内 detail/resume/archive/delete/new 闭环，不再作为独立主线推进。
 - **Task 11A ~ 11F-3**: 已完成并转入基线能力，不再作为独立主线推进；原 Task 11 的上下文压缩需求已被这条子任务链替代。
 
 ### Medium
@@ -1986,6 +1992,17 @@ _基础体验已在 M1.7 完成，此处保留高级特性。_
 - **Related**: docs/specs/omega-tui-overlay-popups.md, docs/specs/omega-tui-ui-reference.md, docs/specs/omega-tui-runtime-experience.md
 - **Summary**: `Detail` 与 `SearchResults` overlay 现都支持鼠标滚轮、`↑/↓`、`PgUp/PgDn`、`Home/End` 导航，并在内容超出视口时显示 `lines X-Y/N` scroll footer；事件仍保持 overlay-first 路由，关闭后继续恢复之前的 focus panel。
 
+### Task 15B-70: omega-tui / omega-app / omega-session — Reusable Operator Picker Overlay And Action Hotkeys
+- **Status**: Completed
+- **Completed**: 2026-04-10
+- **Priority**: High
+- **Description**: 在现有 `Picker` overlay 基础上升级出可复用的 operator picker：支持结构化 item、subtitle/badge、overlay 内过滤、footer action hints，以及把选中动作回收到 slash command 或等价本地 UI intent 的统一 bridge。
+- **Complexity**: L
+- **Planning Note**: 当前 `PickerOverlay` 仍是 `Vec<String> + Enter -> status notice`，不足以支撑 `/session list` 这类真实 operator flow。该任务应保持 overlay 的单活动模型不变，只把 picker 提升为 runtime-driven typed component；领域动作仍归 `omega-session` / command handler 所有，避免把业务规则复制到 TUI。
+- **Blocks**: Task 17G, Task 17H
+- **Related**: docs/specs/omega-operator-picker-overlay.md, docs/specs/omega-tui-overlay-popups.md, docs/specs/omega-runtime-ui-message-contract.md
+- **Summary**: `omega-session` 已新增 typed operator picker contract；`omega-tui` 的 picker overlay 现支持结构化 item/action、基础过滤、footer action hints，以及 `Enter`/`Ctrl-*` 经现有 submit path 回收到 slash command 或本地 detail overlay；`omega-app` 继续保持透传，不承接新的领域动作语义。
+
 ### Task 15B-13: omega-tui — Leader / 模态快捷键基础设施
 - **Status**: Completed
 - **Completed**: 2026-03-19
@@ -2050,6 +2067,147 @@ _基础体验已在 M1.7 完成，此处保留高级特性。_
 - **Planning Note**: `init` / `sync` 负责初始化或增量刷新 `.omega/store/` 下的 manifest + Tantivy + LanceDB；`query` 默认走 hybrid retrieval，`health` 和 `create/archive/list` 负责项目级知识库治理与维护。当前 `/document init|sync|health|query|create|archive|list` 已全部接入 `omega-context` facade，并且所有用户可见结果都会写入 Response panel 的 command section；新增回归测试覆盖了 slash submit、slash hint、以及 `document-backend` 下的 create/list/archive 端到端路径。
 - **Blocked by**: Task 17
 - **Related**: docs/specs/omega-command-system.md, docs/specs/omega-context-management.md, docs/specs/omega-tui-document-memory-supervision.md
+
+### Task 17B: omega-project / omega-session — Resumable Session Snapshot And Replay Log Persistence
+- **Status**: Completed
+- **Completed**: 2026-04-10
+- **Priority**: High
+- **Description**: 在 project-scoped session catalog 之外，为每个 session 补齐 `<session-id>.snapshot.json` 与 `<session-id>.log.jsonl` sidecar 持久化，并把 `resume_ready` / `archived_turn_count` 等恢复态指标写回 `ProjectSessionRef`，让 `/session list|info` 可以区分“存在”和“可恢复”。
+- **Planning Note**: catalog 继续保持轻量 metadata truth，不把 transcript 或 UI state 塞进 `<session-id>.json`；`omega-project` 只负责 sidecar artifacts 的保存/读取/删除与 active/idle/archived 状态切换，不负责 session runtime orchestration。
+- **Blocked by**: Task 17A, Task 18B
+- **Blocks**: Task 17C, Task 17D, Task 17E, Task 17F
+- **Related**: docs/specs/omega-session-resume.md, docs/specs/omega-project-system.md
+- **Summary**: `omega-project` 已新增 session snapshot / replay-log sidecar 读写、删除与 `resume_ready` 刷新路径；`ProjectSessionRef` 现会公开 `resume_ready` 与 `archived_turn_count`，并已有回归测试覆盖 snapshot/log round-trip 与 artifact delete 行为。
+
+### Task 17C: omega-session / omega-context — Session Resume And Context Reload Contract
+- **Status**: Completed
+- **Started**: 2026-04-10
+- **Completed**: 2026-04-10
+- **Priority**: High
+- **Description**: 为 session restore 建立正式合同：保存当前 active session 的 snapshot/replay log，加载目标 session 的 snapshot，并按 `session_id` 重新装配 archived turn history、workflow/skill routing、todo snapshot 与 session-local context，使下一轮输入能够接着旧任务继续。
+- **Planning Note**: `omega-context` / memory 需要从当前 `get_turn_history(limit)` 升级到带 `session_id` 的查询形态；恢复时不得重新执行旧 workflow step 或 tool run，只允许把 session-local state 和 resume seed 恢复到“下一轮可继续”的状态。
+- **Blocked by**: Task 17B, Task 18H, Task 18I
+- **Blocks**: Task 17D, Task 17E, Task 17F
+- **Related**: docs/specs/omega-session-resume.md, docs/specs/omega-context-management.md, docs/specs/omega-runtime-message-pipeline.md
+- **Summary**: `omega-session` / `omega-context` / `omega-memory` 已把 active session snapshot/replay persistence、todo/routing/step summary restore、cwd normalize、runtime rebind 和后续 recall contract 全部接通；archived turn history、memory query 与 observation recall 现都会按 active `session_id` 作用域装配，restore 后的下一轮输入不再串用其他 project session 的记忆。
+
+### Task 17D: omega-command / omega-app — `/session` Command Family
+- **Status**: Completed
+- **Started**: 2026-04-10
+- **Completed**: 2026-04-10
+- **Priority**: High
+- **Description**: 新增 `/session list|info|new|resume|switch|archive|delete` 命令族，复用现有 command registry、slash hint 和 command response contract，为 session 管理提供显式 operator surface。
+- **Planning Note**: Phase 1 默认只操作 current project 内的 session；若用户尝试恢复其他 project 的 session，命令应明确提示先执行 `/project switch`。`resume` 与 `switch` 可以在首轮共用同一 handler，但输出上必须显式说明发生了哪些状态切换与恢复动作。
+- **Blocked by**: Task 17B, Task 17C
+- **Blocks**: Task 17E, Task 17F
+- **Related**: docs/specs/omega-session-resume.md, docs/specs/omega-command-system.md, docs/specs/omega-project-system.md
+- **Summary**: `/session list|info|new|resume|switch|archive|delete` 已全部接入现有 command registry，并按 surface 类型分流：默认 `/session`、`list`、无参 `resume` 与 `info` 会发出 typed overlay request，而带 id 的 direct command 仍保留精确调用路径；相关回归测试已覆盖 `new/list/info/delete`、无参 `resume` picker 入口和 `resume` 路由恢复。
+
+### Task 17E: omega-app / omega-tui — Session Restore Hydration And UI Surfaces
+- **Status**: Completed
+- **Started**: 2026-04-10
+- **Completed**: 2026-04-10
+- **Priority**: High
+- **Description**: 为 session restore 新增 typed hydration 通路，让 runtime 可以通过新的 restore snapshot 清空当前 view state、恢复历史 execution log，并在 Response / Sidebar / status surfaces 中明确显示当前 active session 已发生切换与恢复。
+- **Planning Note**: 不能直接重放旧 `RuntimeMessageEnvelope`；应新增新的 restore-state message 或等价 hydration contract，并让 TUI 以一次性 snapshot 的方式重建 response timeline。Project/Session 面板也要能区分 active、idle、archived 和 resume-ready 状态。
+- **Blocked by**: Task 17C, Task 17D
+- **Blocks**: Task 17F
+- **Related**: docs/specs/omega-session-resume.md, docs/specs/omega-runtime-message-pipeline.md, docs/specs/omega-tui-document-memory-supervision.md
+- **Summary**: `StateMessage::SessionRestored`、typed restore snapshot、`omega-app` policy 转发、`omega-tui` restore hydration 与 session/project status surfaces 已全部接通；恢复态会按 replay log 重建 response/log timeline，并在 restore 时清空旧 response/tool/log/overlay/subflow 等 stale runtime state，相关 app/TUI 回归测试已补齐。
+
+### Task 17F: Session Resume Regression, Docs, And Dev Workflow Sync
+- **Status**: Completed
+- **Started**: 2026-04-10
+- **Completed**: 2026-04-10
+- **Priority**: Medium
+- **Description**: 为 session snapshot persistence、context reload、`/session` commands 与 restore hydration 补齐单测/集成测试，并同步更新相关 spec、开发指南与 TODO，确保 session resume 成为正式受支持的 operator surface。
+- **Planning Note**: 回归测试至少要覆盖 `list/info/new/resume/archive/delete`、resume-ready 缺失错误路径、`session_id` 作用域下的 turn history 装配、以及 restore 后 UI 不混入 stale update 的路径；开发文档要写清 session artifacts 的 repo-local 布局与 delete/archive 语义。
+- **Blocked by**: Task 17B, Task 17C, Task 17D, Task 17E, Task 15B-70, Task 17G, Task 17H
+- **Related**: docs/specs/omega-session-resume.md, docs/guide/omega-dev-guide.md
+- **Summary**: 已补 `omega-project` sidecar persistence 单测、`omega-session` 的 `/session` 管理/overlay/恢复路由回归测试、`omega-tui` 的 picker/confirm 与 restore-state 清理回归测试、`omega-app` 的 `SessionRestored` policy 透传测试，并进一步修复应用重启时会先创建占位 session 的问题：当前启动会直接复用 active session 并在有 snapshot/replay log 时立即 hydrate 旧日志；session resume 现已成为正式受支持的 operator surface。该 phase-1 基线随后被 Task 17I～17N 的 lazy-start / context-ledger 设计重新定义，后续实现应以新规格为准。
+
+### Task 17G: omega-session / omega-command / omega-app — `/session` Picker Entry And Typed Session List Request
+- **Status**: Completed
+- **Completed**: 2026-04-10
+- **Priority**: High
+- **Description**: 把 `/session` 与 `/session list` 的默认用户路径从 Response 文本切换为 picker overlay：session/runtime 侧需要产出 typed session list request，app 负责透传，TUI 负责打开 operator picker，而不是继续在 `Agent Response` 中打印列表。
+- **Complexity**: M
+- **Planning Note**: 该任务的核心不是“把文本换个地方显示”，而是把 session list 提升为可操作 surface。`/session resume` 在无参数时也应落到同一个 picker 入口，并把 `resume_ready` 项置前；保留带 id 的 direct command 作为脚本化/精确调用路径。
+- **Blocked by**: Task 17C, Task 17D, Task 15B-70
+- **Blocks**: Task 17H, Task 17F
+- **Related**: docs/specs/omega-session-resume.md, docs/specs/omega-operator-picker-overlay.md, docs/specs/omega-runtime-ui-message-contract.md
+- **Summary**: `/session`、`/session list` 与无参 `/session resume` 现在都会直接发出 typed `OperatorPickerRequest` overlay，不再向 Response 输出 session 列表文本；resume picker 会把 `resume_ready` 项优先排序，direct command with id 仍保留为精确调用路径。
+
+### Task 17H: omega-session / omega-tui — Session Detail And In-Picker Operator Actions
+- **Status**: Completed
+- **Completed**: 2026-04-10
+- **Priority**: High
+- **Description**: 在 session picker 内补齐 `Enter=详情`、`Ctrl-R=resume`、`Ctrl-A=archive`、`Ctrl-D=delete`、`Ctrl-N=new` 的闭环交互；成功动作应刷新 picker、打开 detail/confirm overlay，或触发 restore hydration，而不是继续向 Response 追加普通 command section 文本。
+- **Complexity**: L
+- **Planning Note**: 领域动作仍应回收为现有 slash command / command handler，而不是让 TUI 直接拥有 session mutation 逻辑。delete 需要 confirm overlay；resume/new 成功后应关闭 picker 并把焦点交回恢复后的主界面。
+- **Blocked by**: Task 15B-70, Task 17G
+- **Blocks**: Task 17F
+- **Related**: docs/specs/omega-session-resume.md, docs/specs/omega-operator-picker-overlay.md, docs/specs/omega-tui-overlay-popups.md
+- **Summary**: session picker 现已接通 `Enter=详情`、`Ctrl-R=resume`、`Ctrl-A=archive`、`Ctrl-D=delete(confirm)`、`Ctrl-N=new` 的闭环动作；领域变更仍通过隐藏 `--picker` 的 slash command 桥接回 `omega-session` handler，成功路径会刷新/切换 overlay 或触发 restore hydration，而不是继续追加普通 command section 文本。
+
+### Task 17I: omega-session / omega-app / omega-project / omega-tui — Lazy Session Binding And Startup-Unbound Lifecycle
+- **Status**: Pending
+- **Priority**: High
+- **Description**: 重构 session 生命周期：应用启动只完成 project/bootstrap 与 session catalog 加载，不再自动创建或恢复 session；首条真实用户消息或显式 `/session new` 才创建并绑定 session，显式 `/session resume` 才绑定旧 session。
+- **Complexity**: M
+- **Planning Note**: 当前 persisted `active_session_id` / `Active` 状态只能作为最近选择提示，不能继续驱动启动自动恢复。实现应把“当前绑定 session”收口为 runtime-only 状态，并补齐 `Unbound` 启动面的 command、status 与 turn dispatch 契约。**TUI 启动侧**：`omega-tui` 的 `initialize_startup_app()` 当前会在启动时直接取 `startup_restore_snapshot()` 并调用 `app.restore_session()`；改为 `Unbound` 后，这段启动代码必须同步去掉 eager hydration，改为显示空白 / welcome surface，不再假设存在 active binding。**command dispatch 侧**：`Unbound` 状态下 `/session list`、`/session new`、`/session resume` 仍应正常工作；`/session archive`、`/session delete`、`/session info` 等依赖当前绑定 session 的子命令（在不带参数时）须返回明确的“无当前 session”错误，而不是静默失败或 panic。
+- **Blocked by**: None
+- **Blocks**: Task 17J, Task 17L, Task 17M, Task 17N
+- **Related**: docs/specs/omega-session-resume.md, docs/specs/omega-project-system.md, docs/specs/omega-runtime-message-pipeline.md
+
+### Task 17J: omega-project / omega-session — Canonical `session.context.jsonl` Schema And Legacy Migration
+- **Status**: Pending
+- **Priority**: High
+- **Description**: 用每-session 目录下的 `session.context.jsonl` 取代现有 `<session-id>.snapshot.json` 与 `<session-id>.log.jsonl` 双 sidecar，并定义统一的 typed record schema、append/load surface 与 legacy artifact 迁移路径。
+- **Complexity**: L
+- **Planning Note**: `session.context.jsonl` 必须成为恢复、压缩、UI hydration 和 recall 的唯一 source of truth；若需要 index/cache，只能作为可重建 sidecar。迁移必须支持读取旧 flat artifacts 并一次性生成新 ledger，避免半迁移状态。schema 与迁移逻辑和 17I 的 lazy-binding 改造在代码上没有直接依赖，可并行开发，但上线顺序上建议 17I 先稳定再部署 17J，避免在 unbound lifecycle 未完成前引入新的存储路径。
+- **Blocked by**: Task 17I
+- **Blocks**: Task 17K, Task 17L, Task 17N
+- **Related**: docs/specs/omega-session-resume.md, docs/specs/omega-context-management.md, docs/specs/omega-project-system.md
+
+### Task 17K: omega-compression / omega-context / omega-app — Session Ledger Compaction, Budgeting, And Historical Search
+- **Status**: Pending
+- **Priority**: High
+- **Description**: 扩展 `omega-compression`，使其能够基于 `session.context.jsonl` 做 token 估算、默认 400k budget 的近期优先装载、compression checkpoint 生成，以及 query-driven historical search / recall。
+- **Complexity**: L
+- **Planning Note**: 这不是简单的 transcript summarize；需要把 raw records、checkpoint summaries 和搜索命中统一成可被 `omega-context` 消费的 load result。配置项命名可在实现时与现有 model budget config 对齐，但默认值必须是 400k tokens。**config budget 注入**：token 预算配置（默认 400k）须经由 `omega-app` bootstrap 从 `.omega/model.toml` 或等价配置源读取后传入 `SessionContextCompressor`；compression 层不得自行读取配置文件，以保持 config ownership 在1 `omega-app`。
+- **Blocked by**: Task 17J
+- **Blocks**: Task 17L, Task 17N
+- **Related**: docs/specs/omega-session-resume.md, docs/specs/omega-context-management.md, docs/specs/omega-knowledge-evolution.md
+
+### Task 17L: omega-session / omega-context / omega-app — Ledger-Driven Resume And Context Assembly
+- **Status**: Pending
+- **Priority**: High
+- **Description**: 将 session restore、prompt context assembly 与 UI hydration 全部改为从 `session.context.jsonl` 的 compression projection 派生，替换当前 snapshot/replay sidecar 恢复链路。
+- **Complexity**: L
+- **Planning Note**: `omega-session` 负责 binding 切换与 restore orchestration，`omega-context` 负责消费 compression load result 组装 prompt-facing context，`omega-app` 继续透传 typed restore snapshot。不得保留“context 从新 ledger 来、UI 从旧 log.jsonl 来”的双路径兜底。**runtime ledger append wiring**：同一任务还需接通正常 turn pipeline 的增量写入路径——每轮 turn 完成时，`omega-session` 应把 `UserTurn` / `AssistantTurn` / `CommandSection` / `WorkingSetSnapshot` 追加到 canonical ledger；这部分不属于 resume 本身，但必须在本任务内一起接通，否则 ledger 只有旧迁移数据而没有新产生的 turns。**`omega-memory` 定位**：`omega-memory` 中 `get_turn_history_for_session()` 与 `query()` 的 session 过滤路径在新模型下退化为可选的长期 archive recall 辅助，不再作为 resume seed 或 prompt context 的主路径输入源；本任务须明确把上述 memory recall 从 context assembly 的 resume 主链路上移除，防止 ledger 和 memory archive 同时作为 resume source 而产生内容分歧。
+- **Blocked by**: Task 17I, Task 17J, Task 17K
+- **Blocks**: Task 17M, Task 17N
+- **Related**: docs/specs/omega-session-resume.md, docs/specs/omega-runtime-message-pipeline.md, docs/specs/omega-runtime-ui-message-contract.md
+
+### Task 17M: omega-command / omega-session / omega-tui — Unbound Startup Session UX And Operator Flow Rebase
+- **Status**: Pending
+- **Priority**: Medium
+- **Description**: 在 startup `Unbound` 模型下重调 `/session` picker、detail、resume/new 行为与状态提示，确保用户在未绑定 session 时也能明确选择“新建会话”或“恢复旧会话”，并在恢复后看到来自 ledger projection 的日志说明。
+- **Complexity**: M
+- **Planning Note**: overlay-first 的交互基线可复用现有 17G/17H，但文案、排序、状态 surface 和 direct-command 结果都要改成新的 lifecycle 语义。成功恢复时需显示近期装载、压缩摘要、搜索命中和历史折叠信息，避免“日志丢失”的错觉再次出现。
+- **Blocked by**: Task 17I, Task 17L
+- **Blocks**: Task 17N
+- **Related**: docs/specs/omega-session-resume.md, docs/specs/omega-operator-picker-overlay.md, docs/specs/omega-tui-overlay-popups.md
+
+### Task 17N: Session Ledger Migration, Regression, And Documentation Sync
+- **Status**: Pending
+- **Priority**: Medium
+- **Description**: 为 lazy-start lifecycle、canonical ledger、compression-driven recall 与 unbound startup UI 补齐回归测试、迁移验证和开发文档同步，清理 phase-1 sidecar 假设的残留描述。
+- **Complexity**: M
+- **Planning Note**: 至少覆盖 startup 不建 session、首条消息创建 session、legacy sidecar 自动迁移、400k budget 默认值、历史折叠提示、query recall 以及 delete/archive/new/resume 的新语义。`docs/guide/omega-dev-guide.md` 需要在实现完成后从“startup 复用 active session”改写到新的 lazy binding 基线。
+- **Blocked by**: Task 17I, Task 17J, Task 17K, Task 17L, Task 17M
+- **Related**: docs/specs/omega-session-resume.md, docs/guide/omega-dev-guide.md
 
 ### Task 16: 最终整合测试
 - **Status**: Pending
