@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::{mpsc, Arc};
 
 use omega_context::{ContextDiagnostics, ContextSupervisionSnapshot, StepKnowledgeSummary};
-use omega_project::ProjectDetailSnapshot;
+use omega_project::{ProjectDetailSnapshot, SessionReplayEntry};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeUiEnvelope {
@@ -106,6 +106,9 @@ pub enum RuntimeUiEffect {
         section_id: String,
         summary: Box<StepKnowledgeSummary>,
     },
+    RestoreSession {
+        snapshot: Box<SessionRestoreSnapshot>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,6 +180,20 @@ pub enum StatusValue {
         snapshot: Box<ProjectDetailSnapshot>,
     },
     Hidden,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionRestoreSnapshot {
+    pub session_id: String,
+    pub title: String,
+    pub replay_log: Vec<SessionReplayEntry>,
+    pub todo_rendered: String,
+    pub root_workflow_id: String,
+    pub active_workflow_id: String,
+    pub active_workflow_role: WorkflowRunRole,
+    pub recognized_scene_id: Option<String>,
+    pub selected_workflow_id: Option<String>,
+    pub project_snapshot: Box<ProjectDetailSnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -484,6 +501,72 @@ pub enum OverlayTarget {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperatorPickerRequest {
+    pub picker_id: String,
+    pub title: String,
+    pub empty_state: String,
+    pub filter_enabled: bool,
+    pub items: Vec<OperatorPickerItem>,
+    pub primary_action: OperatorPickerAction,
+    pub secondary_actions: Vec<OperatorPickerAction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperatorPickerItem {
+    pub id: String,
+    pub title: String,
+    pub subtitle: Option<String>,
+    pub badges: Vec<String>,
+    pub preview: Option<String>,
+    pub disabled_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperatorPickerAction {
+    pub action_id: String,
+    pub label: String,
+    pub shortcut: OperatorPickerShortcut,
+    pub requires_selection: bool,
+    pub overlay_behavior: OperatorPickerOverlayBehavior,
+    pub intent: OperatorPickerIntent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperatorPickerShortcut {
+    Enter,
+    Ctrl(char),
+}
+
+impl OperatorPickerShortcut {
+    pub fn hint_label(self) -> String {
+        match self {
+            Self::Enter => "Enter".to_string(),
+            Self::Ctrl(character) => format!("Ctrl-{}", character.to_ascii_uppercase()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperatorPickerOverlayBehavior {
+    KeepOpen,
+    CloseOverlay,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OperatorPickerIntent {
+    OpenDetail,
+    SubmitSlashCommand { command_template: String },
+    RequestConfirmSlashCommand {
+        title_template: String,
+        message_template: String,
+        confirm_label: String,
+        command_template: String,
+    },
+    RefreshPicker,
+    ClosePicker,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OverlayRequest {
     pub target: OverlayTarget,
     pub content: UiContent,
@@ -531,12 +614,23 @@ pub enum UiMessageKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiContent {
     Text(String),
+    OperatorPicker(OperatorPickerRequest),
 }
 
 impl UiContent {
     pub fn as_text(&self) -> &str {
         match self {
             Self::Text(text) => text,
+            Self::OperatorPicker(_) => panic!("ui content is not plain text"),
+        }
+    }
+
+    pub fn preview_text(&self) -> String {
+        match self {
+            Self::Text(text) => text.clone(),
+            Self::OperatorPicker(request) => {
+                format!("picker:{} items={}", request.title, request.items.len())
+            }
         }
     }
 }

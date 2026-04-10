@@ -29,7 +29,7 @@ use super::{
     ConversationMessage, ProviderMarkupSanitizer, ResponseSectionDelta, ResponseSectionKind,
     ResponseSectionState, RuntimeContentKind, RuntimeEnvelopeRecorder, RuntimeMessage,
     RuntimeMessageEnvelope, RuntimeSource, RuntimeUiEffect, RuntimeUiEnvelope, SectionOrigin,
-    SessionContext,
+    SessionContext, OverlayTarget, OperatorPickerIntent, UiContent,
     SessionSkillCatalog, SessionToolCatalog, StateMessage, StatusSlot, StatusValue,
     StepContextWriteKind, StepOutputAttemptKind, StepOutputStatus, StepSkillRequest,
     StepToolRequest, ToolRunStatus, UiMessageKind, UiSource, UiTarget, WorkflowRunRole,
@@ -256,6 +256,42 @@ fn force_mock_document_embedding_backend() -> DocumentEmbeddingBackendGuard {
 
 fn write_review_skill(root: &Path) {
     write_named_skill(root, "review", "Review code", "Find regressions.");
+}
+
+fn run_command(
+    session: &AgentSession,
+    input: impl Into<String>,
+    turn_id: u64,
+) -> Vec<RuntimeMessageEnvelope> {
+    let recorder = RuntimeEnvelopeRecorder::new();
+    session
+        .spawn_command_with_test_bridge(input.into(), turn_id, recorder.runtime_bridge())
+        .unwrap();
+    recorder.wait_for_turn_finished_messages(turn_id, Duration::from_secs(30))
+}
+
+fn command_body(recorded: &[RuntimeMessageEnvelope]) -> String {
+    recorded
+        .iter()
+        .filter_map(|envelope| match &envelope.message {
+            RuntimeMessage::Conversation(ConversationMessage::AppendSection { delta, .. }) => {
+                match delta {
+                    ResponseSectionDelta::Text(text) => Some(text.as_str()),
+                }
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn show_overlay_content(recorded: &[RuntimeMessageEnvelope], target: OverlayTarget) -> Option<&UiContent> {
+    recorded.iter().find_map(|envelope| match &envelope.message {
+        RuntimeMessage::State(StateMessage::ShowOverlay { request }) if request.target == target => {
+            Some(&request.content)
+        }
+        _ => None,
+    })
 }
 
 fn write_builtin_hook_manifest(root: &Path, hook_id: &str) {
@@ -1968,6 +2004,347 @@ fn spawn_command_project_switch_rebinds_runtime_skill_hook_and_tool_surfaces() {
     assert!(!after.skill_descriptions.iter().any(|line| line.contains("review: Review code")));
     assert!(after.available_tool_ids.iter().any(|id| id == "load_skill"));
     assert_eq!(after.hook_ids, vec!["hook-b".to_string()]);
+}
+
+#[test]
+fn spawn_command_session_new_list_info_and_delete_manage_project_sessions() {
+    let root = unique_session_test_root("session-command-manage");
+    write_document_fixture(&root);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: Arc::new(IdleClient),
+        system: "system".to_string(),
+        cwd: root.clone(),
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+
+    let initial_snapshot = session.project_detail_snapshot().unwrap();
+    let initial_session_id = initial_snapshot
+        .record
+        .active_session_id
+        .clone()
+        .expect("new agent session should create an active session id");
+
+    let new_events = run_command(&session, "/session new Follow up", 570);
+    let restored = new_events.iter().find_map(|envelope| match &envelope.message {
+        RuntimeMessage::State(StateMessage::SessionRestored { snapshot }) => Some(snapshot.as_ref()),
+        _ => None,
+    });
+    let restored = restored.expect("expected session restored state after /session new");
+    let new_session_id = restored.session_id.clone();
+    assert_ne!(new_session_id, initial_session_id);
+    assert_eq!(restored.title, "Follow up");
+    assert_eq!(restored.root_workflow_id, ROOT_WORKFLOW_ID);
+    assert_eq!(restored.active_workflow_id, ROOT_WORKFLOW_ID);
+    assert!(command_body(&new_events).contains("Started new session"));
+
+    let after_new = session.project_detail_snapshot().unwrap();
+    assert_eq!(after_new.record.active_session_id.as_deref(), Some(new_session_id.as_str()));
+    assert_eq!(after_new.sessions.len(), 2);
+    assert!(after_new.sessions.iter().any(|item| {
+        item.session_id == initial_session_id && item.status == omega_project::ProjectSessionStatus::Idle
+    }));
+
+    let session_events = run_command(&session, "/session", 5701);
+    let picker = match show_overlay_content(&session_events, OverlayTarget::Picker) {
+        Some(UiContent::OperatorPicker(request)) => request,
+        other => panic!("expected session picker overlay, got {other:?}"),
+    };
+    assert_eq!(picker.items.len(), 2);
+    assert_eq!(picker.primary_action.label, "Detail");
+    assert!(matches!(
+        &picker.primary_action.intent,
+        OperatorPickerIntent::SubmitSlashCommand { command_template }
+            if command_template == "/session info {id} --picker"
+    ));
+
+    let list_events = run_command(&session, "/session list", 571);
+    assert!(command_body(&list_events).trim().is_empty());
+    let list_picker = match show_overlay_content(&list_events, OverlayTarget::Picker) {
+        Some(UiContent::OperatorPicker(request)) => request,
+        other => panic!("expected session list picker overlay, got {other:?}"),
+    };
+    assert!(list_picker.items.iter().any(|item| item.id == initial_session_id));
+    assert!(list_picker.items.iter().any(|item| item.id == new_session_id));
+
+    let info_events = run_command(&session, format!("/session info {new_session_id}"), 572);
+    assert!(command_body(&info_events).trim().is_empty());
+    let info_overlay = match show_overlay_content(&info_events, OverlayTarget::Detail) {
+        Some(UiContent::Text(text)) => text,
+        other => panic!("expected session detail overlay, got {other:?}"),
+    };
+    assert!(info_overlay.contains(&format!("Session ID: {new_session_id}")));
+    assert!(info_overlay.contains("Resume ready: true"));
+
+    let delete_events = run_command(&session, format!("/session delete {initial_session_id}"), 573);
+    assert!(command_body(&delete_events).contains("Deleted session artifacts"));
+
+    let after_delete = session.project_detail_snapshot().unwrap();
+    assert_eq!(after_delete.sessions.len(), 1);
+    assert!(after_delete
+        .sessions
+        .iter()
+        .all(|item| item.session_id != initial_session_id));
+}
+
+#[test]
+fn spawn_command_session_resume_restores_saved_routing_context() {
+    let client: Arc<SequencedClient> = sequenced_client(vec![
+        ChatResponse {
+            id: "scene-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"recognized_scene_id\":\"feature\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"selected_workflow_id\":\"feature\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "explore-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_explore_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "plan-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_plan_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_execute_partial_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-2".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_execute_complete_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "report-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("done")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+    ]);
+    let root = unique_session_test_root("session-command-resume-routing");
+    write_document_fixture(&root);
+    write_review_skill(&root);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: client,
+        system: "system".to_string(),
+        cwd: root,
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+
+    let original_session_id = session
+        .project_detail_snapshot()
+        .unwrap()
+        .record
+        .active_session_id
+        .clone()
+        .expect("new agent session should create an active session id");
+
+    let turn_recorder = RuntimeEnvelopeRecorder::new();
+    session
+        .spawn_turn_with_test_bridge("fix this bug".to_string(), 580, turn_recorder.runtime_bridge())
+        .unwrap();
+    let _turn_events = turn_recorder.wait_for_turn_finished_messages(580, Duration::from_secs(30));
+
+    let _new_events = run_command(&session, "/session new Scratch", 581);
+    let picker_events = run_command(&session, "/session resume", 5811);
+    assert!(command_body(&picker_events).trim().is_empty());
+    let resume_picker = match show_overlay_content(&picker_events, OverlayTarget::Picker) {
+        Some(UiContent::OperatorPicker(request)) => request,
+        other => panic!("expected resume picker overlay, got {other:?}"),
+    };
+    assert!(resume_picker.items.iter().any(|item| item.id == original_session_id));
+    assert!(matches!(
+        &resume_picker.secondary_actions[0].intent,
+        OperatorPickerIntent::SubmitSlashCommand { command_template }
+            if command_template == "/session resume {id} --picker"
+    ));
+
+    let resume_events = run_command(&session, format!("/session resume {original_session_id}"), 582);
+
+    let restored = resume_events.iter().find_map(|envelope| match &envelope.message {
+        RuntimeMessage::State(StateMessage::SessionRestored { snapshot }) => Some(snapshot.as_ref()),
+        _ => None,
+    });
+    let restored = restored.expect("expected session restored state after /session resume");
+    assert_eq!(restored.session_id, original_session_id);
+    assert_eq!(restored.root_workflow_id, ROOT_WORKFLOW_ID);
+    assert_eq!(restored.active_workflow_id, FEATURE_WORKFLOW_ID);
+    assert_eq!(restored.recognized_scene_id.as_deref(), Some("feature"));
+    assert_eq!(restored.selected_workflow_id.as_deref(), Some(FEATURE_WORKFLOW_ID));
+    assert!(command_body(&resume_events).contains("Resumed session"));
+    assert_eq!(
+        session.project_detail_snapshot().unwrap().record.active_session_id.as_deref(),
+        Some(original_session_id.as_str())
+    );
+}
+
+#[test]
+fn spawn_command_session_resume_reports_non_resume_ready_sessions() {
+    let root = unique_session_test_root("session-command-resume-not-ready");
+    write_document_fixture(&root);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: Arc::new(IdleClient),
+        system: "system".to_string(),
+        cwd: root.clone(),
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+
+    let original_session_id = session
+        .project_detail_snapshot()
+        .unwrap()
+        .record
+        .active_session_id
+        .clone()
+        .expect("new agent session should create an active session id");
+
+    let _new_events = run_command(&session, "/session new Scratch", 5830);
+    let snapshot_path = root
+        .join(".omega")
+        .join("sessions")
+        .join(format!("{original_session_id}.snapshot.json"));
+    std::fs::remove_file(&snapshot_path).expect("remove snapshot to force not resume-ready");
+
+    let resume_events = run_command(&session, format!("/session resume {original_session_id}"), 5831);
+
+    assert!(command_body(&resume_events).contains("Error: session exists but is not resume-ready"));
+    assert!(resume_events.iter().any(|envelope| {
+        matches!(
+            &envelope.message,
+            RuntimeMessage::Conversation(ConversationMessage::CompleteSection { state, .. })
+                if *state == ResponseSectionState::Failed
+        )
+    }));
+}
+
+#[test]
+fn new_reuses_existing_active_session_and_exposes_startup_replay() {
+    let client: Arc<SequencedClient> = sequenced_client(vec![
+        ChatResponse {
+            id: "scene-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"recognized_scene_id\":\"chat\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"selected_workflow_id\":\"chat\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "chat-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("chat answer")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+    ]);
+    let root = unique_session_test_root("startup-session-restore");
+    write_document_fixture(&root);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let first = AgentSession::new(AgentSessionConfig {
+        client: client.clone(),
+        system: "system".to_string(),
+        cwd: root.clone(),
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog.clone(),
+        workflow_catalog: loaded_catalog.workflow_catalog.clone(),
+        prompt_catalog: loaded_catalog.prompt_catalog.clone(),
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+
+    let turn_recorder = RuntimeEnvelopeRecorder::new();
+    first
+        .spawn_turn_with_test_bridge("just chat".to_string(), 590, turn_recorder.runtime_bridge())
+        .unwrap();
+    let _turn_events = turn_recorder.wait_for_turn_finished_messages(590, Duration::from_secs(30));
+
+    let original_id = first.current_session_id();
+    assert_eq!(first.project_detail_snapshot().unwrap().sessions.len(), 1);
+
+    let restored = AgentSession::new(AgentSessionConfig {
+        client: Arc::new(IdleClient),
+        system: "system".to_string(),
+        cwd: root,
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+
+    assert_eq!(restored.current_session_id(), original_id);
+    assert_eq!(restored.project_detail_snapshot().unwrap().sessions.len(), 1);
+    let startup = restored
+        .startup_restore_snapshot()
+        .expect("expected startup restore snapshot for existing active session");
+    assert_eq!(startup.session_id, original_id);
+    assert!(startup.replay_log.iter().any(|entry| {
+        entry.kind == omega_project::SessionReplayEntryKind::UserTurn && entry.body == "just chat"
+    }));
+    assert!(startup.replay_log.iter().any(|entry| {
+        entry.kind == omega_project::SessionReplayEntryKind::AssistantResponse
+            && entry.body.contains("chat answer")
+    }));
 }
 
 #[cfg(feature = "document-backend")]

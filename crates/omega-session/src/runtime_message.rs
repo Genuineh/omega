@@ -5,7 +5,7 @@ use omega_project::ProjectDetailSnapshot;
 
 use crate::runtime_ui::{
     OverlayRequest, ResponseSection, ResponseSectionDelta, ResponseSectionState, RuntimeUiEffect,
-    RuntimeUiEnvelope, RuntimeUiMessage, SkillLoadSummary, StatusSlot, StatusValue,
+    RuntimeUiEnvelope, RuntimeUiMessage, SessionRestoreSnapshot, SkillLoadSummary, StatusSlot, StatusValue,
     StepDiagnostics,
     StepSubflowStatus, ToolRun, ToolRunStatus, UiContent, UiMessageKind, UiPriority, UiSource,
     UiTarget, WorkflowRunRole,
@@ -116,6 +116,9 @@ pub enum StateMessage {
     StepKnowledgeSummary {
         section_id: String,
         summary: Box<StepKnowledgeSummary>,
+    },
+    SessionRestored {
+        snapshot: Box<SessionRestoreSnapshot>,
     },
     Activity {
         source: RuntimeSource,
@@ -408,6 +411,10 @@ fn legacy_ui_envelopes_from_state(turn_id: u64, message: StateMessage) -> Vec<Ru
                 section_id,
                 summary,
             },
+        )],
+        StateMessage::SessionRestored { snapshot } => vec![RuntimeUiEnvelope::effect(
+            turn_id,
+            RuntimeUiEffect::RestoreSession { snapshot },
         )],
         StateMessage::Activity {
             source,

@@ -4,8 +4,9 @@ use omega_core::DynLlmClient;
 use omega_keymap::{InteractionMode, KeymapManager};
 use omega_project::ProjectDetectionKind;
 use omega_session::{
-    ConversationMessage, ResponseSectionKind, ResponseSectionState, RuntimeMessage, StateMessage,
-    WorkflowRunRole,
+    ConversationMessage, OperatorPickerAction, OperatorPickerIntent, OperatorPickerItem,
+    OperatorPickerOverlayBehavior, OperatorPickerRequest, OperatorPickerShortcut,
+    ResponseSectionKind, ResponseSectionState, RuntimeMessage, StateMessage, WorkflowRunRole,
 };
 use omega_theme::OmegaTheme;
 use omega_test_support::persistent_test_root;
@@ -1597,4 +1598,232 @@ fn replay_harness_drives_overlay_search_sequence() {
     assert!(!overlay_active);
     assert_eq!(focused_panel, Panel::Response);
     assert!(input_buffer.is_empty());
+}
+
+#[test]
+fn picker_enter_opens_selected_item_detail_overlay() {
+    let harness = EventReplayHarness::new();
+    {
+        let mut app_guard = harness.app.lock().unwrap();
+        app_guard.focused_panel = Panel::Logs;
+        app_guard.open_picker_overlay(sample_operator_picker_request());
+    }
+
+    harness.replay_keys(&[(KeyCode::Enter, KeyModifiers::NONE)]);
+
+    let app_guard = harness.app.lock().unwrap();
+    match app_guard.overlay.as_ref() {
+        Some(OverlayState::Detail(detail)) => {
+            assert!(detail.title.contains("Session Alpha"));
+            assert!(detail.lines.iter().any(|line| line.contains("session-alpha")));
+        }
+        other => panic!("expected detail overlay, got {other:?}"),
+    }
+}
+
+#[test]
+fn picker_filter_reduces_visible_items() {
+    let harness = EventReplayHarness::new();
+    {
+        let mut app_guard = harness.app.lock().unwrap();
+        app_guard.open_picker_overlay(sample_operator_picker_request());
+    }
+
+    harness.replay_keys(&[
+        (KeyCode::Char('/'), KeyModifiers::NONE),
+        (KeyCode::Char('b'), KeyModifiers::NONE),
+        (KeyCode::Char('e'), KeyModifiers::NONE),
+    ]);
+
+    let app_guard = harness.app.lock().unwrap();
+    match app_guard.overlay.as_ref() {
+        Some(OverlayState::Picker(picker)) => {
+            assert!(picker.filter_mode);
+            assert_eq!(picker.filter_query, "be");
+            assert_eq!(picker.visible_items_len(), 1);
+            assert_eq!(picker.selected_item().map(|item| item.id.as_str()), Some("session-beta"));
+        }
+        other => panic!("expected picker overlay, got {other:?}"),
+    }
+}
+
+#[test]
+fn picker_ctrl_shortcut_submits_slash_command_template() {
+    let client: DynLlmClient = Arc::new(IdleClient);
+    let root = event_test_root("picker-ctrl-shortcut");
+    write_document_fixture(&root);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let session = test_session(client, root, &runtime);
+    let app = Arc::new(Mutex::new(App::new()));
+    let (tx, rx) = mpsc::channel();
+    let keymap = KeymapManager::default();
+    {
+        let mut app_guard = app.lock().unwrap();
+        app_guard.open_picker_overlay(sample_operator_picker_request());
+    }
+
+    handle_key_event(
+        press_key(KeyCode::Char('r'), KeyModifiers::CONTROL),
+        &app,
+        &session,
+        &tx,
+        &keymap,
+    )
+    .unwrap();
+
+    let mut saw_command_section = false;
+    loop {
+        let envelope = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        if matches!(
+            &envelope.message,
+            RuntimeMessage::Conversation(ConversationMessage::BeginSection { section })
+                if section.kind == ResponseSectionKind::Command
+        ) {
+            saw_command_section = true;
+        }
+        if matches!(
+            &envelope.message,
+            RuntimeMessage::State(StateMessage::TurnFinished)
+        ) {
+            break;
+        }
+    }
+
+    assert!(saw_command_section);
+    let app_guard = app.lock().unwrap();
+    assert!(app_guard.overlay.is_none());
+    assert!(app_guard
+        .output_msgs
+        .iter()
+        .any(|message| message.text.contains("> /document health")));
+}
+
+#[test]
+fn picker_confirm_shortcut_opens_confirm_overlay_and_runs_command_after_confirmation() {
+    let client: DynLlmClient = Arc::new(IdleClient);
+    let root = event_test_root("picker-confirm-shortcut");
+    write_document_fixture(&root);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let session = test_session(client, root, &runtime);
+    let app = Arc::new(Mutex::new(App::new()));
+    let (tx, rx) = mpsc::channel();
+    let keymap = KeymapManager::default();
+    {
+        let mut app_guard = app.lock().unwrap();
+        app_guard.open_picker_overlay(sample_confirm_picker_request());
+    }
+
+    handle_key_event(
+        press_key(KeyCode::Char('d'), KeyModifiers::CONTROL),
+        &app,
+        &session,
+        &tx,
+        &keymap,
+    )
+    .unwrap();
+
+    {
+        let app_guard = app.lock().unwrap();
+        match app_guard.overlay.as_ref() {
+            Some(OverlayState::Confirm(confirm)) => {
+                assert!(confirm.message.contains("Session Alpha"));
+                assert_eq!(confirm.confirm_label, "Delete");
+            }
+            other => panic!("expected confirm overlay, got {other:?}"),
+        }
+    }
+
+    handle_key_event(
+        press_key(KeyCode::Char('y'), KeyModifiers::NONE),
+        &app,
+        &session,
+        &tx,
+        &keymap,
+    )
+    .unwrap();
+    handle_key_event(
+        press_key(KeyCode::Enter, KeyModifiers::NONE),
+        &app,
+        &session,
+        &tx,
+        &keymap,
+    )
+    .unwrap();
+
+    loop {
+        let envelope = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        if matches!(&envelope.message, RuntimeMessage::State(StateMessage::TurnFinished)) {
+            break;
+        }
+    }
+
+    let app_guard = app.lock().unwrap();
+    assert!(app_guard.overlay.is_none());
+    assert!(app_guard
+        .output_msgs
+        .iter()
+        .any(|message| message.text.contains("> /session delete session-alpha --picker")));
+}
+
+fn sample_operator_picker_request() -> OperatorPickerRequest {
+    OperatorPickerRequest {
+        picker_id: "sessions".to_string(),
+        title: " Sessions ".to_string(),
+        empty_state: "No sessions found.".to_string(),
+        filter_enabled: true,
+        items: vec![
+            OperatorPickerItem {
+                id: "session-alpha".to_string(),
+                title: "Session Alpha".to_string(),
+                subtitle: Some("resume-ready".to_string()),
+                badges: vec!["current".to_string()],
+                preview: Some("Last turn: inspect runtime contract".to_string()),
+                disabled_reason: None,
+            },
+            OperatorPickerItem {
+                id: "session-beta".to_string(),
+                title: "Session Beta".to_string(),
+                subtitle: Some("archived".to_string()),
+                badges: vec!["resume-ready".to_string()],
+                preview: Some("Last turn: validate background worker".to_string()),
+                disabled_reason: None,
+            },
+        ],
+        primary_action: OperatorPickerAction {
+            action_id: "detail".to_string(),
+            label: "Detail".to_string(),
+            shortcut: OperatorPickerShortcut::Enter,
+            requires_selection: true,
+            overlay_behavior: OperatorPickerOverlayBehavior::KeepOpen,
+            intent: OperatorPickerIntent::OpenDetail,
+        },
+        secondary_actions: vec![OperatorPickerAction {
+            action_id: "resume".to_string(),
+            label: "Resume".to_string(),
+            shortcut: OperatorPickerShortcut::Ctrl('r'),
+            requires_selection: true,
+            overlay_behavior: OperatorPickerOverlayBehavior::CloseOverlay,
+            intent: OperatorPickerIntent::SubmitSlashCommand {
+                command_template: "/document health".to_string(),
+            },
+        }],
+    }
+}
+
+fn sample_confirm_picker_request() -> OperatorPickerRequest {
+    let mut request = sample_operator_picker_request();
+    request.secondary_actions.push(OperatorPickerAction {
+        action_id: "delete".to_string(),
+        label: "Delete".to_string(),
+        shortcut: OperatorPickerShortcut::Ctrl('d'),
+        requires_selection: true,
+        overlay_behavior: OperatorPickerOverlayBehavior::KeepOpen,
+        intent: OperatorPickerIntent::RequestConfirmSlashCommand {
+            title_template: " Confirm session delete ".to_string(),
+            message_template: "Delete session {title} ({id})?".to_string(),
+            confirm_label: "Delete".to_string(),
+            command_template: "/session delete {id} --picker".to_string(),
+        },
+    });
+    request
 }

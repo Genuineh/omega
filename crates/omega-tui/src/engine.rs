@@ -1,6 +1,6 @@
 use omega_session::{
     ContextSupervisionSnapshot, OverlayRequest, ResponseSection, ResponseSectionDelta,
-    ResponseSectionState, RuntimeUiEffect, RuntimeUiEnvelope, SessionRoutingStatus,
+    ResponseSectionState, RuntimeUiEffect, RuntimeUiEnvelope, SessionRestoreSnapshot, SessionRoutingStatus,
     SkillLoadSummary, StatusSlot, StatusValue, StepDiagnostics, StepKnowledgeSummary,
     StepSubflowStatus, ToolRun,
     ToolRunStatus, WorkflowStepStatus,
@@ -38,6 +38,7 @@ pub trait TuiSurface {
     fn show_overlay(&mut self, request: OverlayRequest);
     fn push_agent_message(&mut self, text: &str);
     fn push_error_message(&mut self, text: &str);
+    fn restore_session(&mut self, snapshot: SessionRestoreSnapshot);
     fn mark_turn_finished(&mut self);
 }
 
@@ -179,6 +180,10 @@ impl TuiSurface for TuiEngine<'_> {
 
     fn push_error_message(&mut self, text: &str) {
         self.app.push_msg(MsgKind::Error, text);
+    }
+
+    fn restore_session(&mut self, snapshot: SessionRestoreSnapshot) {
+        self.app.restore_session(snapshot);
     }
 
     fn mark_turn_finished(&mut self) {

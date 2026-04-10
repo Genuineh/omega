@@ -52,6 +52,7 @@ pub(super) fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorSch
             frame.render_widget(block, overlay_rect);
 
             let input = Paragraph::new(Line::from(render_overlay_input(
+                " > ",
                 search.query.as_str(),
                 search.cursor_pos,
                 colors,
@@ -193,35 +194,68 @@ pub(super) fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorSch
         OverlayState::Picker(picker) => {
             let block = Block::default()
                 .border_type(colors.overlay_border_type)
-                .title(picker.title.as_str())
+                .title(picker.title())
                 .borders(Borders::ALL)
                 .border_style(overlay_border_style(colors))
                 .style(Style::default().bg(colors.overlay_bg));
             let inner = padded_rect(block.inner(overlay_rect), 1, 1);
             frame.render_widget(block, overlay_rect);
-            let items: Vec<ListItem> = picker
-                .items
-                .iter()
-                .enumerate()
-                .map(|(index, item)| {
-                    let prefix = if index == picker.selected {
-                        "› "
-                    } else {
-                        "  "
-                    };
-                    let style = if index == picker.selected {
-                        Style::default()
-                            .fg(colors.focus_border)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(colors.text)
-                    };
-                    ListItem::new(Span::styled(format!("{prefix}{item}"), style))
-                })
-                .collect();
+            let constraints = if picker.filter_enabled() {
+                [Constraint::Length(3), Constraint::Min(1), Constraint::Length(1)]
+            } else {
+                [Constraint::Min(1), Constraint::Length(1), Constraint::Length(0)]
+            };
+            let sections = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints(constraints)
+                .split(inner);
+
+            let (list_rect, footer_rect) = if picker.filter_enabled() {
+                frame.render_widget(
+                    Paragraph::new(Line::from(render_overlay_input(
+                        " / ",
+                        picker.filter_query.as_str(),
+                        picker.filter_cursor_pos,
+                        colors,
+                    )))
+                    .style(Style::default().fg(colors.input_text).bg(colors.overlay_bg)),
+                    sections[0],
+                );
+                (sections[1], sections[2])
+            } else {
+                (sections[0], sections[1])
+            };
+
+            if picker.visible_items_len() == 0 {
+                frame.render_widget(
+                    Paragraph::new(picker.empty_state_text())
+                        .style(Style::default().fg(colors.context_hint).bg(colors.overlay_bg)),
+                    list_rect,
+                );
+            } else {
+                let viewport = list_rect.height as usize;
+                let scroll = picker
+                    .selected
+                    .saturating_sub(viewport.saturating_sub(1))
+                    .min(picker.visible_items_len().saturating_sub(viewport));
+                let items: Vec<ListItem> = (scroll..picker.visible_items_len())
+                    .take(viewport)
+                    .filter_map(|index| picker.visible_item(index).map(|item| (index, item)))
+                    .map(|(index, item)| render_picker_item(index == picker.selected, item, colors))
+                    .collect();
+                frame.render_widget(
+                    List::new(items).style(Style::default().bg(colors.overlay_bg)),
+                    list_rect,
+                );
+            }
+
             frame.render_widget(
-                List::new(items).style(Style::default().bg(colors.overlay_bg)),
-                inner,
+                Paragraph::new(picker.footer_hints().join("  ")).style(
+                    Style::default()
+                        .fg(colors.context_hint)
+                        .bg(colors.overlay_bg),
+                ),
+                footer_rect,
             );
         }
         OverlayState::InputPrompt(prompt) => {
@@ -247,6 +281,7 @@ pub(super) fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorSch
             );
             frame.render_widget(
                 Paragraph::new(Line::from(render_overlay_input(
+                    " > ",
                     prompt.value.as_str(),
                     prompt.cursor_pos,
                     colors,
@@ -343,19 +378,22 @@ pub(super) fn overlay_hint_text(app: &App) -> &'static str {
         Some(OverlayState::Detail(_)) => {
             " Detail dialog: ↑/↓ PgUp/PgDn scroll  Home/End jump  Esc=Close"
         }
-        Some(OverlayState::Picker(_)) => " Picker popup: ↑/↓/Tab move  Enter=Select  Esc=Close",
+        Some(OverlayState::Picker(_)) => {
+            " Picker popup: ↑/↓/j/k move  Enter=Primary action  Ctrl-*=Actions  /=Filter  Esc=Close"
+        }
         Some(OverlayState::InputPrompt(_)) => " Input prompt: type freely  Enter=Submit  Esc=Close",
         None => "",
     }
 }
 
 fn render_overlay_input(
+    prefix: &str,
     value: &str,
     cursor_pos: usize,
     colors: &ColorScheme,
 ) -> Vec<Span<'static>> {
     let chars: Vec<char> = value.chars().collect();
-    let mut spans = vec![Span::styled(" > ", Style::default().fg(colors.input_text))];
+    let mut spans = vec![Span::styled(prefix.to_string(), Style::default().fg(colors.input_text))];
 
     if chars.is_empty() {
         spans.push(Span::styled(" ", Style::default().bg(colors.input_text)));
@@ -379,6 +417,46 @@ fn render_overlay_input(
     }
 
     spans
+}
+
+fn render_picker_item(
+    selected: bool,
+    item: &omega_session::OperatorPickerItem,
+    colors: &ColorScheme,
+) -> ListItem<'static> {
+    let base_style = if selected {
+        Style::default()
+            .fg(colors.focus_border)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(colors.text)
+    };
+    let mut spans = vec![Span::styled(
+        if selected { "› " } else { "  " },
+        base_style,
+    )];
+    spans.push(Span::styled(item.title.clone(), base_style));
+
+    if let Some(subtitle) = item.subtitle.as_deref() {
+        spans.push(Span::styled(
+            format!(" — {subtitle}"),
+            Style::default().fg(colors.context_hint),
+        ));
+    }
+    for badge in &item.badges {
+        spans.push(Span::styled(
+            format!(" [{badge}]"),
+            Style::default().fg(colors.context_hint),
+        ));
+    }
+    if let Some(disabled_reason) = item.disabled_reason.as_deref() {
+        spans.push(Span::styled(
+            format!(" ({disabled_reason})"),
+            Style::default().fg(colors.context_hint),
+        ));
+    }
+
+    ListItem::new(Line::from(spans))
 }
 
 fn button_span(selected: bool, label: &str, colors: &ColorScheme) -> Span<'static> {

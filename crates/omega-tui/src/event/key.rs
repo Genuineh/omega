@@ -10,7 +10,7 @@ pub(super) fn handle_key_event(
     keymap: &KeymapManager,
 ) -> anyhow::Result<bool> {
     if app.lock().unwrap().overlay_active() {
-        return handle_overlay_key_event(key, app, session);
+        return handle_overlay_key_event(key, app, session, tx);
     }
 
     {
@@ -302,6 +302,20 @@ pub(super) fn handle_submit(
     session: &AgentSession,
     tx: &mpsc::Sender<RuntimeMessageEnvelope>,
 ) -> anyhow::Result<bool> {
+    let input = {
+        let mut app_guard = app.lock().unwrap();
+        app_guard.take_input()
+    };
+
+    submit_input_text(input, app, session, tx)
+}
+
+pub(super) fn submit_input_text(
+    input: String,
+    app: &Arc<Mutex<App>>,
+    session: &AgentSession,
+    tx: &mpsc::Sender<RuntimeMessageEnvelope>,
+) -> anyhow::Result<bool> {
     let agent_ready = session.is_ready();
     let still_running = app.lock().unwrap().is_running;
     if !agent_ready || still_running {
@@ -311,11 +325,6 @@ pub(super) fn handle_submit(
         );
         return Ok(false);
     }
-
-    let input = {
-        let mut app_guard = app.lock().unwrap();
-        app_guard.take_input()
-    };
 
     if input == "q" || input == "exit" {
         info!("user exit");

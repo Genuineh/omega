@@ -604,6 +604,8 @@ fn bottom_status_renders_project_slot_with_name_only() {
                     last_active_at: 12,
                     turn_count: 4,
                     last_user_turn_preview: Some("Investigate project badge".to_string()),
+                    resume_ready: true,
+                    archived_turn_count: 4,
                 }],
                 knowledge: omega_project::ProjectKnowledgeSummary {
                     document: ContextDocumentDiagnostics {

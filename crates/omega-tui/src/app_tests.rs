@@ -1,7 +1,9 @@
 use omega_session::{
     ActivityTarget, CacheDiagnostics, ContextBudgetDiagnostics, ContextDiagnostics,
     ContextDocumentDiagnostics, ContextMemoryDiagnostics, ContextStoreDiagnostics,
-    ExecuteProgressDiagnostics, HealthScore, OverlayRequest, ResponseSection, ResponseSectionDelta,
+    ExecuteProgressDiagnostics, HealthScore, OperatorPickerAction, OperatorPickerIntent,
+    OperatorPickerItem, OperatorPickerOverlayBehavior, OperatorPickerRequest,
+    OperatorPickerShortcut, OverlayRequest, ResponseSection, ResponseSectionDelta,
     ResponseSectionKind, ResponseSectionMetadata, RuntimeUiEffect, RuntimeUiMessage,
     SectionOrigin,
     StepContextWrite, StepContextWriteKind, StepDiagnostics, StepInputDiagnostics, StepInputStatus,
@@ -341,6 +343,8 @@ fn setting_project_status_builds_project_sidebar_lines_and_badge() {
             status: omega_project::ProjectSessionStatus::Active,
             turn_count: 3,
             last_user_turn_preview: Some("review project wiring".to_string()),
+            resume_ready: true,
+            archived_turn_count: 3,
         }],
         knowledge: omega_project::ProjectKnowledgeSummary {
             document: ContextDocumentDiagnostics {
@@ -384,6 +388,162 @@ fn setting_project_status_builds_project_sidebar_lines_and_badge() {
         .project_lines
         .iter()
         .any(|line| line.contains("memory totals: turns=6 queries=4 observations=2")));
+}
+
+#[test]
+fn restore_session_replaces_stale_runtime_state_with_snapshot_replay() {
+    let mut app = App::new();
+    let turn_id = app.begin_turn();
+
+    app.begin_response_section(ResponseSection {
+        id: "turn-1:command".to_string(),
+        parent_id: None,
+        kind: ResponseSectionKind::Command,
+        title: "/session list".to_string(),
+        state: omega_session::ResponseSectionState::Streaming,
+        metadata: ResponseSectionMetadata {
+            scene_id: None,
+            origin: SectionOrigin::Command {
+                command_name: "/session list".to_string(),
+                source: "builtin".to_string(),
+            },
+            step_id: None,
+            step_label: None,
+            subflow_ref: None,
+        },
+    });
+    app.append_response_section("turn-1:command", "old output");
+    app.complete_response_section(
+        "turn-1:command",
+        omega_session::ResponseSectionState::Complete,
+    );
+    app.begin_tool_run(omega_session::ToolRun {
+        id: "tool-1".to_string(),
+        parent_section_id: "turn-1:command".to_string(),
+        tool_name: "bash".to_string(),
+        status: omega_session::ToolRunStatus::Running,
+        invocation_preview: "$ ls".to_string(),
+        result_preview: None,
+        detail: ToolRunDetail {
+            title: " Tool: bash ".to_string(),
+            lines: vec!["tool: bash".to_string()],
+        },
+    });
+    app.add_log("old log".to_string());
+    app.upsert_step_subflow(StepSubflowStatus {
+        workflow_id: "feature".to_string(),
+        workflow_role: WorkflowRunRole::Child,
+        step_id: "execute".to_string(),
+        step_label: "Execute".to_string(),
+        subflow_id: "execute-1".to_string(),
+        item_id: Some("task-1".to_string()),
+        item_label: Some("Old item".to_string()),
+        item_index: 1,
+        item_total: 2,
+        status: StepSubflowState::Running,
+        repeat_count_for_item: 0,
+        no_progress_streak_for_item: 0,
+        completion_source: None,
+    });
+    app.open_picker_overlay(OperatorPickerRequest {
+        picker_id: "sessions".to_string(),
+        title: " Sessions ".to_string(),
+        empty_state: "none".to_string(),
+        filter_enabled: true,
+        items: vec![OperatorPickerItem {
+            id: "old-session".to_string(),
+            title: "Old Session".to_string(),
+            subtitle: None,
+            badges: vec![],
+            preview: None,
+            disabled_reason: None,
+        }],
+        primary_action: OperatorPickerAction {
+            action_id: "detail".to_string(),
+            label: "Detail".to_string(),
+            shortcut: OperatorPickerShortcut::Enter,
+            requires_selection: true,
+            overlay_behavior: OperatorPickerOverlayBehavior::KeepOpen,
+            intent: OperatorPickerIntent::OpenDetail,
+        },
+        secondary_actions: Vec::new(),
+    });
+    app.set_todo_snapshot(turn_id, "[>] #1: Old\n\n(0/1 completed)");
+
+    app.restore_session(omega_session::SessionRestoreSnapshot {
+        session_id: "session-restored".to_string(),
+        title: "Restored Session".to_string(),
+        replay_log: vec![
+            omega_project::SessionReplayEntry {
+                session_id: "session-restored".to_string(),
+                recorded_at: 1,
+                kind: omega_project::SessionReplayEntryKind::UserTurn,
+                title: None,
+                body: "restored prompt".to_string(),
+                state: None,
+            },
+            omega_project::SessionReplayEntry {
+                session_id: "session-restored".to_string(),
+                recorded_at: 2,
+                kind: omega_project::SessionReplayEntryKind::ToolSummary,
+                title: None,
+                body: "bash echo hi".to_string(),
+                state: None,
+            },
+            omega_project::SessionReplayEntry {
+                session_id: "session-restored".to_string(),
+                recorded_at: 3,
+                kind: omega_project::SessionReplayEntryKind::CommandSection,
+                title: Some("/session list".to_string()),
+                body: "restored sessions".to_string(),
+                state: Some("complete".to_string()),
+            },
+        ],
+        todo_rendered: "[>] #1: Restored\n\n(0/1 completed)".to_string(),
+        root_workflow_id: "root".to_string(),
+        active_workflow_id: "feature".to_string(),
+        active_workflow_role: WorkflowRunRole::Child,
+        recognized_scene_id: Some("feature".to_string()),
+        selected_workflow_id: Some("feature".to_string()),
+        project_snapshot: Box::new(omega_project::ProjectDetailSnapshot {
+            record: omega_project::ProjectRecord {
+                project_id: "proj-123".to_string(),
+                display_name: "omega".to_string(),
+                root: std::path::PathBuf::from("/workspace/omega"),
+                detection_kind: omega_project::ProjectDetectionKind::Explicit,
+                created_at: 1,
+                last_opened_at: 2,
+                active_session_id: Some("session-restored".to_string()),
+            },
+            sessions: vec![omega_project::ProjectSessionRef {
+                session_id: "session-restored".to_string(),
+                title: "Restored Session".to_string(),
+                started_at: 1,
+                last_active_at: 2,
+                status: omega_project::ProjectSessionStatus::Active,
+                turn_count: 4,
+                last_user_turn_preview: Some("restored prompt".to_string()),
+                resume_ready: true,
+                archived_turn_count: 4,
+            }],
+            knowledge: omega_project::ProjectKnowledgeSummary {
+                document: ContextDocumentDiagnostics::default(),
+                memory: ContextMemoryDiagnostics::default(),
+                session_count: 1,
+                active_session_id: Some("session-restored".to_string()),
+            },
+        }),
+    });
+
+    assert!(app.overlay.is_none());
+    assert!(app.tool_runs.is_empty());
+    assert!(app.step_subflows.is_empty());
+    assert!(app.output_msgs.iter().all(|message| !message.text.contains("old output")));
+    assert!(app.output_msgs.iter().any(|message| message.text.contains("restored prompt")));
+    assert!(app.output_msgs.iter().any(|message| message.text.contains("restored sessions")));
+    assert_eq!(app.log_lines, vec!["[tool] bash echo hi".to_string()]);
+    assert_eq!(app.todo_lines, vec!["→ #1: Restored".to_string()]);
+    assert_eq!(app.response_state.selected(), Some(app.output_msgs.len().saturating_sub(1)));
 }
 
 #[test]
@@ -2426,6 +2586,63 @@ fn search_overlay_target_can_show_runtime_results_and_hide() {
     ));
 
     assert!(app.overlay.is_none());
+}
+
+#[test]
+fn picker_overlay_target_can_show_typed_runtime_request() {
+    let mut app = App::new();
+    let turn_id = app.begin_turn();
+
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::ShowOverlay(OverlayRequest {
+            target: omega_session::OverlayTarget::Picker,
+            content: UiContent::OperatorPicker(OperatorPickerRequest {
+                picker_id: "sessions".to_string(),
+                title: " Sessions ".to_string(),
+                empty_state: "No sessions yet.".to_string(),
+                filter_enabled: true,
+                items: vec![OperatorPickerItem {
+                    id: "session-1".to_string(),
+                    title: "Design task".to_string(),
+                    subtitle: Some("idle".to_string()),
+                    badges: vec!["resume-ready".to_string()],
+                    preview: Some("last turn: inspect runtime contract".to_string()),
+                    disabled_reason: None,
+                }],
+                primary_action: OperatorPickerAction {
+                    action_id: "detail".to_string(),
+                    label: "Detail".to_string(),
+                    shortcut: OperatorPickerShortcut::Enter,
+                    requires_selection: true,
+                    overlay_behavior: OperatorPickerOverlayBehavior::KeepOpen,
+                    intent: OperatorPickerIntent::OpenDetail,
+                },
+                secondary_actions: vec![OperatorPickerAction {
+                    action_id: "resume".to_string(),
+                    label: "Resume".to_string(),
+                    shortcut: OperatorPickerShortcut::Ctrl('r'),
+                    requires_selection: true,
+                    overlay_behavior: OperatorPickerOverlayBehavior::CloseOverlay,
+                    intent: OperatorPickerIntent::SubmitSlashCommand {
+                        command_template: "/session resume {id}".to_string(),
+                    },
+                }],
+            }),
+        }),
+    ));
+
+    match app.overlay.as_ref() {
+        Some(OverlayState::Picker(picker)) => {
+            assert_eq!(picker.request.picker_id, "sessions");
+            assert!(picker.filter_enabled());
+            assert_eq!(picker.visible_items_len(), 1);
+            let selected = picker.selected_item().expect("selected picker item");
+            assert_eq!(selected.title, "Design task");
+            assert_eq!(selected.badges, vec!["resume-ready".to_string()]);
+        }
+        other => panic!("expected typed picker overlay, got {other:?}"),
+    }
 }
 
 #[test]

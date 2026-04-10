@@ -1,7 +1,8 @@
 use omega_session::{
-    ActivityTarget, OverlayRequest, OverlayTarget, ResponseSectionDelta, RuntimeUiEffect,
-    RuntimeUiEnvelope, RuntimeUiMessage, StatusValue, UiContent, UiMessageKind, UiSource, UiTarget,
-    WorkflowRunRole,
+    ActivityTarget, OperatorPickerAction, OperatorPickerIntent, OperatorPickerItem,
+    OperatorPickerOverlayBehavior, OperatorPickerRequest, OperatorPickerShortcut, OverlayRequest,
+    OverlayTarget, ResponseSectionDelta, RuntimeUiEffect, RuntimeUiEnvelope, RuntimeUiMessage,
+    StatusValue, UiContent, UiMessageKind, UiSource, UiTarget, WorkflowRunRole,
 };
 
 use crate::app::{
@@ -29,12 +30,14 @@ impl TuiUpdateReducer {
             UiTarget::Activity(ActivityTarget::Log) => Self::apply_log_message(app, message),
             UiTarget::Activity(ActivityTarget::Skills) => Self::apply_log_message(app, message),
             UiTarget::Todo => {
-                let UiContent::Text(text) = message.content;
-                app.set_todo_snapshot(app.active_turn_id, &text);
+                if let UiContent::Text(text) = message.content {
+                    app.set_todo_snapshot(app.active_turn_id, &text);
+                }
             }
             UiTarget::StatusBar(slot) => {
-                let UiContent::Text(text) = message.content;
-                app.set_status_slot(slot, StatusValue::Label(text));
+                if let UiContent::Text(text) = message.content {
+                    app.set_status_slot(slot, StatusValue::Label(text));
+                }
             }
             UiTarget::Overlay(target) => Self::show_overlay_message(app, target, message),
         }
@@ -132,6 +135,7 @@ impl TuiUpdateReducer {
                 section_id,
                 summary,
             } => app.upsert_step_knowledge_summary(section_id, *summary),
+            RuntimeUiEffect::RestoreSession { snapshot } => app.restore_session(*snapshot),
             RuntimeUiEffect::UpsertStepSubflow { subflow } => app.upsert_step_subflow(subflow),
         }
     }
@@ -187,11 +191,12 @@ impl TuiUpdateReducer {
             ),
             OverlayRequest {
                 target: OverlayTarget::Picker,
+                content: UiContent::OperatorPicker(request),
+            } => app.open_picker_overlay(request),
+            OverlayRequest {
+                target: OverlayTarget::Picker,
                 content: UiContent::Text(text),
-            } => app.open_picker_overlay(
-                " Runtime Picker ",
-                text.lines().map(str::to_string).collect(),
-            ),
+            } => app.open_picker_overlay(legacy_picker_request(text)),
             OverlayRequest {
                 target: OverlayTarget::InputPrompt,
                 content: UiContent::Text(text),
@@ -200,6 +205,7 @@ impl TuiUpdateReducer {
                 target: OverlayTarget::Confirm,
                 content: UiContent::Text(text),
             } => app.open_runtime_confirm_overlay(text),
+            _ => {}
         }
     }
 
@@ -224,6 +230,37 @@ impl TuiUpdateReducer {
             UiTarget::Overlay(_) => {}
             UiTarget::StatusBar(_) => {}
         }
+    }
+}
+
+fn legacy_picker_request(text: String) -> OperatorPickerRequest {
+    let items = text
+        .lines()
+        .map(|line| OperatorPickerItem {
+            id: line.to_string(),
+            title: line.to_string(),
+            subtitle: None,
+            badges: Vec::new(),
+            preview: Some(line.to_string()),
+            disabled_reason: None,
+        })
+        .collect();
+
+    OperatorPickerRequest {
+        picker_id: "runtime-legacy-picker".to_string(),
+        title: " Runtime Picker ".to_string(),
+        empty_state: "No operator items available.".to_string(),
+        filter_enabled: false,
+        items,
+        primary_action: OperatorPickerAction {
+            action_id: "detail".to_string(),
+            label: "Detail".to_string(),
+            shortcut: OperatorPickerShortcut::Enter,
+            requires_selection: true,
+            overlay_behavior: OperatorPickerOverlayBehavior::KeepOpen,
+            intent: OperatorPickerIntent::OpenDetail,
+        },
+        secondary_actions: Vec::new(),
     }
 }
 

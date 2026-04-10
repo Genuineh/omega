@@ -44,17 +44,7 @@ pub fn run(config: TuiLaunchConfig) -> anyhow::Result<()> {
     let app = Arc::new(Mutex::new(App::new()));
     {
         let mut app_guard = app.lock().unwrap();
-        app_guard.set_show_thinking(show_thinking);
-        app_guard.set_keymap_source(keymap_source);
-        if let Ok(status) = session.project_status_value() {
-            app_guard.set_status_slot(omega_session::StatusSlot::Project, status);
-        }
-        for warning in &startup_warnings {
-            app_guard.add_log(warning.clone());
-        }
-        if !startup_warnings.is_empty() {
-            app_guard.set_status_notice(startup_warnings.join(" | "));
-        }
+        initialize_startup_app(&mut app_guard, &session, show_thinking, keymap_source, &startup_warnings);
     }
     let (tx, rx) = mpsc::channel::<RuntimeMessageEnvelope>();
     let mut terminal = TerminalGuard::enter()?;
@@ -117,6 +107,28 @@ pub fn run(config: TuiLaunchConfig) -> anyhow::Result<()> {
     terminal.restore()?;
     info!("omega exiting");
     Ok(())
+}
+
+fn initialize_startup_app(
+    app: &mut App,
+    session: &AgentSession,
+    show_thinking: bool,
+    keymap_source: String,
+    startup_warnings: &[String],
+) {
+    app.set_show_thinking(show_thinking);
+    app.set_keymap_source(keymap_source);
+    if let Some(snapshot) = session.startup_restore_snapshot() {
+        app.restore_session(snapshot);
+    } else if let Ok(status) = session.project_status_value() {
+        app.set_status_slot(omega_session::StatusSlot::Project, status);
+    }
+    for warning in startup_warnings {
+        app.add_log(warning.clone());
+    }
+    if !startup_warnings.is_empty() {
+        app.set_status_notice(startup_warnings.join(" | "));
+    }
 }
 
 #[cfg(test)]

@@ -1,9 +1,11 @@
 use omega_observability::strip_ansi;
 use omega_session::{
     ResponseDocumentKnowledge, ResponseMemoryKnowledge, ResponseSection,
-    ResponseSectionKind, ResponseSectionState, SectionOrigin, StepSubflowRef,
-    StepSubflowState, ToolRun, ToolRunStatus,
+    ResponseSectionKind, ResponseSectionMetadata, ResponseSectionState, SectionOrigin,
+    SessionRestoreSnapshot, StatusSlot, StatusValue, StepSubflowRef, StepSubflowState, ToolRun,
+    ToolRunStatus,
 };
+use omega_project::SessionReplayEntryKind;
 
 use crate::render::markdown::{parse_markdown_lines, MdLineKind, StyledSpan};
 
@@ -112,6 +114,88 @@ impl App {
                 }
             }
         }
+    }
+
+    pub fn restore_session(&mut self, snapshot: SessionRestoreSnapshot) {
+        self.output_msgs.clear();
+        self.tool_runs.clear();
+        self.log_lines.clear();
+        self.step_subflows.clear();
+        self.clear_skill_load_summaries();
+        self.step_knowledge_summaries.clear();
+        self.clear_step_diagnostics();
+        self.clear_context_supervision();
+        self.response_state.select(None);
+        self.logs_state.select(None);
+        self.response_pinned = false;
+        self.logs_pinned = false;
+        self.overlay = None;
+
+        self.set_status_slot(
+            StatusSlot::Session,
+            StatusValue::SessionRouting {
+                root_workflow_id: snapshot.root_workflow_id.clone(),
+                active_workflow_id: snapshot.active_workflow_id.clone(),
+                active_workflow_role: snapshot.active_workflow_role,
+                recognized_scene_id: snapshot.recognized_scene_id.clone(),
+                selected_workflow_id: snapshot.selected_workflow_id.clone(),
+            },
+        );
+        self.set_status_slot(
+            StatusSlot::Project,
+            StatusValue::ProjectSelection {
+                snapshot: snapshot.project_snapshot,
+            },
+        );
+        self.set_status_slot(StatusSlot::Agent, StatusValue::Label("Idle".to_string()));
+        self.set_todo_snapshot(self.active_turn_id, &snapshot.todo_rendered);
+
+        for (index, entry) in snapshot.replay_log.iter().enumerate() {
+            match entry.kind {
+                SessionReplayEntryKind::UserTurn => self.push_msg(MsgKind::User, &entry.body),
+                SessionReplayEntryKind::AssistantResponse => {
+                    self.push_msg(MsgKind::Agent, &entry.body)
+                }
+                SessionReplayEntryKind::SystemNotice => {
+                    self.push_msg(MsgKind::Separator, &entry.body)
+                }
+                SessionReplayEntryKind::ToolSummary => {
+                    self.add_log(format!("[tool] {}", entry.body));
+                }
+                SessionReplayEntryKind::CommandSection => {
+                    let section_id = format!("restored:{}:{}", snapshot.session_id, index);
+                    let title = entry.title.clone().unwrap_or_else(|| "Command".to_string());
+                    let state = restored_response_state(entry.state.as_deref());
+                    self.begin_response_section(ResponseSection {
+                        id: section_id.clone(),
+                        parent_id: None,
+                        kind: ResponseSectionKind::Command,
+                        title: title.clone(),
+                        state,
+                        metadata: ResponseSectionMetadata {
+                            scene_id: None,
+                            origin: SectionOrigin::Command {
+                                command_name: title,
+                                source: "restored".to_string(),
+                            },
+                            step_id: None,
+                            step_label: None,
+                            subflow_ref: None,
+                        },
+                    });
+                    if !entry.body.trim().is_empty() {
+                        self.append_response_section(&section_id, &entry.body);
+                    }
+                    self.complete_response_section(&section_id, state);
+                }
+            }
+        }
+
+        if !self.output_msgs.is_empty() {
+            self.response_state
+                .select(Some(self.output_msgs.len().saturating_sub(1)));
+        }
+        self.refresh_delivery_panel();
     }
 
     pub fn set_show_thinking(&mut self, show_thinking: bool) {
@@ -1337,6 +1421,13 @@ impl App {
             build_memory_knowledge_detail_lines(summary),
         );
         Some(())
+    }
+}
+
+fn restored_response_state(value: Option<&str>) -> ResponseSectionState {
+    match value {
+        Some("failed") => ResponseSectionState::Failed,
+        _ => ResponseSectionState::Complete,
     }
 }
 

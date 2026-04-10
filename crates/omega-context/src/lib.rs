@@ -65,6 +65,7 @@ pub struct ContextRouting {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextSession {
+    pub session_id: String,
     pub latest_user_turn: String,
     pub routing: ContextRouting,
     pub step_summaries: Vec<ContextStepSummary>,
@@ -169,6 +170,7 @@ pub struct AssembledContext {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TurnData {
+    pub session_id: String,
     pub turn_id: u64,
     pub workflow_id: String,
     pub user_intent: String,
@@ -178,6 +180,7 @@ pub struct TurnData {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TurnSummary {
+    pub session_id: String,
     pub turn_id: u64,
     pub workflow_id: String,
     pub user_intent: String,
@@ -611,7 +614,14 @@ pub trait ContextAssembler: Send + Sync {
 pub trait MemoryService: Send + Sync {
     fn archive_turn(&self, turn: &TurnData) -> Result<()>;
     fn compact_context(&self, policy: CompactionPolicy) -> Result<CompactionResult>;
-    fn get_turn_history(&self, limit: usize) -> Result<Vec<TurnSummary>>;
+    fn get_turn_history_for_session(
+        &self,
+        session_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<TurnSummary>>;
+    fn get_turn_history(&self, limit: usize) -> Result<Vec<TurnSummary>> {
+        self.get_turn_history_for_session(None, limit)
+    }
     fn query(&self, query: MemoryQuery) -> Result<Vec<MemoryQueryHit>>;
     fn query_observations(&self, query: ObservationQuery) -> Result<Vec<ProjectObservation>>;
     fn diagnostics_snapshot(&self) -> Result<MemoryKnowledgeSnapshot>;
@@ -736,6 +746,7 @@ impl OmegaContextFacade {
         }
 
         let memory_hits = self.memory.query(MemoryQuery {
+            session_id: Some(request.session.session_id.clone()),
             text: Some(bundle.primary_query()),
             queries: planned_queries.clone(),
             raw_query: Some(bundle.raw_query.clone()),
@@ -750,6 +761,7 @@ impl OmegaContextFacade {
             recovery_path: bundle.recovery_path.clone(),
         })?;
         let observations = self.memory.query_observations(ObservationQuery {
+            session_id: Some(request.session.session_id.clone()),
             text: Some(bundle.primary_query()),
             queries: planned_queries.clone(),
             raw_query: Some(bundle.raw_query.clone()),
@@ -1024,6 +1036,7 @@ impl LocalMemoryService {
 impl MemoryService for LocalMemoryService {
     fn archive_turn(&self, turn: &TurnData) -> Result<()> {
         self.store.archive_turn(ArchivedTurnInput {
+            session_id: turn.session_id.clone(),
             turn_id: turn.turn_id,
             workflow_id: turn.workflow_id.clone(),
             user_intent: turn.user_intent.clone(),
@@ -1043,12 +1056,17 @@ impl MemoryService for LocalMemoryService {
         })
     }
 
-    fn get_turn_history(&self, limit: usize) -> Result<Vec<TurnSummary>> {
+    fn get_turn_history_for_session(
+        &self,
+        session_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<TurnSummary>> {
         Ok(self
             .store
-            .get_turn_history(limit)?
+            .get_turn_history_for_session(session_id, limit)?
             .into_iter()
             .map(|turn| TurnSummary {
+                session_id: turn.session_id,
                 turn_id: turn.turn_id,
                 workflow_id: turn.workflow_id,
                 user_intent: turn.user_intent,
@@ -3076,6 +3094,7 @@ mod tests {
             skill_system_prompt: "Base prompt".to_string(),
             cwd: PathBuf::from("/tmp/project"),
             session: ContextSession {
+                session_id: "session-feature".to_string(),
                 latest_user_turn: "fix this bug".to_string(),
                 routing: ContextRouting {
                     recognized_scene_id: Some("feature".to_string()),
@@ -3426,7 +3445,16 @@ mod tests {
 
     #[test]
     fn local_diagnostics_snapshot_tracks_context_and_document_metrics() {
-        let facade = OmegaContextFacade::local(PathBuf::from("/tmp/omega-context-diagnostics"));
+        let root = std::env::temp_dir().join(format!(
+            "omega-context-diagnostics-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let facade = OmegaContextFacade::local(root);
         let assembled = DefaultContextAssembler
             .assemble_step_context(step_request(), &FixedTokenCounter)
             .unwrap();
@@ -3465,6 +3493,7 @@ mod tests {
         facade
             .memory
             .archive_turn(&TurnData {
+                session_id: "session-feature".to_string(),
                 turn_id: 1,
                 workflow_id: "feature".to_string(),
                 user_intent: "archive one turn".to_string(),
@@ -3601,6 +3630,7 @@ mod tests {
         for turn_id in 1..=6 {
             memory
                 .archive_turn(&TurnData {
+                    session_id: "session-feature".to_string(),
                     turn_id,
                     workflow_id: "feature".to_string(),
                     user_intent: format!("archive turn {turn_id}"),
@@ -3620,7 +3650,10 @@ mod tests {
                 trigger: "budget_threshold".to_string(),
             })
             .unwrap();
-        let turns = memory.store.get_turn_history(10).unwrap();
+        let turns = memory
+            .store
+            .get_turn_history_for_session(Some("session-feature"), 10)
+            .unwrap();
         let oldest = turns.iter().find(|turn| turn.turn_id == 1).unwrap();
         let newest = turns.iter().find(|turn| turn.turn_id == 6).unwrap();
 

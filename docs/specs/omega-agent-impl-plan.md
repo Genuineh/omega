@@ -35,7 +35,9 @@ Rust, tokio, reqwest, ratatui, serde, uuid
 | `docs/specs/omega-agent-impl-plan/task-15-interaction-foundation.md` | Task 15 overview, 15F-1..15F-5 | `omega-app` / `omega-tui` / `omega-session` boundary, workflow package, session asset baseline, scene routing |
 | `docs/specs/omega-agent-impl-plan/task-15-runtime-visibility.md` | 15B-19, 15F-6..15B-23 | Streaming runtime contract, step context, data contracts, diagnostics, tool/thinking visibility |
 | `docs/specs/omega-runtime-message-pipeline.md` | Task 15 follow-up design | Runtime message pipeline v0.3: session produces frontend-neutral `RuntimeMessageEnvelope`, app owns message policy, TUI keeps runtime shell and engine |
-| `docs/specs/omega-command-system.md` | Task 17 planning | Command registry, slash invocation model, and the first `/document` command family |
+| `docs/specs/omega-command-system.md` | Task 17 planning | Command registry, slash invocation model, `/document` and `/project` command families |
+| `docs/specs/omega-session-resume.md` | Task 17B-17H planning | Project-scoped session resume, replay log hydration, context reload, `/session` command family, and session operator UX |
+| `docs/specs/omega-operator-picker-overlay.md` | Task 15B-70, 17G-17H planning | Reusable operator picker overlay, action hotkeys, and session picker flow |
 
 ## Progress Snapshot
 
@@ -45,7 +47,7 @@ Rust, tokio, reqwest, ratatui, serde, uuid
 | Task 15 foundation | Implemented baseline | `omega-app`、`omega-session`、`omega-observability`、`omega-workflow` 与 scene-aware routing 主路径已建立 |
 | Task 15 runtime visibility | Implemented baseline | 流式 response/thinking、step tool lane、context diagnostics 与 runtime reducer 已落地 |
 | Task 15 message pipeline | Implemented follow-up | 主路径已收敛到 `RuntimeMessageEnvelope` + app-owned `RuntimeMessagePolicy` + `TuiEngine`；`RuntimeUiEnvelope` 降为 compat surface |
-| Task 17 command system | Planned | 下一条显式 operator surface：独立 command registry 与 `/document` 首个命令族 |
+| Task 17 command system | Planned follow-up | command registry、`/document` 与 `/project` 已落地；下一阶段是 `/session` resume + management control plane |
 | Task 16 | Pending | 仍保留为最终整合验证里程碑 |
 
 <a id="task-15"></a>
@@ -74,10 +76,14 @@ Rust, tokio, reqwest, ratatui, serde, uuid
 
 新增 command system 相关工作时，优先以 `docs/specs/omega-command-system.md` 为入口，而不是把命令注册、slash UX 与 document command 细节回填到本索引页。
 
+新增 session restore / session control-plane 相关工作时，优先以 `docs/specs/omega-session-resume.md` 为入口，而不是把 replay/hydration/context reload 细节回填到本索引页。
+
 ---
 
 ### Change Log
 
+- 2026-04-10: 新增 `docs/specs/omega-operator-picker-overlay.md` 作为 session/operator picker UX 规划入口，避免把 picker/action hotkey 细节堆回 session spec 或本索引页。
+- 2026-04-10: 新增 `docs/specs/omega-session-resume.md` 作为 Task 17 下一阶段规划入口，收口 `/session` control plane、resume snapshot 与 replay hydration 设计。
 - 2026-04-02: 新增 Task 17 command system 规划入口，明确 `/document` 是首个命令族，并将细节下沉到 `docs/specs/omega-command-system.md`。
 - 2026-03-26: runtime message pipeline follow-up 已落地实现；主路径现已切到 `RuntimeMessageEnvelope`、app-owned `RuntimeMessagePolicy` 与 `TuiEngine`，并保留 `RuntimeUiEnvelope` compat surface。
 - 2026-03-26: 补充 runtime message pipeline follow-up 导航与进度摘要，并在同日复审后收敛到更小的 v0.3：保留消息模型，但恢复 turn envelope，明确 `omega-app` 只拥有 message policy，`omega-tui` 继续拥有 runtime shell。

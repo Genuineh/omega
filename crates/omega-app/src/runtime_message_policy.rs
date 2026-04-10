@@ -79,6 +79,7 @@ fn apply_state(surface: &mut dyn TuiSurface, message: StateMessage) {
             section_id,
             summary,
         } => surface.upsert_step_knowledge_summary(section_id, *summary),
+        StateMessage::SessionRestored { snapshot } => surface.restore_session(*snapshot),
         StateMessage::StepSubflow { subflow } => {
             surface.add_activity_line(format_step_subflow_line(&subflow));
             surface.upsert_step_subflow(subflow);
@@ -177,6 +178,7 @@ mod tests {
         ClearWorkflowStep,
         AgentStatus(String),
         SessionRouting(String),
+        RestoreSession(String),
         ProjectStatus(String),
         TodoSnapshot(String),
         Diagnostics(String),
@@ -247,6 +249,11 @@ mod tests {
 
         fn clear_session_routing(&mut self) {}
 
+        fn restore_session(&mut self, snapshot: omega_session::SessionRestoreSnapshot) {
+            self.ops
+                .push(SurfaceOp::RestoreSession(snapshot.session_id));
+        }
+
         fn set_project_status(&mut self, snapshot: omega_project::ProjectDetailSnapshot) {
             self.ops
                 .push(SurfaceOp::ProjectStatus(snapshot.record.display_name));
@@ -293,9 +300,7 @@ mod tests {
         }
 
         fn show_overlay(&mut self, request: OverlayRequest) {
-            let preview = match request.content {
-                UiContent::Text(text) => text,
-            };
+            let preview = request.content.preview_text();
             self.ops
                 .push(SurfaceOp::ShowOverlay(request.target, preview));
         }
@@ -621,6 +626,55 @@ mod tests {
                 SurfaceOp::TurnFinished,
             ]
         );
+    }
+
+    #[test]
+    fn policy_forwards_session_restored_snapshot_to_surface() {
+        let policy = DefaultRuntimeMessagePolicy;
+        let mut surface = RecordingSurface::default();
+
+        let stale_applied = apply_runtime_message_with_policy(
+            7,
+            RuntimeMessageEnvelope::state(
+                7,
+                StateMessage::SessionRestored {
+                    snapshot: Box::new(omega_session::SessionRestoreSnapshot {
+                        session_id: "session-restored".to_string(),
+                        title: "Restored Session".to_string(),
+                        replay_log: Vec::new(),
+                        todo_rendered: "No todos.".to_string(),
+                        root_workflow_id: "root".to_string(),
+                        active_workflow_id: "feature".to_string(),
+                        active_workflow_role: WorkflowRunRole::Child,
+                        recognized_scene_id: Some("feature".to_string()),
+                        selected_workflow_id: Some("feature".to_string()),
+                        project_snapshot: Box::new(omega_project::ProjectDetailSnapshot {
+                            record: omega_project::ProjectRecord {
+                                project_id: "proj-123".to_string(),
+                                display_name: "omega".to_string(),
+                                root: std::path::PathBuf::from("/workspace/omega"),
+                                detection_kind: omega_project::ProjectDetectionKind::Explicit,
+                                created_at: 1,
+                                last_opened_at: 2,
+                                active_session_id: Some("session-restored".to_string()),
+                            },
+                            sessions: Vec::new(),
+                            knowledge: omega_project::ProjectKnowledgeSummary {
+                                document: ContextDocumentDiagnostics::default(),
+                                memory: ContextMemoryDiagnostics::default(),
+                                session_count: 0,
+                                active_session_id: Some("session-restored".to_string()),
+                            },
+                        }),
+                    }),
+                },
+            ),
+            &policy,
+            &mut surface,
+        );
+
+        assert!(stale_applied);
+        assert_eq!(surface.ops, vec![SurfaceOp::RestoreSession("session-restored".to_string())]);
     }
 
     #[test]

@@ -304,6 +304,7 @@ pub struct RetentionCandidate {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArchivedTurnInput {
+    pub session_id: String,
     pub turn_id: u64,
     pub workflow_id: String,
     pub user_intent: String,
@@ -313,6 +314,8 @@ pub struct ArchivedTurnInput {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArchivedTurnRecord {
+    #[serde(default)]
+    pub session_id: String,
     pub turn_id: u64,
     pub workflow_id: String,
     pub user_intent: String,
@@ -325,6 +328,7 @@ pub struct ArchivedTurnRecord {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MemoryQuery {
+    pub session_id: Option<String>,
     pub text: Option<String>,
     pub queries: Vec<String>,
     pub raw_query: Option<String>,
@@ -346,6 +350,7 @@ pub struct MemoryQueryHit {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ObservationQuery {
+    pub session_id: Option<String>,
     pub text: Option<String>,
     pub queries: Vec<String>,
     pub raw_query: Option<String>,
@@ -385,6 +390,8 @@ pub struct ObservationEvidenceRef {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectObservation {
+    #[serde(default)]
+    pub session_id: String,
     pub id: String,
     pub profile: RetentionProfile,
     pub title: String,
@@ -435,6 +442,7 @@ impl LocalMemoryStore {
         let archived_at = current_unix_timestamp();
         let retention_candidates = build_retention_candidates(&input);
         let record = ArchivedTurnRecord {
+            session_id: input.session_id,
             turn_id: input.turn_id,
             workflow_id: input.workflow_id,
             user_intent: input.user_intent,
@@ -447,7 +455,7 @@ impl LocalMemoryStore {
 
         fs::create_dir_all(self.turns_dir())
             .with_context(|| format!("create {}", self.turns_dir().display()))?;
-        let turn_path = self.turn_path(record.turn_id);
+        let turn_path = self.turn_path(&record.session_id, record.turn_id);
         let turn_json = serde_json::to_string_pretty(&record)?;
         fs::write(&turn_path, turn_json)
             .with_context(|| format!("write archived turn {}", turn_path.display()))?;
@@ -459,8 +467,19 @@ impl LocalMemoryStore {
     }
 
     pub fn get_turn_history(&self, limit: usize) -> Result<Vec<ArchivedTurnRecord>> {
+        self.get_turn_history_for_session(None, limit)
+    }
+
+    pub fn get_turn_history_for_session(
+        &self,
+        session_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<ArchivedTurnRecord>> {
         let _guard = self.io_lock.lock().unwrap();
         let mut turns = self.read_turns_locked()?;
+        if let Some(session_id) = normalized_session_id(session_id) {
+            turns.retain(|turn| turn.session_id == session_id);
+        }
         turns.sort_by(|left, right| {
             right
                 .archived_at
@@ -480,9 +499,15 @@ impl LocalMemoryStore {
         let planned_queries = planned_query_texts(query.text.as_deref(), &query.queries);
         let queries_empty = planned_queries.is_empty();
         let allowed_profiles = allowed_profiles(&query.profiles);
+        let requested_session_id = normalized_session_id(query.session_id.as_deref());
         let mut hits = self
             .read_turns_locked()?
             .into_iter()
+            .filter(|turn| {
+                requested_session_id
+                    .as_ref()
+                    .is_none_or(|session_id| turn.session_id == *session_id)
+            })
             .flat_map(|turn| {
                 let planned_queries = planned_queries.clone();
                 turn.retention_candidates
@@ -530,10 +555,16 @@ impl LocalMemoryStore {
     pub fn query_observations(&self, query: &ObservationQuery) -> Result<Vec<ProjectObservation>> {
         let _guard = self.io_lock.lock().unwrap();
         let planned_queries = planned_query_texts(query.text.as_deref(), &query.queries);
+        let requested_session_id = normalized_session_id(query.session_id.as_deref());
         let mut hits = self
             .read_observations_locked()?
             .into_iter()
             .map(refresh_observation_freshness)
+            .filter(|observation| {
+                requested_session_id
+                    .as_ref()
+                    .is_none_or(|session_id| observation.session_id == *session_id)
+            })
             .filter(|observation| {
                 query.include_stale
                     || !matches!(
@@ -664,8 +695,13 @@ impl LocalMemoryStore {
         self.root.join(".omega/memory/turns")
     }
 
-    fn turn_path(&self, turn_id: u64) -> PathBuf {
-        self.turns_dir().join(format!("turn-{turn_id:020}.json"))
+    fn turn_path(&self, session_id: &str, turn_id: u64) -> PathBuf {
+        if session_id.trim().is_empty() {
+            self.turns_dir().join(format!("turn-{turn_id:020}.json"))
+        } else {
+            self.turns_dir()
+                .join(format!("session-{}-turn-{turn_id:020}.json", session_id.trim()))
+        }
     }
 
     fn observations_path(&self) -> PathBuf {
@@ -675,7 +711,7 @@ impl LocalMemoryStore {
     fn write_turn_locked(&self, record: &ArchivedTurnRecord) -> Result<()> {
         fs::create_dir_all(self.turns_dir())
             .with_context(|| format!("create {}", self.turns_dir().display()))?;
-        let turn_path = self.turn_path(record.turn_id);
+        let turn_path = self.turn_path(&record.session_id, record.turn_id);
         let turn_json = serde_json::to_string_pretty(record)?;
         fs::write(&turn_path, turn_json)
             .with_context(|| format!("write archived turn {}", turn_path.display()))
@@ -864,6 +900,7 @@ fn compact_archived_turn_record(record: &mut ArchivedTurnRecord) -> bool {
     if changed {
         record.summary_count = record.summaries.len();
         record.retention_candidates = build_retention_candidates(&ArchivedTurnInput {
+            session_id: record.session_id.clone(),
             turn_id: record.turn_id,
             workflow_id: record.workflow_id.clone(),
             user_intent: record.user_intent.clone(),
@@ -897,6 +934,8 @@ fn update_observations(observations: &mut Vec<ProjectObservation>, record: &Arch
             .collect::<Vec<_>>();
 
         if let Some(existing_index) = observations.iter().position(|observation| {
+            observation.session_id == record.session_id
+                &&
             canonical_key(observation.profile.as_str(), &observation.title) == key
                 && !matches!(observation.freshness, ObservationFreshness::Superseded)
         }) {
@@ -912,9 +951,10 @@ fn update_observations(observations: &mut Vec<ProjectObservation>, record: &Arch
                 let previous_id = existing.id.clone();
                 existing.freshness = ObservationFreshness::Corrected;
                 existing.updated_at = now;
-                existing.corrected_by = Some(observation_id(record.turn_id, index));
+                existing.corrected_by = Some(observation_id(&record.session_id, record.turn_id, index));
                 observations.push(ProjectObservation {
-                    id: observation_id(record.turn_id, index),
+                    session_id: record.session_id.clone(),
+                    id: observation_id(&record.session_id, record.turn_id, index),
                     profile: candidate.profile.clone(),
                     title,
                     summary: candidate.text.clone(),
@@ -929,7 +969,8 @@ fn update_observations(observations: &mut Vec<ProjectObservation>, record: &Arch
             }
         } else {
             observations.push(ProjectObservation {
-                id: observation_id(record.turn_id, index),
+                session_id: record.session_id.clone(),
+                id: observation_id(&record.session_id, record.turn_id, index),
                 profile: candidate.profile.clone(),
                 title,
                 summary: candidate.text.clone(),
@@ -1071,8 +1112,19 @@ fn derive_candidate_title(profile: &str, text: &str) -> String {
     format!("{label}: {}", preview_text(base, 72))
 }
 
-fn observation_id(turn_id: u64, index: usize) -> String {
-    format!("obs-{turn_id:020}-{index:04}")
+fn observation_id(session_id: &str, turn_id: u64, index: usize) -> String {
+    if session_id.trim().is_empty() {
+        format!("obs-{turn_id:020}-{index:04}")
+    } else {
+        format!("obs-{}-{turn_id:020}-{index:04}", session_id.trim())
+    }
+}
+
+fn normalized_session_id(session_id: Option<&str>) -> Option<String> {
+    session_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 fn canonical_key(profile: &str, title: &str) -> String {
@@ -1398,6 +1450,7 @@ mod tests {
 
         let record = store
             .archive_turn(ArchivedTurnInput {
+                session_id: "session-a".to_string(),
                 turn_id: 7,
                 workflow_id: "feature".to_string(),
                 user_intent: "Prefer patch-sized edits and keep validation narrow".to_string(),
@@ -1445,7 +1498,9 @@ mod tests {
         assert_eq!(stats.total_turns_archived, 1);
         assert!(stats.retained_candidates_accepted >= 3);
         assert!(stats.retained_candidates_dropped >= 1);
-        assert!(root.join(".omega/memory/turns/turn-00000000000000000007.json").exists());
+        assert!(root
+            .join(".omega/memory/turns/session-session-a-turn-00000000000000000007.json")
+            .exists());
     }
 
         #[test]
@@ -1487,6 +1542,7 @@ mod tests {
         let store = LocalMemoryStore::new(root);
         store
             .archive_turn(ArchivedTurnInput {
+                session_id: "session-a".to_string(),
                 turn_id: 11,
                 workflow_id: "feature".to_string(),
                 user_intent: "Wire memory query into the planner".to_string(),
@@ -1504,6 +1560,7 @@ mod tests {
 
         let hits = store
             .query(&MemoryQuery {
+                session_id: Some("session-a".to_string()),
                 text: Some("planner memory query".to_string()),
                 queries: vec!["planner memory query".to_string()],
                 raw_query: Some("Wire memory query into the planner".to_string()),
@@ -1519,6 +1576,7 @@ mod tests {
 
         let observations = store
             .query_observations(&ObservationQuery {
+                session_id: Some("session-a".to_string()),
                 text: Some("memory query".to_string()),
                 queries: vec!["memory query".to_string()],
                 raw_query: Some("Wire memory query into the planner".to_string()),
@@ -1542,6 +1600,7 @@ mod tests {
 
         store
             .archive_turn(ArchivedTurnInput {
+                session_id: "session-a".to_string(),
                 turn_id: 21,
                 workflow_id: "feature".to_string(),
                 user_intent: "Keep task-keep-open active".to_string(),
@@ -1558,6 +1617,7 @@ mod tests {
             .unwrap();
         store
             .archive_turn(ArchivedTurnInput {
+                session_id: "session-a".to_string(),
                 turn_id: 22,
                 workflow_id: "feature".to_string(),
                 user_intent: "Close task-keep-open".to_string(),
@@ -1575,6 +1635,7 @@ mod tests {
 
         let observations = store
             .query_observations(&ObservationQuery {
+                session_id: Some("session-a".to_string()),
                 text: Some("task keep open".to_string()),
                 queries: vec!["task keep open".to_string()],
                 raw_query: Some("Close task-keep-open".to_string()),
@@ -1596,6 +1657,7 @@ mod tests {
         let store = LocalMemoryStore::new(root);
         store
             .archive_turn(ArchivedTurnInput {
+                session_id: "session-cjk".to_string(),
                 turn_id: 31,
                 workflow_id: "feature".to_string(),
                 user_intent: "修复记忆查询规划空命中问题".to_string(),
@@ -1613,6 +1675,7 @@ mod tests {
 
         let hits = store
             .query(&MemoryQuery {
+                session_id: Some("session-cjk".to_string()),
                 text: Some("记忆查询规划".to_string()),
                 queries: vec!["记忆查询规划".to_string()],
                 raw_query: Some("记忆查询规划".to_string()),
@@ -1634,6 +1697,7 @@ mod tests {
         let store = LocalMemoryStore::new(root);
         store
             .archive_turn(ArchivedTurnInput {
+                session_id: "session-rank".to_string(),
                 turn_id: 41,
                 workflow_id: "feature".to_string(),
                 user_intent: "Investigate planner follow-up".to_string(),
@@ -1650,6 +1714,7 @@ mod tests {
             .unwrap();
         store
             .archive_turn(ArchivedTurnInput {
+                session_id: "session-rank".to_string(),
                 turn_id: 42,
                 workflow_id: "feature".to_string(),
                 user_intent: "Need recall bundle naming for the final report".to_string(),
@@ -1667,6 +1732,7 @@ mod tests {
 
         let hits = store
             .query(&MemoryQuery {
+                session_id: Some("session-rank".to_string()),
                 text: Some("recall bundle naming".to_string()),
                 queries: vec!["recall bundle naming".to_string()],
                 raw_query: Some("recall bundle naming".to_string()),

@@ -2,7 +2,7 @@
 status: active
 owner: omega-team
 created: 2026-03-18
-updated: 2026-04-09
+updated: 2026-04-10
 audience: developers
 level: intermediate
 ---
@@ -139,6 +139,45 @@ cargo test-document-commands
 `cargo test -p omega-app` 现在默认不再拉起 `document-backend`，用于日常快速回归；`cargo test-document-backend` 只覆盖文档存储/keyword+semantic+hybrid retrieval 后端，`cargo test-document-commands` 单独覆盖 `omega-session` 的 `/document` command 集成。feature-enabled session 文档测试默认强制 mock embedding backend，避免真实模型下载与 `.fastembed_cache` 污染工作树。
 
 当前 project system 基线已经完整落地：session 启动时会先解析 active project，把 `.omega/` 下的 project metadata / session catalog 作为仓库级状态；`/document` 默认绑定 active project root，而 `/project list|switch|info|sessions|knowledge|delete` 提供显式运维入口。`/project switch` 不只更新 cwd/dispatcher，也会同步重绑 repo-scoped skills、hooks 和 tool surface。TUI 除底部 project badge 外，Sidebar 现也有正式 `Project` panel，并可通过键盘或鼠标打开统一 project detail overlay。
+
+### 管理 session 与恢复上下文
+
+当前 session artifacts 全部保存在仓库内的 `.omega/sessions/`：
+
+| 文件 | 用途 |
+|------|------|
+| `<session-id>.json` | session catalog entry，记录 title、status、turn 计数和 resume-ready 元数据 |
+| `<session-id>.snapshot.json` | restore seed，保存 routing、skill routing、todo snapshot、step summaries 和最近 cwd |
+| `<session-id>.log.jsonl` | 用于 restore hydration 的 replay log |
+
+TUI 中的默认入口已经切到 overlay-first：
+
+```text
+/session
+/session list
+/session resume
+```
+
+这些入口会直接打开 session picker，而不是把列表继续打印到 Response。当前快捷键约定如下：
+
+- `Enter`: 打开所选 session 详情
+- `Ctrl-R`: resume 所选 session
+- `Ctrl-A`: archive 所选 session
+- `Ctrl-D`: 先弹 confirm overlay，再删除所选 session artifacts
+- `Ctrl-N`: 新建 session
+
+如果需要精确或脚本化调用，仍保留 direct command 形态：
+
+```text
+/session info <session-id>
+/session resume <session-id>
+/session archive <session-id>
+/session delete <session-id>
+```
+
+应用启动时会优先复用当前 project record 上的 active session，而不是先新建一个占位 session 再等待手工 `/session resume`。如果该 active session 带有 snapshot/replay log，TUI 会在启动阶段直接 hydrate 旧 response/log timeline；如果没有可恢复快照，则继续复用同一个 session id 但以空白 runtime state 启动。
+
+session restore 不会重放旧 workflow step 或 tool run。当前实现只恢复 session-local runtime state，并把后续 memory recall / observation recall 收口到当前 `session_id`，避免不同 project session 之间继续串用 archived turn history。
 
 ### 格式化与静态检查
 

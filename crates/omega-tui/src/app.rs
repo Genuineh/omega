@@ -7,10 +7,10 @@ use ratatui::{layout::Rect, widgets::ListState};
 
 use omega_observability::strip_ansi;
 use omega_session::{
-    ContextSupervisionSnapshot, OverlayTarget, ResponseSectionState, RuntimeUiEnvelope,
-    SkillLoadSummary, StatusSlot, StatusValue, StepDiagnostics, StepKnowledgeSummary,
-    StepOutputStatus, StepSubflowRef,
-    StepSubflowStatus, ToolRun, ToolRunStatus, WorkflowRunRole,
+    ContextSupervisionSnapshot, OperatorPickerRequest, OverlayTarget, ResponseSectionState,
+    RuntimeUiEnvelope, SkillLoadSummary, StatusSlot, StatusValue, StepDiagnostics,
+    StepKnowledgeSummary, StepOutputStatus, StepSubflowRef, StepSubflowStatus, ToolRun,
+    ToolRunStatus, WorkflowRunRole,
 };
 use omega_theme::RenderPalette;
 
@@ -1665,14 +1665,11 @@ impl App {
     }
 
     #[allow(dead_code)]
-    pub fn open_picker_overlay(&mut self, title: impl Into<String>, items: Vec<String>) {
-        self.overlay = Some(OverlayState::Picker(PickerOverlay {
-            origin_panel: self.focused_panel,
-            title: title.into(),
-            items,
-            selected: 0,
-            dismiss_on_backdrop: true,
-        }));
+    pub fn open_picker_overlay(&mut self, request: OperatorPickerRequest) {
+        self.overlay = Some(OverlayState::Picker(PickerOverlay::new(
+            self.focused_panel,
+            request,
+        )));
         self.clear_leader_pending();
     }
 
