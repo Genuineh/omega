@@ -16,6 +16,7 @@ pub use omega_todo::{
 };
 pub use omega_tools::{
     MemoryScopeLevel as CoreMemoryScopeLevel,
+    ToolDispatcher,
     ToolContextProfile as CoreToolContextProfile,
     ToolErrorKind as CoreToolErrorKind, ToolFamily as CoreToolFamily,
     ToolExecutionContext as CoreToolExecutionContext,
@@ -28,6 +29,7 @@ pub use omega_tools::{
     ToolStorageProfile as CoreToolStorageProfile, ToolUiProfile as CoreToolUiProfile,
 };
 pub use tool_factory::{
+    create_default_tools_with_context_and_todo_manager_and_tool_limits,
     create_default_tools, create_default_tools_with_todo_manager,
     create_default_tools_with_todo_manager_and_bash_allowlist,
     create_default_tools_with_todo_manager_and_tool_limits, default_bash_allowed_commands,

@@ -4,6 +4,7 @@ use omega_context::{ContextDiagnostics, DocumentHealthStatus, HealthScore};
 use omega_core::{
     ChatEvent, CoreToolExecutionContext, CoreToolManifestMetadata, CoreToolResult,
 };
+use omega_project::ProjectDetailSnapshot;
 use omega_workflow::{WorkflowStep, WorkflowStepState};
 use serde_json::Value;
 
@@ -718,6 +719,19 @@ pub(crate) fn send_session_status(
             recognized_scene_id: session_context.routing.recognized_scene_id.clone(),
             selected_workflow_id: session_context.routing.selected_workflow_id.clone(),
         }),
+    ));
+}
+
+pub(crate) fn send_project_status(
+    tx: &dyn RuntimeMessageBridge,
+    turn_id: u64,
+    snapshot: ProjectDetailSnapshot,
+) {
+    tx.send(RuntimeMessageEnvelope::state(
+        turn_id,
+        StateMessage::ProjectStatus {
+            snapshot: Box::new(snapshot),
+        },
     ));
 }
 

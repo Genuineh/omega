@@ -46,6 +46,9 @@ pub fn run(config: TuiLaunchConfig) -> anyhow::Result<()> {
         let mut app_guard = app.lock().unwrap();
         app_guard.set_show_thinking(show_thinking);
         app_guard.set_keymap_source(keymap_source);
+        if let Ok(status) = session.project_status_value() {
+            app_guard.set_status_slot(omega_session::StatusSlot::Project, status);
+        }
         for warning in &startup_warnings {
             app_guard.add_log(warning.clone());
         }

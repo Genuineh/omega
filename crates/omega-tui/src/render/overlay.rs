@@ -68,6 +68,7 @@ pub(super) fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorSch
                 Panel::Diagnostics => "Diagnostics",
                 Panel::Delivery => "Delivery",
                 Panel::Skills => "Skills",
+                Panel::Project => "Project",
                 Panel::Document => "Knowledge",
                 Panel::Memory => "Memory",
                 Panel::Todo => "Todos",

@@ -2,6 +2,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use omega_client::test_support::IdleLlmClient;
 use omega_core::DynLlmClient;
 use omega_keymap::{InteractionMode, KeymapManager};
+use omega_project::ProjectDetectionKind;
 use omega_session::{
     ConversationMessage, ResponseSectionKind, ResponseSectionState, RuntimeMessage, StateMessage,
     WorkflowRunRole,
@@ -235,6 +236,87 @@ fn typing_slash_command_updates_command_hint() {
 }
 
 #[test]
+fn shift_enter_inserts_newline_without_submitting() {
+    let harness = EventReplayHarness::new();
+    {
+        let mut app_guard = harness.app.lock().unwrap();
+        app_guard.interaction_mode = InteractionMode::Insert;
+        app_guard.insert_text("alpha");
+    }
+
+    harness.replay_keys(&[
+        (KeyCode::Enter, KeyModifiers::SHIFT),
+        (KeyCode::Char('b'), KeyModifiers::NONE),
+    ]);
+
+    let (buffer, messages) =
+        harness.inspect(|app| (app.input_buffer.clone(), app.output_msgs.len()));
+    assert_eq!(buffer, "alpha\nb");
+    assert_eq!(messages, 0);
+}
+
+#[test]
+fn up_and_down_move_cursor_between_input_lines() {
+    let harness = EventReplayHarness::new();
+    {
+        let mut app_guard = harness.app.lock().unwrap();
+        app_guard.interaction_mode = InteractionMode::Insert;
+        app_guard.input_rect = ratatui::layout::Rect::new(0, 0, 24, 4);
+        app_guard.insert_text("alpha\nbeta\ngamma");
+    }
+
+    harness.replay_keys(&[(KeyCode::Up, KeyModifiers::NONE)]);
+    assert_eq!(harness.inspect(|app| app.cursor_pos), 10);
+
+    harness.replay_keys(&[(KeyCode::Down, KeyModifiers::NONE)]);
+    assert_eq!(harness.inspect(|app| app.cursor_pos), 16);
+}
+
+#[test]
+fn mouse_wheel_scrolls_input_viewport_when_pointer_is_inside_input() {
+    let app = Arc::new(Mutex::new(App::new()));
+    {
+        let mut app_guard = app.lock().unwrap();
+        app_guard.interaction_mode = InteractionMode::Insert;
+        app_guard.input_rect = ratatui::layout::Rect::new(2, 10, 20, 4);
+        app_guard.insert_text("alpha\nbeta\ngamma\ndelta\nepsilon\nzeta");
+    }
+
+    handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 3,
+            row: 11,
+            modifiers: KeyModifiers::NONE,
+        },
+        &app,
+    );
+    handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 3,
+            row: 11,
+            modifiers: KeyModifiers::NONE,
+        },
+        &app,
+    );
+
+    assert_eq!(app.lock().unwrap().input_scroll_top, 2);
+
+    handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 3,
+            row: 11,
+            modifiers: KeyModifiers::NONE,
+        },
+        &app,
+    );
+
+    assert_eq!(app.lock().unwrap().input_scroll_top, 0);
+}
+
+#[test]
 fn clipboard_backend_is_reused_between_writes() {
     let init_count = std::cell::Cell::new(0);
     let mut backend = None;
@@ -405,6 +487,61 @@ fn mouse_click_on_bottom_status_opens_delivery_detail() {
 }
 
 #[test]
+fn mouse_click_on_bottom_status_opens_project_detail_when_project_slot_present() {
+    let client: DynLlmClient = Arc::new(IdleClient);
+    let root = event_test_root("project-status-overlay");
+    write_document_fixture(&root);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let session = test_session(client, root.clone(), &runtime);
+    let app = Arc::new(Mutex::new(App::new()));
+    {
+        let mut app_guard = app.lock().unwrap();
+        app_guard
+            .set_status_slot(omega_session::StatusSlot::Project, session.project_status_value().unwrap());
+        app_guard.bottom_status_rect = ratatui::layout::Rect::new(0, 20, 120, 1);
+    }
+
+    handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 3,
+            row: 20,
+            modifiers: KeyModifiers::NONE,
+        },
+        &app,
+    );
+    handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 3,
+            row: 20,
+            modifiers: KeyModifiers::NONE,
+        },
+        &app,
+    );
+
+    let app_guard = app.lock().unwrap();
+    assert_eq!(
+        app_guard.status_notice.as_deref(),
+        Some("Opened project detail overlay.")
+    );
+    match app_guard.overlay.as_ref() {
+        Some(crate::overlay::OverlayState::Detail(detail)) => {
+            assert_eq!(detail.title, " Project ");
+            assert!(detail.lines.iter().any(|line| line.contains("project_id:")));
+            assert!(detail.lines.iter().any(|line| line.contains("sessions:")));
+            assert!(detail.lines.iter().any(|line| line.contains(&root.display().to_string())));
+        }
+        other => panic!("expected project detail overlay, got {other:?}"),
+    }
+    let snapshot = app_guard.project_status.as_ref().unwrap();
+    assert!(matches!(
+        snapshot.snapshot.record.detection_kind,
+        ProjectDetectionKind::Cwd | ProjectDetectionKind::LooseDirectory
+    ));
+}
+
+#[test]
 fn mouse_click_on_sidebar_child_panel_selects_item() {
     let app = Arc::new(Mutex::new(App::new()));
     {
@@ -477,6 +614,44 @@ fn mouse_click_on_sidebar_child_panel_header_focuses_panel() {
     let app_guard = app.lock().unwrap();
     assert_eq!(app_guard.focused_panel, Panel::Todo);
     assert_eq!(app_guard.todo_state.selected(), Some(0));
+}
+
+#[test]
+fn mouse_click_on_project_sidebar_panel_focuses_project_panel() {
+    let app = Arc::new(Mutex::new(App::new()));
+    {
+        let mut app_guard = app.lock().unwrap();
+        app_guard.project_rect = ratatui::layout::Rect::new(60, 1, 24, 8);
+        app_guard.project_lines = vec![
+            "project: omega".to_string(),
+            "active session: session-a".to_string(),
+        ];
+        app_guard.project_displayed_count = 2;
+    }
+
+    handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 62,
+            row: 3,
+            modifiers: KeyModifiers::NONE,
+        },
+        &app,
+    );
+    handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 62,
+            row: 3,
+            modifiers: KeyModifiers::NONE,
+        },
+        &app,
+    );
+
+    let app_guard = app.lock().unwrap();
+    assert_eq!(app_guard.focused_panel, Panel::Project);
+    assert_eq!(app_guard.project_state.selected(), Some(1));
+    assert!(app_guard.project_pinned);
 }
 
 #[test]

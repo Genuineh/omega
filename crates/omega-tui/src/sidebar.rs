@@ -3,6 +3,7 @@ pub enum SidebarSection {
     Diagnostics,
     Delivery,
     Skills,
+    Project,
     Knowledge,
     Todos,
     Logs,
@@ -14,6 +15,7 @@ impl SidebarSection {
             Self::Diagnostics => "Diagnostics",
             Self::Delivery => "Delivery",
             Self::Skills => "Skills",
+            Self::Project => "Project",
             Self::Knowledge => "Knowledge",
             Self::Todos => "Todos",
             Self::Logs => "Logs",
@@ -24,7 +26,8 @@ impl SidebarSection {
         match self {
             Self::Diagnostics => Self::Delivery,
             Self::Delivery => Self::Skills,
-            Self::Skills => Self::Knowledge,
+            Self::Skills => Self::Project,
+            Self::Project => Self::Knowledge,
             Self::Knowledge => Self::Todos,
             Self::Todos => Self::Logs,
             Self::Logs => Self::Diagnostics,
@@ -36,7 +39,8 @@ impl SidebarSection {
             Self::Diagnostics => Self::Logs,
             Self::Delivery => Self::Diagnostics,
             Self::Skills => Self::Delivery,
-            Self::Knowledge => Self::Skills,
+            Self::Project => Self::Skills,
+            Self::Knowledge => Self::Project,
             Self::Todos => Self::Knowledge,
             Self::Logs => Self::Todos,
         }
@@ -50,6 +54,7 @@ pub struct SidebarState {
     pub diagnostics_expanded: bool,
     pub delivery_expanded: bool,
     pub skills_expanded: bool,
+    pub project_expanded: bool,
     pub knowledge_expanded: bool,
     pub todos_expanded: bool,
     pub logs_expanded: bool,
@@ -63,6 +68,7 @@ impl Default for SidebarState {
             diagnostics_expanded: false,
             delivery_expanded: false,
             skills_expanded: false,
+            project_expanded: true,
             knowledge_expanded: true,
             todos_expanded: true,
             logs_expanded: false,
@@ -75,6 +81,7 @@ impl SidebarState {
         usize::from(self.diagnostics_expanded)
             + usize::from(self.delivery_expanded)
             + usize::from(self.skills_expanded)
+            + usize::from(self.project_expanded)
             + usize::from(self.knowledge_expanded)
             + usize::from(self.todos_expanded)
             + usize::from(self.logs_expanded)
@@ -97,6 +104,7 @@ impl SidebarState {
             SidebarSection::Diagnostics => self.diagnostics_expanded,
             SidebarSection::Delivery => self.delivery_expanded,
             SidebarSection::Skills => self.skills_expanded,
+            SidebarSection::Project => self.project_expanded,
             SidebarSection::Knowledge => self.knowledge_expanded,
             SidebarSection::Todos => self.todos_expanded,
             SidebarSection::Logs => self.logs_expanded,
@@ -112,6 +120,7 @@ impl SidebarState {
             SidebarSection::Diagnostics => self.diagnostics_expanded = !self.diagnostics_expanded,
             SidebarSection::Delivery => self.delivery_expanded = !self.delivery_expanded,
             SidebarSection::Skills => self.skills_expanded = !self.skills_expanded,
+            SidebarSection::Project => self.project_expanded = !self.project_expanded,
             SidebarSection::Knowledge => self.knowledge_expanded = !self.knowledge_expanded,
             SidebarSection::Todos => self.todos_expanded = !self.todos_expanded,
             SidebarSection::Logs => self.logs_expanded = !self.logs_expanded,

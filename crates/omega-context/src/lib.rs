@@ -643,17 +643,17 @@ pub trait ContextDiagnosticsProvider: Send + Sync {
     fn record_memory_snapshot(&self, snapshot: &MemoryKnowledgeSnapshot);
 }
 
-pub struct OmegaContextFacade {
-    pub assembler: Arc<dyn ContextAssembler>,
-    pub memory: Arc<dyn MemoryService>,
-    pub query: Arc<dyn KnowledgeQueryService>,
-    pub governance: Arc<dyn DocumentGovernanceService>,
-    pub diagnostics: Arc<dyn ContextDiagnosticsProvider>,
-    pub document_backend_enabled: bool,
+pub struct ContextFacadeServices {
+    assembler: Arc<dyn ContextAssembler>,
+    memory: Arc<dyn MemoryService>,
+    query: Arc<dyn KnowledgeQueryService>,
+    governance: Arc<dyn DocumentGovernanceService>,
+    diagnostics: Arc<dyn ContextDiagnosticsProvider>,
+    document_backend_enabled: bool,
     recall_budget: RecallBudgetConfig,
 }
 
-impl OmegaContextFacade {
+impl ContextFacadeServices {
     pub fn local(root: PathBuf) -> Self {
         let diagnostics_root = root.clone();
         let diagnostics = Arc::new(LocalDiagnostics::new(diagnostics_root));
@@ -681,6 +681,34 @@ impl OmegaContextFacade {
             document_backend_enabled: cfg!(feature = "document-backend"),
             recall_budget,
         }
+    }
+}
+
+pub struct OmegaContextFacade {
+    pub assembler: Arc<dyn ContextAssembler>,
+    pub memory: Arc<dyn MemoryService>,
+    pub query: Arc<dyn KnowledgeQueryService>,
+    pub governance: Arc<dyn DocumentGovernanceService>,
+    pub diagnostics: Arc<dyn ContextDiagnosticsProvider>,
+    pub document_backend_enabled: bool,
+    recall_budget: RecallBudgetConfig,
+}
+
+impl OmegaContextFacade {
+    pub fn from_services(services: ContextFacadeServices) -> Self {
+        Self {
+            assembler: services.assembler,
+            memory: services.memory,
+            query: services.query,
+            governance: services.governance,
+            diagnostics: services.diagnostics,
+            document_backend_enabled: services.document_backend_enabled,
+            recall_budget: services.recall_budget,
+        }
+    }
+
+    pub fn local(root: PathBuf) -> Self {
+        Self::from_services(ContextFacadeServices::local(root))
     }
 
     pub fn assemble_step_context(

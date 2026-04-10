@@ -2,7 +2,7 @@
 status: active
 owner: omega-team
 created: 2026-03-18
-updated: 2026-04-07
+updated: 2026-04-09
 audience: developers
 level: intermediate
 ---
@@ -62,13 +62,14 @@ cargo run -p omega-app --features document-backend
 
 ## 当前工作区结构
 
-当前 workspace 有 25 个 crate。日常开发不需要记住所有 crate 的细枝末节，先按主路径和支撑层理解即可。
+当前 workspace 有 26 个 crate。日常开发不需要记住所有 crate 的细枝末节，先按主路径和支撑层理解即可。
 
 ### 主运行路径
 
 | Crate | 当前职责 |
 |-------|----------|
 | `omega-app` | 唯一应用入口，负责 bootstrap、config、provider wiring 和 runtime policy |
+| `omega-project` | project 检测、active project 选择、project-bound context ownership 与 session catalog |
 | `omega-session` | 会话运行态编排、workflow turn 驱动、runtime-visible 更新归一 |
 | `omega-core` | agent loop、工具分发和底层执行模型 |
 | `omega-workflow` | workflow 定义、step 配置与运行策略 |
@@ -81,6 +82,7 @@ cargo run -p omega-app --features document-backend
 | Crate | 当前职责 |
 |-------|----------|
 | `omega-context` | 对外统一上下文 facade |
+| `omega-project` | project root、session catalog、`/project` command ownership 与 `.omega/` project state |
 | `omega-memory` | 会话记忆、summary ranking 与 compaction |
 | `omega-document` | 文件治理、索引、检索与文档工具后端 |
 | `omega-todo` | todo 工具与快照模型 |
@@ -127,6 +129,7 @@ cargo run -p omega-app --features document-backend
 
 ```bash
 cargo test -p omega-client
+cargo test -p omega-project
 cargo test -p omega-session
 cargo test -p omega-tui
 cargo test-document-backend
@@ -134,6 +137,8 @@ cargo test-document-commands
 ```
 
 `cargo test -p omega-app` 现在默认不再拉起 `document-backend`，用于日常快速回归；`cargo test-document-backend` 只覆盖文档存储/keyword+semantic+hybrid retrieval 后端，`cargo test-document-commands` 单独覆盖 `omega-session` 的 `/document` command 集成。feature-enabled session 文档测试默认强制 mock embedding backend，避免真实模型下载与 `.fastembed_cache` 污染工作树。
+
+当前 project system 基线已经完整落地：session 启动时会先解析 active project，把 `.omega/` 下的 project metadata / session catalog 作为仓库级状态；`/document` 默认绑定 active project root，而 `/project list|switch|info|sessions|knowledge|delete` 提供显式运维入口。`/project switch` 不只更新 cwd/dispatcher，也会同步重绑 repo-scoped skills、hooks 和 tool surface。TUI 除底部 project badge 外，Sidebar 现也有正式 `Project` panel，并可通过键盘或鼠标打开统一 project detail overlay。
 
 ### 格式化与静态检查
 
@@ -162,9 +167,10 @@ sed -n '1,160p' docs/README.md
 ## 当前架构约束
 
 - `omega-app` 拥有应用 bootstrap 与 runtime message policy。
+- `omega-project` 是 project root、session catalog 和 project-bound context ownership 的唯一上层入口。
 - `omega-session` 是 TUI shell 与 agent runtime 之间的编排边界。
 - `omega-tui` 只负责 UI，不承载会话编排或 observability bootstrap。
-- 上下文主路径通过 `omega-context` 暴露；上层不应直接绕过它去依赖 `omega-memory` 或 `omega-document`。
+- 上下文主路径通过 `omega-context` 暴露；session/app/tool factory 不应直接绕过 `omega-project` 去隐式持有 repo-scoped `omega-context` 实例。
 - 当前 runtime 主链路以 `docs/specs/omega-runtime-message-pipeline.md` 为准；`RuntimeUiEnvelope` 只保留 compat baseline。
 
 ## 日志与排障

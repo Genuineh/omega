@@ -58,6 +58,16 @@ action = "move_cursor_right"
 mode = "insert"
 
 [[bindings]]
+keys = "up"
+action = "move_cursor_up"
+mode = "insert"
+
+[[bindings]]
+keys = "down"
+action = "move_cursor_down"
+mode = "insert"
+
+[[bindings]]
 keys = "home"
 action = "move_cursor_home"
 mode = "insert"
@@ -76,6 +86,12 @@ mode = "insert"
 keys = "backspace"
 action = "delete_char_before"
 mode = "insert"
+
+[[bindings]]
+keys = "shift+enter"
+action = "insert_newline"
+mode = "insert"
+input_capable = true
 
 [[bindings]]
 keys = "enter"

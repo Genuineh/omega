@@ -40,6 +40,15 @@ pub(super) fn handle_mouse_event(mouse: MouseEvent, app: &Arc<Mutex<App>>) {
 
     match mouse.kind {
         MouseEventKind::Down(MouseButton::Left) => {
+            let in_input = mouse.column >= app_guard.input_rect.x
+                && mouse.column < app_guard.input_rect.x.saturating_add(app_guard.input_rect.width)
+                && mouse.row >= app_guard.input_rect.y
+                && mouse.row < app_guard.input_rect.y.saturating_add(app_guard.input_rect.height);
+            if in_input {
+                app_guard.clear_text_selection();
+                return;
+            }
+
             let in_bottom_status = mouse.column >= app_guard.bottom_status_rect.x
                 && mouse.column
                     < app_guard
@@ -74,6 +83,10 @@ pub(super) fn handle_mouse_event(mouse: MouseEvent, app: &Arc<Mutex<App>>) {
                 Panel::Skills if app_guard.skills_visible() => {
                     app_guard.focus_sidebar_panel_from_pointer(Panel::Skills);
                     app_guard.begin_mouse_selection(Panel::Skills, mouse.column, mouse.row);
+                }
+                Panel::Project if app_guard.project_visible() => {
+                    app_guard.focus_sidebar_panel_from_pointer(Panel::Project);
+                    app_guard.begin_mouse_selection(Panel::Project, mouse.column, mouse.row);
                 }
                 Panel::Document if app_guard.document_visible() => {
                     app_guard.focus_sidebar_panel_from_pointer(Panel::Document);
@@ -114,7 +127,9 @@ pub(super) fn handle_mouse_event(mouse: MouseEvent, app: &Arc<Mutex<App>>) {
                         .y
                         .saturating_add(app_guard.bottom_status_rect.height);
             if in_bottom_status {
-                if app_guard.open_latest_delivery_detail() {
+                if app_guard.open_project_detail() {
+                    app_guard.set_status_notice("Opened project detail overlay.");
+                } else if app_guard.open_latest_delivery_detail() {
                     app_guard.set_status_notice("Opened task delivery detail overlay.");
                 }
                 return;
@@ -138,6 +153,7 @@ pub(super) fn handle_mouse_event(mouse: MouseEvent, app: &Arc<Mutex<App>>) {
                     Panel::Diagnostics
                     | Panel::Delivery
                     | Panel::Skills
+                    | Panel::Project
                     | Panel::Document
                     | Panel::Memory
                     | Panel::Todo
@@ -185,6 +201,9 @@ pub(super) fn handle_mouse_event(mouse: MouseEvent, app: &Arc<Mutex<App>>) {
                     Panel::Skills if app_guard.skills_visible() => {
                         app_guard.focus_sidebar_panel_from_pointer(Panel::Skills);
                     }
+                    Panel::Project if app_guard.project_visible() => {
+                        app_guard.focus_sidebar_panel_from_pointer(Panel::Project);
+                    }
                     Panel::Document if app_guard.document_visible() => {
                         app_guard.focus_sidebar_panel_from_pointer(Panel::Document);
                     }
@@ -202,12 +221,28 @@ pub(super) fn handle_mouse_event(mouse: MouseEvent, app: &Arc<Mutex<App>>) {
             }
         }
         MouseEventKind::ScrollUp => {
-            let panel = app_guard.panel_at(mouse.column, mouse.row);
-            app_guard.scroll_panel_up(panel, 3);
+            let in_input = mouse.column >= app_guard.input_rect.x
+                && mouse.column < app_guard.input_rect.x.saturating_add(app_guard.input_rect.width)
+                && mouse.row >= app_guard.input_rect.y
+                && mouse.row < app_guard.input_rect.y.saturating_add(app_guard.input_rect.height);
+            if in_input {
+                app_guard.scroll_input_up(3);
+            } else {
+                let panel = app_guard.panel_at(mouse.column, mouse.row);
+                app_guard.scroll_panel_up(panel, 3);
+            }
         }
         MouseEventKind::ScrollDown => {
-            let panel = app_guard.panel_at(mouse.column, mouse.row);
-            app_guard.scroll_panel_down(panel, 3);
+            let in_input = mouse.column >= app_guard.input_rect.x
+                && mouse.column < app_guard.input_rect.x.saturating_add(app_guard.input_rect.width)
+                && mouse.row >= app_guard.input_rect.y
+                && mouse.row < app_guard.input_rect.y.saturating_add(app_guard.input_rect.height);
+            if in_input {
+                app_guard.scroll_input_down(3);
+            } else {
+                let panel = app_guard.panel_at(mouse.column, mouse.row);
+                app_guard.scroll_panel_down(panel, 3);
+            }
         }
         _ => {}
     }

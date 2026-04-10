@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 last_verified_commit: N/A
 owner: omega-team
 created: 2026-04-09
@@ -20,13 +20,13 @@ related_prds:
 当前 `omega-context` 同时承担了两类边界：
 
 1. **session-local 上下文装配**：当前轮对话、step summaries、tool contracts、结构化输入和上下文预算。
-2. **repository-owned 知识与治理**：`OmegaContextFacade::local(root)` 直接创建 `LocalMemoryService`、`OmegaDocument`、document governance 与 diagnostics 聚合，并默认把 `cwd/root` 当作唯一仓库边界。
+2. **repository-owned 知识与治理**：repo-scoped memory/document/query/governance services 通过显式 `ContextFacadeServices` 组装，再由 `omega-project` 注入到 `OmegaContextFacade`；`cwd/root` 不再作为 session/app/tool factory 直接构造 repo knowledge 的隐式入口。
 
 这条边界在单仓库、单 session 模式下可工作，但已经开始阻碍后续演进：
 
 - `omega-session` 只有 `cwd` 和 `OmegaContextFacade`，没有显式 `project_id`，因此无法稳定表达“多个 session 属于同一个项目”。
 - `/document` 计划与当前实现都是 repo-scoped，但系统里没有一个正式的 `project` 根对象来持有 document/memory/session 关系。
-- 当前 TUI 底部状态栏只有 `Workflow / Agent / Session` 三个 runtime slot，无法把“当前项目”和它的 knowledge/session 详情作为稳定可点击状态暴露出来。
+- 当前 project runtime surface 除底部状态栏外，也需要在 Sidebar 中有稳定可聚焦的 `Project` panel，用于汇总 active project、session 和 knowledge 摘要。
 
 本规格引入新的 `omega-project` 仓库级模块，把“项目识别、项目绑定的 document/memory、项目下多个 session、`/project` 命令和项目详情 UI”收敛成一个正式边界；同时把 `omega-context` 收敛为 **session-local context assembly layer**，不再直接拥有仓库级 document/memory 生命周期。
 
@@ -42,7 +42,7 @@ related_prds:
 ## Non-Goals
 
 - 不在第一阶段实现跨机器同步的全局项目目录服务。
-- 不要求第一阶段把 project detail 做成新的常驻 sidebar panel；overlay 即可作为主详情载体。
+- project detail 仍以 overlay 作为主 drill-down 载体，但 Sidebar 现在应保留一个轻量 `Project` panel 作为稳定摘要入口。
 - 不要求第一阶段重写 `omega-document` 的内部索引结构；重点是 ownership 和 routing 边界迁移。
 - 不把 `omega-project` 设计成新的 god object；command、session、TUI 仍通过明确接口消费 project 能力。
 - 不把 `omega-todo` 纳入 `omega-project`；todo 继续保持 runtime / session 级 working state，不作为 project-bound persistence 或 knowledge surface 的一部分。
@@ -51,15 +51,15 @@ related_prds:
 
 ### 当前实现锚点
 
-- `omega-context` 的 `OmegaContextFacade::local(root)` 直接创建 `LocalMemoryService`、`OmegaDocument`、query/governance/diagnostics，说明 repo-scoped knowledge 目前挂在 context facade 内部。
-- `omega-session::AgentSession` 当前仅持有 `cwd` 与 `Arc<OmegaContextFacade>`，没有 `project_id`、`project_handle` 或 project-scoped session catalog。
-- `omega-command` 规格已经把 `/document` 定义成 repo-scoped operator surface，但前提仍是“`omega-context` 是 document/memory 的唯一上层入口”。
-- `omega-tui` 当前 runtime UI 只有 `StatusSlot::Workflow | Agent | Session`；底部状态栏支持点击，但现在整条 bar 点击只会打开 delivery detail，并没有 segment-level 项目命中模型。
-- `omega-todo` 当前以 `SharedTodoManager = Arc<Mutex<TodoManager>>` 的形式由 runtime/tool 装配注入，是当前会话内的 working set，不是 project root 下的 repo-local source of truth。
+- `omega-project::OmegaProjectHandle` 负责创建 project-bound `OmegaContextFacade`，并通过显式 `ContextFacadeServices` 注入 repo-scoped memory/document/query/governance/diagnostics。
+- `omega-core` 现提供 context-aware tool factory 入口，`omega-session` 初始化、interrupt 与 `/project switch` 重绑均显式复用 active project 的 `context_facade`，不再绕过 `omega-project` 额外构造 repo knowledge owner。
+- `omega-session::AgentSession` 现持有 project runtime bindings；project 切换后会同步重建 `SkillLoader` / `SessionSkillCatalog` / `HookHost` / `SessionToolCatalog`，保证 repo-local skills/hooks/tool surface 跟随 active project root 切换。
+- `omega-tui` 当前同时提供底部 project badge 与 Sidebar `Project` panel；panel 会展示 active project、session 与 knowledge 摘要，并支持键盘/鼠标打开统一 project detail overlay。
+- `omega-todo` 仍保持 runtime / session-scoped working set，不进入 `omega-project` 的 repo-local source of truth。
 
 ### 结论
 
-现状的主要问题不是“缺一个 `/project` 命令”，而是**缺一个 project-owned 根对象**。如果继续把 repo-owned document/memory 挂在 `omega-context` 内，再叠加 `/project`、多 session 和项目详情 UI，会把 context 进一步推向 god object。
+project system 的核心已经收口为 **project-owned 根对象**：repo-owned document/memory/session runtime surface 统一经由 `omega-project` 注入和重绑，避免 `omega-context` 或 `omega-core` 再次膨胀成隐式 god object。
 
 ## Architecture
 
@@ -72,7 +72,7 @@ related_prds:
 | `omega-session` | 持有 `session_id` + `Arc<OmegaProjectHandle>` + session-local `OmegaContextSession`，负责 session 生命周期与 project 关联写入 |
 | `omega-command` | 新增 `/project` descriptor / parser / hint metadata；不直接持有存储或 UI 依赖 |
 | `omega-app` | 装配 `ProjectRegistry`、active project selection、command handlers 和 TUI runtime wiring |
-| `omega-tui` | 渲染当前 project 状态段，支持项目详情 overlay 和后续 drill-down |
+| `omega-tui` | 渲染当前 project 状态段、Sidebar `Project` panel，并支持项目详情 overlay 和 drill-down |
 
 ### Runtime Todo Boundary
 
@@ -102,7 +102,7 @@ omega-project 实现这些 traits，并把 project-scoped knowledge 暴露给 se
 
 关键约束：
 
-- `omega-context` 不再提供 `OmegaContextFacade::local(root)` 这种“直接用 root 构造 repo knowledge”的入口。
+- `OmegaContextFacade::local(root)` 仅保留为兼容测试/fixture 入口；production app/session/tool factory 不再依赖它直接装配 repo knowledge。
 - `omega-project` 不拥有 session-local transcript 或 step outputs；它只拥有 project-scoped knowledge 和 session catalog。
 - `omega-session` 既不直接依赖 `omega-document`，也不绕过 `omega-project` 写 project memory。
 
@@ -304,7 +304,7 @@ pub struct ProjectTurnData {
 2. 用户新开 session 时，`omega-project` 生成/记录 `session_id` 并返回 `OmegaProjectHandle`。
 3. `omega-session` 使用该 handle 构造 session-local context service。
 4. 每个 turn archival 通过 `omega-project` 记录，保证 memory 与 session catalog 同时更新。
-5. `/project switch` 切换项目时，当前 session 要么关闭，要么以新的 `session_id` 重新绑定目标 project，禁止隐式跨项目复用同一 session transcript。
+5. `/project switch` 切换项目时，当前实现会把同一 `session_id` 从旧 project 标记为 `idle`，再把它重新绑定到新 project，并同步重建当前 agent 的 dispatcher/cwd；后续如需“切换时强制新 session_id”的更严格语义，再单独提升为 follow-up。
 
 ## Command System Integration
 
@@ -321,6 +321,8 @@ pub struct ProjectTurnData {
 | `/project knowledge [project_id]` | 查看该 project 的 document/memory 摘要、最近文档与 knowledge totals |
 | `/project delete <project_id>` | 删除 project registry entry；默认只忘记 registry，`--purge` 才删除 `.omega/project.json` / session catalog / local recent cache |
 
+当前实现说明：`/project delete <project-id|path>` 只允许删除非 active project，并直接移除目标 project 的 repo-local `.omega/` 状态后忘记当前进程内 registry entry；`--purge` 语义暂未拆分。
+
 ### `/document` Rebinding Rule
 
 `/document` 不再以 session `cwd` 作为默认根，而是必须使用 `CurrentProjectHandle`：
@@ -335,17 +337,13 @@ pub struct ProjectTurnData {
 
 底部状态栏新增独立 `Project` segment，而不是复用 `Session` 或 `Aux`：
 
-- 展示：`project <display_name> · <session_count> sessions · docs <readiness>`
+- 展示：`project <display_name>`
 - 位置：建议位于 `Session` / `Workflow` 之后、`Delivery` 之前
-- 状态颜色：沿用 readiness 语义色，不自行发明新体系
+- 状态颜色：沿用状态栏既有 label/value 语义色，不自行发明新体系
 
 ### Click Behavior
 
-当前状态栏点击行为是“整条 bar 打开 delivery detail”。改为 **segment-aware hit testing**：
-
-- 点击 `Project` segment：打开 `Project Detail` overlay
-- 点击 `Delivery` segment：保持现有 delivery detail 行为
-- 点击其他 segment：仅聚焦或无操作，不隐式复用 delivery 行为
+当前实现先采用较小闭环：当存在 project slot 时，点击底部状态栏会优先打开 `Project Detail` overlay；若当前没有 project slot，则保持现有 delivery detail 行为。更细的 segment-aware hit testing 仍可作为后续 UI 精修项。
 
 ### Project Detail Overlay
 
@@ -405,11 +403,11 @@ overlay 至少展示：
 
 ## Testing Strategy
 
-- `omega-project` 单测覆盖：current-file detection、path canonicalization、project-id 稳定性、registry persistence。
-- `omega-session` 集成测试覆盖：session 创建会绑定 `project_id`，turn archival 会写 project session catalog。
-- `omega-context` 集成测试覆盖：project provider 缺失/切换时 recall 与 diagnostics 语义正确。
-- `omega-command` / `omega-app` 集成测试覆盖：`/project list|switch|info|sessions|knowledge|delete` 的 parse/dispatch/output contract。
-- `omega-tui` 测试覆盖：底部 project segment 渲染、鼠标点击打开 project detail overlay、project switch 后 UI 同步。
+- `omega-project` 单测已覆盖：current-file detection、显式 root 优先级、repo-local project name、session catalog 排序与持久化。
+- `omega-session` 集成测试已覆盖：`/project info` 会发出 `ProjectStatus` snapshot，`/project switch` 会切换 active project 并重绑定 session/project handle。
+- `omega-context` 当前仍通过 `OmegaContextFacade::local(root)` 由 `omega-project` 持有；更细的 provider-trait 内拆留作后续演进，不阻塞当前 project-owned boundary。
+- `omega-command` / `omega-app` 已覆盖 `/project` family parse/dispatch/output contract 的主闭环；`omega-app` 启动时会把初始 project slot 注入 TUI。
+- `omega-tui` 已覆盖：底部 project badge 渲染路径、点击状态栏打开 project detail overlay，以及 slash command/project slot 共存回归。
 
 ## Open Questions
 
@@ -420,3 +418,4 @@ overlay 至少展示：
 ## Change Log
 
 - 2026-04-09: 首次新增 `omega-project` 规格，定义 project-owned document/memory/session boundary、`/project` command family 和底部状态栏 project segment。
+- 2026-04-09: 规格同步到已实现基线：新增 `omega-project` crate、project-aware `AgentSession`、`/project` commands、底部 project badge 与 detail overlay，并记录当前 phase 对 `session_id` 复用和状态栏点击行为的实现语义。

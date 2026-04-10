@@ -61,6 +61,7 @@ pub(super) fn render_sidebar_rail(
         SidebarSection::Diagnostics,
         SidebarSection::Delivery,
         SidebarSection::Skills,
+        SidebarSection::Project,
         SidebarSection::Knowledge,
         SidebarSection::Todos,
         SidebarSection::Logs,
@@ -72,8 +73,6 @@ pub(super) fn render_sidebar_rail(
         let selected = app.sidebar.rail_selection == section;
         let expanded = app.sidebar.is_expanded(section);
         let rail_focused = app.focused_panel == Panel::SidebarRail;
-        let marker = if expanded { "▾" } else { "▸" };
-        let icon = sidebar_rail_icon(section);
         let count = sidebar_rail_count(app, section);
         let style = if selected && rail_focused {
             Style::default()
@@ -94,11 +93,7 @@ pub(super) fn render_sidebar_rail(
                 .fg(colors.context_label)
                 .bg(colors.sidebar_rail_bg)
         };
-        let text = if count.is_empty() {
-            format!(" {marker} {icon} ")
-        } else {
-            format!(" {marker} {icon} {count} ")
-        };
+        let text = sidebar_rail_item_text(section, expanded, &count);
         item_widths.push(sidebar_rail_item_width(section, &count));
         spans.push(Span::styled(text, style));
     }
@@ -138,30 +133,21 @@ fn sidebar_rail_scroll_offset(
 }
 
 fn sidebar_rail_item_width(section: SidebarSection, count: &str) -> usize {
-    let icon_width = sidebar_rail_icon_width(section);
+    let label_width = section.label().chars().count();
     if count.is_empty() {
-        icon_width + 4
+        label_width + 4
     } else {
-        icon_width + count.chars().count() + 5
+        label_width + count.chars().count() + 5
     }
 }
 
-fn sidebar_rail_icon(section: SidebarSection) -> &'static str {
-    match section {
-        SidebarSection::Diagnostics => "⚠",
-        SidebarSection::Delivery => "▣",
-        SidebarSection::Skills => "💡",
-        SidebarSection::Knowledge => "📚",
-        SidebarSection::Todos => "☑",
-        SidebarSection::Logs => "☰",
-    }
-}
-
-/// Terminal column width of each section's icon for rail scrolling math.
-fn sidebar_rail_icon_width(section: SidebarSection) -> usize {
-    match section {
-        SidebarSection::Skills | SidebarSection::Knowledge => 2,
-        _ => 1,
+fn sidebar_rail_item_text(section: SidebarSection, expanded: bool, count: &str) -> String {
+    let marker = if expanded { "▾" } else { "▸" };
+    let label = section.label();
+    if count.is_empty() {
+        format!(" {marker} {label} ")
+    } else {
+        format!(" {marker} {label} {count} ")
     }
 }
 
@@ -189,6 +175,7 @@ pub(super) fn render_sidebar_body(
     app.diagnostics_rect = Rect::default();
     app.delivery_rect = Rect::default();
     app.skills_rect = Rect::default();
+    app.project_rect = Rect::default();
     app.document_rect = Rect::default();
     app.memory_rect = Rect::default();
     app.todo_rect = Rect::default();
@@ -324,6 +311,39 @@ pub(super) fn render_sidebar_body(
         }
     } else {
         app.skills_displayed_count = 0;
+    }
+
+    if app.sidebar.project_expanded {
+        let rect = section_rect(SidebarSection::Project);
+        app.project_rect = rect;
+        if rect.height > 0 {
+            let focused = app.focused_panel == Panel::Project;
+            let title = app.project_panel_title();
+            let inner_w = (rect.width as usize).saturating_sub(2).max(1);
+            let app_ref: &App = &*app;
+            let items = render_sidebar_items(app_ref, Panel::Project, inner_w, rect.height, colors);
+            let total = items.len();
+            app.project_displayed_count = total;
+            if !app.project_pinned && total > 0 {
+                app.project_state.select(Some(total - 1));
+            }
+            let list = List::new(items)
+                .block(
+                    Block::default()
+                        .border_type(colors.panel_border_type)
+                        .title(styled_title(&title, focused, colors))
+                        .borders(Borders::ALL)
+                        .border_style(sidebar_section_border_style(focused, colors))
+                        .style(Style::default().bg(colors.sidebar_bg)),
+                )
+                .highlight_style(Style::default())
+                .style(section_body_style(focused, colors));
+            frame.render_stateful_widget(list, rect, &mut app.project_state);
+        } else {
+            app.project_displayed_count = 0;
+        }
+    } else {
+        app.project_displayed_count = 0;
     }
 
     if app.sidebar.knowledge_expanded {
@@ -513,6 +533,7 @@ fn expanded_sidebar_sections(app: &App) -> Vec<SidebarSection> {
         SidebarSection::Diagnostics,
         SidebarSection::Delivery,
         SidebarSection::Skills,
+        SidebarSection::Project,
         SidebarSection::Knowledge,
         SidebarSection::Todos,
         SidebarSection::Logs,
@@ -553,6 +574,7 @@ fn sidebar_view_anchor(app: &App, expanded: &[SidebarSection]) -> Option<Sidebar
         Panel::Diagnostics => Some(SidebarSection::Diagnostics),
         Panel::Delivery => Some(SidebarSection::Delivery),
         Panel::Skills => Some(SidebarSection::Skills),
+        Panel::Project => Some(SidebarSection::Project),
         Panel::Document => Some(SidebarSection::Knowledge),
         Panel::Todo => Some(SidebarSection::Todos),
         Panel::Logs => Some(SidebarSection::Logs),
@@ -570,6 +592,7 @@ fn sidebar_section_weight(app: &App, section: SidebarSection) -> u32 {
         SidebarSection::Diagnostics => 8,
         SidebarSection::Delivery => 14,
         SidebarSection::Skills => 10,
+        SidebarSection::Project => 11,
         SidebarSection::Knowledge => 14,
         SidebarSection::Todos => 13,
         SidebarSection::Logs => 9,
@@ -585,6 +608,7 @@ fn panel_for_sidebar_section(section: SidebarSection) -> Panel {
         SidebarSection::Diagnostics => Panel::Diagnostics,
         SidebarSection::Delivery => Panel::Delivery,
         SidebarSection::Skills => Panel::Skills,
+        SidebarSection::Project => Panel::Project,
         SidebarSection::Knowledge => Panel::Document,
         SidebarSection::Todos => Panel::Todo,
         SidebarSection::Logs => Panel::Logs,
@@ -642,6 +666,7 @@ fn selected_sidebar_item_index(app: &App, panel: Panel) -> Option<usize> {
         Panel::Diagnostics => app.diagnostics_state.selected(),
         Panel::Delivery => app.delivery_state.selected(),
         Panel::Skills => app.skills_state.selected(),
+        Panel::Project => app.project_state.selected(),
         Panel::Document => app.document_state.selected(),
         Panel::Memory => app.memory_state.selected(),
         Panel::Todo => app.todo_state.selected(),
@@ -708,6 +733,7 @@ fn sidebar_preview_limit(panel: Panel, focused: bool) -> usize {
         Panel::Diagnostics => 6,
         Panel::Delivery => 6,
         Panel::Skills => 5,
+        Panel::Project => 6,
         Panel::Document => 6,
         Panel::Memory => 6,
         Panel::Todo => 6,
@@ -750,7 +776,7 @@ fn truncate_sidebar_preview(text: &str, max_chars: usize) -> String {
 
 fn sidebar_overflow_hint(panel: Panel, hidden_lines: usize) -> String {
     let action = match panel {
-        Panel::Diagnostics | Panel::Delivery | Panel::Skills | Panel::Document | Panel::Memory => {
+        Panel::Diagnostics | Panel::Delivery | Panel::Skills | Panel::Project | Panel::Document | Panel::Memory => {
             "focus panel for detail"
         }
         Panel::Todo | Panel::Logs => "focus panel to scroll",
@@ -985,6 +1011,15 @@ mod tests {
     }
 
     #[test]
+    fn expanded_sidebar_sections_include_project_panel() {
+        let app = App::new();
+
+        let sections = expanded_sidebar_sections(&app);
+
+        assert!(sections.contains(&SidebarSection::Project));
+    }
+
+    #[test]
     fn sidebar_preview_lines_require_focus_before_detail_hint() {
         let mut app = App::new();
         app.focused_panel = Panel::Response;
@@ -1063,8 +1098,14 @@ mod tests {
     }
 
     #[test]
-    fn sidebar_rail_books_icon_uses_wide_width() {
-        assert_eq!(sidebar_rail_icon(SidebarSection::Knowledge), "📚");
-        assert_eq!(sidebar_rail_icon_width(SidebarSection::Knowledge), 2);
+    fn sidebar_rail_item_text_uses_section_labels() {
+        assert_eq!(
+            sidebar_rail_item_text(SidebarSection::Project, true, "2/8"),
+            " ▾ Project 2/8 "
+        );
+        assert_eq!(
+            sidebar_rail_item_text(SidebarSection::Logs, false, ""),
+            " ▸ Logs "
+        );
     }
 }

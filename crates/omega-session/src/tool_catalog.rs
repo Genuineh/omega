@@ -221,6 +221,10 @@ impl SessionToolCatalog {
                 .collect(),
         )
     }
+
+    pub fn available_tool_names(&self) -> Vec<String> {
+        self.available_tools.keys().cloned().collect()
+    }
 }
 
 #[cfg(test)]

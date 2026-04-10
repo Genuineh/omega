@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::{mpsc, Arc};
 
 use omega_context::{ContextDiagnostics, ContextSupervisionSnapshot, StepKnowledgeSummary};
+use omega_project::ProjectDetailSnapshot;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeUiEnvelope {
@@ -136,6 +137,7 @@ pub enum StatusSlot {
     Workflow,
     Agent,
     Session,
+    Project,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -170,6 +172,9 @@ pub enum StatusValue {
         active_workflow_role: WorkflowRunRole,
         recognized_scene_id: Option<String>,
         selected_workflow_id: Option<String>,
+    },
+    ProjectSelection {
+        snapshot: Box<ProjectDetailSnapshot>,
     },
     Hidden,
 }

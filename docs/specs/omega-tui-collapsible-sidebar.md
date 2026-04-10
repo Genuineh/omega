@@ -64,7 +64,7 @@ related_prds: []
 
 - 左侧仍为 `Response` 主面板。
 - 右侧为单一较大的 `Sidebar` 面板。
-- `Header rail` 固定在 `Sidebar` 顶部，使用单行轻量文本入口显示 `Todos`、`Logs` 的图标、名称与摘要，入口之间以 `|` 分隔。
+- `Header rail` 固定在 `Sidebar` 顶部，使用单行轻量文本入口显示各 section 的名称与摘要，入口之间按 tab 顺序横向排列。
 - `Body` 在 rail 下方渲染已展开的 section。
 
 ### Section Expansion Behavior
@@ -90,8 +90,8 @@ related_prds: []
 - `toggle_sidebar`: 收起或展开整个右侧侧边栏。
 - `toggle_todos`: 在侧边栏展开时展开或折叠 `Todos` section。
 - `toggle_logs`: 在侧边栏展开时展开或折叠 `Logs` section。
-- `focus_sidebar_rail`: 把交互焦点移到侧边栏顶部图标轨。
-- `cycle_sidebar_section`: 在 rail 内切换当前高亮的 section 图标。
+- `focus_sidebar_rail`: 把交互焦点移到侧边栏顶部 rail。
+- `cycle_sidebar_section`: 在 rail 内切换当前高亮的 section 文本入口。
 - `activate_sidebar_section`: 展开当前高亮 section，或把焦点跳转到该 section。
 
 当前默认交互：
@@ -154,9 +154,9 @@ related_prds: []
 
 | Decision | Choice | Rationale |
 |---------|--------|-----------|
-| sidebar ownership | `omega-tui` local layout state | 侧边栏开合、图标轨与弹性布局都是纯 UI 语义 |
+| sidebar ownership | `omega-tui` local layout state | 侧边栏开合、顶部 rail 与弹性布局都是纯 UI 语义 |
 | section source data | keep existing session updates | 不为本次壳层重构改动 `omega-session` 协议 |
-| collapsed representation | top rail icons with compact badges | 既保留可发现性，也避免折叠后信息完全消失 |
+| collapsed representation | top rail text tabs with compact badges | 既保留可发现性，也避免折叠后信息完全消失 |
 | empty-body prevention | keep at least one section expanded | 避免出现打开侧边栏却只有空壳的死区 |
 | future extensibility | reuse rail for Activity views | 为后续运行态视图提供统一承载面 |
 
@@ -169,19 +169,19 @@ related_prds: []
 1. `Sidebar shell foundation`：统一右侧侧边栏容器、整体收起快捷键、顶部 rail、`Todos`/`Logs` section state。
 2. `Activity view migration`：保持 `Todos`、`Logs` 作为统一 rail 内的运行态入口，并在后续逐步加入 `Skills`、`Delegations`、`Background`、`Inbox` 等更多视图。
 
-如果实现过程中发现交互复杂度明显上升，可以将 `Sidebar shell foundation` 再拆成单独子任务，但不建议把图标 rail 与整体收起能力推迟到 `Activity` 视图全部接入之后。
+如果实现过程中发现交互复杂度明显上升，可以将 `Sidebar shell foundation` 再拆成单独子任务，但不建议把顶部 rail 与整体收起能力推迟到 `Activity` 视图全部接入之后。
 
 ## Testing Strategy
 
 - `omega-tui` 单测：验证 `toggle_sidebar` 后布局和焦点会正确退化与恢复。
-- `omega-tui` 单测：验证 `Todos` / `Logs` 折叠后只保留 rail 图标，不参与主体高度分配。
+- `omega-tui` 单测：验证 `Todos` / `Logs` 折叠后只保留 rail 文本入口，不参与主体高度分配。
 - `omega-tui` 单测：验证单 section 展开时会占满 `Sidebar` 主体。
 - `omega-tui` 单测：验证试图折叠最后一个展开 section 时不会出现空主体。
 - `omega-tui` 单测：验证窄终端下侧边栏强制收起后，焦点与快捷键行为仍一致。
-- 手动验证：运行 `cargo run -p omega-tui`，检查侧边栏整体收起、section 图标切换、双展开弹性布局与窄终端退化。
+- 手动验证：运行 `cargo run -p omega-tui`，检查侧边栏整体收起、section 文本入口切换、双展开弹性布局与窄终端退化。
 
 ---
 
 ### Change Log
-- 2026-03-19: 新增可收起侧边栏规格，定义统一 `Sidebar` shell、顶部图标轨、section 折叠态与整体收起交互。
+- 2026-03-19: 新增可收起侧边栏规格，定义统一 `Sidebar` shell、顶部 rail、section 折叠态与整体收起交互。
 - 2026-03-19: `Task 15B-16` 已落地，`omega-tui` 现支持统一 `Sidebar` shell、轻量单行 rail、`Todos | Logs` 入口、最后一个 section 防空折叠，以及直接显示 `Logs` 标题。

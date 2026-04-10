@@ -59,6 +59,16 @@ action = "move_cursor_right"
 mode = "insert"
 
 [[bindings]]
+keys = "up"
+action = "move_cursor_up"
+mode = "insert"
+
+[[bindings]]
+keys = "down"
+action = "move_cursor_down"
+mode = "insert"
+
+[[bindings]]
 keys = "home"
 action = "move_cursor_home"
 mode = "insert"
@@ -77,6 +87,12 @@ mode = "insert"
 keys = "backspace"
 action = "delete_char_before"
 mode = "insert"
+
+[[bindings]]
+keys = "shift+enter"
+action = "insert_newline"
+mode = "insert"
+input_capable = true
 
 [[bindings]]
 keys = "enter"
@@ -134,10 +150,13 @@ pub enum KeyAction {
     ScrollPanelDown,
     MoveCursorLeft,
     MoveCursorRight,
+    MoveCursorUp,
+    MoveCursorDown,
     MoveCursorHome,
     MoveCursorEnd,
     DeleteCharAt,
     DeleteCharBefore,
+    InsertNewline,
     SubmitInput,
     InterruptTurn,
     Quit,
@@ -161,10 +180,13 @@ impl KeyAction {
             Self::ScrollPanelDown => "scroll_panel_down",
             Self::MoveCursorLeft => "move_cursor_left",
             Self::MoveCursorRight => "move_cursor_right",
+            Self::MoveCursorUp => "move_cursor_up",
+            Self::MoveCursorDown => "move_cursor_down",
             Self::MoveCursorHome => "move_cursor_home",
             Self::MoveCursorEnd => "move_cursor_end",
             Self::DeleteCharAt => "delete_char_at",
             Self::DeleteCharBefore => "delete_char_before",
+            Self::InsertNewline => "insert_newline",
             Self::SubmitInput => "submit_input",
             Self::InterruptTurn => "interrupt_turn",
             Self::Quit => "quit",
@@ -467,7 +489,13 @@ impl KeymapManager {
     pub fn load_from_file(path: &Path) -> Result<Self> {
         let raw = fs::read_to_string(path)
             .with_context(|| format!("failed to read keymap file {}", path.display()))?;
-        Self::parse_keymap_str(&raw, KeymapSource::File(path.to_path_buf())).map_err(|error| {
+        let builtin = Self::parse_keymap_file(DEFAULT_KEYMAP_TOML)
+            .expect("builtin keymap file should parse");
+        let custom = Self::parse_keymap_file(&raw)
+            .map_err(|error| anyhow::anyhow!("failed to parse keymap file {}: {error}", path.display()))?;
+        let merged = merge_keymap_files(builtin, custom);
+
+        Self::compile_keymap(merged, KeymapSource::File(path.to_path_buf())).map_err(|error| {
             anyhow::anyhow!("failed to parse keymap file {}: {error}", path.display())
         })
     }
@@ -645,8 +673,15 @@ impl KeymapManager {
     }
 
     fn parse_keymap_str(raw: &str, source: KeymapSource) -> Result<Self> {
-        let file: KeymapFile = toml::from_str(raw)?;
+        let file = Self::parse_keymap_file(raw)?;
+        Self::compile_keymap(file, source)
+    }
 
+    fn parse_keymap_file(raw: &str) -> Result<KeymapFile> {
+        toml::from_str(raw).map_err(Into::into)
+    }
+
+    fn compile_keymap(file: KeymapFile, source: KeymapSource) -> Result<Self> {
         let (leader, leader_timeout) = match file.leader {
             Some(config) => {
                 let key = KeyStroke::parse(&config.key)?;
@@ -755,19 +790,19 @@ fn validate_bindings(bindings: &[KeyBinding]) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct KeymapFile {
     leader: Option<LeaderConfig>,
     bindings: Option<Vec<KeyBindingConfig>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct LeaderConfig {
     key: String,
     timeout_ms: Option<u64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct KeyBindingConfig {
     keys: String,
     action: KeyAction,
@@ -776,6 +811,25 @@ struct KeyBindingConfig {
     input_capable: Option<bool>,
     text_fallback: Option<bool>,
     timeout_ms: Option<u64>,
+}
+
+fn merge_keymap_files(mut builtin: KeymapFile, custom: KeymapFile) -> KeymapFile {
+    if custom.leader.is_some() {
+        builtin.leader = custom.leader;
+    }
+
+    let mut bindings = builtin.bindings.take().unwrap_or_default();
+    for binding in custom.bindings.unwrap_or_default() {
+        bindings.retain(|existing| {
+            !(existing.keys == binding.keys
+                && existing.mode == binding.mode
+                && existing.focus == binding.focus
+                && existing.input_capable == binding.input_capable)
+        });
+        bindings.push(binding);
+    }
+    builtin.bindings = Some(bindings);
+    builtin
 }
 
 #[cfg(test)]
@@ -1020,6 +1074,75 @@ mod tests {
                 press(KeyCode::Char('a'), KeyModifiers::NONE)
             ),
             KeyResolution::ReplayAsText(" a".to_string())
+        );
+    }
+
+    #[test]
+    fn default_keymap_maps_shift_enter_to_insert_newline() {
+        let manager = KeymapManager::default();
+        let context = KeyContext {
+            mode: InteractionMode::Insert,
+            focus: KeyFocus::InputField,
+            input_capable: true,
+            leader_pending: false,
+        };
+
+        assert_eq!(
+            manager.resolve(&context, press(KeyCode::Enter, KeyModifiers::SHIFT)),
+            KeyResolution::Matched(KeyAction::InsertNewline)
+        );
+    }
+
+    #[test]
+    fn default_keymap_maps_arrow_keys_to_vertical_cursor_motion() {
+        let manager = KeymapManager::default();
+        let context = KeyContext {
+            mode: InteractionMode::Insert,
+            focus: KeyFocus::InputField,
+            input_capable: true,
+            leader_pending: false,
+        };
+
+        assert_eq!(
+            manager.resolve(&context, press(KeyCode::Up, KeyModifiers::NONE)),
+            KeyResolution::Matched(KeyAction::MoveCursorUp)
+        );
+        assert_eq!(
+            manager.resolve(&context, press(KeyCode::Down, KeyModifiers::NONE)),
+            KeyResolution::Matched(KeyAction::MoveCursorDown)
+        );
+    }
+
+    #[test]
+    fn stale_workspace_keymap_inherits_new_builtin_bindings() {
+        let root = temp_root("stale-default-overlay");
+        let omega_dir = root.join(".omega");
+        fs::create_dir_all(&omega_dir).unwrap();
+        fs::write(
+            omega_dir.join("keymap.toml"),
+            "# Older workspace keymap without newer defaults\n\n[leader]\nkey = \"space\"\ntimeout_ms = 300\n\n[[bindings]]\nkeys = \"esc\"\naction = \"enter_normal_mode\"\nmode = \"insert\"\n\n[[bindings]]\nkeys = \"left\"\naction = \"move_cursor_left\"\nmode = \"insert\"\n\n[[bindings]]\nkeys = \"right\"\naction = \"move_cursor_right\"\nmode = \"insert\"\n\n[[bindings]]\nkeys = \"enter\"\naction = \"submit_input\"\nmode = \"insert\"\ninput_capable = true\n",
+        )
+        .unwrap();
+
+        let manager = KeymapManager::load_from_file(&omega_dir.join("keymap.toml")).unwrap();
+        let context = KeyContext {
+            mode: InteractionMode::Insert,
+            focus: KeyFocus::InputField,
+            input_capable: true,
+            leader_pending: false,
+        };
+
+        assert_eq!(
+            manager.resolve(&context, press(KeyCode::Up, KeyModifiers::NONE)),
+            KeyResolution::Matched(KeyAction::MoveCursorUp)
+        );
+        assert_eq!(
+            manager.resolve(&context, press(KeyCode::Down, KeyModifiers::NONE)),
+            KeyResolution::Matched(KeyAction::MoveCursorDown)
+        );
+        assert_eq!(
+            manager.resolve(&context, press(KeyCode::Enter, KeyModifiers::SHIFT)),
+            KeyResolution::Matched(KeyAction::InsertNewline)
         );
     }
 

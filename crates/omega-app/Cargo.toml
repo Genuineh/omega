@@ -15,6 +15,7 @@ path = "src/main.rs"
 omega-core = { path = "../omega-core" }
 omega-keymap = { path = "../omega-keymap" }
 omega-observability = { path = "../omega-observability" }
+omega-project = { path = "../omega-project" }
 omega-session = { path = "../omega-session" }
 omega-theme = { path = "../omega-theme" }
 omega-tui = { path = "../omega-tui" }

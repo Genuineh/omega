@@ -230,6 +230,22 @@ fn input_editing_uses_character_indices() {
 }
 
 #[test]
+fn vertical_cursor_motion_follows_wrapped_input_lines() {
+    let mut app = App::new();
+    app.input_rect = ratatui::layout::Rect::new(0, 0, 7, 4);
+    app.insert_text("abcdefghij");
+
+    app.move_cursor_up();
+    assert_eq!(app.cursor_pos, 6);
+
+    app.move_cursor_up();
+    assert_eq!(app.cursor_pos, 2);
+
+    app.move_cursor_down();
+    assert_eq!(app.cursor_pos, 6);
+}
+
+#[test]
 fn add_log_strips_ansi_sequences() {
     let mut app = App::new();
     app.add_log("\u{1b}[32mhello\u{1b}[0m".to_string());
@@ -302,6 +318,72 @@ fn upserting_skill_load_summary_builds_skills_sidebar_lines() {
         .skill_lines
         .iter()
         .any(|line| line.contains("ignored ids: plan")));
+}
+
+#[test]
+fn setting_project_status_builds_project_sidebar_lines_and_badge() {
+    let mut app = App::new();
+    let snapshot = omega_project::ProjectDetailSnapshot {
+        record: omega_project::ProjectRecord {
+            project_id: "proj-123".to_string(),
+            display_name: "omega".to_string(),
+            root: std::path::PathBuf::from("/workspace/omega"),
+            detection_kind: omega_project::ProjectDetectionKind::Explicit,
+            created_at: 1,
+            last_opened_at: 2,
+            active_session_id: Some("session-a".to_string()),
+        },
+        sessions: vec![omega_project::ProjectSessionRef {
+            session_id: "session-a".to_string(),
+            title: "Session A".to_string(),
+            started_at: 1,
+            last_active_at: 2,
+            status: omega_project::ProjectSessionStatus::Active,
+            turn_count: 3,
+            last_user_turn_preview: Some("review project wiring".to_string()),
+        }],
+        knowledge: omega_project::ProjectKnowledgeSummary {
+            document: ContextDocumentDiagnostics {
+                total_files_indexed: 12,
+                total_chunks: 48,
+                health_status: omega_session::DocumentHealthStatus::Good,
+                ..ContextDocumentDiagnostics::default()
+            },
+            memory: ContextMemoryDiagnostics {
+                total_turns_archived: 6,
+                memory_query_count: 4,
+                observation_count: 2,
+                ..ContextMemoryDiagnostics::default()
+            },
+            session_count: 1,
+            active_session_id: Some("session-a".to_string()),
+        },
+    };
+
+    app.set_status_slot(
+        StatusSlot::Project,
+        StatusValue::ProjectSelection {
+            snapshot: Box::new(snapshot),
+        },
+    );
+
+    assert_eq!(app.rail_badge(SidebarSection::Project), "P 1/6");
+    assert!(app
+        .project_lines
+        .iter()
+        .any(|line| line.contains("project: omega")));
+    assert!(app
+        .project_lines
+        .iter()
+        .any(|line| line.contains("active session: session-a")));
+    assert!(app
+        .project_lines
+        .iter()
+        .any(|line| line.contains("document totals: files=12 chunks=48")));
+    assert!(app
+        .project_lines
+        .iter()
+        .any(|line| line.contains("memory totals: turns=6 queries=4 observations=2")));
 }
 
 #[test]

@@ -3,7 +3,7 @@ status: active
 last_verified_commit: N/A
 owner: omega-team
 created: 2026-03-19
-updated: 2026-04-03
+updated: 2026-04-10
 version: 0.3
 supersedes: []
 related_prds: []
@@ -23,6 +23,7 @@ related_prds: []
 - 引入 `Normal` / `Insert` 两种交互模式，使导航类操作与文本输入类操作明确分离。
 - 支持 mode-aware、focus-aware、context-aware 的快捷键匹配规则。
 - 支持从工作目录下 `.omega/keymap.toml` 启动加载用户快捷键设置，并在缺失时回退到内置默认映射。
+- 已存在的工作区 `.omega/keymap.toml` 应视为“覆盖层”而不是“整份替换”：当内置默认 keymap 新增键位时，旧工作区文件必须自动继承这些新增默认，除非用户显式用同条件绑定覆盖它们。
 - 将快捷键定义、加载、验证、解析与动作匹配逻辑放入独立 crate，降低 `omega-tui` 的输入系统复杂度。
 - 允许 `Insert` 模式声明前缀序列，在 `space`、`jk` 等常见场景下同时满足“先尝试映射”和“失败后回放原始文本”。
 - 为 pending 输入序列定义显式 timeout replay 语义，避免把空格 leader 与自由输入永久做成二选一。
@@ -134,8 +135,15 @@ v0.2 不再把 leader 仅限于 `Normal` 模式，而是把按键处理拆成两
 启动行为：
 
 - 若文件存在，则读取并校验
+- 若文件存在，则以“内置默认 + 工作区覆盖”的方式合并加载，避免旧默认文件吞掉后续新增默认绑定
 - 若文件缺失，则创建默认 `.omega/keymap.toml` 文件并加载它
 - 若文件格式错误，则记录错误、向用户显示提示，并回退到内置默认 keymap
+
+覆盖规则：
+
+- `leader` 配置若在工作区文件中出现，则替换默认 leader，并让默认绑定也按新的 leader 重新解析。
+- `bindings` 以 `keys + mode + focus + input_capable` 为覆盖键；工作区文件中命中的绑定会替换默认同条件绑定。
+- 工作区文件未声明的新默认绑定必须自动保留，避免历史默认文件把后续新增快捷键静默吃掉。
 
 ### Suggested Format
 

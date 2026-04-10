@@ -46,6 +46,7 @@ fn apply_state(surface: &mut dyn TuiSurface, message: StateMessage) {
         StateMessage::AgentStatus { label: Some(label) } => surface.set_agent_status(&label),
         StateMessage::AgentStatus { label: None } => surface.clear_agent_status(),
         StateMessage::SessionRouting(routing) => surface.set_session_routing(routing),
+        StateMessage::ProjectStatus { snapshot } => surface.set_project_status(*snapshot),
         StateMessage::TodoSnapshot { rendered } => surface.set_todo_snapshot(&rendered),
         StateMessage::OpenDiffPreview { diff } => surface.show_overlay(OverlayRequest {
             target: omega_session::OverlayTarget::Detail,
@@ -176,6 +177,7 @@ mod tests {
         ClearWorkflowStep,
         AgentStatus(String),
         SessionRouting(String),
+        ProjectStatus(String),
         TodoSnapshot(String),
         Diagnostics(String),
         ContextSupervision,
@@ -244,6 +246,11 @@ mod tests {
         }
 
         fn clear_session_routing(&mut self) {}
+
+        fn set_project_status(&mut self, snapshot: omega_project::ProjectDetailSnapshot) {
+            self.ops
+                .push(SurfaceOp::ProjectStatus(snapshot.record.display_name));
+        }
 
         fn set_todo_snapshot(&mut self, text: &str) {
             self.ops.push(SurfaceOp::TodoSnapshot(text.to_string()));

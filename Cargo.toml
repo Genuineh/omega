@@ -24,6 +24,7 @@ members = [
     "crates/omega-core",
     "crates/omega-session",
     "crates/omega-observability",
+    "crates/omega-project",
     "crates/omega-test-support",
     "crates/omega-tui",
 ]

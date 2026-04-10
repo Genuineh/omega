@@ -23,12 +23,14 @@ use crate::sidebar::{SidebarSection, SidebarState};
 
 mod diagnostics;
 mod delivery;
+mod project;
 mod response;
 mod skills;
 mod supervision;
 mod text;
 mod todo;
 
+pub(crate) use project::project_badge_text;
 pub(crate) use text::wrap_text_segments;
 #[cfg(test)]
 pub(crate) use todo::todo_empty_lines;
@@ -45,6 +47,7 @@ const TODO_EMPTY_LINES: &[&str] = &[
     "Todo list is empty.",
     "Call the todo tool when the task splits into steps.",
 ];
+const INPUT_VIEWPORT_PREFIX_WIDTH: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Panel {
@@ -53,6 +56,7 @@ pub enum Panel {
     Diagnostics,
     Delivery,
     Skills,
+    Project,
     Document,
     Memory,
     Todo,
@@ -265,6 +269,11 @@ pub enum SessionStatusSummary {
     Routing(SessionRoutingSummary),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectStatusSummary {
+    pub snapshot: omega_project::ProjectDetailSnapshot,
+}
+
 pub struct App {
     pub output_msgs: Vec<Msg>,
     pub tool_runs: Vec<ToolRun>,
@@ -279,6 +288,7 @@ pub struct App {
     diagnostics_lines: Vec<DiagnosticsLine>,
     pub delivery_lines: Vec<String>,
     pub skill_lines: Vec<String>,
+    pub project_lines: Vec<String>,
     pub document_lines: Vec<String>,
     pub memory_lines: Vec<String>,
     pub todo_lines: Vec<String>,
@@ -289,6 +299,7 @@ pub struct App {
     pub diagnostics_state: ListState,
     pub delivery_state: ListState,
     pub skills_state: ListState,
+    pub project_state: ListState,
     pub document_state: ListState,
     pub memory_state: ListState,
     pub todo_state: ListState,
@@ -299,6 +310,7 @@ pub struct App {
     pub diagnostics_pinned: bool,
     pub delivery_pinned: bool,
     pub skills_pinned: bool,
+    pub project_pinned: bool,
     pub document_pinned: bool,
     pub memory_pinned: bool,
     pub todo_pinned: bool,
@@ -307,11 +319,13 @@ pub struct App {
     pub input_context_rect: Rect,
     pub input_gap_rect: Rect,
     pub input_rect: Rect,
+    pub input_info_rect: Rect,
     pub sidebar_rect: Rect,
     pub sidebar_rail_rect: Rect,
     pub diagnostics_rect: Rect,
     pub delivery_rect: Rect,
     pub skills_rect: Rect,
+    pub project_rect: Rect,
     pub document_rect: Rect,
     pub memory_rect: Rect,
     pub todo_rect: Rect,
@@ -319,6 +333,7 @@ pub struct App {
     pub bottom_status_rect: Rect,
     pub input_buffer: String,
     pub cursor_pos: usize,
+    pub input_scroll_top: usize,
     pub input_enabled: bool,
     pub show_thinking: bool,
     pub is_running: bool,
@@ -326,12 +341,14 @@ pub struct App {
     pub workflow_summary: Option<WorkflowSummary>,
     pub agent_status_label: Option<String>,
     pub session_status: Option<SessionStatusSummary>,
+    pub project_status: Option<ProjectStatusSummary>,
     pub last_todo_turn_id: Option<u64>,
     pub spinner_tick: u8,
     pub response_displayed_count: usize,
     pub diagnostics_displayed_count: usize,
     pub delivery_displayed_count: usize,
     pub skills_displayed_count: usize,
+    pub project_displayed_count: usize,
     pub document_displayed_count: usize,
     pub memory_displayed_count: usize,
     pub todo_displayed_count: usize,
@@ -342,6 +359,7 @@ pub struct App {
     pub status_notice: Option<String>,
     pub text_selection: Option<PanelTextSelection>,
     pub mouse_selection_active: bool,
+    pub input_cursor_column_goal: Option<usize>,
     pub sidebar: SidebarState,
     pub overlay: Option<OverlayState>,
     pub overlay_rect: Rect,
@@ -365,6 +383,7 @@ impl App {
             diagnostics_lines: vec![],
             delivery_lines: delivery_placeholder_lines(),
             skill_lines: skill_placeholder_lines(),
+            project_lines: project::project_placeholder_lines(),
             document_lines: knowledge_placeholder_lines(),
             memory_lines: memory_placeholder_lines(),
             todo_lines: todo_unsynced_lines(),
@@ -375,6 +394,7 @@ impl App {
             diagnostics_state: ListState::default(),
             delivery_state: ListState::default(),
             skills_state: ListState::default(),
+            project_state: ListState::default(),
             document_state: ListState::default(),
             memory_state: ListState::default(),
             todo_state: ListState::default(),
@@ -385,6 +405,7 @@ impl App {
             diagnostics_pinned: false,
             delivery_pinned: false,
             skills_pinned: false,
+            project_pinned: false,
             document_pinned: false,
             memory_pinned: false,
             todo_pinned: false,
@@ -393,11 +414,13 @@ impl App {
             input_context_rect: Rect::default(),
             input_gap_rect: Rect::default(),
             input_rect: Rect::default(),
+            input_info_rect: Rect::default(),
             sidebar_rect: Rect::default(),
             sidebar_rail_rect: Rect::default(),
             diagnostics_rect: Rect::default(),
             delivery_rect: Rect::default(),
             skills_rect: Rect::default(),
+            project_rect: Rect::default(),
             document_rect: Rect::default(),
             memory_rect: Rect::default(),
             todo_rect: Rect::default(),
@@ -405,6 +428,7 @@ impl App {
             bottom_status_rect: Rect::default(),
             input_buffer: String::new(),
             cursor_pos: 0,
+            input_scroll_top: 0,
             input_enabled: true,
             show_thinking: true,
             is_running: false,
@@ -412,12 +436,14 @@ impl App {
             workflow_summary: None,
             agent_status_label: None,
             session_status: None,
+            project_status: None,
             last_todo_turn_id: None,
             spinner_tick: 0,
             response_displayed_count: 0,
             diagnostics_displayed_count: 0,
             delivery_displayed_count: 0,
             skills_displayed_count: 0,
+            project_displayed_count: 0,
             document_displayed_count: 0,
             memory_displayed_count: 0,
             todo_displayed_count: 0,
@@ -428,6 +454,7 @@ impl App {
             status_notice: None,
             text_selection: None,
             mouse_selection_active: false,
+            input_cursor_column_goal: None,
             sidebar: SidebarState::default(),
             overlay: None,
             overlay_rect: Rect::default(),
@@ -501,10 +528,21 @@ impl App {
                 }
                 StatusValue::SessionRouting { .. } => {}
                 StatusValue::WorkflowStep { .. } => {}
+                StatusValue::ProjectSelection { .. } => {}
             },
             StatusSlot::Session => match value {
                 StatusValue::WorkflowStep { .. } => {}
                 value => self.session_status = session_status_from_status(value),
+            },
+            StatusSlot::Project => match value {
+                StatusValue::ProjectSelection { snapshot } => {
+                    self.project_status = Some(ProjectStatusSummary { snapshot: *snapshot });
+                    self.rebuild_project_lines();
+                }
+                StatusValue::Hidden => self.clear_project_status(),
+                StatusValue::Label(_)
+                | StatusValue::WorkflowStep { .. }
+                | StatusValue::SessionRouting { .. } => {}
             },
         }
     }
@@ -517,6 +555,7 @@ impl App {
                 self.agent_status_label = None;
             }
             StatusSlot::Session => self.session_status = None,
+            StatusSlot::Project => self.clear_project_status(),
         }
     }
 
@@ -719,6 +758,15 @@ impl App {
                 });
                 self.skills_state.select(Some(current.saturating_sub(amount)));
             }
+            Panel::Project => {
+                self.project_pinned = true;
+                let current = self.project_state.selected().unwrap_or_else(|| {
+                    self.project_displayed_count
+                        .max(self.project_lines.len())
+                        .saturating_sub(1)
+                });
+                self.project_state.select(Some(current.saturating_sub(amount)));
+            }
             Panel::Document => {
                 self.document_pinned = true;
                 let current = self.document_state.selected().unwrap_or_else(|| {
@@ -809,6 +857,18 @@ impl App {
                 self.skills_state.select(Some(new_idx));
                 if new_idx >= last {
                     self.skills_pinned = false;
+                }
+            }
+            Panel::Project => {
+                let last = self
+                    .project_displayed_count
+                    .max(self.project_lines.len())
+                    .saturating_sub(1);
+                let current = self.project_state.selected().unwrap_or(last);
+                let new_idx = (current + amount).min(last);
+                self.project_state.select(Some(new_idx));
+                if new_idx >= last {
+                    self.project_pinned = false;
                 }
             }
             Panel::Document => {
@@ -908,6 +968,13 @@ impl App {
             && row < self.skills_rect.y.saturating_add(self.skills_rect.height)
         {
             Panel::Skills
+        } else if self.project_rect.width > 0
+            && col >= self.project_rect.x
+            && col < self.project_rect.x.saturating_add(self.project_rect.width)
+            && row >= self.project_rect.y
+            && row < self.project_rect.y.saturating_add(self.project_rect.height)
+        {
+            Panel::Project
         } else if self.document_rect.width > 0
             && col >= self.document_rect.x
             && col < self.document_rect.x.saturating_add(self.document_rect.width)
@@ -961,6 +1028,12 @@ impl App {
                 self.skills_state.select(Some(index.min(self.skills_displayed_count - 1)));
                 true
             }
+            Panel::Project if self.project_visible() && self.project_displayed_count > 0 => {
+                self.focused_panel = Panel::Project;
+                self.project_pinned = true;
+                self.project_state.select(Some(index.min(self.project_displayed_count - 1)));
+                true
+            }
             Panel::Document if self.document_visible() && self.document_displayed_count > 0 => {
                 self.focused_panel = Panel::Document;
                 self.document_pinned = true;
@@ -1005,6 +1078,10 @@ impl App {
         self.skills_rect.width > 0 && self.skills_rect.height > 0
     }
 
+    pub fn project_visible(&self) -> bool {
+        self.project_rect.width > 0 && self.project_rect.height > 0
+    }
+
     pub fn document_visible(&self) -> bool {
         self.document_rect.width > 0 && self.document_rect.height > 0
     }
@@ -1032,6 +1109,9 @@ impl App {
             self.focused_panel = Panel::Response;
         }
         if self.focused_panel == Panel::Skills && !self.skills_visible() {
+            self.focused_panel = Panel::Response;
+        }
+        if self.focused_panel == Panel::Project && !self.project_visible() {
             self.focused_panel = Panel::Response;
         }
         if self.focused_panel == Panel::Document && !self.document_visible() {
@@ -1070,6 +1150,9 @@ impl App {
         if self.skills_visible() {
             panels.push(Panel::Skills);
         }
+        if self.project_visible() {
+            panels.push(Panel::Project);
+        }
         if self.document_visible() {
             panels.push(Panel::Document);
         }
@@ -1101,6 +1184,7 @@ impl App {
             Panel::Diagnostics => KeyFocus::Activity,
             Panel::Delivery => KeyFocus::Activity,
             Panel::Skills => KeyFocus::Activity,
+            Panel::Project => KeyFocus::Activity,
             Panel::Document => KeyFocus::Activity,
             Panel::Memory => KeyFocus::Activity,
             Panel::Todo => KeyFocus::Todo,
@@ -1268,6 +1352,9 @@ impl App {
         if self.skills_visible() {
             panels.push(Panel::Skills);
         }
+        if self.project_visible() {
+            panels.push(Panel::Project);
+        }
         if self.document_visible() {
             panels.push(Panel::Document);
         }
@@ -1332,6 +1419,12 @@ impl App {
                 }
                 self.focus_sidebar_panel(Panel::Skills);
             }
+            SidebarSection::Project => {
+                if !self.sidebar.project_expanded {
+                    self.sidebar.project_expanded = true;
+                }
+                self.focus_sidebar_panel(Panel::Project);
+            }
             SidebarSection::Knowledge => {
                 if !self.sidebar.knowledge_expanded {
                     self.sidebar.knowledge_expanded = true;
@@ -1377,6 +1470,9 @@ impl App {
             }
             Panel::Skills if self.skills_state.selected().is_none() => {
                 self.skills_state.select(Some(0));
+            }
+            Panel::Project if self.project_state.selected().is_none() => {
+                self.project_state.select(Some(0));
             }
             Panel::Document if self.document_state.selected().is_none() => {
                 self.document_state.select(Some(0));
@@ -1447,6 +1543,17 @@ impl App {
                     .unwrap_or_else(|| "S --".to_string()),
                 None => "S --".to_string(),
             },
+            SidebarSection::Project => self
+                .project_status
+                .as_ref()
+                .map(|summary| {
+                    format!(
+                        "P {}/{}",
+                        summary.snapshot.sessions.len(),
+                        summary.snapshot.knowledge.memory.total_turns_archived
+                    )
+                })
+                .unwrap_or_else(|| "P --".to_string()),
             SidebarSection::Knowledge => match self.context_supervision.as_ref() {
                 Some(snapshot) if !snapshot.document.enabled && !snapshot.memory.enabled => {
                     "K off".to_string()
@@ -1683,6 +1790,16 @@ impl App {
         self.input_buffer.chars().count()
     }
 
+    pub fn input_viewport_top(&self, total_lines: usize) -> usize {
+        let visible_height = self.input_visible_height();
+        if visible_height == 0 {
+            return 0;
+        }
+
+        self.input_scroll_top
+            .min(total_lines.saturating_sub(visible_height))
+    }
+
     pub fn cursor_byte_pos(&self) -> usize {
         self.input_buffer
             .char_indices()
@@ -1695,6 +1812,8 @@ impl App {
         let byte_pos = self.cursor_byte_pos();
         self.input_buffer.insert(byte_pos, c);
         self.cursor_pos += 1;
+        self.clear_input_cursor_column_goal();
+        self.ensure_input_cursor_visible();
     }
 
     pub fn insert_text(&mut self, text: &str) {
@@ -1703,11 +1822,17 @@ impl App {
         }
     }
 
+    pub fn insert_newline(&mut self) {
+        self.insert_char('\n');
+    }
+
     pub fn delete_char_before(&mut self) {
         if self.cursor_pos > 0 {
             self.cursor_pos -= 1;
             let byte_pos = self.cursor_byte_pos();
             self.input_buffer.remove(byte_pos);
+            self.clear_input_cursor_column_goal();
+            self.ensure_input_cursor_visible();
         }
     }
 
@@ -1715,11 +1840,15 @@ impl App {
         if self.cursor_pos < self.char_count() {
             let byte_pos = self.cursor_byte_pos();
             self.input_buffer.remove(byte_pos);
+            self.clear_input_cursor_column_goal();
+            self.ensure_input_cursor_visible();
         }
     }
 
     pub fn move_cursor_left(&mut self) {
         self.cursor_pos = self.cursor_pos.saturating_sub(1);
+        self.clear_input_cursor_column_goal();
+        self.ensure_input_cursor_visible();
     }
 
     pub fn move_cursor_right(&mut self) {
@@ -1727,22 +1856,160 @@ impl App {
         if self.cursor_pos < count {
             self.cursor_pos += 1;
         }
+        self.clear_input_cursor_column_goal();
+        self.ensure_input_cursor_visible();
+    }
+
+    pub fn move_cursor_up(&mut self) {
+        self.move_cursor_vertical(-1);
+    }
+
+    pub fn move_cursor_down(&mut self) {
+        self.move_cursor_vertical(1);
     }
 
     pub fn move_cursor_home(&mut self) {
         self.cursor_pos = 0;
+        self.clear_input_cursor_column_goal();
+        self.ensure_input_cursor_visible();
     }
 
     pub fn move_cursor_end(&mut self) {
         self.cursor_pos = self.char_count();
+        self.clear_input_cursor_column_goal();
+        self.ensure_input_cursor_visible();
+    }
+
+    pub fn scroll_input_up(&mut self, amount: usize) {
+        self.input_scroll_top = self.input_scroll_top.saturating_sub(amount);
+    }
+
+    pub fn scroll_input_down(&mut self, amount: usize) {
+        let total_lines = self.input_total_visual_lines();
+        self.input_scroll_top = (self.input_scroll_top + amount).min(
+            total_lines.saturating_sub(self.input_visible_height()),
+        );
     }
 
     pub fn take_input(&mut self) -> String {
         let input = self.input_buffer.clone();
         self.input_buffer.clear();
         self.cursor_pos = 0;
+        self.input_scroll_top = 0;
+        self.clear_input_cursor_column_goal();
         self.command_hint = None;
         input
+    }
+
+    fn input_visible_height(&self) -> usize {
+        self.input_rect.height as usize
+    }
+
+    fn input_content_width(&self) -> usize {
+        (self.input_rect.width as usize)
+            .saturating_sub(INPUT_VIEWPORT_PREFIX_WIDTH)
+            .max(1)
+    }
+
+    fn input_total_visual_lines(&self) -> usize {
+        self.input_cursor_visual_positions()
+            .last()
+            .map(|(line, _)| line.saturating_add(1))
+            .unwrap_or(1)
+    }
+
+    fn input_cursor_visual_positions(&self) -> Vec<(usize, usize)> {
+        let mut positions = Vec::with_capacity(self.char_count().saturating_add(1));
+        let mut line = 0usize;
+        let mut column = 0usize;
+        let content_width = self.input_content_width();
+
+        positions.push((line, column));
+        for character in self.input_buffer.chars() {
+            if character == '\n' {
+                line = line.saturating_add(1);
+                column = 0;
+                positions.push((line, column));
+                continue;
+            }
+
+            if column == content_width {
+                line = line.saturating_add(1);
+                column = 0;
+            }
+            column = column.saturating_add(1);
+            positions.push((line, column));
+        }
+
+        positions
+    }
+
+    fn clear_input_cursor_column_goal(&mut self) {
+        self.input_cursor_column_goal = None;
+    }
+
+    fn ensure_input_cursor_visible(&mut self) {
+        let visible_height = self.input_visible_height();
+        if visible_height == 0 {
+            self.input_scroll_top = 0;
+            return;
+        }
+
+        let positions = self.input_cursor_visual_positions();
+        let (cursor_line, _) = positions.get(self.cursor_pos).copied().unwrap_or((0, 0));
+        let max_top = positions
+            .last()
+            .map(|(line, _)| line.saturating_add(1))
+            .unwrap_or(1)
+            .saturating_sub(visible_height);
+
+        if cursor_line < self.input_scroll_top {
+            self.input_scroll_top = cursor_line;
+        } else if cursor_line >= self.input_scroll_top.saturating_add(visible_height) {
+            self.input_scroll_top = cursor_line.saturating_add(1).saturating_sub(visible_height);
+        }
+
+        self.input_scroll_top = self.input_scroll_top.min(max_top);
+    }
+
+    fn move_cursor_vertical(&mut self, direction: isize) {
+        let positions = self.input_cursor_visual_positions();
+        let Some((current_line, current_column)) = positions.get(self.cursor_pos).copied() else {
+            return;
+        };
+        let last_line = positions.last().map(|(line, _)| *line).unwrap_or(0);
+        let target_line = match direction {
+            -1 if current_line > 0 => current_line - 1,
+            1 if current_line < last_line => current_line + 1,
+            _ => return,
+        };
+        let desired_column = self
+            .input_cursor_column_goal
+            .unwrap_or(current_column);
+        let mut fallback_index = None;
+
+        for (index, (line, column)) in positions.iter().copied().enumerate() {
+            if line < target_line {
+                continue;
+            }
+            if line > target_line {
+                break;
+            }
+
+            fallback_index = Some(index);
+            if column == desired_column {
+                self.cursor_pos = index;
+                self.input_cursor_column_goal = Some(desired_column);
+                self.ensure_input_cursor_visible();
+                return;
+            }
+        }
+
+        if let Some(index) = fallback_index {
+            self.cursor_pos = index;
+            self.input_cursor_column_goal = Some(desired_column);
+            self.ensure_input_cursor_visible();
+        }
     }
 }
 

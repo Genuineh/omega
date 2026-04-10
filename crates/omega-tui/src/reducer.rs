@@ -254,6 +254,7 @@ pub fn workflow_summary_from_status(value: StatusValue) -> Option<WorkflowSummar
         }),
         StatusValue::Hidden => None,
         StatusValue::SessionRouting { .. } => None,
+        StatusValue::ProjectSelection { .. } => None,
     }
 }
 
@@ -273,6 +274,6 @@ pub fn session_status_from_status(value: StatusValue) -> Option<SessionStatusSum
             recognized_scene_id,
             selected_workflow_id,
         })),
-        StatusValue::Hidden | StatusValue::WorkflowStep { .. } => None,
+        StatusValue::Hidden | StatusValue::WorkflowStep { .. } | StatusValue::ProjectSelection { .. } => None,
     }
 }

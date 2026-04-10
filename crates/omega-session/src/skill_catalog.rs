@@ -157,6 +157,10 @@ impl SessionSkillCatalog {
         self.resolve_for_step(task, routed_skill_ids, request)
             .build_system_prompt(base_prompt)
     }
+
+    pub fn descriptions(&self) -> Vec<String> {
+        self.loader.descriptions()
+    }
 }
 
 pub(crate) fn normalize_skill_ids(names: &[String]) -> Vec<String> {

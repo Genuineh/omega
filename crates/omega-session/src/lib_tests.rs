@@ -258,6 +258,17 @@ fn write_review_skill(root: &Path) {
     write_named_skill(root, "review", "Review code", "Find regressions.");
 }
 
+fn write_builtin_hook_manifest(root: &Path, hook_id: &str) {
+    let hook_dir = root.join(".omega/hooks").join(hook_id);
+    let _ = std::fs::create_dir_all(&hook_dir);
+    let _ = std::fs::write(
+        hook_dir.join("Hook.toml"),
+        format!(
+            "id = \"{hook_id}\"\npackage = \"builtin\"\nartifact = \"builtin:{hook_id}\"\napi_version = 1\n"
+        ),
+    );
+}
+
 fn write_named_skill(root: &Path, name: &str, description: &str, body: &str) {
     let skills_dir = root.join(".claude/skills").join(name);
     let _ = std::fs::create_dir_all(&skills_dir);
@@ -1799,6 +1810,164 @@ fn command_hint_renders_ready_state_for_document_query() {
 
     let hint = session.command_hint("/document query roadmap").unwrap();
     assert!(hint.contains("/document"));
+}
+
+#[test]
+fn spawn_command_project_info_emits_project_status_snapshot() {
+    let root = unique_session_test_root("project-command-info");
+    write_document_fixture(&root);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: Arc::new(IdleClient),
+        system: "system".to_string(),
+        cwd: root.clone(),
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+    let recorder = RuntimeEnvelopeRecorder::new();
+
+    session
+        .spawn_command_with_test_bridge(
+            "/project info".to_string(),
+            560,
+            recorder.runtime_bridge(),
+        )
+        .unwrap();
+
+    let recorded = recorder.wait_for_turn_finished_messages(560, Duration::from_secs(30));
+    let snapshot = recorded.iter().find_map(|envelope| match &envelope.message {
+        RuntimeMessage::State(StateMessage::ProjectStatus { snapshot }) => Some(snapshot.as_ref()),
+        _ => None,
+    });
+
+    let snapshot = snapshot.expect("expected project status snapshot");
+    assert_eq!(snapshot.record.root, root.canonicalize().unwrap());
+    assert!(matches!(
+        snapshot.record.detection_kind,
+        omega_project::ProjectDetectionKind::Cwd | omega_project::ProjectDetectionKind::LooseDirectory
+    ));
+    assert!(!snapshot.sessions.is_empty());
+
+    let body = recorded
+        .iter()
+        .filter_map(|envelope| match &envelope.message {
+            RuntimeMessage::Conversation(ConversationMessage::AppendSection { delta, .. }) => {
+                match delta {
+                    ResponseSectionDelta::Text(text) => Some(text.as_str()),
+                }
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(body.contains("Project ID:"));
+    assert!(body.contains("Document readiness:"));
+}
+
+#[test]
+fn spawn_command_project_switch_rebinds_active_project() {
+    let root = unique_session_test_root("project-command-switch-a");
+    let other_root = unique_session_test_root("project-command-switch-b");
+    write_document_fixture(&root);
+    write_document_fixture(&other_root);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: Arc::new(IdleClient),
+        system: "system".to_string(),
+        cwd: root,
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+    let recorder = RuntimeEnvelopeRecorder::new();
+
+    session
+        .spawn_command_with_test_bridge(
+            format!("/project switch {}", other_root.display()),
+            561,
+            recorder.runtime_bridge(),
+        )
+        .unwrap();
+
+    let recorded = recorder.wait_for_turn_finished_messages(561, Duration::from_secs(30));
+    let snapshot = recorded.iter().find_map(|envelope| match &envelope.message {
+        RuntimeMessage::State(StateMessage::ProjectStatus { snapshot }) => Some(snapshot.as_ref()),
+        _ => None,
+    });
+
+    let snapshot = snapshot.expect("expected project status snapshot after switch");
+    assert_eq!(snapshot.record.root, other_root.canonicalize().unwrap());
+    assert_eq!(
+        session.project_detail_snapshot().unwrap().record.root,
+        other_root.canonicalize().unwrap()
+    );
+}
+
+#[test]
+fn spawn_command_project_switch_rebinds_runtime_skill_hook_and_tool_surfaces() {
+    let root = unique_session_test_root("project-command-switch-bindings-a");
+    let other_root = unique_session_test_root("project-command-switch-bindings-b");
+    write_document_fixture(&root);
+    write_document_fixture(&other_root);
+    write_named_skill(&root, "review", "Review code", "Find regressions.");
+    write_named_skill(&other_root, "docs-specs", "Write specs", "Be precise.");
+    write_builtin_hook_manifest(&root, "hook-a");
+    write_builtin_hook_manifest(&other_root, "hook-b");
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: Arc::new(IdleClient),
+        system: "system".to_string(),
+        cwd: root.clone(),
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+
+    let before = session.debug_runtime_bindings_snapshot();
+    assert!(before.skill_descriptions.iter().any(|line| line.contains("review")));
+    assert!(!before.skill_descriptions.iter().any(|line| line.contains("docs-specs")));
+    assert!(before.available_tool_ids.iter().any(|id| id == "load_skill"));
+    assert_eq!(before.hook_ids, vec!["hook-a".to_string()]);
+
+    let recorder = RuntimeEnvelopeRecorder::new();
+    session
+        .spawn_command_with_test_bridge(
+            format!("/project switch {}", other_root.display()),
+            562,
+            recorder.runtime_bridge(),
+        )
+        .unwrap();
+
+    let _recorded = recorder.wait_for_turn_finished_messages(562, Duration::from_secs(30));
+    let after = session.debug_runtime_bindings_snapshot();
+    assert_eq!(after.cwd, other_root.canonicalize().unwrap());
+    assert!(after.skill_descriptions.iter().any(|line| line.contains("docs-specs")));
+    assert!(!after.skill_descriptions.iter().any(|line| line.contains("review: Review code")));
+    assert!(after.available_tool_ids.iter().any(|id| id == "load_skill"));
+    assert_eq!(after.hook_ids, vec!["hook-b".to_string()]);
 }
 
 #[cfg(feature = "document-backend")]

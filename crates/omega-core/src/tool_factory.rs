@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use omega_context::{ContextToolRegistry, OmegaContextFacade};
+use omega_context::{ContextFacadeServices, ContextToolRegistry, OmegaContextFacade};
 use omega_skills::LoadSkillHandler;
 use omega_todo::{SharedTodoManager, TodoManager, TodoReadHandler, TodoWriteHandler};
 use omega_tools::{
@@ -37,8 +37,12 @@ pub fn create_default_tools_with_todo_manager(
     root: PathBuf,
     todo_manager: SharedTodoManager,
 ) -> ToolDispatcher {
-    create_default_tools_with_todo_manager_and_tool_limits(
+    let context_facade = std::sync::Arc::new(OmegaContextFacade::from_services(
+        ContextFacadeServices::local(root.clone()),
+    ));
+    create_default_tools_with_context_and_todo_manager_and_tool_limits(
         root,
+        context_facade,
         todo_manager,
         default_bash_allowed_commands(),
         default_batch_max_requests(),
@@ -50,8 +54,12 @@ pub fn create_default_tools_with_todo_manager_and_bash_allowlist(
     todo_manager: SharedTodoManager,
     bash_allowed_commands: Vec<String>,
 ) -> ToolDispatcher {
-    create_default_tools_with_todo_manager_and_tool_limits(
+    let context_facade = std::sync::Arc::new(OmegaContextFacade::from_services(
+        ContextFacadeServices::local(root.clone()),
+    ));
+    create_default_tools_with_context_and_todo_manager_and_tool_limits(
         root,
+        context_facade,
         todo_manager,
         bash_allowed_commands,
         default_batch_max_requests(),
@@ -64,9 +72,27 @@ pub fn create_default_tools_with_todo_manager_and_tool_limits(
     bash_allowed_commands: Vec<String>,
     batch_max_requests: usize,
 ) -> ToolDispatcher {
+    let context_facade = std::sync::Arc::new(OmegaContextFacade::from_services(
+        ContextFacadeServices::local(root.clone()),
+    ));
+    create_default_tools_with_context_and_todo_manager_and_tool_limits(
+        root,
+        context_facade,
+        todo_manager,
+        bash_allowed_commands,
+        batch_max_requests,
+    )
+}
+
+pub fn create_default_tools_with_context_and_todo_manager_and_tool_limits(
+    root: PathBuf,
+    context_facade: std::sync::Arc<OmegaContextFacade>,
+    todo_manager: SharedTodoManager,
+    bash_allowed_commands: Vec<String>,
+    batch_max_requests: usize,
+) -> ToolDispatcher {
     let mut dispatcher = ToolDispatcher::new();
-    let context_registry =
-        ContextToolRegistry::new(std::sync::Arc::new(OmegaContextFacade::local(root.clone())));
+    let context_registry = ContextToolRegistry::new(context_facade);
     register_default_manifest(
         &mut dispatcher,
         Box::new(BashHandler::with_allowed_commands(

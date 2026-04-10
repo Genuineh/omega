@@ -32,6 +32,7 @@ pub(super) fn handle_key_event(
                 Panel::Diagnostics
                     | Panel::Delivery
                     | Panel::Skills
+                    | Panel::Project
                     | Panel::Document
                     | Panel::Memory
                     | Panel::Todo
@@ -198,6 +199,23 @@ pub(super) fn handle_key_event(
                     "Opened routed skills detail overlay."
                 } else {
                     "Routed skill summary is not available yet."
+                };
+                app_guard.set_status_notice(notice);
+                return Ok(false);
+            }
+        }
+    }
+
+    {
+        let mut app_guard = app.lock().unwrap();
+        if app_guard.interaction_mode == InteractionMode::Normal
+            && app_guard.focused_panel == Panel::Project
+        {
+            if matches!(key.code, KeyCode::Enter | KeyCode::Char('x')) {
+                let notice = if app_guard.open_project_detail() {
+                    "Opened project detail overlay."
+                } else {
+                    "Project status snapshot is not available yet."
                 };
                 app_guard.set_status_notice(notice);
                 return Ok(false);
@@ -468,6 +486,14 @@ fn execute_action(
             app.lock().unwrap().move_cursor_right();
             Ok(false)
         }
+        KeyAction::MoveCursorUp => {
+            app.lock().unwrap().move_cursor_up();
+            Ok(false)
+        }
+        KeyAction::MoveCursorDown => {
+            app.lock().unwrap().move_cursor_down();
+            Ok(false)
+        }
         KeyAction::MoveCursorHome => {
             app.lock().unwrap().move_cursor_home();
             Ok(false)
@@ -483,6 +509,11 @@ fn execute_action(
         }
         KeyAction::DeleteCharBefore => {
             app.lock().unwrap().delete_char_before();
+            refresh_command_hint(app, session);
+            Ok(false)
+        }
+        KeyAction::InsertNewline => {
+            app.lock().unwrap().insert_newline();
             refresh_command_hint(app, session);
             Ok(false)
         }

@@ -107,6 +107,10 @@ impl DeliverySummary {
             self.changed_files.len(),
         )
     }
+
+    fn token_badge(&self) -> String {
+        format!("{:.1}k", self.total_tokens() as f64 / 1000.0)
+    }
 }
 
 impl App {
@@ -141,6 +145,10 @@ impl App {
 
     pub fn delivery_badge_text(&self) -> Option<String> {
         self.delivery_panel_summary().map(|summary| summary.compact_badge())
+    }
+
+    pub fn delivery_token_badge_text(&self) -> Option<String> {
+        self.delivery_panel_summary().map(|summary| summary.token_badge())
     }
 
     pub(super) fn refresh_delivery_panel(&mut self) {

@@ -1,6 +1,7 @@
 use std::sync::{mpsc, Arc};
 
 use omega_context::{ContextSupervisionSnapshot, StepKnowledgeSummary};
+use omega_project::ProjectDetailSnapshot;
 
 use crate::runtime_ui::{
     OverlayRequest, ResponseSection, ResponseSectionDelta, ResponseSectionState, RuntimeUiEffect,
@@ -80,6 +81,9 @@ pub enum StateMessage {
         label: Option<String>,
     },
     SessionRouting(SessionRoutingStatus),
+    ProjectStatus {
+        snapshot: Box<ProjectDetailSnapshot>,
+    },
     TodoSnapshot {
         rendered: String,
     },
@@ -341,6 +345,13 @@ fn legacy_ui_envelopes_from_state(turn_id: u64, message: StateMessage) -> Vec<Ru
                     recognized_scene_id: routing.recognized_scene_id,
                     selected_workflow_id: routing.selected_workflow_id,
                 },
+            },
+        )],
+        StateMessage::ProjectStatus { snapshot } => vec![RuntimeUiEnvelope::effect(
+            turn_id,
+            RuntimeUiEffect::SetStatusSlot {
+                slot: StatusSlot::Project,
+                value: StatusValue::ProjectSelection { snapshot },
             },
         )],
         StateMessage::TodoSnapshot { rendered } => vec![RuntimeUiEnvelope::effect(

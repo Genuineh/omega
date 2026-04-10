@@ -15,8 +15,11 @@ use crate::render::markdown::StyledSpan;
 
 use super::overlay::render_overlay;
 use super::sidebar::{render_sidebar_body, render_sidebar_rail};
-use super::status::{bottom_status_line, input_context_line};
+use super::status::{bottom_status_line, input_context_line, input_info_line};
 use super::style::{response_line_style, response_status_symbol_style};
+
+const INPUT_PROMPT_PREFIX: &str = " > ";
+const INPUT_CONTINUATION_PREFIX: &str = "   ";
 
 pub(crate) fn render(frame: &mut Frame, app: &mut App, model_name: &str, theme: &OmegaTheme) {
     let colors = theme.render_palette();
@@ -51,14 +54,15 @@ pub(crate) fn render(frame: &mut Frame, app: &mut App, model_name: &str, theme: 
         .constraints([
             Constraint::Min(0),
             Constraint::Length(2),
-            Constraint::Length(6),
+            Constraint::Length(9),
         ])
         .split(main_chunks[0]);
 
     app.response_rect = left_chunks[0];
     app.input_context_rect = left_chunks[1];
     app.input_gap_rect = Rect::default();
-    app.input_rect = left_chunks[2];
+    app.input_rect = Rect::default();
+    app.input_info_rect = Rect::default();
     app.sidebar_rect = main_chunks[1];
     app.sidebar_rail_rect = Rect::default();
     app.todo_rect = Rect::default();
@@ -180,84 +184,52 @@ pub(crate) fn render(frame: &mut Frame, app: &mut App, model_name: &str, theme: 
     // normalize_focus after sidebar rects are fully populated (or zeroed if sidebar hidden)
     app.normalize_focus();
 
-    let chars: Vec<char> = app.input_buffer.chars().collect();
-    let cursor_pos = app.cursor_pos;
-    let char_count = chars.len();
-    let avail_w = (left_chunks[2].width as usize).saturating_sub(5).max(1);
-    let scroll_offset = if cursor_pos < avail_w {
-        0
-    } else {
-        cursor_pos - avail_w + 1
-    };
-
-    let prefix = if scroll_offset > 0 { "◂> " } else { " > " };
-    let mut spans = vec![ratatui::text::Span::styled(
-        prefix,
-        Style::default().fg(colors.input_text),
-    )];
-    match app.interaction_mode {
-        InteractionMode::Normal => {
-            if app.input_buffer.is_empty() {
-                spans.push(ratatui::text::Span::styled(
-                    "Press Space jk to enter insert mode",
-                    Style::default().fg(colors.input_placeholder),
-                ));
-            } else {
-                for ch in chars.iter().skip(scroll_offset).take(avail_w) {
-                    spans.push(ratatui::text::Span::styled(
-                        ch.to_string(),
-                        Style::default().fg(colors.input_placeholder),
-                    ));
-                }
-            }
-        }
-        InteractionMode::Insert => {
-            if app.input_buffer.is_empty() {
-                spans.push(ratatui::text::Span::styled(
-                    " ",
-                    Style::default().bg(colors.input_text),
-                ));
-            } else {
-                for (index, ch) in chars.iter().enumerate().skip(scroll_offset).take(avail_w) {
-                    let style = if index == cursor_pos {
-                        Style::default()
-                            .fg(colors.input_bg)
-                            .bg(colors.input_text)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(colors.input_text)
-                    };
-                    spans.push(ratatui::text::Span::styled(ch.to_string(), style));
-                }
-                if cursor_pos == char_count && (char_count - scroll_offset) < avail_w {
-                    spans.push(ratatui::text::Span::styled(
-                        " ",
-                        Style::default().bg(colors.input_text),
-                    ));
-                }
-            }
-        }
-    }
-
     let input_border_color = match app.interaction_mode {
         InteractionMode::Normal => colors.mode_normal_fg,
         InteractionMode::Insert => colors.mode_insert_fg,
     };
+    let input_shell = Block::default()
+        .border_type(colors.input_border_type)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(input_border_color))
+        .style(Style::default().bg(colors.input_bg));
+    let input_shell_rect = left_chunks[2];
+    let input_inner = input_shell.inner(input_shell_rect);
+    frame.render_widget(input_shell, input_shell_rect);
 
-    let input = Paragraph::new(ratatui::text::Line::from(spans))
-        .style(Style::default().fg(colors.text).bg(colors.input_bg))
-        .block(
-            Block::default()
-                .border_type(colors.input_border_type)
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(input_border_color)),
-        );
-    frame.render_widget(input, left_chunks[2]);
+    let input_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(0),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .split(input_inner);
+    app.input_rect = input_chunks[0];
+    app.input_info_rect = Rect {
+        x: input_chunks[2].x.saturating_add(1),
+        y: input_chunks[2].y,
+        width: input_chunks[2].width.saturating_sub(2),
+        height: input_chunks[2].height,
+    };
+
+    let input = Paragraph::new(input_viewport_lines(app, &colors))
+        .style(Style::default().fg(colors.text).bg(colors.input_bg));
+    frame.render_widget(input, app.input_rect);
 
     let context = Paragraph::new(input_context_line(app, main_chunks[1].width == 0, &colors))
         .wrap(Wrap { trim: false })
         .style(Style::default().fg(colors.text).bg(colors.context_bar_bg));
     frame.render_widget(context, left_chunks[1]);
+
+    let input_info = Paragraph::new(input_info_line(
+        app,
+        SPINNER_FRAMES,
+        &colors,
+        app.input_info_rect.width as usize,
+    ))
+    .style(Style::default().fg(colors.text).bg(colors.input_bg));
+    frame.render_widget(input_info, app.input_info_rect);
 
     render_overlay(frame, app, &colors);
 }
@@ -317,6 +289,169 @@ fn wrap_styled_spans(spans: &[StyledSpan], width: usize) -> Vec<Vec<StyledSpan>>
     }
 
     lines
+}
+
+pub(super) fn input_viewport_lines(app: &App, colors: &ColorScheme) -> Vec<Line<'static>> {
+    let visible_height = app.input_rect.height as usize;
+    if visible_height == 0 {
+        return Vec::new();
+    }
+
+    let content_width = (app.input_rect.width as usize)
+        .saturating_sub(INPUT_PROMPT_PREFIX.chars().count())
+        .max(1);
+    let lines = build_input_lines(app, colors, content_width);
+    let start = app.input_viewport_top(lines.len());
+
+    lines
+        .into_iter()
+        .skip(start)
+        .take(visible_height)
+        .collect()
+}
+
+fn build_input_lines(
+    app: &App,
+    colors: &ColorScheme,
+    content_width: usize,
+) -> Vec<Line<'static>> {
+    let prompt_style = Style::default().fg(colors.input_text);
+    let text_style = match app.interaction_mode {
+        InteractionMode::Normal => Style::default().fg(colors.input_placeholder),
+        InteractionMode::Insert => Style::default().fg(colors.input_text),
+    };
+    let placeholder_style = Style::default().fg(colors.input_placeholder);
+    let cursor_style = Style::default()
+        .fg(colors.input_bg)
+        .bg(colors.input_text)
+        .add_modifier(Modifier::BOLD);
+
+    let mut lines = vec![input_line_prefix(true, prompt_style)];
+    let mut current_width = 0usize;
+
+    if app.input_buffer.is_empty() {
+        match app.interaction_mode {
+            InteractionMode::Normal => append_input_text(
+                &mut lines,
+                "Press Space jk to enter insert mode",
+                placeholder_style,
+                content_width,
+                prompt_style,
+                &mut current_width,
+            ),
+            InteractionMode::Insert => append_input_cell(
+                &mut lines,
+                " ".to_string(),
+                cursor_style,
+                content_width,
+                prompt_style,
+                &mut current_width,
+            ),
+        }
+
+        return lines.into_iter().map(Line::from).collect();
+    }
+
+    let chars: Vec<char> = app.input_buffer.chars().collect();
+    for (index, character) in chars.iter().enumerate() {
+        if index == app.cursor_pos {
+            if app.interaction_mode == InteractionMode::Insert {
+                append_input_cell(
+                    &mut lines,
+                    " ".to_string(),
+                    cursor_style,
+                    content_width,
+                    prompt_style,
+                    &mut current_width,
+                );
+            }
+        }
+
+        if *character == '\n' {
+            lines.push(input_line_prefix(false, prompt_style));
+            current_width = 0;
+            continue;
+        }
+
+        append_input_cell(
+            &mut lines,
+            character.to_string(),
+            text_style,
+            content_width,
+            prompt_style,
+            &mut current_width,
+        );
+    }
+
+    if app.cursor_pos == chars.len() {
+        if app.interaction_mode == InteractionMode::Insert {
+            append_input_cell(
+                &mut lines,
+                " ".to_string(),
+                cursor_style,
+                content_width,
+                prompt_style,
+                &mut current_width,
+            );
+        }
+    }
+
+    lines.into_iter().map(Line::from).collect()
+}
+
+fn input_line_prefix(is_first: bool, style: Style) -> Vec<Span<'static>> {
+    vec![Span::styled(
+        if is_first {
+            INPUT_PROMPT_PREFIX.to_string()
+        } else {
+            INPUT_CONTINUATION_PREFIX.to_string()
+        },
+        style,
+    )]
+}
+
+fn append_input_text(
+    lines: &mut Vec<Vec<Span<'static>>>,
+    text: &str,
+    style: Style,
+    content_width: usize,
+    prompt_style: Style,
+    current_width: &mut usize,
+) {
+    for character in text.chars() {
+        append_input_cell(
+            lines,
+            character.to_string(),
+            style,
+            content_width,
+            prompt_style,
+            current_width,
+        );
+    }
+}
+
+fn append_input_cell(
+    lines: &mut Vec<Vec<Span<'static>>>,
+    text: String,
+    style: Style,
+    content_width: usize,
+    prompt_style: Style,
+    current_width: &mut usize,
+) {
+    if *current_width == content_width {
+        lines.push(input_line_prefix(false, prompt_style));
+        *current_width = 0;
+    }
+
+    if lines.is_empty() {
+        lines.push(input_line_prefix(true, prompt_style));
+    }
+
+    lines
+        .last_mut()
+        .expect("input viewport always has at least one line")
+        .push(Span::styled(text, style));
+    *current_width += 1;
 }
 
 fn response_display_spans(

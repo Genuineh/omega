@@ -24,11 +24,16 @@ pub use omega_context::{
 };
 use omega_core::{Agent, CoreSharedTodoManager, DynLlmClient, Message, TodoManager};
 use omega_hooks::HookHost;
+use omega_project::{
+    OmegaProjectHandle, ProjectDetailSnapshot, ProjectDetectionKind, ProjectRegistry,
+    ProjectResolutionInput, ProjectSessionStatus, ProjectSessionUpdate,
+};
 use omega_skills::SkillLoader;
 use omega_workflow::{SceneCatalog, WorkflowCatalog, WorkflowPromptCatalog};
 use tokio::runtime::Handle;
 use tokio::sync::watch;
 use tracing::{error, info};
+use uuid::Uuid;
 
 const SUMMARY_CHAR_LIMIT: usize = 2_000;
 const CONTEXT_SAFETY_MARGIN_TOKENS: u32 = 2_000;
@@ -109,6 +114,18 @@ pub struct AgentSessionConfig {
     pub batch_max_requests: usize,
 }
 
+struct ProjectRuntimeState {
+    registry: Arc<ProjectRegistry>,
+    active_handle: Arc<OmegaProjectHandle>,
+}
+
+#[derive(Clone)]
+struct SessionRuntimeBindings {
+    hook_host: Arc<HookHost>,
+    skill_catalog: Arc<SessionSkillCatalog>,
+    tool_catalog: Arc<SessionToolCatalog>,
+}
+
 struct AgentSlot {
     turn_id: u64,
     agent: Option<Agent>,
@@ -119,14 +136,13 @@ pub struct AgentSession {
     turn_checkpoint: Arc<Mutex<Vec<Message>>>,
     active_turn_tx: watch::Sender<u64>,
     session_context: Arc<Mutex<SessionContext>>,
-    context_facade: Arc<OmegaContextFacade>,
+    project_state: Arc<Mutex<ProjectRuntimeState>>,
     client: DynLlmClient,
     base_system: String,
-    cwd: std::path::PathBuf,
+    cwd: Arc<Mutex<std::path::PathBuf>>,
+    session_id: String,
     todo_manager: CoreSharedTodoManager,
-    hook_host: Arc<HookHost>,
-    skill_catalog: Arc<SessionSkillCatalog>,
-    tool_catalog: Arc<SessionToolCatalog>,
+    runtime_bindings: Arc<Mutex<SessionRuntimeBindings>>,
     runtime_handle: Handle,
     scene_catalog: SceneCatalog,
     workflow_catalog: WorkflowCatalog,
@@ -134,41 +150,44 @@ pub struct AgentSession {
     context_window: u32,
     max_output_tokens: u32,
     bash_allowed_commands: Vec<String>,
+    batch_max_requests: usize,
 }
 
 impl AgentSession {
     pub fn new(config: AgentSessionConfig) -> anyhow::Result<Self> {
-        let skill_loader = SkillLoader::from_repo_root(&config.cwd)?;
-        let skill_catalog = Arc::new(SessionSkillCatalog::new(skill_loader));
+        let registry = Arc::new(ProjectRegistry::new());
+        let active_project = registry.resolve(ProjectResolutionInput {
+            current_file_path: None,
+            cwd: config.cwd.clone(),
+            explicit_root: None,
+        })?;
+        let resolved_cwd = active_project.root();
         let todo_manager = Arc::new(Mutex::new(TodoManager::new()));
-        let hook_host = Arc::new(HookHost::load(&config.cwd)?);
-        let dispatcher = omega_core::create_default_tools_with_todo_manager_and_tool_limits(
-            config.cwd.clone(),
+        let (runtime_bindings, dispatcher) = load_runtime_bindings(
+            &active_project,
+            resolved_cwd.clone(),
             todo_manager.clone(),
             config.bash_allowed_commands.clone(),
             config.batch_max_requests,
-        );
-        let available_manifests = dispatcher.manifest_metadata();
-        let default_manifests = available_manifests
-            .iter()
-            .filter(|manifest| manifest.id != "ask_user_question")
-            .cloned()
-            .collect::<Vec<_>>();
-        let tool_catalog = Arc::new(SessionToolCatalog::with_available_manifests(
-            default_manifests,
-            available_manifests,
-        ));
-        let initial_system = skill_catalog.build_system_prompt(
+        )?;
+        let initial_system = runtime_bindings.skill_catalog.build_system_prompt(
             &config.system,
             "",
             &[],
             &StepSkillRequest::MatchTask,
         );
-        let context_facade = Arc::new(OmegaContextFacade::local(config.cwd.clone()));
         let mut agent = Agent::new(config.client.clone(), initial_system, dispatcher)?;
         agent.set_max_tokens(config.max_output_tokens);
         let checkpoint = agent.messages().to_vec();
         let (active_turn_tx, _active_turn_rx) = watch::channel(0u64);
+        let session_id = Uuid::new_v4().simple().to_string();
+        active_project.upsert_session(ProjectSessionUpdate {
+            session_id: session_id.clone(),
+            title: Some(session_title(&session_id)),
+            status: ProjectSessionStatus::Active,
+            turn_count: 0,
+            last_user_turn_preview: None,
+        })?;
 
         if config
             .workflow_catalog
@@ -201,14 +220,16 @@ impl AgentSession {
             session_context: Arc::new(Mutex::new(SessionContext::new(
                 config.scene_catalog.root_workflow_id.clone(),
             ))),
-            context_facade,
+            project_state: Arc::new(Mutex::new(ProjectRuntimeState {
+                registry,
+                active_handle: active_project,
+            })),
             client: config.client,
             base_system: config.system,
-            cwd: config.cwd,
+            cwd: Arc::new(Mutex::new(resolved_cwd)),
+            session_id,
             todo_manager,
-            hook_host,
-            skill_catalog,
-            tool_catalog,
+            runtime_bindings: Arc::new(Mutex::new(runtime_bindings)),
             runtime_handle: config.runtime_handle,
             scene_catalog: config.scene_catalog,
             workflow_catalog: config.workflow_catalog,
@@ -216,6 +237,7 @@ impl AgentSession {
             context_window: config.context_window,
             max_output_tokens: config.max_output_tokens,
             bash_allowed_commands: config.bash_allowed_commands,
+            batch_max_requests: config.batch_max_requests,
         })
     }
 
@@ -228,8 +250,18 @@ impl AgentSession {
             return None;
         }
 
-        let registry = command_registry(&self.context_facade);
+        let registry = command_registry(&self.active_project_handle());
         Some(render_command_hint(registry.resolve_hint(input)))
+    }
+
+    pub fn project_detail_snapshot(&self) -> anyhow::Result<ProjectDetailSnapshot> {
+        self.active_project_handle().detail_snapshot()
+    }
+
+    pub fn project_status_value(&self) -> anyhow::Result<StatusValue> {
+        Ok(StatusValue::ProjectSelection {
+            snapshot: Box::new(self.project_detail_snapshot()?),
+        })
     }
 
     pub fn checkpoint_current_messages(&self) {
@@ -244,18 +276,59 @@ impl AgentSession {
         *self.turn_checkpoint.lock().unwrap() = current_messages;
     }
 
+    fn active_project_handle(&self) -> Arc<OmegaProjectHandle> {
+        active_project_handle(&self.project_state)
+    }
+
+    fn current_cwd(&self) -> std::path::PathBuf {
+        self.cwd.lock().unwrap().clone()
+    }
+
+    fn current_skill_catalog(&self) -> Arc<SessionSkillCatalog> {
+        self.runtime_bindings.lock().unwrap().skill_catalog.clone()
+    }
+
+    fn current_hook_host(&self) -> Arc<HookHost> {
+        self.runtime_bindings.lock().unwrap().hook_host.clone()
+    }
+
+    fn current_tool_catalog(&self) -> Arc<SessionToolCatalog> {
+        self.runtime_bindings.lock().unwrap().tool_catalog.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn debug_runtime_bindings_snapshot(&self) -> RuntimeBindingsDebugSnapshot {
+        let bindings = self.runtime_bindings.lock().unwrap().clone();
+        RuntimeBindingsDebugSnapshot {
+            cwd: self.current_cwd(),
+            skill_descriptions: bindings.skill_catalog.descriptions(),
+            available_tool_ids: bindings.tool_catalog.available_tool_names(),
+            hook_ids: bindings
+                .hook_host
+                .catalog()
+                .hook_ids()
+                .into_iter()
+                .map(ToString::to_string)
+                .collect(),
+        }
+    }
+
     pub fn interrupt(&self, replacement_turn_id: u64) -> anyhow::Result<()> {
         let checkpoint = self.turn_checkpoint.lock().unwrap().clone();
-        let system = self.skill_catalog.build_system_prompt(
+        let skill_catalog = self.current_skill_catalog();
+        let project_handle = self.active_project_handle();
+        let system = skill_catalog.build_system_prompt(
             &self.base_system,
             "",
             &[],
             &StepSkillRequest::MatchTask,
         );
-        let dispatcher = omega_core::create_default_tools_with_todo_manager_and_bash_allowlist(
-            self.cwd.clone(),
+        let dispatcher = omega_core::create_default_tools_with_context_and_todo_manager_and_tool_limits(
+            self.current_cwd(),
+            project_handle.context_facade(),
             self.todo_manager.clone(),
             self.bash_allowed_commands.clone(),
+            self.batch_max_requests,
         );
         let mut replacement = Agent::new(self.client.clone(), system, dispatcher)?;
         replacement.set_max_tokens(self.max_output_tokens);
@@ -311,25 +384,34 @@ impl AgentSession {
         };
         drop(slot);
         self.active_turn_tx.send_replace(turn_id);
+        let project_handle = self.active_project_handle();
+        project_handle.upsert_session(ProjectSessionUpdate {
+            session_id: self.session_id.clone(),
+            title: Some(session_title(&self.session_id)),
+            status: ProjectSessionStatus::Active,
+            turn_count: turn_id,
+            last_user_turn_preview: Some(preview_text(&input, 160)),
+        })?;
 
         let tx_callback = tx.clone();
         let tx_result = tx;
         let handle = self.runtime_handle.clone();
         let cancel_turn_rx = self.active_turn_tx.subscribe();
         let base_system = self.base_system.clone();
-        let cwd = self.cwd.clone();
+        let cwd = self.current_cwd();
         let todo_manager = self.todo_manager.clone();
-        let hook_host = self.hook_host.clone();
         let client = self.client.clone();
-        let context_facade = self.context_facade.clone();
-        let skill_catalog = self.skill_catalog.clone();
-        let tool_catalog = self.tool_catalog.clone();
+        let context_facade = project_handle.context_facade();
+        let hook_host = self.current_hook_host();
+        let skill_catalog = self.current_skill_catalog();
+        let tool_catalog = self.current_tool_catalog();
         let scene_catalog = self.scene_catalog.clone();
         let workflow_catalog = self.workflow_catalog.clone();
         let prompt_catalog = self.prompt_catalog.clone();
         let session_context = self.session_context.clone();
         let context_window = self.context_window;
         let max_output_tokens = self.max_output_tokens;
+        let session_id = self.session_id.clone();
         thread::spawn(move || {
             let thread_turn_rx = cancel_turn_rx.clone();
             agent.add_user_message(&input);
@@ -369,6 +451,8 @@ impl AgentSession {
             let result = runner.run(&mut agent, &mut turn_context);
             let turn_still_active = *thread_turn_rx.borrow() == turn_id;
             let archive_data = turn_still_active.then(|| build_turn_archive(turn_id, &turn_context));
+            let session_title = session_title_from_context(&turn_context);
+            let latest_user_turn_preview = preview_text(&turn_context.latest_user_turn, 160);
 
             if turn_still_active {
                 let mut shared = session_context.lock().unwrap();
@@ -415,6 +499,18 @@ impl AgentSession {
             }
 
             if turn_still_active {
+                if let Ok(snapshot) = project_handle
+                    .upsert_session(ProjectSessionUpdate {
+                        session_id,
+                        title: Some(session_title),
+                        status: ProjectSessionStatus::Idle,
+                        turn_count: turn_id,
+                        last_user_turn_preview: Some(latest_user_turn_preview),
+                    })
+                    .and_then(|_| project_handle.detail_snapshot())
+                {
+                    ui_emit::send_project_status(&*tx_result, turn_id, snapshot);
+                }
                 ui_emit::send_turn_finished(&*tx_result, turn_id);
             }
         });
@@ -448,9 +544,26 @@ impl AgentSession {
         tx: SharedRuntimeMessageBridge,
     ) -> anyhow::Result<()> {
         self.active_turn_tx.send_replace(turn_id);
-        let context_facade = self.context_facade.clone();
+        let project_state = self.project_state.clone();
+        let session_id = self.session_id.clone();
+        self.active_project_handle().upsert_session(ProjectSessionUpdate {
+            session_id: self.session_id.clone(),
+            title: Some(session_title(&self.session_id)),
+            status: ProjectSessionStatus::Active,
+            turn_count: turn_id,
+            last_user_turn_preview: Some(preview_text(&input, 160)),
+        })?;
         let session_context = self.session_context.clone();
         let scene_catalog = self.scene_catalog.clone();
+        let cwd = self.cwd.clone();
+        let agent_slot = self.agent_slot.clone();
+        let client = self.client.clone();
+        let base_system = self.base_system.clone();
+        let todo_manager = self.todo_manager.clone();
+        let runtime_bindings = self.runtime_bindings.clone();
+        let bash_allowed_commands = self.bash_allowed_commands.clone();
+        let max_output_tokens = self.max_output_tokens;
+        let batch_max_requests = self.batch_max_requests;
 
         thread::spawn(move || {
             let mut turn_context = {
@@ -458,7 +571,7 @@ impl AgentSession {
                 shared.begin_turn(input.clone(), scene_catalog.root_workflow_id.clone());
                 shared.clone()
             };
-            let registry = command_registry(&context_facade);
+            let registry = command_registry(&active_project_handle(&project_state));
             let parsed = registry.parse(&input);
             let title = command_title_from_input(&input);
             let source = parsed
@@ -469,9 +582,14 @@ impl AgentSession {
             let mut progress = |text: &str| append_command_output(&*tx, turn_id, &section_id, text);
 
             let output = match parsed {
-                Ok(invocation) => {
-                    execute_command(&context_facade, invocation, &mut turn_context, &mut progress)
-                }
+                Ok(invocation) => execute_command(
+                    &project_state,
+                    &session_id,
+                    &cwd,
+                    invocation,
+                    &mut turn_context,
+                    &mut progress,
+                ),
                 Err(error) => Err(anyhow::anyhow!(error)),
             };
 
@@ -480,6 +598,7 @@ impl AgentSession {
                 let mut shared = session_context.lock().unwrap();
                 *shared = turn_context;
             }
+            let context_facade = active_project_handle(&project_state).context_facade();
             if let Err(error) = context_facade.memory.archive_turn(&archive_data) {
                 error!(turn_id, error = %error, "failed to archive command turn memory");
             } else if let Ok(snapshot) = context_facade.memory.diagnostics_snapshot() {
@@ -501,11 +620,55 @@ impl AgentSession {
                 ),
             }
 
+            let (session_title, latest_user_turn_preview) = {
+                let shared = session_context.lock().unwrap();
+                (
+                    session_title_from_context(&shared),
+                    preview_text(&shared.latest_user_turn, 160),
+                )
+            };
+
+            if let Ok(snapshot) = active_project_handle(&project_state)
+                .upsert_session(ProjectSessionUpdate {
+                    session_id: session_id.clone(),
+                    title: Some(session_title),
+                    status: ProjectSessionStatus::Idle,
+                    turn_count: turn_id,
+                    last_user_turn_preview: Some(latest_user_turn_preview),
+                })
+                .and_then(|_| active_project_handle(&project_state).detail_snapshot())
+            {
+                ui_emit::send_project_status(&*tx, turn_id, snapshot);
+            }
+
+            if let Err(error) = rebind_agent_to_current_project(
+                &agent_slot,
+                &project_state,
+                &cwd,
+                &client,
+                &runtime_bindings,
+                &base_system,
+                &todo_manager,
+                &bash_allowed_commands,
+                batch_max_requests,
+                max_output_tokens,
+            ) {
+                error!(turn_id, error = %error, "failed to rebind agent after project command");
+            }
+
             ui_emit::send_turn_finished(&*tx, turn_id);
         });
 
         Ok(())
     }
+}
+
+#[cfg(test)]
+pub(crate) struct RuntimeBindingsDebugSnapshot {
+    pub(crate) cwd: std::path::PathBuf,
+    pub(crate) skill_descriptions: Vec<String>,
+    pub(crate) available_tool_ids: Vec<String>,
+    pub(crate) hook_ids: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -516,52 +679,237 @@ struct CommandExecutionOutput {
     knowledge_summary: Option<StepKnowledgeSummary>,
 }
 
-fn command_registry(context_facade: &Arc<OmegaContextFacade>) -> OmegaCommandRegistry {
-    let facade = Arc::clone(context_facade);
-    OmegaCommandRegistry::new(vec![OmegaCommandDescriptor::new(
-        "document",
-        vec!["doc".to_string()],
-        None,
-        vec![
-            OmegaCommandSubcommand::new("init", "Initialize document indexes", None),
-            OmegaCommandSubcommand::new("sync", "Refresh indexed workspace documents", None),
-            OmegaCommandSubcommand::new("health", "Check repository document health", None),
-            OmegaCommandSubcommand::new(
-                "query",
-                "Search indexed project documents",
-                Some("<text>"),
-            ),
-            OmegaCommandSubcommand::new(
-                "create",
-                "Create a managed document from a template",
-                Some("<path> <doc_type> <title...>"),
-            ),
-            OmegaCommandSubcommand::new(
-                "archive",
-                "Archive a managed document",
-                Some("<path> [reason] [replaced_by]"),
-            ),
-            OmegaCommandSubcommand::new(
-                "list",
-                "List tracked documents",
-                Some("[doc_type] [status]"),
-            ),
-        ],
-        "Manage workspace document indexing and query operations.",
-        OmegaCommandSource::Builtin,
-        Arc::new(move || facade.document_backend_enabled),
-    )])
+fn command_registry(project_handle: &Arc<OmegaProjectHandle>) -> OmegaCommandRegistry {
+    let facade = project_handle.context_facade();
+    OmegaCommandRegistry::new(vec![
+        OmegaCommandDescriptor::new(
+            "document",
+            vec!["doc".to_string()],
+            None,
+            vec![
+                OmegaCommandSubcommand::new("init", "Initialize document indexes", None),
+                OmegaCommandSubcommand::new("sync", "Refresh indexed workspace documents", None),
+                OmegaCommandSubcommand::new("health", "Check repository document health", None),
+                OmegaCommandSubcommand::new(
+                    "query",
+                    "Search indexed project documents",
+                    Some("<text>"),
+                ),
+                OmegaCommandSubcommand::new(
+                    "create",
+                    "Create a managed document from a template",
+                    Some("<path> <doc_type> <title...>"),
+                ),
+                OmegaCommandSubcommand::new(
+                    "archive",
+                    "Archive a managed document",
+                    Some("<path> [reason] [replaced_by]"),
+                ),
+                OmegaCommandSubcommand::new(
+                    "list",
+                    "List tracked documents",
+                    Some("[doc_type] [status]"),
+                ),
+            ],
+            "Manage workspace document indexing and query operations.",
+            OmegaCommandSource::Builtin,
+            Arc::new(move || facade.document_backend_enabled),
+        ),
+        OmegaCommandDescriptor::new(
+            "project",
+            vec!["proj".to_string()],
+            None,
+            vec![
+                OmegaCommandSubcommand::new("list", "List resolved projects", None),
+                OmegaCommandSubcommand::new("switch", "Switch active project", Some("<path>")),
+                OmegaCommandSubcommand::new("info", "Show current project summary", None),
+                OmegaCommandSubcommand::new("sessions", "Show project sessions", None),
+                OmegaCommandSubcommand::new("knowledge", "Show project knowledge summary", None),
+                OmegaCommandSubcommand::new(
+                    "delete",
+                    "Delete inactive project state",
+                    Some("<project-id|path>"),
+                ),
+            ],
+            "Manage project selection, sessions, and knowledge ownership.",
+            OmegaCommandSource::Builtin,
+            Arc::new(|| true),
+        ),
+    ])
 }
 
 fn execute_command(
-    context_facade: &Arc<OmegaContextFacade>,
+    project_state: &Arc<Mutex<ProjectRuntimeState>>,
+    session_id: &str,
+    cwd: &Arc<Mutex<std::path::PathBuf>>,
     invocation: OmegaCommandInvocation,
     turn_context: &mut SessionContext,
     progress: &mut dyn FnMut(&str),
 ) -> anyhow::Result<CommandExecutionOutput> {
     match invocation.name.as_str() {
-        "document" => execute_document_command(context_facade, invocation, turn_context, progress),
+        "document" => {
+            let handle = active_project_handle(project_state);
+            execute_document_command(&handle.context_facade(), invocation, turn_context, progress)
+        }
+        "project" => execute_project_command(
+            project_state,
+            session_id,
+            cwd,
+            invocation,
+            turn_context,
+            progress,
+        ),
         _ => Err(anyhow::anyhow!("unsupported command '/{}'", invocation.name)),
+    }
+}
+
+fn execute_project_command(
+    project_state: &Arc<Mutex<ProjectRuntimeState>>,
+    session_id: &str,
+    cwd: &Arc<Mutex<std::path::PathBuf>>,
+    invocation: OmegaCommandInvocation,
+    turn_context: &mut SessionContext,
+    progress: &mut dyn FnMut(&str),
+) -> anyhow::Result<CommandExecutionOutput> {
+    let Some(subcommand) = invocation.subcommand.as_deref() else {
+        return Err(anyhow::anyhow!(
+            "missing subcommand for '/project'; expected list, switch, info, sessions, knowledge, or delete"
+        ));
+    };
+
+    match subcommand {
+        "list" => {
+            let state = project_state.lock().unwrap();
+            let records = state.registry.list();
+            let active_id = state.active_handle.project_id();
+            Ok(CommandExecutionOutput {
+                body: render_project_list(&records, &active_id),
+                state: ResponseSectionState::Complete,
+                activity: format!("/project list returned {} projects", records.len()),
+                knowledge_summary: None,
+            })
+        }
+        "info" => {
+            let snapshot = active_project_handle(project_state).detail_snapshot()?;
+            Ok(CommandExecutionOutput {
+                body: render_project_info(&snapshot),
+                state: ResponseSectionState::Complete,
+                activity: "/project info completed".to_string(),
+                knowledge_summary: None,
+            })
+        }
+        "sessions" => {
+            let snapshot = active_project_handle(project_state).detail_snapshot()?;
+            Ok(CommandExecutionOutput {
+                body: render_project_sessions(&snapshot),
+                state: ResponseSectionState::Complete,
+                activity: format!("/project sessions returned {} sessions", snapshot.sessions.len()),
+                knowledge_summary: None,
+            })
+        }
+        "knowledge" => {
+            let snapshot = active_project_handle(project_state).detail_snapshot()?;
+            Ok(CommandExecutionOutput {
+                body: render_project_knowledge(&snapshot),
+                state: ResponseSectionState::Complete,
+                activity: "/project knowledge completed".to_string(),
+                knowledge_summary: None,
+            })
+        }
+        "switch" => {
+            let target = invocation.args.join(" ");
+            if target.trim().is_empty() {
+                return Err(anyhow::anyhow!("usage: /project switch <path>"));
+            }
+            progress("Phase: resolve target project root");
+            let explicit_root = std::path::PathBuf::from(target.trim());
+            let (registry, current_handle) = {
+                let state = project_state.lock().unwrap();
+                (Arc::clone(&state.registry), Arc::clone(&state.active_handle))
+            };
+            let next_handle = registry.resolve(ProjectResolutionInput {
+                current_file_path: None,
+                cwd: explicit_root.clone(),
+                explicit_root: Some(explicit_root),
+            })?;
+            if next_handle.project_id() == current_handle.project_id() {
+                return Ok(CommandExecutionOutput {
+                    body: format!(
+                        "Project unchanged: {} ({})",
+                        next_handle.display_name(),
+                        next_handle.root().display()
+                    ),
+                    state: ResponseSectionState::Complete,
+                    activity: "/project switch left active project unchanged".to_string(),
+                    knowledge_summary: None,
+                });
+            }
+
+            current_handle.upsert_session(ProjectSessionUpdate {
+                session_id: session_id.to_string(),
+                title: Some(session_title_from_context(turn_context)),
+                status: ProjectSessionStatus::Idle,
+                turn_count: 0,
+                last_user_turn_preview: Some(preview_text(&turn_context.latest_user_turn, 160)),
+            })?;
+            next_handle.upsert_session(ProjectSessionUpdate {
+                session_id: session_id.to_string(),
+                title: Some(session_title_from_context(turn_context)),
+                status: ProjectSessionStatus::Active,
+                turn_count: 0,
+                last_user_turn_preview: Some(preview_text(&turn_context.latest_user_turn, 160)),
+            })?;
+            {
+                let mut state = project_state.lock().unwrap();
+                state.active_handle = Arc::clone(&next_handle);
+            }
+            *cwd.lock().unwrap() = next_handle.root();
+            progress("Phase: switched active project handle");
+            let snapshot = next_handle.detail_snapshot()?;
+            Ok(CommandExecutionOutput {
+                body: format!(
+                    "Active project switched to {}\nRoot: {}\nProject ID: {}\nSessions: {}",
+                    snapshot.record.display_name,
+                    snapshot.record.root.display(),
+                    snapshot.record.project_id,
+                    snapshot.sessions.len(),
+                ),
+                state: ResponseSectionState::Complete,
+                activity: format!("/project switch -> {}", snapshot.record.display_name),
+                knowledge_summary: None,
+            })
+        }
+        "delete" => {
+            let target = invocation.args.join(" ");
+            if target.trim().is_empty() {
+                return Err(anyhow::anyhow!("usage: /project delete <project-id|path>"));
+            }
+            let (registry, active_handle) = {
+                let state = project_state.lock().unwrap();
+                (Arc::clone(&state.registry), Arc::clone(&state.active_handle))
+            };
+            let target_handle = resolve_known_project_target(&registry, target.trim())?;
+            if target_handle.project_id() == active_handle.project_id() {
+                return Err(anyhow::anyhow!(
+                    "refusing to delete the active project; switch to another project first"
+                ));
+            }
+            target_handle.delete_local_state()?;
+            registry.forget(&target_handle.project_id());
+            Ok(CommandExecutionOutput {
+                body: format!(
+                    "Deleted project state for {}\nRoot: {}",
+                    target_handle.display_name(),
+                    target_handle.root().display(),
+                ),
+                state: ResponseSectionState::Complete,
+                activity: format!("/project delete removed {}", target_handle.project_id()),
+                knowledge_summary: None,
+            })
+        }
+        other => Err(anyhow::anyhow!(
+            "unsupported '/project' subcommand '{other}'"
+        )),
     }
 }
 
@@ -1280,6 +1628,240 @@ fn build_turn_archive(turn_id: u64, session_context: &SessionContext) -> TurnDat
             })
             .collect(),
         signals: build_turn_retention_signals(session_context),
+    }
+}
+
+fn active_project_handle(project_state: &Arc<Mutex<ProjectRuntimeState>>) -> Arc<OmegaProjectHandle> {
+    Arc::clone(&project_state.lock().unwrap().active_handle)
+}
+
+fn resolve_known_project_target(
+    registry: &Arc<ProjectRegistry>,
+    target: &str,
+) -> anyhow::Result<Arc<OmegaProjectHandle>> {
+    if let Some(record) = registry
+        .list()
+        .into_iter()
+        .find(|record| record.project_id == target)
+    {
+        return registry.resolve(ProjectResolutionInput {
+            current_file_path: None,
+            cwd: record.root.clone(),
+            explicit_root: Some(record.root),
+        });
+    }
+
+    registry.resolve(ProjectResolutionInput {
+        current_file_path: None,
+        cwd: std::path::PathBuf::from(target),
+        explicit_root: Some(std::path::PathBuf::from(target)),
+    })
+}
+
+fn rebind_agent_to_current_project(
+    agent_slot: &Arc<Mutex<AgentSlot>>,
+    project_state: &Arc<Mutex<ProjectRuntimeState>>,
+    cwd: &Arc<Mutex<std::path::PathBuf>>,
+    client: &DynLlmClient,
+    runtime_bindings: &Arc<Mutex<SessionRuntimeBindings>>,
+    base_system: &str,
+    todo_manager: &CoreSharedTodoManager,
+    bash_allowed_commands: &[String],
+    batch_max_requests: usize,
+    max_output_tokens: u32,
+) -> anyhow::Result<()> {
+    let project_handle = active_project_handle(project_state);
+    let current_cwd = cwd.lock().unwrap().clone();
+    let (next_bindings, dispatcher) = load_runtime_bindings(
+        &project_handle,
+        current_cwd,
+        todo_manager.clone(),
+        bash_allowed_commands.to_vec(),
+        batch_max_requests,
+    )?;
+    let system = next_bindings
+        .skill_catalog
+        .build_system_prompt(base_system, "", &[], &StepSkillRequest::MatchTask);
+    let messages = {
+        let slot = agent_slot.lock().unwrap();
+        slot.agent
+            .as_ref()
+            .map(|agent| agent.messages().to_vec())
+            .unwrap_or_default()
+    };
+    let mut replacement = Agent::new(client.clone(), system, dispatcher)?;
+    replacement.set_max_tokens(max_output_tokens);
+    replacement.set_messages(messages);
+    let mut slot = agent_slot.lock().unwrap();
+    slot.agent = Some(replacement);
+    *runtime_bindings.lock().unwrap() = next_bindings;
+    Ok(())
+}
+
+fn load_runtime_bindings(
+    project_handle: &Arc<OmegaProjectHandle>,
+    root: std::path::PathBuf,
+    todo_manager: CoreSharedTodoManager,
+    bash_allowed_commands: Vec<String>,
+    batch_max_requests: usize,
+) -> anyhow::Result<(SessionRuntimeBindings, omega_core::ToolDispatcher)> {
+    let skill_loader = SkillLoader::from_repo_root(&root)?;
+    let skill_catalog = Arc::new(SessionSkillCatalog::new(skill_loader));
+    let hook_host = Arc::new(HookHost::load(&root)?);
+    let dispatcher = omega_core::create_default_tools_with_context_and_todo_manager_and_tool_limits(
+        root,
+        project_handle.context_facade(),
+        todo_manager,
+        bash_allowed_commands,
+        batch_max_requests,
+    );
+    let available_manifests = dispatcher.manifest_metadata();
+    let default_manifests = available_manifests
+        .iter()
+        .filter(|manifest| manifest.id != "ask_user_question")
+        .cloned()
+        .collect::<Vec<_>>();
+    let tool_catalog = Arc::new(SessionToolCatalog::with_available_manifests(
+        default_manifests,
+        available_manifests,
+    ));
+
+    Ok((
+        SessionRuntimeBindings {
+            hook_host,
+            skill_catalog,
+            tool_catalog,
+        },
+        dispatcher,
+    ))
+}
+
+fn session_title(session_id: &str) -> String {
+    format!("Session {}", &session_id[..8.min(session_id.len())])
+}
+
+fn session_title_from_context(session_context: &SessionContext) -> String {
+    let preview = preview_text(&session_context.latest_user_turn, 48);
+    if preview.is_empty() {
+        "Untitled Session".to_string()
+    } else {
+        preview
+    }
+}
+
+fn render_project_list(
+    records: &[omega_project::ProjectRecord],
+    active_project_id: &str,
+) -> String {
+    if records.is_empty() {
+        return "No resolved projects.".to_string();
+    }
+
+    let mut body = format!("Projects: {}", records.len());
+    for record in records {
+        let active_marker = if record.project_id == active_project_id {
+            "active"
+        } else {
+            "idle"
+        };
+        body.push_str(&format!(
+            "\n- {} [{}] ({})\n  root: {}",
+            record.display_name,
+            active_marker,
+            detection_kind_label(record.detection_kind),
+            record.root.display(),
+        ));
+    }
+    body
+}
+
+fn render_project_info(snapshot: &ProjectDetailSnapshot) -> String {
+    format!(
+        "Project: {}\nProject ID: {}\nRoot: {}\nDetection: {}\nActive session: {}\nSessions: {}\nDocument readiness: {}\nMemory readiness: {}",
+        snapshot.record.display_name,
+        snapshot.record.project_id,
+        snapshot.record.root.display(),
+        detection_kind_label(snapshot.record.detection_kind),
+        snapshot.record.active_session_id.as_deref().unwrap_or("none"),
+        snapshot.sessions.len(),
+        command_document_query_readiness(&ContextDiagnostics {
+            document: snapshot.knowledge.document.clone(),
+            memory: snapshot.knowledge.memory.clone(),
+            ..ContextDiagnostics::default()
+        })
+        .as_str(),
+        memory_readiness_from_diagnostics(&snapshot.knowledge.memory).as_str(),
+    )
+}
+
+fn render_project_sessions(snapshot: &ProjectDetailSnapshot) -> String {
+    if snapshot.sessions.is_empty() {
+        return format!(
+            "Project: {}\nNo recorded sessions.",
+            snapshot.record.display_name
+        );
+    }
+    let mut body = format!(
+        "Project: {}\nSessions: {}",
+        snapshot.record.display_name,
+        snapshot.sessions.len()
+    );
+    for session in &snapshot.sessions {
+        body.push_str(&format!(
+            "\n- {} [{}] turns={} last_active={}\n  preview: {}",
+            session.title,
+            project_session_status_label(session.status),
+            session.turn_count,
+            session.last_active_at,
+            session
+                .last_user_turn_preview
+                .as_deref()
+                .unwrap_or("none"),
+        ));
+    }
+    body
+}
+
+fn render_project_knowledge(snapshot: &ProjectDetailSnapshot) -> String {
+    format!(
+        "Project: {}\nDocument files: {}\nDocument chunks: {}\nDocument health: {}\nMemory turns: {}\nMemory queries: {}\nObservations: {}",
+        snapshot.record.display_name,
+        snapshot.knowledge.document.total_files_indexed,
+        snapshot.knowledge.document.total_chunks,
+        snapshot.knowledge.document.health_status.as_str(),
+        snapshot.knowledge.memory.total_turns_archived,
+        snapshot.knowledge.memory.memory_query_count,
+        snapshot.knowledge.memory.observation_count,
+    )
+}
+
+fn detection_kind_label(kind: ProjectDetectionKind) -> &'static str {
+    match kind {
+        ProjectDetectionKind::Explicit => "explicit",
+        ProjectDetectionKind::CurrentFile => "current-file",
+        ProjectDetectionKind::Cwd => "cwd",
+        ProjectDetectionKind::LooseDirectory => "loose-directory",
+    }
+}
+
+fn project_session_status_label(status: ProjectSessionStatus) -> &'static str {
+    match status {
+        ProjectSessionStatus::Active => "active",
+        ProjectSessionStatus::Idle => "idle",
+        ProjectSessionStatus::Archived => "archived",
+    }
+}
+
+fn memory_readiness_from_diagnostics(
+    diagnostics: &ContextMemoryDiagnostics,
+) -> SupervisionReadiness {
+    if diagnostics.total_turns_archived == 0
+        && diagnostics.memory_query_count == 0
+        && diagnostics.observation_count == 0
+    {
+        SupervisionReadiness::Uninitialized
+    } else {
+        SupervisionReadiness::Ready
     }
 }
 

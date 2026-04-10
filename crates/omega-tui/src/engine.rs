@@ -5,6 +5,7 @@ use omega_session::{
     StepSubflowStatus, ToolRun,
     ToolRunStatus, WorkflowStepStatus,
 };
+use omega_project::ProjectDetailSnapshot;
 
 use crate::app::{App, MsgKind};
 use crate::reducer::TuiUpdateReducer;
@@ -22,6 +23,7 @@ pub trait TuiSurface {
     fn clear_agent_status(&mut self);
     fn set_session_routing(&mut self, routing: SessionRoutingStatus);
     fn clear_session_routing(&mut self);
+    fn set_project_status(&mut self, snapshot: ProjectDetailSnapshot);
     fn set_todo_snapshot(&mut self, text: &str);
     fn upsert_diagnostics(&mut self, diagnostics: StepDiagnostics);
     fn set_context_supervision(&mut self, snapshot: ContextSupervisionSnapshot);
@@ -118,6 +120,15 @@ impl TuiSurface for TuiEngine<'_> {
 
     fn clear_session_routing(&mut self) {
         self.app.clear_status_slot(StatusSlot::Session);
+    }
+
+    fn set_project_status(&mut self, snapshot: ProjectDetailSnapshot) {
+        self.app.set_status_slot(
+            StatusSlot::Project,
+            StatusValue::ProjectSelection {
+                snapshot: Box::new(snapshot),
+            },
+        );
     }
 
     fn set_todo_snapshot(&mut self, text: &str) {
