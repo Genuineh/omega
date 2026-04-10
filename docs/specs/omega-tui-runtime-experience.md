@@ -3,7 +3,7 @@ status: draft
 last_verified_commit: N/A
 owner: omega-team
 created: 2026-03-19
-updated: 2026-03-20
+updated: 2026-04-10
 version: 1.1
 supersedes: []
 related_prds: []
@@ -58,7 +58,8 @@ related_prds: []
 | `Activity` | 与运行时能力相关的可切换详情视图 | runtime secondary state |
 | `Overlay` | 搜索、确认、详情查看等短时浮动交互 | transient focused interaction |
 | `Input context bar` | 左列输入框上方的当前交互提示与短消息 | input-adjacent context |
-| `Bottom status bar` | 输入框下方的持续状态摘要与扩展槽 | compact badges |
+| `Input info bar` | 共享输入壳层底部的一行短状态栏，带内边距，承载 model / token / 右侧 state icon | input-adjacent runtime strip |
+| `Bottom status bar` | 全宽底部的全局状态摘要与扩展槽，不再重复展示 model | compact badges |
 
 `Response` 的详细规划见 `docs/specs/omega-tui-response-thinking-experience.md`。当前该面板已经按 `route / step / final / thinking` 结构化渲染 turn timeline；provider-exposed thinking 现已作为独立、低噪音且可折叠的 block 接入，并支持通过 `.omega/tui.toml` 关闭可见性。
 
@@ -66,10 +67,11 @@ related_prds: []
 
 底部区域应采用稳定的双层结构，而不是继续把提示和系统状态拆散到顶部与底部：
 
-- `Input context bar`：位于左列 `Response` 下方、输入框上方，承载 leader 提示、当前模式提示和局部短消息；当前固定为两行并允许换行，不再横跨 full-height `Sidebar` 下方。
-- `Bottom status bar`：位于输入框下方，承载模型名、运行态和未来可扩展状态槽。
+- `Input context bar`：位于左列 `Response` 下方、输入框上方，承载 leader 提示、当前模式提示和局部短消息；当前固定为两行并允许换行，不再横跨 full-height `Sidebar` 下方。Insert 模式提示现显式区分 `Enter=Send`、`Shift+Enter=Newline` 与 `↑/↓=Line`。
+- `Input info bar`：位于共享输入壳层底部，带上下左右留白，承载当前模型、token 摘要与右侧运行态图标；token 仅保留 `k` 值，段间只用固定空格分隔。其右侧 running 动画现为一行高的压缩单点 orbit：glyph 会在 `● / ◉ / ◎ / ○ / ·` 间切换，但任一时刻只显示一个，而不是单 glyph 旋转圈或多点 trail。其上方输入区现为固定高度的多行 viewport，长输入会软换行并在超出可见高度时自动滚动；鼠标滚轮停留在输入区内时只滚动该 viewport。
+- `Bottom status bar`：位于整页底部，承载 mode、workflow/route/project 等全局摘要。
 
-原顶部 header 不再作为主要状态承载区。模型名与 `Idle / Running` 等持续状态应下移到底部状态带；`KM / Focus / Mode / Omega Agent` 这类高噪音信息不应继续作为固定 header 保留。具体布局规则见 `docs/specs/omega-tui-input-status-layout.md`。
+原顶部 header 不再作为主要状态承载区。`Idle / Running` 图标与 delivery token 摘要收敛到共享输入壳层底部的 `Input info bar`；`Mode` 回到底部状态带最左侧；`model` 不再在底部状态带重复展示；`KM / Focus / Omega Agent` 这类高噪音信息不应继续作为固定 header 保留。具体布局规则见 `docs/specs/omega-tui-input-status-layout.md`。
 
 ## Sidebar Shell
 
@@ -92,7 +94,7 @@ related_prds: []
 
 - 左侧：`Response`
 - 右侧：统一 `Sidebar`
-- 左列底部：`Context bar + Input`
+- 左列底部：`Context bar + Input shell`
 - `Sidebar` 顶部：section/view rail
 - `Sidebar` 主体：`Todos` + `Activity` 的一个或多个展开 section
 - `Activity` 内部可切换 `Logs / Skills / Delegations / Tasks / Background / Inbox / Team / Worktree`
@@ -112,13 +114,13 @@ related_prds: []
 - `Bg: 1 failed` / `Bg: idle`：后台任务总览
 - `Inbox: 3 unread`：团队/消息未读数
 - `WT: feature-x`：当前活跃 worktree
-- `Delivery: 18k tok · 3 llm · 5 tools · 2 files`：当前或最近一轮任务交付摘要
+- `Project: omega` / `Route: chat -> feature` / `Item: execute-2 2/5`：当前全局上下文摘要
 
 规则：
 
 - 徽章必须可在窄终端下截断为短格式，而不是把底部状态带挤爆。
 - 警告类状态优先于信息类状态，例如压缩失败、后台任务 error、subagent 异常。
-- 底部状态带只展示最新摘要；完整细节进入 `Activity` 面板。
+- 底部状态带只展示全局摘要；完整细节进入 `Activity` 面板，而 token 短摘要进入 `Input info bar`。
 
 当前对 scene-aware routing 的落地规则：
 

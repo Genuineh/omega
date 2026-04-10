@@ -1,4 +1,5 @@
 use omega_session::{
+    ContextDocumentDiagnostics, ContextMemoryDiagnostics,
     ResponseSection, ResponseSectionDelta, ResponseSectionKind, ResponseSectionMetadata,
     ResponseSectionState, RuntimeUiEffect, RuntimeUiEnvelope, SectionOrigin,
     StepSubflowState, StepSubflowStatus, WorkflowRunRole,
@@ -17,7 +18,8 @@ use crate::app::{
 use crate::sidebar::SidebarSection;
 
 use super::{
-    bottom_status_line, bottom_status_text, input_context_line, input_context_text, render,
+    bottom_status_line, bottom_status_text, input_context_line, input_context_text,
+    input_info_line, input_info_text, input_viewport_lines, render,
     response_line_style, response_status_symbol_style, wrap_text,
 };
 
@@ -175,7 +177,7 @@ fn markdown_response_lines_wrap_in_narrow_terminal() {
 }
 
 #[test]
-fn input_context_and_bottom_status_bars_have_stable_heights() {
+fn input_context_input_info_and_bottom_status_bars_have_stable_heights() {
     let backend = TestBackend::new(120, 30);
     let mut terminal = Terminal::new(backend).unwrap();
     let mut app = App::new();
@@ -188,15 +190,83 @@ fn input_context_and_bottom_status_bars_have_stable_heights() {
     assert_eq!(app.response_rect.y, 0);
     assert_eq!(app.input_context_rect.height, 2);
     assert_eq!(app.input_gap_rect.height, 0);
-    assert_eq!(app.input_rect.height, 6);
+    assert_eq!(app.input_rect.height, 4);
+    assert_eq!(app.input_info_rect.height, 1);
     assert_eq!(app.bottom_status_rect.height, 1);
     assert_eq!(app.sidebar_rect.y, 0);
     assert_eq!(app.sidebar_rect.height, app.bottom_status_rect.y);
     assert_eq!(
         app.input_rect.y,
-        app.input_context_rect.y + app.input_context_rect.height
+        app.input_context_rect.y + app.input_context_rect.height + 1
     );
+    assert_eq!(
+        app.input_info_rect.y,
+        app.input_rect.y + app.input_rect.height + 1
+    );
+    assert_eq!(app.input_info_rect.x, app.input_rect.x + 1);
+    assert_eq!(app.input_info_rect.width + 2, app.input_rect.width);
     assert!(app.input_context_rect.y < app.bottom_status_rect.y);
+}
+
+#[test]
+fn input_box_wraps_long_content_across_visible_rows() {
+    let mut app = App::new();
+    let theme = OmegaTheme::dark();
+    app.interaction_mode = omega_keymap::InteractionMode::Insert;
+    app.input_rect = ratatui::layout::Rect::new(0, 0, 12, 4);
+    app.insert_text("abcdefghijklmnopqrstuvwxyz0123456789");
+
+    let colors = theme.render_palette();
+    let input_lines = input_viewport_lines(&app, &colors)
+        .into_iter()
+        .map(|line| line.to_string().trim_end().to_string())
+        .collect::<Vec<_>>();
+
+    assert!(input_lines.iter().filter(|line| !line.trim().is_empty()).count() >= 2);
+    assert!(input_lines[0].contains("abc"));
+    assert!(input_lines.iter().skip(1).any(|line| line.contains("jkl")));
+}
+
+#[test]
+fn input_box_scrolls_to_keep_latest_lines_visible() {
+    let mut app = App::new();
+    let theme = OmegaTheme::dark();
+    app.interaction_mode = omega_keymap::InteractionMode::Insert;
+    app.input_rect = ratatui::layout::Rect::new(0, 0, 24, 4);
+    app.insert_text("alpha\nbeta\ngamma\ndelta\nepsilon");
+
+    let colors = theme.render_palette();
+    let input_lines = input_viewport_lines(&app, &colors)
+        .into_iter()
+        .map(|line| line.to_string().trim_end().to_string())
+        .collect::<Vec<_>>();
+    let rendered = input_lines.join("\n");
+
+    assert!(!rendered.contains("alpha"));
+    assert!(rendered.contains("beta"));
+    assert!(rendered.contains("epsilon"));
+}
+
+#[test]
+fn input_box_respects_manual_scroll_offset() {
+    let mut app = App::new();
+    let theme = OmegaTheme::dark();
+    app.interaction_mode = omega_keymap::InteractionMode::Insert;
+    app.input_rect = ratatui::layout::Rect::new(0, 0, 24, 3);
+    app.input_buffer = "alpha\nbeta\ngamma\ndelta".to_string();
+    app.cursor_pos = app.char_count();
+    app.input_scroll_top = 1;
+
+    let colors = theme.render_palette();
+    let input_lines = input_viewport_lines(&app, &colors)
+        .into_iter()
+        .map(|line| line.to_string().trim_end().to_string())
+        .collect::<Vec<_>>();
+    let rendered = input_lines.join("\n");
+
+    assert!(!rendered.contains("alpha"));
+    assert!(rendered.contains("beta"));
+    assert!(rendered.contains("delta"));
 }
 
 #[test]
@@ -359,7 +429,7 @@ fn step_and_command_headers_use_distinct_accent_roles() {
 }
 
 #[test]
-fn bottom_status_keeps_model_and_runtime_without_old_header_fields() {
+fn bottom_status_keeps_runtime_without_old_header_fields() {
     let mut app = App::new();
     app.is_running = true;
     app.spinner_tick = 3;
@@ -374,13 +444,12 @@ fn bottom_status_keeps_model_and_runtime_without_old_header_fields() {
 
     let text = bottom_status_text(&app, "test-model", &['⠋', '⠙']);
 
-    assert!(text.contains("test-model"));
-    assert!(text.contains("Running…"));
+    assert!(text.contains("NORMAL"));
     assert!(text.contains("child:feature Explore 1/4"));
     assert!(!text.contains("Omega Agent"));
-    assert!(!text.contains("Mode:"));
-    assert!(!text.contains("Focus:"));
-    assert!(!text.contains("KM:"));
+    assert!(!text.contains("Running…"));
+    assert!(!text.contains("tok"));
+    assert!(!text.contains("test-model"));
 }
 
 #[test]
@@ -416,25 +485,42 @@ fn command_hint_takes_priority_in_input_context_bar() {
 }
 
 #[test]
+fn insert_mode_hint_mentions_shift_enter_for_newline() {
+    let mut app = App::new();
+    app.interaction_mode = omega_keymap::InteractionMode::Insert;
+
+    let hint = input_context_text(&app, false);
+    assert!(hint.contains("Shift+Enter=Newline"));
+    assert!(hint.contains("↑/↓=Line"));
+}
+
+#[test]
 fn input_surfaces_use_symmetric_visual_bars() {
     let mut app = App::new();
     app.is_running = true;
+    app.remember_delivery_model_name("test-model");
 
     let colors = OmegaTheme::dark().render_palette();
     let context = input_context_line(&app, false, &colors);
+    let input_info = input_info_line(&app, &['⠋', '⠙'], &colors, 32);
     let status = bottom_status_line(&app, "test-model", &['⠋', '⠙'], &colors);
 
     assert_eq!(context.spans[0].style.fg, Some(colors.context_label));
     assert_eq!(context.spans[0].style.bg, Some(colors.context_bar_bg));
     assert_eq!(context.spans[0].content, " keys ");
+    assert_eq!(input_info.spans[0].style.bg, Some(colors.input_bg));
+    assert!(input_info.spans[0].content.contains("test-model"));
+    assert!(input_info
+        .spans
+        .iter()
+        .skip(2)
+        .any(|span| span.style.fg == Some(colors.status_running_fg)));
     assert_eq!(status.spans[0].style.bg, Some(colors.status_bar_bg));
     assert_eq!(status.spans[0].content, " mode ");
-    assert_eq!(status.spans[1].style.fg, Some(colors.mode_normal_fg));
-    assert_eq!(status.spans[7].style.fg, Some(colors.status_running_fg));
+    assert_eq!(status.spans.len(), 1);
     assert_eq!(colors.context_label, colors.text);
     assert_eq!(colors.status_label, colors.text);
     assert_eq!(colors.bar_divider, colors.text);
-    assert_eq!(colors.context_bar_bg, colors.status_bar_bg);
     assert_eq!(colors.context_bar_bg, colors.panel_bg);
     assert_ne!(colors.input_bg, colors.panel_bg);
 }
@@ -454,7 +540,8 @@ fn idle_bottom_status_hides_workflow_segment() {
     let text = bottom_status_text(&app, "test-model", &['⠋', '⠙']);
 
     assert!(!text.contains("Report 4/4"));
-    assert!(text.contains("● Idle"));
+    assert!(text.contains("NORMAL"));
+    assert!(!text.contains("test-model"));
 }
 
 #[test]
@@ -483,9 +570,67 @@ fn bottom_status_renders_delivery_badge_when_summary_exists() {
         omega_session::StatusValue::Label("Idle".to_string()),
     );
 
-    let text = bottom_status_text(&app, "gpt-5.4", &['⠋', '⠙']);
+    let text = input_info_text(&app, &['⠋', '⠙']);
 
-    assert!(text.contains("0 tok · 0 llm · 0 tools · 0 files"));
+    assert!(text.contains("gpt-5.4"));
+    assert!(text.contains("0.0k"));
+    assert!(!text.contains("tok"));
+    assert!(!text.contains("llm"));
+    assert!(!text.contains("tools"));
+    assert!(!text.contains("files"));
+}
+
+#[test]
+fn bottom_status_renders_project_slot_with_name_only() {
+    let mut app = App::new();
+    app.set_status_slot(
+        omega_session::StatusSlot::Project,
+        omega_session::StatusValue::ProjectSelection {
+            snapshot: Box::new(omega_project::ProjectDetailSnapshot {
+                record: omega_project::ProjectRecord {
+                    project_id: "proj-123".to_string(),
+                    display_name: "omega".to_string(),
+                    root: std::path::PathBuf::from("/workspace/omega"),
+                    detection_kind: omega_project::ProjectDetectionKind::Explicit,
+                    created_at: 1,
+                    last_opened_at: 2,
+                    active_session_id: Some("session-a".to_string()),
+                },
+                sessions: vec![omega_project::ProjectSessionRef {
+                    session_id: "session-a".to_string(),
+                    title: "Current session".to_string(),
+                    status: omega_project::ProjectSessionStatus::Active,
+                    started_at: 10,
+                    last_active_at: 12,
+                    turn_count: 4,
+                    last_user_turn_preview: Some("Investigate project badge".to_string()),
+                }],
+                knowledge: omega_project::ProjectKnowledgeSummary {
+                    document: ContextDocumentDiagnostics {
+                        total_files_indexed: 42,
+                        total_chunks: 128,
+                        health_status: omega_session::DocumentHealthStatus::Good,
+                        ..ContextDocumentDiagnostics::default()
+                    },
+                    memory: ContextMemoryDiagnostics {
+                        total_turns_archived: 7,
+                        memory_query_count: 3,
+                        observation_count: 2,
+                        ..ContextMemoryDiagnostics::default()
+                    },
+                    session_count: 1,
+                    active_session_id: Some("session-a".to_string()),
+                },
+            }),
+        },
+    );
+
+    let text = bottom_status_text(&app, "test-model", &['⠋', '⠙']);
+
+    assert!(text.contains("omega"));
+    assert!(!text.contains("sessions"));
+    assert!(!text.contains("d:"));
+    assert!(!text.contains("m:"));
 }
 
 #[test]
@@ -519,4 +664,40 @@ fn bottom_status_prefers_active_step_subflow_badge() {
 
     assert!(text.contains("execute-2 2/5 r1"));
     assert!(!text.contains("feature -> feature"));
+}
+
+#[test]
+fn input_info_bar_renders_idle_arrow_model_and_tokens() {
+    let mut app = App::new();
+    app.begin_turn();
+    app.remember_delivery_model_name("gpt-5.4");
+    app.set_status_slot(
+        omega_session::StatusSlot::Agent,
+        omega_session::StatusValue::Label("Idle".to_string()),
+    );
+
+    let text = input_info_text(&app, &['⠋', '⠙']);
+
+    assert!(text.contains("gpt-5.4"));
+    assert!(text.contains("↑"));
+    assert!(text.contains("0.0k"));
+    assert!(!text.contains("tok"));
+    assert!(!text.contains("·"));
+}
+
+#[test]
+fn running_input_info_bar_uses_spinner_icon() {
+    let mut app = App::new();
+    app.is_running = true;
+    app.spinner_tick = 2;
+
+    let text = input_info_text(&app, &['⠋', '⠙']);
+
+    assert!(!text.contains("↑"));
+    let animated_count = text
+        .chars()
+        .filter(|ch| matches!(ch, '●' | '◉' | '◎' | '○' | '·'))
+        .count();
+    assert_eq!(animated_count, 1);
+    assert!(text.contains('◉'));
 }

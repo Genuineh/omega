@@ -3,7 +3,7 @@ status: draft
 last_verified_commit: N/A
 owner: omega-team
 created: 2026-04-08
-updated: 2026-04-09
+updated: 2026-04-10
 version: 0.1
 supersedes: []
 related_prds:
@@ -44,7 +44,7 @@ related_prds:
 | 面板语言 | 深色分层 surface + rounded border + 低饱和背景 |
 | 输出形态 | 从日志流转向结构化报告卡片与 section |
 | 侧栏策略 | rail + section card + row taxonomy + preview first |
-| 底部控制带 | 左列 `Context bar + Input` 与全宽 `Status bar` 共享 `Response` dark surface，形成统一控制带 |
+| 底部控制带 | 左列 `Context bar + Input shell` 与全宽 `Status bar` 共享 `Response` dark surface，形成统一控制带 |
 
 ## Theme Configuration Surface
 
@@ -101,7 +101,7 @@ related_prds:
 | Token | 默认值 | 用途 |
 |-------|--------|------|
 | `status_bar.bg` | `#0C1117` | 底部状态条背景，现与 `Agent Response` panel 背景对齐 |
-| `status_bar.label_fg` | `#D7DDE5` | `mode` / `model` / `state` / `flow` 等 label，已去除旧灰色前景 |
+| `status_bar.label_fg` | `#D7DDE5` | `mode` / `flow` / `project` / `session` / `route` / `item` 等 label，已去除旧灰色前景 |
 | `status_bar.divider_fg` | `#D7DDE5` | 分隔符 `·`，已去除旧灰色前景 |
 | `status_bar.normal_mode_fg` | `#CBD5DF` | `NORMAL` mode 标签 |
 | `status_bar.insert_mode_fg` | `#71D2C2` | `INSERT` mode 标签 |
@@ -171,7 +171,7 @@ related_prds:
 | 区域 | 高度规则 | 说明 |
 |------|----------|------|
 | 主工作区 | `Min(0)` | 左列 control stack + 右列 full-height `Sidebar` |
-| Status bar | `Length(1)` | 全宽底部模式/模型/状态/flow/delivery |
+| Status bar | `Length(1)` | 全宽底部 mode/flow/project-route-item |
 
 ### Left Column Stack
 
@@ -179,14 +179,14 @@ related_prds:
 |------|----------|------|
 | Response | `Min(0)` | 主阅读区 |
 | Context bar | `Length(2)` | 左列输入上方热键/notice/command hint，必要时换行 |
-| Input | `Length(6)` | 输入框固定 6 行高 |
+| Input shell | `Length(9)` | 单一共享边框输入容器：上部输入区 + 底部留白 + 一行 input info + 底部留白 |
 
 ### Main Horizontal Split
 
 | 终端宽度 | Response | Sidebar | 说明 |
 |----------|----------|---------|------|
 | `< 60` | `100%` | `0%` | Sidebar 自动隐藏 |
-| `60 - 99` | `66%` | `34%` | 中等宽度下左列为 `Response + Context + Input`，右列为 full-height `Sidebar` |
+| `60 - 99` | `66%` | `34%` | 中等宽度下左列为 `Response + Context + Input shell`，右列为 full-height `Sidebar` |
 | `>= 100` | `66%` | `34%` | 宽屏默认布局 |
 | 任意宽度 + `shell_collapsed=true` | `100%` | `0%` | 用户主动折叠 Sidebar |
 
@@ -195,7 +195,7 @@ related_prds:
 | 层级 | 高度规则 | 说明 |
 |------|----------|------|
 | Sidebar 外壳 | 跟随主工作区全高 | 带标题和边框，不再在其下方留出输入区 |
-| Rail | `Length(1)` | 顶部横向 section rail，使用单行 marker + icon + count tab 文本 |
+| Rail | `Length(1)` | 顶部横向 section rail，使用单行 marker + section label + count tab 文本 |
 | Rail spacer | `Length(1)` | rail 与下方 section body 之间的呼吸间隔 |
 | Section body | `Min(0)` | Diagnostics/Delivery/Skills/Knowledge/Todos/Logs；每个子面板使用顶部文字标题，当 section 过多时使用 rail/focus 锚定的 viewport，只显示当前窗口能装下的一段 |
 
@@ -273,6 +273,7 @@ Overlay 最终尺寸还会被终端边界再裁一次，最大值是 `area - 2`�
 | `diagnostics_expanded` | `false` |
 | `delivery_expanded` | `false` |
 | `skills_expanded` | `false` |
+| `project_expanded` | `true` |
 | `knowledge_expanded` | `true` |
 | `todos_expanded` | `true` |
 | `logs_expanded` | `false` |
@@ -281,16 +282,15 @@ Overlay 最终尺寸还会被终端边界再裁一次，最大值是 `area - 2`�
 
 | 元素 | 当前实现 |
 |------|----------|
-| section 顺序 | Diagnostics → Delivery → Skills → Knowledge → Todos → Logs |
+| section 顺序 | Diagnostics → Delivery → Skills → Project → Knowledge → Todos → Logs |
 | 布局形式 | rail 位于 Sidebar 顶部，单行横向排列；body 在其下方 |
-| item 形式 | 恢复 `▾/▸ + icon + count` 的单行 tab 文本样式 |
+| item 形式 | 当前使用 `▾/▸ + section label + count` 的单行 tab 文本样式 |
 | 展开 section 样式 | `▾` marker + `context_hint` / 当前选中时 `title_fg` 或 `focus_border` |
 | 收起 section 样式 | `▸` marker + `context_label` / 当前选中时 `title_fg` 或 `focus_border` |
 | 选中 + rail 聚焦 | `focus_border + sidebar_rail_bg + bold` |
 | 选中 + 非聚焦 | `title_fg + sidebar_rail_bg + bold` |
 | 横向滚动 | 当 rail 总宽度超过可用宽度时，渲染窗口自动跟随当前 `rail_selection`，保证所选 tab 保持可见 |
-| Icon 对照 | Diagnostics `⚠` / Delivery `▣` / Skills `💡` / Knowledge `📚` / Todos `☑` / Logs `☰` |
-| 宽字符处理 | `💡` 与 `📚` 视为 2 列宽字符，用于 rail 横向滚动偏移计算 |
+| Section 文案 | Diagnostics / Delivery / Skills / Project / Knowledge / Todos / Logs |
 | badge 组合 | 保留原计数语义，但压缩成短数字格式：invalid/pending 数、LLM/changed files、loaded/recognized、doc/mem 命中数、todo 完成数、log 行数 |
 
 ### Sidebar Panel Titles
@@ -362,11 +362,14 @@ Sidebar section body 不再等比分配，而是使用 `base + content_bonus + f
 
 | 元素 | 当前实现 |
 |------|----------|
-| 高度 | 固定 `6` |
-| 前缀 | 左侧前缀为 ` > `；横向滚动后变为 `◂> ` |
-| 可视宽度 | `panel_width - 5` |
+| 容器关系 | 与下方 `Input info bar` 共用同一套 `input` 边框 |
+| 总壳层高度 | 固定 `9` |
+| 实际文本区 | 位于共享壳层内部的上部区域，当前可见高度为 `4` |
+| 前缀 | 首行左侧前缀为 ` > `；续行与滚动后的可见行使用等宽缩进前缀对齐 |
+| 可视宽度 | `inner_width - 3`；超宽内容改为软换行而不是横向滚动 |
 | Normal mode | 已有输入以 `input_placeholder` 渲染；空输入显示 `Press Space jk to enter insert mode` |
-| Insert mode | 文本用 `input_text`；光标字符使用前景/背景反转 + `BOLD` |
+| Insert mode | 文本用 `input_text`；光标以反色块显示；`Enter=Send`，`Shift+Enter=Newline`，`↑/↓` 在多行输入内按可视行移动光标 |
+| 多行行为 | 显式换行和软换行都会占用输入区可见行数；当内容超出 `4` 行可见高度时，viewport 会自动向下滚动以保持当前光标所在行可见；鼠标滚轮落在输入区内时只滚动该 viewport，不会侵入下方 `Input info bar` |
 | 边框颜色 | `NORMAL -> mode_normal_fg`，`INSERT -> mode_insert_fg` |
 
 ### Context Bar
@@ -379,17 +382,30 @@ Sidebar section body 不再等比分配，而是使用 `base + content_bonus + f
 | 行高 | 固定 `2` 行，可自动换行 |
 | 作用 | 统一承载热键提示、状态 notice、slash hint、overlay 提示；现只占左列，不再横跨 Sidebar 下方 |
 
+### Input Info Bar
+
+| 元素 | 当前实现 |
+|------|----------|
+| 行高 | 固定 `1` 行 |
+| 位置 | 输入壳层底部，和上方输入区共用同一套边框 |
+| 内边距 | 左右各保留 `1` 列；与上方输入区和下方边框之间各保留 `1` 行留白 |
+| 左侧内容 | 当前模型名；若有 delivery token，则显示为 `model   12.3k` |
+| 最右状态图标 | 空闲时显示 `↑`；运行时使用一行压缩版 `5` 列单点 orbit 动画，只保留一个沿轨道移动的 glyph，并在 `● / ◉ / ◎ / ○ / ·` 间切换后右对齐到壳层末端 |
+| delivery | 仅展示 token 摘要，格式为 `12.3k` 这类 `k` 单位一位小数，不再追加单位文案 |
+| 背景 | 当前使用 `input.bg`，与上方输入区保持同一底色 |
+| 分隔 | 各段之间只保留固定空格，不再使用 `·` 或竖线分隔符 |
+
 ### Bottom Status Bar
 
 | 元素 | 当前实现 |
 |------|----------|
-| label 段 | `mode` / `model` / `state` / 可选 `flow` / 可选 `session` / 可选 `delivery` |
+| label 段 | `mode` / 可选 `flow` / 可选 `project` / `session` / `route` / `item` |
 | 背景 | `status_bar.bg`，与 `Agent Response` panel 背景相同 |
 | label/divider 前景 | 已去除旧灰色，统一回到正文级亮度 |
-| 模式色 | `NORMAL` 蓝、`INSERT` 青绿 |
-| 运行色 | 运行中用 `status_running_fg`，空闲用 `status_idle_fg` |
+| 模式色 | `NORMAL` 蓝、`INSERT` 青绿；位于最左侧 |
+| 运行色 | 已移至 `Input info bar`；运行中用 `status_running_fg`，空闲用 `status_idle_fg` |
 | 分隔方式 | ` · ` |
-| spinner | `⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏` |
+| spinner | 底部状态条不再直接显示 running 文本 spinner；运行图标已移至 `Input info bar`，当前为单行压缩版单点 orbit 动画，任一时刻只显示一个 `● / ◉ / ◎ / ○ / ·` glyph |
 
 ## Overlay Inventory
 
@@ -452,6 +468,7 @@ Sidebar section body 不再等比分配，而是使用 `base + content_bonus + f
 - 2026-04-08: 基于这份基线补充“当前实现到目标审美的差距”表，并把下一轮 UI 优化任务显式映射到 `Task 15B-61 ~ 15B-64`。
 - 2026-04-08: `Task 15B-61 ~ 15B-64` 完成后，保留这份差距表作为后续 theme preset / density mode 演进的对照面，而不是继续作为未完成项清单。
 - 2026-04-09: 同步 `Context bar` / `Status bar` 与 `Agent Response` 的同底色实现，去除 bar 上旧灰色 label/divider 前景；同时更新左列 `Response + Context(2) + Input(6)` / 右列 full-height `Sidebar` 的现行布局，以及无浅灰 header 背景、sidebar 子面板鼠标选中等最新实现细节。
+- 2026-04-10: 左列控制带进一步收敛为共享边框的 `Input shell`：上部为输入区，下部一行为带内边距的 `Input info bar`；该行现显示 `model + token`，token 仅保留 `k` 值不再带单位，段间只用固定空格分隔，并把 `state` icon 右对齐到壳层末端。`mode` 已回到底部状态条最左侧，底部状态条当前为 `mode + flow + project/session/route/item` 的全局信息栏。输入区现已按多行 viewport 渲染，支持 `Shift+Enter` 插入换行、`↑/↓` 按可视行移动光标，并在内容超出可见高度时支持输入区内自动跟随与鼠标滚轮滚动，而不覆盖 `Input info bar`。运行态图标现已从单 glyph spinner 升级为单行压缩版单点 orbit 动画：glyph 会在 `● / ◉ / ◎ / ○ / ·` 间切换，但任一时刻只显示一个。
 - 2026-04-09: 同步 `Task 15B-65 ~ 15B-69` 的现行 contract：`Delivery/Skills` 默认收起、rail/focus 锚定的 sidebar section viewport、统一 `Knowledge` 面板、`✓ / → / ○` todo glyph，以及带 scroll footer 的 `Detail/SearchResults` overlay。
 - 2026-04-09: 修复 `normalize_focus()` 在每帧渲染起始时早于 `render_sidebar_body` 调用导致 sidebar panel focus 被错误重置的 bug；`normalize_focus` 现在移至 sidebar 渲染结束后调用，保证 rects 反映当前帧真实状态。新增 `Ctrl+Left/Right` 在可见 sidebar panel 间循环切换 focus；panel 足够高时自动压制 overflow hint（不再显示 `… more lines`）。
-- 2026-04-09: Sidebar rail 回到顶部横向布局，重新使用 `▾/▸ + icon + count` 的单行 marker 风格，并让渲染窗口随 `rail_selection` 自动横向滚动；Knowledge icon 更新为 `📚`，`💡` 与 `📚` 均按 2 列宽字符参与滚动宽度计算。
+- 2026-04-09: Sidebar rail 回到顶部横向布局，当前使用 `▾/▸ + section label + count` 的单行 marker 风格，并让渲染窗口随 `rail_selection` 自动横向滚动。

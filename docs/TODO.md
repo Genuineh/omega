@@ -2,14 +2,13 @@
 
 ## Current Priorities
 
-_当前主线已按真实实现状态收口。判断依据：`cargo test` 全工作区通过；`Task 15F-26 ~ 15F-29` 与 `Task 15B-28 ~ 15B-29` 已完成，execute 已收敛到 itemized loop 并具备 subflow visibility；`Task 11A ~ 11F-3` 已完成，上下文装配、长期知识索引与 `ContextDiagnostics` 聚合快照均已成为现行基线。主优先级已回到 `Task 10`。_
+_当前主线已按真实实现状态收口：`Task 18 ~ 18J` 已完成，project-owned ownership 现已真正收口到 `omega-project` 路径，`omega-core` / `omega-session` 的生产装配不再直连 `OmegaContextFacade::local(root)`，`/project switch` 会同步重绑 repo-scoped skill/hook/tool surface，Sidebar 也已新增正式 `Project` panel；`Task 15F-26 ~ 15F-29` 与 `Task 15B-28 ~ 15B-29` 已完成，execute 已收敛到 itemized loop 并具备 subflow visibility；`Task 11A ~ 11F-3` 已完成，上下文装配、长期知识索引与 `ContextDiagnostics` 聚合快照均已成为现行基线。主优先级已回到 `Task 10`。_
 
 _任务编号以 `docs/specs/omega-agent-impl-plan.md` 为准；`8A/8B`、`15A/15B/15C/15D` 等后缀仅用于里程碑拆分。详细历史与完成记录保留在后文。_
 
 ### High
 
 - **Task 10**: `omega-subagent` 是当前主线，但要建立在已完成的上下文管理基线之上，避免调度再次被上下文膨胀拖垮。
-- **Task 18 / Task 18A ~ 18F**: 建立 `omega-project` 仓库级边界，把 project 变成 document/memory/session 的正式 owner，并为 `/project` command、`/document` project 绑定、context ownership shift 和底部状态栏 project 详情提供统一落点；`omega-todo` 继续保持 runtime/session 级 working state，不并入 project ownership。这是后续多 session、项目切换和知识库治理显式化的前置。
 - **Task 17 / Task 17A**: 建立独立 command system，当前 scope 收窄为 builtin + tool-extension commands；先以 `/document` 验证 slash hint UX、Response panel 的 command-special rendering，以及 command-result contract；下一阶段需与 `Task 18` 对齐，把 `/project` 作为 project-owned control plane 接入，而不是继续让 repo state 隐含挂在 `omega-context` 上。
 - **Task 11A ~ 11F-3**: 已完成并转入基线能力，不再作为独立主线推进；原 Task 11 的上下文压缩需求已被这条子任务链替代。
 
@@ -27,9 +26,9 @@ _任务编号以 `docs/specs/omega-agent-impl-plan.md` 为准；`8A/8B`、`15A/1
 - **2026-04-08 TUI readability + accent tuning follow-up**: 在 `Task 15B-61 ~ 15B-64` 完成后，`omega-tui` 又补了一轮首屏阅读压缩与重点样式回拉：未聚焦 `Sidebar` 现在会以更低 preview line budget + 保留前几个字的短预告来减少初次阅读字数，collapsed command summary 也收敛为更短的 leading preview；同时 `Response` 的 route/step/command header、status cue 与 section/metric accent 从纯黑白灰中重新拉开层级。剩余主题 preset / density mode 系统化工作继续收敛到 `Task 15B-54`。
 - **2026-04-09 TUI status glyph polish**: `omega-tui` 的 response timeline 现已把状态标记进一步收敛为无括号的纯符号样式；streaming 黄色状态只让状态点本身闪烁，不再让整条 header/tool/subflow 行一起闪烁，`expand/collapse` 文案也同步去掉方括号，减少视觉噪声并保留状态可扫描性。
 - **2026-04-09 TUI sidebar focus + keyboard navigation**: 修复了 `normalize_focus()` 在每帧渲染起始时早于 `render_sidebar_body` 执行、导致 sidebar panel focus 每帧被错误重置为 `Response` 的根本 bug；`normalize_focus` 现在移至 sidebar 渲染块结束后调用，确保 panel rects 已全部落地。新增 `Ctrl+Left/Right` 快捷键在当前可见 sidebar panel 间循环切换 focus；panel 高度足够容纳全部内容时自动抑制 `… more lines` overflow hint。
-- **2026-04-09 TUI rail top-scroll layout**: rail 回到与 body 的上下级关系，位于 Sidebar 顶部并恢复 `▾/▸ + icon + count` 的单行样式；当 rail 总宽度超过可用宽度时，渲染窗口会自动随当前 `rail_selection` 横向滚动，保证选中项保持可见。Knowledge icon 更新为 `📚`，`💡` 与 `📚` 的宽字符宽度已纳入滚动计算。
-- **2026-04-09 TUI panel layout + sidebar interaction polish**: `omega-tui` 现已把主布局重排为“左列 Response + 2 行 Context bar + 6 行 Input / 右列 full-height Sidebar”，避免 Sidebar 下方再出现横跨全宽的输入区；同时 route/step header 与 sidebar section card 的浅灰底色已去除，sidebar child panels 保持顶部文字标题，整个 Sidebar 与顶部 rail 均进一步收窄；rail 当前使用紧凑的单行 `▾/▸ + icon + count` 样式，并保留自动横向滚动；`panel_at()` 右边界命中问题也已修复，`more lines` 溢出提示仍可点击并聚焦对应 panel。
-- **2026-04-09 TUI control band surface polish**: `Context bar` 与 `Status bar` 的默认 theme token 已去除旧灰色 label/divider 前景，并把两条 bar 的背景统一贴齐 `Agent Response` 的 dark panel surface；相关 UI reference 与 layout spec 也已同步更新，避免实现与文档继续漂移。
+- **2026-04-09 TUI rail top-scroll layout**: rail 回到与 body 的上下级关系，位于 Sidebar 顶部并使用 `▾/▸ + section label + count` 的单行样式；当 rail 总宽度超过可用宽度时，渲染窗口会自动随当前 `rail_selection` 横向滚动，保证选中项保持可见。
+- **2026-04-09 TUI panel layout + sidebar interaction polish**: `omega-tui` 现已把主布局重排为“左列 Response + 2 行 Context bar + 共享边框 Input shell(输入区 + 1 行 Input info) / 右列 full-height Sidebar”，避免 Sidebar 下方再出现横跨全宽的输入区；同时 route/step header 与 sidebar section card 的浅灰底色已去除，sidebar child panels 保持顶部文字标题，整个 Sidebar 与顶部 rail 均进一步收窄；rail 当前使用紧凑的单行 `▾/▸ + section label + count` 样式，并保留自动横向滚动；`panel_at()` 右边界命中问题也已修复，`more lines` 溢出提示仍可点击并聚焦对应 panel。
+- **2026-04-10 TUI control band surface polish**: `Context bar`、共享边框 `Input shell` 与 `Status bar` 的默认 theme token 已去除旧灰色 label/divider 前景，并把三条 control band 的背景统一贴齐 `Agent Response` 的 dark panel surface；其中 `Input info bar` 现承载带内边距的 `model + k` token 摘要，token 不再追加单位文案、段间只保留固定空格，并把 state icon 右对齐到壳层末端，`mode` 已回到底部状态条最左侧且底部状态条不再重复展示 model；输入区现已补齐真正的多行 viewport，支持 `Shift+Enter` 插入换行、`Up/Down` 按可视行移动光标，并在内容超出可见高度时支持自动跟随与输入区内鼠标滚轮滚动而不侵入 `Input info bar`；同时 `omega-keymap` 对工作区 `.omega/keymap.toml` 的加载已收敛为“内置默认 + 工作区覆盖”，避免历史默认文件继续吞掉新增输入快捷键；`Input info bar` 的 running 态图标也已从单 glyph spinner 升级为一行压缩版单点 orbit 动画，glyph 会在 `● / ◉ / ◎ / ○ / ·` 间切换，但任一时刻只显示一个；相关 UI reference、layout spec 与 keymap spec 也已同步更新，避免实现与文档继续漂移。
 - **2026-04-09 sidebar usability + knowledge dashboard completion**: `Task 15B-65 ~ 15B-69` 已完成。Sidebar 现已收紧为显式选中 contract：`Delivery` / `Skills` 默认收起，rail 进入 child panel 会自动 seed 选中项，未聚焦 preview 统一改为 `focus panel for detail`；当 section 过多时，body 会按 rail / focused section 锚定到可见 viewport，而不是把下方 panel 直接挤没。原 `Document + Memory` 已合并为带 mini-bar 命中摘要的 `Knowledge` 面板，`Todos` 使用 `✓ / → / ○` checklist glyph，`Detail/SearchResults` overlay 也已支持鼠标滚轮、`PgUp/PgDn`、`Home/End` 与可见的 scroll footer。
 - **2026-04-08 message cards planning**: 已完成 `Task 15B-55 ~ 15B-57`。`omega-tui` 现已把 response assembly 从 `Msg -> ResponseDisplayLine` 提升为 `Msg -> ResponseCard -> section -> lines`，并补齐报告型 section header、scanable summary badge、Markdown table 渲染与 report token；`omega-theme` 也新增了 report-oriented 颜色角色，默认输出已明显从“带样式的日志列表”转向“结果优先的结构化报告”。详见 `docs/specs/omega-tui-message-cards.md`。
 - **2026-04-08 response/sidebar readability follow-up**: 下一轮 TUI 设计优化重点不再是“有没有卡片”，而是“卡片和侧栏读起来是否足够清楚”。建议按 `Task 15B-58 ~ 15B-60` 推进：`15B-58` 专注 `Response` 卡片内部主次与阅读节奏，`15B-59` 为 `Sidebar` 建立 row taxonomy 和语义样式，`15B-60` 收敛默认密度、截断与 drill-down 策略。详见 `docs/specs/omega-tui-message-cards.md` 与 `docs/specs/omega-tui-visual-refresh.md`。
@@ -62,65 +61,122 @@ _以下保留详细里程碑与历史记录；待办项的 `Priority` 字段已�
 > 前置：`Task 11A ~ 11F-3` 已完成，`Task 17` command system 基线已立项
 
 ### Task 18: omega-project — 项目级根对象与所有权边界
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-04-09
 - **Priority**: High
 - **Description**: 新增 `omega-project` crate，建立 project detection、project registry、project-bound document/memory ownership 和 session catalog 的正式边界，并给上层暴露稳定的 project handle / summary surface；`omega-todo` 保持 runtime/session 级 manager，不迁入 `omega-project`。
 - **Complexity**: L
 - **Related**: docs/specs/omega-project-system.md
-- **Blocks**: Task 17A, Task 18B, Task 18C, Task 18D, Task 18E
+- **Blocks**: Task 17A, Task 18B, Task 18C, Task 18D, Task 18E, Task 18G, Task 18H, Task 18I, Task 18J
+- **Summary**: 已新增 `omega-project` crate，落地 project detection、stable `project_id`、repo-local `.omega/project.json` 与 `.omega/sessions/` catalog，并让 project handle 成为 session/runtime 侧访问 repo-scoped context/document/memory 的 phase-1 上层入口；ownership 收口与 sidebar surface 仍由 `Task 18G ~ 18J` 继续完成。
 
 ### Task 18A: omega-project / omega-app — 基于当前文件的 project 识别与激活
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-04-09
 - **Priority**: High
 - **Description**: 基于 current file、cwd 和显式选择实现 project resolution；解析 canonical root、生成稳定 `project_id`，并在 app/runtime 中维护当前 active project。
 - **Complexity**: M
 - **Blocked by**: Task 18
 - **Blocks**: Task 18B, Task 18D, Task 18E
 - **Related**: docs/specs/omega-project-system.md
+- **Summary**: `ProjectRegistry` 已支持 current-file/cwd/explicit-root resolution，active project 会在 `omega-app` 启动时注入到 session/TUI；`/project switch` 也会同步更新 active project handle 与当前 cwd。
 
 ### Task 18B: omega-session / omega-project — 多 session 关联与 project session catalog
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-04-09
 - **Priority**: High
 - **Description**: 让 session 创建、归档和恢复显式带上 `project_id` 与 `session_id`；支持一个 project 下登记多个 session，并维护 active/idle/archived 状态与最近摘要。
 - **Complexity**: L
 - **Blocked by**: Task 18, Task 18A
 - **Blocks**: Task 18C, Task 18D, Task 18E
 - **Related**: docs/specs/omega-project-system.md
+- **Summary**: `AgentSession` 现已显式持有 `session_id` 与 active `OmegaProjectHandle`；普通 turn 与 slash command 都会把 active/idle 状态、turn count 和最近 user preview 写入 project session catalog。
 
 ### Task 18C: omega-context — 从 repo owner 收敛为 session-local context assembly
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-04-09
 - **Priority**: High
 - **Description**: 去掉 `omega-context` 对 project-bound document/memory 的 concrete ownership，引入 project-facing provider traits，让 context 只负责当前 session 对话、step 资产与上下文装配。
 - **Complexity**: L
 - **Blocked by**: Task 18, Task 18B
-- **Blocks**: Task 18D, Task 18F
+- **Blocks**: Task 18D, Task 18F, Task 18H
 - **Related**: docs/specs/omega-project-system.md, docs/specs/omega-context-management.md
+- **Summary**: `OmegaContextFacade` 现已改为消费显式 `ContextFacadeServices`，project/runtime 生产路径不再依赖 facade 内部的 `local(root)` 直连装配；`omega-context` 继续保留兼容构造入口仅供测试/局部 fixture 使用，而 session/app/tool factory 的 repo-scoped ownership 已收口到 `omega-project`。
 
 ### Task 18D: omega-command / omega-app — `/project` 命令族与 `/document` project 绑定
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-04-09
 - **Priority**: High
 - **Description**: 新增 `/project list|switch|info|sessions|knowledge|delete` 命令；同时把 `/document` command 从 session cwd 改为 current project handle 驱动。
 - **Complexity**: M
 - **Blocked by**: Task 18A, Task 18B, Task 18C
 - **Blocks**: Task 18E, Task 18F
 - **Related**: docs/specs/omega-project-system.md, docs/specs/omega-command-system.md
+- **Summary**: `omega-session` command registry 已新增 `/project list|switch|info|sessions|knowledge|delete`，并把 `/document` 默认根切换为 current project handle；`/project switch` 会更新 active project、session catalog、cwd 与后续 agent dispatcher。
 
 ### Task 18E: omega-session / omega-tui — 底部状态栏 project slot 与详情弹窗
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-04-09
 - **Priority**: High
 - **Description**: 为 runtime UI 增加 `StatusSlot::Project` 与对应 summary/value，渲染当前 project 到底部状态栏，并支持点击打开 project detail overlay，展示关联 sessions 与 document/memory 摘要。
 - **Complexity**: M
 - **Blocked by**: Task 18A, Task 18B, Task 18D
 - **Blocks**: Task 18F
 - **Related**: docs/specs/omega-project-system.md, docs/specs/omega-tui-document-memory-supervision.md
+- **Summary**: runtime/TUI 已新增 `StatusSlot::Project` 与 `ProjectSelection` snapshot；`omega-app` 启动时会注入初始 project slot，底部状态栏显示 project badge，点击后打开 project detail overlay，展示 project id/root、session 列表与 document/memory 摘要。
 
 ### Task 18F: 测试与文档迁移 — project-aware command/context/session 回归
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-04-09
 - **Priority**: Medium
 - **Description**: 为 project detection、session association、context provider wiring、`/project` commands 与 TUI project overlay 补齐单测/集成测试，并同步更新相关规格与开发文档。
 - **Complexity**: M
 - **Blocked by**: Task 18C, Task 18D, Task 18E
 - **Related**: docs/specs/omega-project-system.md, docs/guide/omega-dev-guide.md
+- **Summary**: 已补 `omega-project` detection/session catalog 单测、`omega-session` 的 `/project info` 与 `/project switch` 集成测试、`omega-tui` 的底部 project overlay 交互测试，并同步更新 `docs/specs/omega-project-system.md`、`docs/guide/omega-dev-guide.md` 与本 TODO。
+
+### Task 18G: omega-core / omega-project — 去掉 tool factory 对本地 context 的直连构造
+- **Status**: Completed
+- **Completed**: 2026-04-09
+- **Priority**: High
+- **Description**: 把 `omega-core` / tool dispatcher 对 repo-scoped context/document 的装配入口统一收口到 active `OmegaProjectHandle` 或等价 project-owned surface，移除默认 tool factory 中直接 `OmegaContextFacade::local(root)` 的路径，避免 tools 绕过 `omega-project` 独立创建第二套 knowledge owner。
+- **Complexity**: M
+- **Blocked by**: Task 18, Task 18B
+- **Blocks**: Task 18H, Task 18I, Task 18J
+- **Related**: docs/specs/omega-project-system.md, docs/specs/omega-command-system.md
+- **Summary**: `omega-core` 现已新增 context-aware dispatcher 装配入口，`omega-session` 初始化、interrupt 与 `/project switch` 重绑都会显式使用 active project 的 `context_facade`；生产工具链已不再绕过 `omega-project` 额外构造第二套 repo-scoped knowledge owner。
+
+### Task 18H: omega-context / omega-project — 完成 provider-trait 收口与 concrete ownership 下移
+- **Status**: Completed
+- **Completed**: 2026-04-09
+- **Priority**: High
+- **Description**: 继续把 `omega-context` 从 repo knowledge owner 收敛为 session-local assembly layer：移除或封存 `OmegaContextFacade::local(root)` 这类直接构造 repo-scoped memory/document backend 的入口，改由 `omega-project` 提供 project-facing provider / service 实现，确保 document/memory 生命周期只由 project root 管理。
+- **Complexity**: L
+- **Blocked by**: Task 18G
+- **Blocks**: Task 18I, Task 18J
+- **Related**: docs/specs/omega-project-system.md, docs/specs/omega-context-management.md
+- **Summary**: `omega-context` 现已把 concrete local service 装配抽到显式 `ContextFacadeServices`，由 `omega-project` 在生产路径中持有并注入到 `OmegaContextFacade`；`OmegaContextFacade::local(root)` 仅保留为兼容委托入口，不再是 app/session/tool factory 的正式 ownership 边界。
+
+### Task 18I: omega-session / omega-project — `/project switch` 后重绑 repo-scoped skills/hooks/runtime surface
+- **Status**: Completed
+- **Completed**: 2026-04-09
+- **Priority**: High
+- **Description**: 在 project 切换后除 dispatcher/cwd 外，同步重建与新 project root 绑定的 `SkillLoader` / `SessionSkillCatalog` / `HookHost` 及其相关 runtime surface，避免后续 turn 继续读取旧项目的 skills、hooks 或 repo-local config。
+- **Complexity**: M
+- **Blocked by**: Task 18G, Task 18H
+- **Blocks**: Task 18J
+- **Related**: docs/specs/omega-project-system.md, docs/specs/omega-root-skill-routing.md
+- **Summary**: `omega-session` 现已把 repo-scoped `skill_catalog` / `hook_host` / `tool_catalog` 收敛到可重绑 runtime bindings；`/project switch`、interrupt 和后续 turn 都会基于新 project root 重新加载 skills、hooks 与 tool surface，避免旧仓库配置继续泄漏到后续执行。
+
+### Task 18J: omega-tui / omega-session — 新增 Sidebar Project panel 与完整回归验证
+- **Status**: Completed
+- **Completed**: 2026-04-09
+- **Priority**: High
+- **Description**: 在保留底部 project badge/overlay 的同时，为 Sidebar 增加正式 `Project` panel，统一展示 current project、关联 sessions、document/memory summary 与切换后的 repo-scoped状态；并补齐覆盖 ownership 收口与 sidebar 呈现的回归测试及文档同步。
+- **Complexity**: M
+- **Blocked by**: Task 18G, Task 18H, Task 18I
+- **Related**: docs/specs/omega-project-system.md, docs/specs/omega-tui-document-memory-supervision.md, docs/guide/omega-dev-guide.md
+- **Summary**: `omega-tui` Sidebar 现已新增 `Project` section，支持 rail badge、sidebar summary、键盘/鼠标 focus 与 `Enter/x` 打开 project detail overlay；并补齐 `/project switch` runtime rebinding 与 project panel 的回归测试，使 Task 18 的 project ownership/UI 路径完成闭环。
 
 ### ── M1.7: TUI 基础美化 ──
 
@@ -218,7 +274,7 @@ _将 M11 中基础级体验优化前移，确保在开发后续功能时有可�
 - **Status**: Completed
 - **Completed**: 2026-03-19
 - **Priority**: Medium
-- **Description**: 将当前 `Todos` + `Logs` 组合升级为统一可收起的右侧 `Sidebar`，支持整体收起快捷键、顶部图标轨、section 折叠/切换，以及面向 `skills/subagent/tasks/background/message/team/worktree` 的 `Activity` 面板基础
+- **Description**: 将当前 `Todos` + `Logs` 组合升级为统一可收起的右侧 `Sidebar`，支持整体收起快捷键、顶部 rail 文本入口、section 折叠/切换，以及面向 `skills/subagent/tasks/background/message/team/worktree` 的 `Activity` 面板基础
 - **Complexity**: M
 - **Related**: docs/specs/omega-tui-runtime-experience.md, docs/specs/omega-tui-collapsible-sidebar.md, docs/specs/omega-tui-modal-keymap.md, docs/specs/omega-tui-overlay-popups.md
 - **Summary**: `omega-tui` 新增统一 `Sidebar` shell 与本地 `SidebarState`，把右侧辅助区重构为 `Response | Sidebar` 布局，并在侧边栏顶部加入轻量可聚焦 rail；当前 rail 直接以 `Todos | Logs` 呈现，后续 workflow 接入后又进一步收敛出清晰语义分工：`Response` 展示用户输入、各 step 的文本结果与最终 assistant 回复，右侧 `Activity & Logs` 承接 workflow phase、tool preview、todo 刷新与 tracing 日志，避免把纯运行态事件伪装成对用户的回答；支持 `leader b` 整体收起/展开、rail 左右切换、`x` 折叠 section、`Enter` 激活展开内容，同时显式禁止把最后一个 section 收起成空 sidebar；窄终端会自动隐藏侧边栏并回退焦点，状态栏同步增加 sidebar/logs 徽章信息；相关布局、事件和状态单测已覆盖，并以 `cargo test -p omega-tui`、`cargo test -p omega-keymap -p omega-tui`、`cargo clippy -p omega-keymap -p omega-tui --all-targets -- -D warnings` 验证
@@ -1968,7 +2024,7 @@ _基础体验已在 M1.7 完成，此处保留高级特性。_
 - **Complexity**: M
 - **Blocked by**: Task 15B-13A, Task 15B-13B
 - **Related**: docs/specs/omega-tui-modal-keymap.md
-- **Summary**: 工作区 `.omega/keymap.toml` 与内置默认 keymap 已迁移到 v0.2 语义，insert-mode `leader j k` 使用 `text_fallback = true`；`omega-tui` 的 input context bar 现在会显示 pending key 序列与 timeout replay 提示；回归测试已覆盖 running 态模式切换、insert 空格即时失配回放、timeout flush，以及 pending sequence 取消路径。
+- **Summary**: 工作区 `.omega/keymap.toml` 与内置默认 keymap 已迁移到 v0.2 语义，insert-mode `leader j k` 使用 `text_fallback = true`；`omega-tui` 的 input context bar 现在会显示 pending key 序列与 timeout replay 提示；2026-04-10 起，工作区 keymap 加载已改为“内置默认 + 工作区覆盖”，旧默认文件会自动继承后续新增的 `Shift+Enter`、`Up/Down` 等输入快捷键，而不是整份覆盖掉内置默认；回归测试已覆盖 running 态模式切换、insert 空格即时失配回放、timeout flush、pending sequence 取消路径，以及 stale keymap 对新增默认绑定的继承。
 
 ### ── M12: Command System ──
 
