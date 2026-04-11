@@ -473,32 +473,66 @@ fn restore_session_replaces_stale_runtime_state_with_snapshot_replay() {
     app.restore_session(omega_session::SessionRestoreSnapshot {
         session_id: "session-restored".to_string(),
         title: "Restored Session".to_string(),
-        replay_log: vec![
-            omega_project::SessionReplayEntry {
+        visible_history: vec![
+            omega_project::SessionContextRecord {
+                schema_version: 1,
                 session_id: "session-restored".to_string(),
+                sequence: 1,
                 recorded_at: 1,
-                kind: omega_project::SessionReplayEntryKind::UserTurn,
-                title: None,
-                body: "restored prompt".to_string(),
-                state: None,
+                token_estimate: None,
+                record: omega_project::SessionContextRecordKind::ReplayEntry {
+                    entry: omega_project::SessionReplayEntry {
+                        session_id: "session-restored".to_string(),
+                        recorded_at: 1,
+                        kind: omega_project::SessionReplayEntryKind::UserTurn,
+                        title: None,
+                        body: "restored prompt".to_string(),
+                        state: None,
+                    },
+                },
             },
-            omega_project::SessionReplayEntry {
+            omega_project::SessionContextRecord {
+                schema_version: 1,
                 session_id: "session-restored".to_string(),
+                sequence: 2,
                 recorded_at: 2,
-                kind: omega_project::SessionReplayEntryKind::ToolSummary,
-                title: None,
-                body: "bash echo hi".to_string(),
-                state: None,
+                token_estimate: None,
+                record: omega_project::SessionContextRecordKind::ReplayEntry {
+                    entry: omega_project::SessionReplayEntry {
+                        session_id: "session-restored".to_string(),
+                        recorded_at: 2,
+                        kind: omega_project::SessionReplayEntryKind::ToolSummary,
+                        title: None,
+                        body: "bash echo hi".to_string(),
+                        state: None,
+                    },
+                },
             },
-            omega_project::SessionReplayEntry {
+            omega_project::SessionContextRecord {
+                schema_version: 1,
                 session_id: "session-restored".to_string(),
+                sequence: 3,
                 recorded_at: 3,
-                kind: omega_project::SessionReplayEntryKind::CommandSection,
-                title: Some("/session list".to_string()),
-                body: "restored sessions".to_string(),
-                state: Some("complete".to_string()),
+                token_estimate: None,
+                record: omega_project::SessionContextRecordKind::ReplayEntry {
+                    entry: omega_project::SessionReplayEntry {
+                        session_id: "session-restored".to_string(),
+                        recorded_at: 3,
+                        kind: omega_project::SessionReplayEntryKind::CommandSection,
+                        title: Some("/session list".to_string()),
+                        body: "restored sessions".to_string(),
+                        state: Some("complete".to_string()),
+                    },
+                },
             },
         ],
+        turn_count: 4,
+        archived_turn_count: 4,
+        latest_user_turn_preview: Some("restored prompt".to_string()),
+        recent_context_record_count: 3,
+        checkpoint_summary_count: 1,
+        search_hit_count: 2,
+        truncated_history: true,
         todo_rendered: "[>] #1: Restored\n\n(0/1 completed)".to_string(),
         root_workflow_id: "root".to_string(),
         active_workflow_id: "feature".to_string(),
@@ -541,6 +575,14 @@ fn restore_session_replaces_stale_runtime_state_with_snapshot_replay() {
     assert!(app.output_msgs.iter().all(|message| !message.text.contains("old output")));
     assert!(app.output_msgs.iter().any(|message| message.text.contains("restored prompt")));
     assert!(app.output_msgs.iter().any(|message| message.text.contains("restored sessions")));
+    assert!(app
+        .output_msgs
+        .iter()
+        .any(|message| message.text.contains("Context strategy: recent records=3, compression summaries=1, search hits=2.")));
+    assert!(app
+        .output_msgs
+        .iter()
+        .any(|message| message.text.contains("use search/detail to inspect older records")));
     assert_eq!(app.log_lines, vec!["[tool] bash echo hi".to_string()]);
     assert_eq!(app.todo_lines, vec!["→ #1: Restored".to_string()]);
     assert_eq!(app.response_state.selected(), Some(app.output_msgs.len().saturating_sub(1)));

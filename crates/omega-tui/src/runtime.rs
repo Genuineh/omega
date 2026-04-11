@@ -122,6 +122,12 @@ fn initialize_startup_app(
         app.restore_session(snapshot);
     } else if let Ok(status) = session.project_status_value() {
         app.set_status_slot(omega_session::StatusSlot::Project, status);
+        if !session.has_bound_session() {
+            app.set_status_notice(
+                "No session bound. Send a message or use /session new or /session resume."
+                    .to_string(),
+            );
+        }
     }
     for warning in startup_warnings {
         app.add_log(warning.clone());

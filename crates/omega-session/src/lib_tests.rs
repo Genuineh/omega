@@ -11,6 +11,10 @@ use omega_client::{
 };
 use omega_context::GovernanceEventSignal;
 use omega_core::DynLlmClient;
+use omega_project::{
+    ProjectRegistry, ProjectResolutionInput, ProjectSessionStatus, ProjectSessionUpdate,
+    SessionContextRecord, SessionContextRecordKind, SessionReplayEntry, SessionReplayEntryKind,
+};
 use omega_test_support::persistent_test_root;
 use omega_workflow::{
     DataFormat, LoadedWorkflowCatalog, OutputRecoveryMode, StepInputContract, StepLoopMode,
@@ -1890,7 +1894,8 @@ fn spawn_command_project_info_emits_project_status_snapshot() {
         snapshot.record.detection_kind,
         omega_project::ProjectDetectionKind::Cwd | omega_project::ProjectDetectionKind::LooseDirectory
     ));
-    assert!(!snapshot.sessions.is_empty());
+    assert!(snapshot.sessions.is_empty());
+    assert!(snapshot.record.active_session_id.is_none());
 
     let body = recorded
         .iter()
@@ -2028,11 +2033,8 @@ fn spawn_command_session_new_list_info_and_delete_manage_project_sessions() {
     .unwrap();
 
     let initial_snapshot = session.project_detail_snapshot().unwrap();
-    let initial_session_id = initial_snapshot
-        .record
-        .active_session_id
-        .clone()
-        .expect("new agent session should create an active session id");
+    assert!(initial_snapshot.record.active_session_id.is_none());
+    assert!(initial_snapshot.sessions.is_empty());
 
     let new_events = run_command(&session, "/session new Follow up", 570);
     let restored = new_events.iter().find_map(|envelope| match &envelope.message {
@@ -2041,7 +2043,6 @@ fn spawn_command_session_new_list_info_and_delete_manage_project_sessions() {
     });
     let restored = restored.expect("expected session restored state after /session new");
     let new_session_id = restored.session_id.clone();
-    assert_ne!(new_session_id, initial_session_id);
     assert_eq!(restored.title, "Follow up");
     assert_eq!(restored.root_workflow_id, ROOT_WORKFLOW_ID);
     assert_eq!(restored.active_workflow_id, ROOT_WORKFLOW_ID);
@@ -2049,17 +2050,14 @@ fn spawn_command_session_new_list_info_and_delete_manage_project_sessions() {
 
     let after_new = session.project_detail_snapshot().unwrap();
     assert_eq!(after_new.record.active_session_id.as_deref(), Some(new_session_id.as_str()));
-    assert_eq!(after_new.sessions.len(), 2);
-    assert!(after_new.sessions.iter().any(|item| {
-        item.session_id == initial_session_id && item.status == omega_project::ProjectSessionStatus::Idle
-    }));
+    assert_eq!(after_new.sessions.len(), 1);
 
     let session_events = run_command(&session, "/session", 5701);
     let picker = match show_overlay_content(&session_events, OverlayTarget::Picker) {
         Some(UiContent::OperatorPicker(request)) => request,
         other => panic!("expected session picker overlay, got {other:?}"),
     };
-    assert_eq!(picker.items.len(), 2);
+    assert_eq!(picker.items.len(), 1);
     assert_eq!(picker.primary_action.label, "Detail");
     assert!(matches!(
         &picker.primary_action.intent,
@@ -2073,7 +2071,6 @@ fn spawn_command_session_new_list_info_and_delete_manage_project_sessions() {
         Some(UiContent::OperatorPicker(request)) => request,
         other => panic!("expected session list picker overlay, got {other:?}"),
     };
-    assert!(list_picker.items.iter().any(|item| item.id == initial_session_id));
     assert!(list_picker.items.iter().any(|item| item.id == new_session_id));
 
     let info_events = run_command(&session, format!("/session info {new_session_id}"), 572);
@@ -2085,15 +2082,9 @@ fn spawn_command_session_new_list_info_and_delete_manage_project_sessions() {
     assert!(info_overlay.contains(&format!("Session ID: {new_session_id}")));
     assert!(info_overlay.contains("Resume ready: true"));
 
-    let delete_events = run_command(&session, format!("/session delete {initial_session_id}"), 573);
-    assert!(command_body(&delete_events).contains("Deleted session artifacts"));
-
-    let after_delete = session.project_detail_snapshot().unwrap();
-    assert_eq!(after_delete.sessions.len(), 1);
-    assert!(after_delete
-        .sessions
-        .iter()
-        .all(|item| item.session_id != initial_session_id));
+    let delete_events = run_command(&session, "/session delete", 573);
+    assert!(command_body(&delete_events)
+        .contains("Error: refusing to delete the active session; create or resume another session first"));
 }
 
 #[test]
@@ -2169,19 +2160,14 @@ fn spawn_command_session_resume_restores_saved_routing_context() {
     })
     .unwrap();
 
-    let original_session_id = session
-        .project_detail_snapshot()
-        .unwrap()
-        .record
-        .active_session_id
-        .clone()
-        .expect("new agent session should create an active session id");
-
     let turn_recorder = RuntimeEnvelopeRecorder::new();
     session
         .spawn_turn_with_test_bridge("fix this bug".to_string(), 580, turn_recorder.runtime_bridge())
         .unwrap();
     let _turn_events = turn_recorder.wait_for_turn_finished_messages(580, Duration::from_secs(30));
+    let original_session_id = session
+        .current_session_id()
+        .expect("first real turn should lazily bind a session");
 
     let _new_events = run_command(&session, "/session new Scratch", 581);
     let picker_events = run_command(&session, "/session resume", 5811);
@@ -2191,10 +2177,16 @@ fn spawn_command_session_resume_restores_saved_routing_context() {
         other => panic!("expected resume picker overlay, got {other:?}"),
     };
     assert!(resume_picker.items.iter().any(|item| item.id == original_session_id));
+    assert_eq!(resume_picker.primary_action.label, "Resume");
+    assert!(matches!(
+        &resume_picker.primary_action.intent,
+        OperatorPickerIntent::SubmitSlashCommand { command_template }
+            if command_template == "/session resume {id} --picker"
+    ));
     assert!(matches!(
         &resume_picker.secondary_actions[0].intent,
         OperatorPickerIntent::SubmitSlashCommand { command_template }
-            if command_template == "/session resume {id} --picker"
+            if command_template == "/session info {id} --picker"
     ));
 
     let resume_events = run_command(&session, format!("/session resume {original_session_id}"), 582);
@@ -2212,6 +2204,80 @@ fn spawn_command_session_resume_restores_saved_routing_context() {
     assert!(command_body(&resume_events).contains("Resumed session"));
     assert_eq!(
         session.project_detail_snapshot().unwrap().record.active_session_id.as_deref(),
+        Some(original_session_id.as_str())
+    );
+}
+
+#[test]
+fn unbound_session_resume_picker_does_not_create_a_new_session() {
+    let root = unique_session_test_root("session-command-resume-unbound-picker");
+    write_document_fixture(&root);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+
+    let first = AgentSession::new(AgentSessionConfig {
+        client: Arc::new(IdleClient),
+        system: "system".to_string(),
+        cwd: root.clone(),
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog.clone(),
+        workflow_catalog: loaded_catalog.workflow_catalog.clone(),
+        prompt_catalog: loaded_catalog.prompt_catalog.clone(),
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+
+    let original_events = run_command(&first, "/session new Original", 5825);
+    let original_session_id = original_events
+        .iter()
+        .find_map(|envelope| match &envelope.message {
+            RuntimeMessage::State(StateMessage::SessionRestored { snapshot }) => {
+                Some(snapshot.session_id.clone())
+            }
+            _ => None,
+        })
+        .expect("expected original session id from /session new");
+
+    let restored = AgentSession::new(AgentSessionConfig {
+        client: Arc::new(IdleClient),
+        system: "system".to_string(),
+        cwd: root,
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+
+    assert_eq!(restored.current_session_id(), None);
+    assert_eq!(restored.project_detail_snapshot().unwrap().sessions.len(), 1);
+
+    let picker_events = run_command(&restored, "/session resume", 5826);
+    assert!(command_body(&picker_events).trim().is_empty());
+    let resume_picker = match show_overlay_content(&picker_events, OverlayTarget::Picker) {
+        Some(UiContent::OperatorPicker(request)) => request,
+        other => panic!("expected resume picker overlay, got {other:?}"),
+    };
+    assert_eq!(resume_picker.primary_action.label, "Resume");
+    assert_eq!(restored.current_session_id(), None);
+    let project_snapshot = restored.project_detail_snapshot().unwrap();
+    assert_eq!(project_snapshot.sessions.len(), 1);
+    assert_eq!(
+        project_snapshot.record.active_session_id.as_deref(),
+        Some(original_session_id.as_str())
+    );
+
+    let resume_events = run_command(&restored, format!("/session resume {original_session_id}"), 5827);
+    assert!(command_body(&resume_events).contains("Resumed session"));
+    assert_eq!(
+        restored.current_session_id().as_deref(),
         Some(original_session_id.as_str())
     );
 }
@@ -2237,20 +2303,24 @@ fn spawn_command_session_resume_reports_non_resume_ready_sessions() {
     })
     .unwrap();
 
-    let original_session_id = session
-        .project_detail_snapshot()
-        .unwrap()
-        .record
-        .active_session_id
-        .clone()
-        .expect("new agent session should create an active session id");
+    let original_events = run_command(&session, "/session new Original", 5830);
+    let original_session_id = original_events
+        .iter()
+        .find_map(|envelope| match &envelope.message {
+            RuntimeMessage::State(StateMessage::SessionRestored { snapshot }) => {
+                Some(snapshot.session_id.clone())
+            }
+            _ => None,
+        })
+        .expect("expected initial session id from /session new");
 
-    let _new_events = run_command(&session, "/session new Scratch", 5830);
-    let snapshot_path = root
+    let _new_events = run_command(&session, "/session new Scratch", 58301);
+    let ledger_path = root
         .join(".omega")
         .join("sessions")
-        .join(format!("{original_session_id}.snapshot.json"));
-    std::fs::remove_file(&snapshot_path).expect("remove snapshot to force not resume-ready");
+        .join(&original_session_id)
+        .join("session.context.jsonl");
+    std::fs::remove_file(&ledger_path).expect("remove ledger to force not resume-ready");
 
     let resume_events = run_command(&session, format!("/session resume {original_session_id}"), 5831);
 
@@ -2265,7 +2335,7 @@ fn spawn_command_session_resume_reports_non_resume_ready_sessions() {
 }
 
 #[test]
-fn new_reuses_existing_active_session_and_exposes_startup_replay() {
+fn new_starts_unbound_even_with_existing_saved_session() {
     let client: Arc<SequencedClient> = sequenced_client(vec![
         ChatResponse {
             id: "scene-1".to_string(),
@@ -2314,7 +2384,9 @@ fn new_reuses_existing_active_session_and_exposes_startup_replay() {
         .unwrap();
     let _turn_events = turn_recorder.wait_for_turn_finished_messages(590, Duration::from_secs(30));
 
-    let original_id = first.current_session_id();
+    let original_id = first
+        .current_session_id()
+        .expect("first real turn should lazily bind a session");
     assert_eq!(first.project_detail_snapshot().unwrap().sessions.len(), 1);
 
     let restored = AgentSession::new(AgentSessionConfig {
@@ -2332,19 +2404,13 @@ fn new_reuses_existing_active_session_and_exposes_startup_replay() {
     })
     .unwrap();
 
-    assert_eq!(restored.current_session_id(), original_id);
+    assert_eq!(restored.current_session_id(), None);
     assert_eq!(restored.project_detail_snapshot().unwrap().sessions.len(), 1);
-    let startup = restored
-        .startup_restore_snapshot()
-        .expect("expected startup restore snapshot for existing active session");
-    assert_eq!(startup.session_id, original_id);
-    assert!(startup.replay_log.iter().any(|entry| {
-        entry.kind == omega_project::SessionReplayEntryKind::UserTurn && entry.body == "just chat"
-    }));
-    assert!(startup.replay_log.iter().any(|entry| {
-        entry.kind == omega_project::SessionReplayEntryKind::AssistantResponse
-            && entry.body.contains("chat answer")
-    }));
+    assert_eq!(
+        restored.project_detail_snapshot().unwrap().record.active_session_id.as_deref(),
+        Some(original_id.as_str())
+    );
+    assert!(restored.startup_restore_snapshot().is_none());
 }
 
 #[cfg(feature = "document-backend")]
@@ -6459,6 +6525,316 @@ fn session_context_persists_step_summaries_across_turns() {
     }));
     assert!(systems.iter().filter_map(|system| system.as_deref()).any(|system| {
         system.contains("Selected workflow: chat.")
+    }));
+}
+
+#[test]
+fn prompt_assembly_includes_checkpoint_backed_ledger_context() {
+    let client: Arc<SequencedClient> = sequenced_client(vec![
+        ChatResponse {
+            id: "scene-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"recognized_scene_id\":\"chat\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"selected_workflow_id\":\"chat\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "chat-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("x".repeat(1_700_000))],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "scene-2".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"recognized_scene_id\":\"chat\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-2".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"selected_workflow_id\":\"chat\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "chat-2".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("second answer")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+    ]);
+    let client_dyn: DynLlmClient = client.clone();
+    let root = unique_session_test_root("session-ledger-prompt-assembly");
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: client_dyn,
+        system: "system".to_string(),
+        cwd: root,
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 24_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+
+    for (turn_id, input) in [(41, "first question"), (42, "second question")] {
+        let (tx, rx) = mpsc::channel();
+        session
+            .spawn_turn_ui_compat(input.to_string(), turn_id, tx)
+            .unwrap();
+
+        loop {
+            if let RuntimeUiEnvelope::Effect {
+                turn_id: observed_turn_id,
+                effect:
+                    RuntimeUiEffect::SetStatusSlot {
+                        slot: StatusSlot::Agent,
+                        value: StatusValue::Label(label),
+                    },
+            } = rx.recv_timeout(Duration::from_secs(2)).unwrap()
+            {
+                assert_eq!(observed_turn_id, turn_id);
+                assert_eq!(label, "Idle");
+                break;
+            }
+        }
+    }
+
+    let second_turn_system = client
+        .recorded_systems()
+        .into_iter()
+        .flatten()
+        .find(|system| {
+            system.contains("second question") && system.contains("Workflow role: child")
+        })
+        .expect("expected second-turn child workflow system prompt");
+    assert!(second_turn_system.contains("<session_ledger_context>"));
+    assert!(second_turn_system.contains("Compacted"));
+}
+
+#[test]
+fn prompt_assembly_includes_session_history_hits_from_ledger_search() {
+    let client: Arc<SequencedClient> = sequenced_client(vec![
+        ChatResponse {
+            id: "scene-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"recognized_scene_id\":\"chat\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"selected_workflow_id\":\"chat\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "chat-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("first answer")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "scene-2".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"recognized_scene_id\":\"chat\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-2".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"selected_workflow_id\":\"chat\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "chat-2".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("second answer")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+    ]);
+    let client_dyn: DynLlmClient = client.clone();
+    let root = unique_session_test_root("session-ledger-history-search");
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: client_dyn,
+        system: "system".to_string(),
+        cwd: root.clone(),
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 24_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+
+    let (tx, rx) = mpsc::channel();
+    session
+        .spawn_turn_ui_compat("start a chat session".to_string(), 51, tx)
+        .unwrap();
+    loop {
+        if let RuntimeUiEnvelope::Effect {
+            turn_id: observed_turn_id,
+            effect:
+                RuntimeUiEffect::SetStatusSlot {
+                    slot: StatusSlot::Agent,
+                    value: StatusValue::Label(label),
+                },
+        } = rx.recv_timeout(Duration::from_secs(2)).unwrap()
+        {
+            assert_eq!(observed_turn_id, 51);
+            assert_eq!(label, "Idle");
+            break;
+        }
+    }
+
+    let handle = ProjectRegistry::new()
+        .resolve(ProjectResolutionInput {
+            current_file_path: None,
+            cwd: root.clone(),
+            explicit_root: Some(root.clone()),
+        })
+        .unwrap();
+    let session_id = handle
+        .list_sessions()
+        .unwrap()
+        .into_iter()
+        .next()
+        .expect("expected first turn to create a session")
+        .session_id;
+    handle
+        .append_context_records(
+            &session_id,
+            &[SessionContextRecord {
+                schema_version: 1,
+                session_id: session_id.clone(),
+                sequence: 0,
+                recorded_at: 2,
+                token_estimate: Some(24),
+                record: SessionContextRecordKind::CompressionCheckpoint {
+                    checkpoint_id: "checkpoint:widget-cache".to_string(),
+                    source_sequence_start: 1,
+                    source_sequence_end: 4,
+                    summary: "Widget cache invalidation history".to_string(),
+                    keywords: vec!["widget".to_string(), "cache".to_string(), "invalidation".to_string()],
+                    retained_facts: vec![
+                        "The old widget pipeline required clearing stale cache keys before retries."
+                            .to_string(),
+                    ],
+                    token_count: 24,
+                },
+            }],
+        )
+        .unwrap();
+
+    let (tx, rx) = mpsc::channel();
+    session
+        .spawn_turn_ui_compat("Explain widget cache invalidation".to_string(), 52, tx)
+        .unwrap();
+    loop {
+        if let RuntimeUiEnvelope::Effect {
+            turn_id: observed_turn_id,
+            effect:
+                RuntimeUiEffect::SetStatusSlot {
+                    slot: StatusSlot::Agent,
+                    value: StatusValue::Label(label),
+                },
+        } = rx.recv_timeout(Duration::from_secs(2)).unwrap()
+        {
+            assert_eq!(observed_turn_id, 52);
+            assert_eq!(label, "Idle");
+            break;
+        }
+    }
+
+    let second_turn_system = client
+        .recorded_systems()
+        .into_iter()
+        .flatten()
+        .find(|system| {
+            system.contains("Explain widget cache invalidation")
+                && system.contains("Workflow role: child")
+        })
+        .expect("expected second-turn child workflow system prompt");
+    assert!(second_turn_system.contains("<session_history_hits>"));
+    assert!(second_turn_system.contains("Widget cache invalidation history"));
+}
+
+#[test]
+fn persist_session_artifacts_appends_compaction_checkpoint_records() {
+    let root = unique_session_test_root("session-checkpoint-writeback");
+    let handle = ProjectRegistry::new()
+        .resolve(ProjectResolutionInput {
+            current_file_path: None,
+            cwd: root.clone(),
+            explicit_root: Some(root.clone()),
+        })
+        .unwrap();
+    handle
+        .upsert_session(ProjectSessionUpdate {
+            session_id: "session-a".to_string(),
+            title: Some("Session A".to_string()),
+            status: ProjectSessionStatus::Active,
+            turn_count: 1,
+            last_user_turn_preview: Some("oversized history".to_string()),
+            archived_turn_count: Some(0),
+        })
+        .unwrap();
+
+    let mut session_context = SessionContext::new(ROOT_WORKFLOW_ID.to_string());
+    session_context.latest_user_turn = "oversized history".to_string();
+    let todo_manager = Arc::new(Mutex::new(super::TodoManager::new()));
+    let replay_entries = vec![SessionReplayEntry {
+        session_id: "session-a".to_string(),
+        recorded_at: 1,
+        kind: SessionReplayEntryKind::AssistantResponse,
+        title: Some("Assistant".to_string()),
+        body: "x".repeat(1_700_000),
+        state: Some("complete".to_string()),
+    }];
+
+    super::persist_session_artifacts(
+        &handle,
+        "session-a",
+        &root,
+        &session_context,
+        &todo_manager,
+        Some(1),
+        &replay_entries,
+    )
+    .unwrap();
+
+    let records = handle.load_context_records("session-a").unwrap();
+    assert!(records.iter().any(|record| {
+        matches!(
+            record.record,
+            SessionContextRecordKind::CompressionCheckpoint { .. }
+        )
     }));
 }
 

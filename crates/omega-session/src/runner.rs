@@ -2,6 +2,10 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use omega_compression::{
+    LedgerSessionContextCompressor, SessionContextCompressor, SessionContextLoadGoal,
+    SessionContextLoadRequest, session_context_budget_tokens,
+};
 use omega_context::{
     ContextCacheDiagnostics, ContextDiagnostics, ContextExecuteItem, ContextRouting,
     ContextSession, ContextStep, ContextStepSummary, ContextSupervisionSnapshot,
@@ -17,6 +21,7 @@ use omega_core::{
     DynLlmClient, Message, TodoItem, TodoStatus,
 };
 use omega_hooks::{HookAdvanceOutcome, HookHost};
+use omega_project::{ProjectRegistry, ProjectResolutionInput, SessionContextRecordKind};
 use omega_workflow::{
     DataFormat, OutputRecoveryMode, SceneCatalog, StepInputContract, StepLoopContract,
     StepOutputContract, WorkflowCatalog, WorkflowPromptCatalog, WorkflowPrompts, WorkflowStep,
@@ -1195,6 +1200,59 @@ impl<'a> WorkflowTurnRunner<'a> {
         Ok(step_input)
     }
 
+    fn prompt_assembly_ledger_context(&self) -> Option<String> {
+        let project_handle = ProjectRegistry::new()
+            .resolve(ProjectResolutionInput {
+                current_file_path: None,
+                cwd: self.cwd.clone(),
+                explicit_root: None,
+            })
+            .ok()?;
+        let projection = LedgerSessionContextCompressor::with_budget(
+            project_handle,
+            session_context_budget_tokens(),
+        )
+        .load(SessionContextLoadRequest {
+            session_id: self.session_id.to_string(),
+            max_tokens: session_context_budget_tokens(),
+            goal: SessionContextLoadGoal::PromptAssembly,
+            query: None,
+        })
+        .ok()?;
+
+        let checkpoints = projection
+            .recent_records
+            .iter()
+            .chain(projection.checkpoint_records.iter())
+            .filter_map(|record| match &record.record {
+                SessionContextRecordKind::CompressionCheckpoint { summary, .. } => {
+                    Some(summary.as_str())
+                }
+                SessionContextRecordKind::WorkingSetSnapshot { .. }
+                | SessionContextRecordKind::ReplayEntry { .. } => None,
+            })
+            .take(2)
+            .collect::<Vec<_>>();
+
+        if checkpoints.is_empty() && !projection.truncated_history {
+            return None;
+        }
+
+        let mut lines = vec![format!(
+            "source: session.context.jsonl (estimated_tokens={})",
+            projection.estimated_tokens
+        )];
+        lines.push(if projection.truncated_history {
+            "history: recent records plus checkpoint summaries".to_string()
+        } else {
+            "history: recent records only".to_string()
+        });
+        for summary in checkpoints {
+            lines.push(format!("checkpoint: {summary}"));
+        }
+        Some(lines.join("\n"))
+    }
+
     fn build_step_context_request(
         &self,
         agent_messages: &[omega_core::Message],
@@ -1232,6 +1290,7 @@ impl<'a> WorkflowTurnRunner<'a> {
             document_hits: Vec::new(),
             memory_hits: Vec::new(),
             observation_hits: Vec::new(),
+            session_history_hits: Vec::new(),
             structured_input: structured_input.cloned(),
             todo_snapshot: todo_snapshot.map(ToOwned::to_owned),
             current_execute_item: current_execute_item
@@ -1241,6 +1300,7 @@ impl<'a> WorkflowTurnRunner<'a> {
             tool_manifests: resolved_tools.tool_manifests().to_vec(),
             tool_definitions: resolved_tools.tool_definitions().to_vec(),
             messages: agent_messages.to_vec(),
+            session_ledger_context: self.prompt_assembly_ledger_context(),
             recall_rewrite_reason: None,
             recall_rewrite_queries: Vec::new(),
             recall_recovery_path: None,
@@ -1290,6 +1350,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                 document_hits: Vec::new(),
                 memory_hits: Vec::new(),
                 observation_hits: Vec::new(),
+                session_history_hits: Vec::new(),
                 structured_input: step_input.structured_input.clone(),
                 todo_snapshot: step_input.todo_snapshot.clone(),
                 current_execute_item: step_input
@@ -1301,6 +1362,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                 tool_manifests: step_input.resolved_tools.tool_manifests().to_vec(),
                 tool_definitions: step_input.resolved_tools.tool_definitions().to_vec(),
                 messages: Vec::new(),
+                session_ledger_context: self.prompt_assembly_ledger_context(),
                 recall_rewrite_reason: None,
                 recall_rewrite_queries: Vec::new(),
                 recall_recovery_path: None,

@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 use omega_context::{
     ContextDiagnostics, ContextDocumentDiagnostics, ContextFacadeServices,
     ContextMemoryDiagnostics, GovernanceEventSignal, OmegaContextFacade,
+    SessionHistoryHit, SessionHistoryQuery, SessionHistoryService,
 };
 use serde::{Deserialize, Serialize};
 
@@ -17,6 +18,8 @@ const PROJECT_CONFIG_TOML: &str = "project.toml";
 const PROJECT_CONFIG_JSON: &str = "project.json";
 const PROJECT_SESSIONS_DIR: &str = "sessions";
 const PROJECT_ID_LEN: usize = 12;
+const SESSION_RECORD_FILE: &str = "session.json";
+const SESSION_CONTEXT_LEDGER_FILE: &str = "session.context.jsonl";
 const SESSION_SNAPSHOT_SUFFIX: &str = ".snapshot.json";
 const SESSION_REPLAY_LOG_SUFFIX: &str = ".log.jsonl";
 
@@ -179,6 +182,38 @@ pub enum SessionReplayEntryKind {
     SystemNotice,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionContextRecord {
+    pub schema_version: u32,
+    pub session_id: String,
+    pub sequence: u64,
+    pub recorded_at: u64,
+    pub token_estimate: Option<u32>,
+    pub record: SessionContextRecordKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SessionContextRecordKind {
+    WorkingSetSnapshot { snapshot: ProjectSessionSnapshot },
+    ReplayEntry { entry: SessionReplayEntry },
+    CompressionCheckpoint {
+        checkpoint_id: String,
+        source_sequence_start: u64,
+        source_sequence_end: u64,
+        summary: String,
+        keywords: Vec<String>,
+        retained_facts: Vec<String>,
+        token_count: u32,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LegacyMigrationResult {
+    pub migrated: bool,
+    pub record_count: usize,
+}
+
 pub struct ProjectRegistry {
     handles: Mutex<BTreeMap<String, Arc<OmegaProjectHandle>>>,
 }
@@ -242,7 +277,9 @@ impl OmegaProjectHandle {
         write_project_record(&record)?;
         Ok(Self {
             context_facade: Arc::new(OmegaContextFacade::from_services(
-                ContextFacadeServices::local(record.root.clone()),
+                ContextFacadeServices::local(record.root.clone()).with_session_history_service(
+                    Arc::new(ProjectSessionHistoryService::new(record.root.clone())),
+                ),
             )),
             record: Mutex::new(record),
         })
@@ -278,11 +315,7 @@ impl OmegaProjectHandle {
         let session_id = update.session_id.clone();
         let session_path = self.session_path(&update.session_id);
         let now = now_unix_seconds();
-        let existing = if session_path.exists() {
-            Some(read_session_record(&session_path)?)
-        } else {
-            None
-        };
+        let existing = self.load_session(&update.session_id).ok();
         let session = ProjectSessionRef {
             session_id,
             title: update
@@ -294,14 +327,18 @@ impl OmegaProjectHandle {
             status: update.status,
             turn_count: update.turn_count,
             last_user_turn_preview: update.last_user_turn_preview,
-            resume_ready: self.snapshot_path(&update.session_id).exists()
-                && self.replay_log_path(&update.session_id).exists(),
+            resume_ready: self.session_resume_ready(&update.session_id)?,
             archived_turn_count: update
                 .archived_turn_count
                 .or_else(|| existing.as_ref().map(|entry| entry.archived_turn_count))
                 .unwrap_or(0),
         };
         write_session_record(&session_path, &session)?;
+        let legacy_path = self.legacy_session_path(&update.session_id);
+        if legacy_path.exists() {
+            fs::remove_file(&legacy_path)
+                .with_context(|| format!("delete legacy session record {}", legacy_path.display()))?;
+        }
 
         let mut record = self.record.lock().unwrap();
         record.active_session_id = match session.status {
@@ -323,22 +360,37 @@ impl OmegaProjectHandle {
             return Ok(Vec::new());
         }
 
-        let mut sessions = fs::read_dir(&sessions_dir)
+        let mut sessions = BTreeMap::new();
+        for entry in fs::read_dir(&sessions_dir)
             .with_context(|| format!("read project sessions directory {}", sessions_dir.display()))?
             .filter_map(|entry| entry.ok())
-            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
-            .filter(|entry| {
-                entry
-                    .path()
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| {
-                        !name.ends_with(SESSION_SNAPSHOT_SUFFIX)
-                            && !name.ends_with(SESSION_REPLAY_LOG_SUFFIX)
-                    })
-            })
-            .map(|entry| read_session_record(&entry.path()))
-            .collect::<Result<Vec<_>>>()?;
+        {
+            let path = entry.path();
+            if path.is_dir() {
+                let session_path = path.join(SESSION_RECORD_FILE);
+                if session_path.exists() {
+                    let session = read_session_record(&session_path)?;
+                    sessions.insert(session.session_id.clone(), session);
+                }
+                continue;
+            }
+
+            if !path.extension().is_some_and(|ext| ext == "json") {
+                continue;
+            }
+
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if name.ends_with(SESSION_SNAPSHOT_SUFFIX) || name.ends_with(SESSION_REPLAY_LOG_SUFFIX) {
+                continue;
+            }
+
+            let session = read_session_record(&path)?;
+            sessions.entry(session.session_id.clone()).or_insert(session);
+        }
+
+        let mut sessions = sessions.into_values().collect::<Vec<_>>();
 
         sessions.sort_by(|left, right| {
             session_status_rank(left.status)
@@ -370,22 +422,40 @@ impl OmegaProjectHandle {
     }
 
     pub fn load_session(&self, session_id: &str) -> Result<ProjectSessionRef> {
-        read_session_record(&self.session_path(session_id))
+        let session_path = self.session_path(session_id);
+        if session_path.exists() {
+            return read_session_record(&session_path);
+        }
+        read_session_record(&self.legacy_session_path(session_id))
     }
 
     pub fn save_session_snapshot(&self, snapshot: &ProjectSessionSnapshot) -> Result<()> {
-        let path = self.snapshot_path(&snapshot.session_id);
-        write_json_record(&path, snapshot)?;
-        self.refresh_resume_ready(&snapshot.session_id)?;
-        Ok(())
+        self.migrate_legacy_session_artifacts(&snapshot.session_id)?;
+        self.append_context_records(
+            &snapshot.session_id,
+            &[SessionContextRecord {
+                schema_version: snapshot.schema_version,
+                session_id: snapshot.session_id.clone(),
+                sequence: 0,
+                recorded_at: snapshot.saved_at,
+                token_estimate: None,
+                record: SessionContextRecordKind::WorkingSetSnapshot {
+                    snapshot: snapshot.clone(),
+                },
+            }],
+        )
     }
 
     pub fn load_session_snapshot(&self, session_id: &str) -> Result<Option<ProjectSessionSnapshot>> {
-        let path = self.snapshot_path(session_id);
-        if !path.exists() {
-            return Ok(None);
-        }
-        read_json_record(&path).map(Some)
+        Ok(self
+            .load_context_records(session_id)?
+            .into_iter()
+            .rev()
+            .find_map(|record| match record.record {
+                SessionContextRecordKind::WorkingSetSnapshot { snapshot } => Some(snapshot),
+                SessionContextRecordKind::ReplayEntry { .. }
+                | SessionContextRecordKind::CompressionCheckpoint { .. } => None,
+            }))
     }
 
     pub fn append_replay_entries(
@@ -393,54 +463,156 @@ impl OmegaProjectHandle {
         session_id: &str,
         entries: &[SessionReplayEntry],
     ) -> Result<()> {
-        if entries.is_empty() {
+        self.migrate_legacy_session_artifacts(session_id)?;
+        let records = entries
+            .iter()
+            .cloned()
+            .map(|entry| SessionContextRecord {
+                schema_version: 1,
+                session_id: session_id.to_string(),
+                sequence: 0,
+                recorded_at: entry.recorded_at,
+                token_estimate: None,
+                record: SessionContextRecordKind::ReplayEntry { entry },
+            })
+            .collect::<Vec<_>>();
+        self.append_context_records(session_id, &records)
+    }
+
+    pub fn load_replay_log(&self, session_id: &str) -> Result<Vec<SessionReplayEntry>> {
+        Ok(self
+            .load_context_records(session_id)?
+            .into_iter()
+            .filter_map(|record| match record.record {
+                SessionContextRecordKind::ReplayEntry { entry } => Some(entry),
+                SessionContextRecordKind::WorkingSetSnapshot { .. }
+                | SessionContextRecordKind::CompressionCheckpoint { .. } => None,
+            })
+            .collect())
+    }
+
+    pub fn append_context_records(
+        &self,
+        session_id: &str,
+        records: &[SessionContextRecord],
+    ) -> Result<()> {
+        if records.is_empty() {
             return self.refresh_resume_ready(session_id).map(|_| ());
         }
-        let path = self.replay_log_path(session_id);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("create replay log directory {}", parent.display()))?;
-        }
+
+        let path = self.context_ledger_path(session_id);
+        let existing = read_context_records_from_path(&path)?;
+        let mut next_sequence = existing.last().map(|record| record.sequence + 1).unwrap_or(1);
         let mut bytes = if path.exists() {
-            fs::read(&path).with_context(|| format!("read replay log {}", path.display()))?
+            fs::read(&path).with_context(|| format!("read session context ledger {}", path.display()))?
         } else {
             Vec::new()
         };
-        for entry in entries {
-            bytes.extend_from_slice(&serde_json::to_vec(entry)?);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("create session ledger directory {}", parent.display()))?;
+        }
+
+        for record in records {
+            let mut record = record.clone();
+            record.sequence = next_sequence;
+            next_sequence += 1;
+            bytes.extend_from_slice(&serde_json::to_vec(&record)?);
             bytes.push(b'\n');
         }
-        fs::write(&path, bytes).with_context(|| format!("write replay log {}", path.display()))?;
+
+        fs::write(&path, bytes)
+            .with_context(|| format!("write session context ledger {}", path.display()))?;
         self.refresh_resume_ready(session_id)?;
         Ok(())
     }
 
-    pub fn load_replay_log(&self, session_id: &str) -> Result<Vec<SessionReplayEntry>> {
-        let path = self.replay_log_path(session_id);
+    pub fn load_context_records(&self, session_id: &str) -> Result<Vec<SessionContextRecord>> {
+        let path = self.context_ledger_path(session_id);
         if !path.exists() {
-            return Ok(Vec::new());
+            let migration = self.migrate_legacy_session_artifacts(session_id)?;
+            if !migration.migrated && !path.exists() {
+                return Ok(Vec::new());
+            }
         }
-        let content = fs::read_to_string(&path)
-            .with_context(|| format!("read replay log {}", path.display()))?;
-        content
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .map(|line| serde_json::from_str(line).map_err(anyhow::Error::from))
-            .collect()
+        read_context_records_from_path(&path)
+    }
+
+    pub fn migrate_legacy_session_artifacts(&self, session_id: &str) -> Result<LegacyMigrationResult> {
+        let ledger_path = self.context_ledger_path(session_id);
+        if ledger_path.exists() {
+            return Ok(LegacyMigrationResult::default());
+        }
+
+        let snapshot = self.load_legacy_session_snapshot(session_id)?;
+        let replay_entries = self.load_legacy_replay_log(session_id)?;
+        if snapshot.is_none() && replay_entries.is_empty() {
+            return Ok(LegacyMigrationResult::default());
+        }
+
+        let mut records = replay_entries
+            .into_iter()
+            .map(|entry| SessionContextRecord {
+                schema_version: 1,
+                session_id: session_id.to_string(),
+                sequence: 0,
+                recorded_at: entry.recorded_at,
+                token_estimate: None,
+                record: SessionContextRecordKind::ReplayEntry { entry },
+            })
+            .collect::<Vec<_>>();
+        if let Some(snapshot) = snapshot {
+            records.push(SessionContextRecord {
+                schema_version: snapshot.schema_version,
+                session_id: session_id.to_string(),
+                sequence: 0,
+                recorded_at: snapshot.saved_at,
+                token_estimate: None,
+                record: SessionContextRecordKind::WorkingSetSnapshot { snapshot },
+            });
+        }
+
+        self.append_context_records(session_id, &records)?;
+
+        let snapshot_path = self.legacy_snapshot_path(session_id);
+        if snapshot_path.exists() {
+            fs::remove_file(&snapshot_path)
+                .with_context(|| format!("delete legacy session snapshot {}", snapshot_path.display()))?;
+        }
+        let replay_path = self.legacy_replay_log_path(session_id);
+        if replay_path.exists() {
+            fs::remove_file(&replay_path)
+                .with_context(|| format!("delete legacy replay log {}", replay_path.display()))?;
+        }
+
+        Ok(LegacyMigrationResult {
+            migrated: true,
+            record_count: records.len(),
+        })
     }
 
     pub fn delete_session_artifacts(&self, session_id: &str) -> Result<()> {
         let session_path = self.session_path(session_id);
         if session_path.exists() {
-            fs::remove_file(&session_path)
-                .with_context(|| format!("delete session record {}", session_path.display()))?;
+            fs::remove_dir_all(session_path.parent().unwrap_or(&session_path)).with_context(|| {
+                format!(
+                    "delete session directory {}",
+                    session_path.parent().unwrap_or(&session_path).display()
+                )
+            })?;
         }
-        let snapshot_path = self.snapshot_path(session_id);
+        let legacy_session_path = self.legacy_session_path(session_id);
+        if legacy_session_path.exists() {
+            fs::remove_file(&legacy_session_path).with_context(|| {
+                format!("delete legacy session record {}", legacy_session_path.display())
+            })?;
+        }
+        let snapshot_path = self.legacy_snapshot_path(session_id);
         if snapshot_path.exists() {
             fs::remove_file(&snapshot_path)
                 .with_context(|| format!("delete session snapshot {}", snapshot_path.display()))?;
         }
-        let replay_path = self.replay_log_path(session_id);
+        let replay_path = self.legacy_replay_log_path(session_id);
         if replay_path.exists() {
             fs::remove_file(&replay_path)
                 .with_context(|| format!("delete replay log {}", replay_path.display()))?;
@@ -467,27 +639,113 @@ impl OmegaProjectHandle {
         self.root().join(PROJECT_DIR).join(PROJECT_SESSIONS_DIR)
     }
 
+    fn session_dir(&self, session_id: &str) -> PathBuf {
+        self.sessions_dir().join(session_id)
+    }
+
     fn session_path(&self, session_id: &str) -> PathBuf {
+        self.session_dir(session_id).join(SESSION_RECORD_FILE)
+    }
+
+    fn legacy_session_path(&self, session_id: &str) -> PathBuf {
         self.sessions_dir().join(format!("{session_id}.json"))
     }
 
-    fn snapshot_path(&self, session_id: &str) -> PathBuf {
+    fn context_ledger_path(&self, session_id: &str) -> PathBuf {
+        self.session_dir(session_id).join(SESSION_CONTEXT_LEDGER_FILE)
+    }
+
+    fn legacy_snapshot_path(&self, session_id: &str) -> PathBuf {
         self.sessions_dir()
             .join(format!("{session_id}{SESSION_SNAPSHOT_SUFFIX}"))
     }
 
-    fn replay_log_path(&self, session_id: &str) -> PathBuf {
+    fn legacy_replay_log_path(&self, session_id: &str) -> PathBuf {
         self.sessions_dir()
             .join(format!("{session_id}{SESSION_REPLAY_LOG_SUFFIX}"))
     }
 
     fn refresh_resume_ready(&self, session_id: &str) -> Result<ProjectSessionRef> {
-        let session_path = self.session_path(session_id);
-        let mut record = read_session_record(&session_path)?;
-        record.resume_ready = self.snapshot_path(session_id).exists()
-            && self.replay_log_path(session_id).exists();
-        write_session_record(&session_path, &record)?;
+        let mut record = self.load_session(session_id)?;
+        record.resume_ready = self.session_resume_ready(session_id)?;
+        write_session_record(&self.session_path(session_id), &record)?;
+        let legacy_path = self.legacy_session_path(session_id);
+        if legacy_path.exists() {
+            fs::remove_file(&legacy_path)
+                .with_context(|| format!("delete legacy session record {}", legacy_path.display()))?;
+        }
         Ok(record)
+    }
+
+    fn session_resume_ready(&self, session_id: &str) -> Result<bool> {
+        Ok(self
+            .load_context_records(session_id)?
+            .iter()
+            .any(|record| matches!(record.record, SessionContextRecordKind::WorkingSetSnapshot { .. })))
+    }
+
+    fn load_legacy_session_snapshot(&self, session_id: &str) -> Result<Option<ProjectSessionSnapshot>> {
+        let path = self.legacy_snapshot_path(session_id);
+        if !path.exists() {
+            return Ok(None);
+        }
+        read_json_record(&path).map(Some)
+    }
+
+    fn load_legacy_replay_log(&self, session_id: &str) -> Result<Vec<SessionReplayEntry>> {
+        let path = self.legacy_replay_log_path(session_id);
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let content = fs::read_to_string(&path)
+            .with_context(|| format!("read legacy replay log {}", path.display()))?;
+        content
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| serde_json::from_str(line).map_err(anyhow::Error::from))
+            .collect()
+    }
+}
+
+struct ProjectSessionHistoryService {
+    root: PathBuf,
+}
+
+impl ProjectSessionHistoryService {
+    fn new(root: PathBuf) -> Self {
+        Self { root }
+    }
+
+    fn context_ledger_path(&self, session_id: &str) -> PathBuf {
+        self.root
+            .join(PROJECT_DIR)
+            .join(PROJECT_SESSIONS_DIR)
+            .join(session_id)
+            .join(SESSION_CONTEXT_LEDGER_FILE)
+    }
+}
+
+impl SessionHistoryService for ProjectSessionHistoryService {
+    fn query(&self, query: SessionHistoryQuery) -> Result<Vec<SessionHistoryHit>> {
+        let query_terms = session_history_query_terms(&query.text, &query.queries);
+        if query_terms.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut hits = read_context_records_from_path(&self.context_ledger_path(&query.session_id))?
+            .into_iter()
+            .filter_map(|record| {
+                let searchable = session_history_search_text(&record);
+                query_terms
+                    .iter()
+                    .any(|term| searchable.contains(term))
+                    .then(|| (record.sequence, session_history_hit_from_record(&record)))
+            })
+            .collect::<Vec<_>>();
+
+        hits.sort_by(|left, right| right.0.cmp(&left.0));
+        hits.truncate(query.max_results);
+        Ok(hits.into_iter().map(|(_, hit)| hit).collect())
     }
 }
 
@@ -669,6 +927,7 @@ fn write_session_record(path: &Path, record: &ProjectSessionRef) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn write_json_record<T>(path: &Path, value: &T) -> Result<()>
 where
     T: Serialize,
@@ -695,6 +954,134 @@ fn read_session_record(path: &Path) -> Result<ProjectSessionRef> {
     let content = fs::read(path).with_context(|| format!("read session record {}", path.display()))?;
     serde_json::from_slice(&content)
         .with_context(|| format!("parse session record {}", path.display()))
+}
+
+fn session_history_query_terms(text: &str, queries: &[String]) -> Vec<String> {
+    let mut terms = BTreeSet::new();
+    for value in std::iter::once(text).chain(queries.iter().map(String::as_str)) {
+        let normalized = value.trim().to_ascii_lowercase();
+        if !normalized.is_empty() {
+            terms.insert(normalized);
+        }
+    }
+    terms.into_iter().collect()
+}
+
+fn session_history_search_text(record: &SessionContextRecord) -> String {
+    match &record.record {
+        SessionContextRecordKind::WorkingSetSnapshot { snapshot } => {
+            let mut parts = Vec::new();
+            if let Some(latest_user_turn) = snapshot.latest_user_turn.as_deref() {
+                parts.push(latest_user_turn.to_ascii_lowercase());
+            }
+            parts.extend(
+                snapshot
+                    .recent_turn_summaries
+                    .iter()
+                    .map(|summary| summary.user_intent.to_ascii_lowercase()),
+            );
+            parts.extend(snapshot.step_summaries.iter().map(|summary| {
+                format!("{} {}", summary.title, summary.summary).to_ascii_lowercase()
+            }));
+            parts.extend(snapshot.todo_items.iter().map(|item| item.text.to_ascii_lowercase()));
+            parts.join("\n")
+        }
+        SessionContextRecordKind::ReplayEntry { entry } => format!(
+            "{}\n{}",
+            entry.title.as_deref().unwrap_or("").to_ascii_lowercase(),
+            entry.body.to_ascii_lowercase()
+        ),
+        SessionContextRecordKind::CompressionCheckpoint {
+            summary,
+            keywords,
+            retained_facts,
+            ..
+        } => {
+            let mut parts = vec![summary.to_ascii_lowercase()];
+            parts.extend(keywords.iter().map(|keyword| keyword.to_ascii_lowercase()));
+            parts.extend(retained_facts.iter().map(|fact| fact.to_ascii_lowercase()));
+            parts.join("\n")
+        }
+    }
+}
+
+fn session_history_hit_from_record(record: &SessionContextRecord) -> SessionHistoryHit {
+    match &record.record {
+        SessionContextRecordKind::WorkingSetSnapshot { snapshot } => {
+            let mut lines = Vec::new();
+            if let Some(latest_user_turn) = snapshot.latest_user_turn.as_deref() {
+                lines.push(format!("latest user turn: {}", preview_text(latest_user_turn, 180)));
+            }
+            lines.extend(snapshot.step_summaries.iter().take(2).map(|summary| {
+                format!("{}: {}", summary.title, preview_text(&summary.summary, 160))
+            }));
+            SessionHistoryHit {
+                source: "snapshot".to_string(),
+                title: "Working set snapshot".to_string(),
+                preview: lines.join("\n"),
+            }
+        }
+        SessionContextRecordKind::ReplayEntry { entry } => SessionHistoryHit {
+            source: replay_entry_source_label(entry.kind).to_string(),
+            title: entry
+                .title
+                .clone()
+                .unwrap_or_else(|| replay_entry_source_label(entry.kind).to_string()),
+            preview: preview_text(&entry.body, 220),
+        },
+        SessionContextRecordKind::CompressionCheckpoint {
+            checkpoint_id,
+            summary,
+            retained_facts,
+            ..
+        } => {
+            let mut preview = vec![preview_text(summary, 220)];
+            preview.extend(
+                retained_facts
+                    .iter()
+                    .take(2)
+                    .map(|fact| format!("fact: {}", preview_text(fact, 140))),
+            );
+            SessionHistoryHit {
+                source: "checkpoint".to_string(),
+                title: checkpoint_id.clone(),
+                preview: preview.join("\n"),
+            }
+        }
+    }
+}
+
+fn replay_entry_source_label(kind: SessionReplayEntryKind) -> &'static str {
+    match kind {
+        SessionReplayEntryKind::UserTurn => "user_turn",
+        SessionReplayEntryKind::AssistantResponse => "assistant_response",
+        SessionReplayEntryKind::CommandSection => "command_section",
+        SessionReplayEntryKind::ToolSummary => "tool_summary",
+        SessionReplayEntryKind::SystemNotice => "system_notice",
+    }
+}
+
+fn preview_text(text: &str, limit: usize) -> String {
+    let trimmed = text.trim();
+    if trimmed.chars().count() <= limit {
+        return trimmed.to_string();
+    }
+    let mut preview = trimmed.chars().take(limit).collect::<String>();
+    preview.push_str("...");
+    preview
+}
+
+fn read_context_records_from_path(path: &Path) -> Result<Vec<SessionContextRecord>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("read session context ledger {}", path.display()))?;
+    content
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).map_err(anyhow::Error::from))
+        .collect()
 }
 
 fn canonicalize_lossy(path: &Path) -> Result<PathBuf> {
@@ -857,10 +1244,28 @@ mod tests {
                     user_intent: "resume me".to_string(),
                     summary_count: 1,
                 }],
-                selected_workflow_id: Some("feature".to_string()),
-                selected_skill_ids: vec!["review".to_string()],
-                loaded_skill_ids: vec!["review".to_string()],
-                todo_snapshot: vec!["todo one".to_string()],
+                routing: ProjectSessionRoutingSnapshot {
+                    recognized_scene_id: Some("feature".to_string()),
+                    selected_workflow_id: Some("feature".to_string()),
+                    active_workflow_id: "feature".to_string(),
+                    active_workflow_role: "child".to_string(),
+                },
+                skill_routing: ProjectSkillRoutingSnapshot {
+                    selected_skill_ids: vec!["review".to_string()],
+                    loaded_skill_ids: vec!["review".to_string()],
+                    ignored_skill_ids: Vec::new(),
+                    selection_reason: None,
+                    source_step_id: None,
+                },
+                step_summaries: Vec::new(),
+                step_outputs: BTreeMap::new(),
+                governance_events: Vec::new(),
+                todo_items: vec![ProjectSessionTodoItem {
+                    id: "1".to_string(),
+                    text: "todo one".to_string(),
+                    status: ProjectSessionTodoStatus::Pending,
+                    active_form: None,
+                }],
                 structured_input: None,
                 last_known_cwd: Some(root.clone()),
             })
@@ -883,10 +1288,13 @@ mod tests {
         let session = handle.load_session("session-a").unwrap();
         assert!(session.resume_ready);
         assert_eq!(session.archived_turn_count, 3);
+        assert!(handle.context_ledger_path("session-a").exists());
+        assert!(!handle.legacy_snapshot_path("session-a").exists());
+        assert!(!handle.legacy_replay_log_path("session-a").exists());
 
         let snapshot = handle.load_session_snapshot("session-a").unwrap().unwrap();
         assert_eq!(snapshot.last_completed_turn_id, Some(2));
-        assert_eq!(snapshot.selected_skill_ids, vec!["review".to_string()]);
+        assert_eq!(snapshot.skill_routing.selected_skill_ids, vec!["review".to_string()]);
 
         let replay = handle.load_replay_log("session-a").unwrap();
         assert_eq!(replay.len(), 1);
@@ -927,10 +1335,12 @@ mod tests {
                 last_completed_turn_id: Some(2),
                 latest_user_turn: Some("resume me".to_string()),
                 recent_turn_summaries: Vec::new(),
-                selected_workflow_id: None,
-                selected_skill_ids: Vec::new(),
-                loaded_skill_ids: Vec::new(),
-                todo_snapshot: Vec::new(),
+                routing: ProjectSessionRoutingSnapshot::default(),
+                skill_routing: ProjectSkillRoutingSnapshot::default(),
+                step_summaries: Vec::new(),
+                step_outputs: BTreeMap::new(),
+                governance_events: Vec::new(),
+                todo_items: Vec::new(),
                 structured_input: None,
                 last_known_cwd: None,
             })
@@ -955,6 +1365,97 @@ mod tests {
         assert!(handle.load_replay_log("session-a").unwrap().is_empty());
         assert!(handle.load_session("session-a").is_err());
         assert_eq!(handle.record().active_session_id, None);
+    }
+
+    #[test]
+    fn loading_legacy_sidecars_migrates_them_to_context_ledger() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path().join("workspace");
+        fs::create_dir_all(&root).unwrap();
+
+        let registry = ProjectRegistry::new();
+        let handle = registry
+            .resolve(ProjectResolutionInput {
+                current_file_path: None,
+                cwd: root.clone(),
+                explicit_root: Some(root.clone()),
+            })
+            .unwrap();
+
+        write_session_record(
+            &handle.legacy_session_path("session-a"),
+            &ProjectSessionRef {
+                session_id: "session-a".to_string(),
+                title: "Session A".to_string(),
+                started_at: 1,
+                last_active_at: 2,
+                status: ProjectSessionStatus::Idle,
+                turn_count: 2,
+                last_user_turn_preview: Some("resume me".to_string()),
+                resume_ready: false,
+                archived_turn_count: 0,
+            },
+        )
+        .unwrap();
+        write_json_record(
+            &handle.legacy_snapshot_path("session-a"),
+            &ProjectSessionSnapshot {
+                schema_version: 1,
+                project_id: handle.project_id(),
+                session_id: "session-a".to_string(),
+                saved_at: 42,
+                last_completed_turn_id: Some(2),
+                latest_user_turn: Some("resume me".to_string()),
+                recent_turn_summaries: Vec::new(),
+                routing: ProjectSessionRoutingSnapshot {
+                    recognized_scene_id: Some("feature".to_string()),
+                    selected_workflow_id: Some("feature".to_string()),
+                    active_workflow_id: "feature".to_string(),
+                    active_workflow_role: "child".to_string(),
+                },
+                skill_routing: ProjectSkillRoutingSnapshot {
+                    selected_skill_ids: vec!["review".to_string()],
+                    loaded_skill_ids: vec!["review".to_string()],
+                    ignored_skill_ids: Vec::new(),
+                    selection_reason: None,
+                    source_step_id: None,
+                },
+                step_summaries: Vec::new(),
+                step_outputs: BTreeMap::new(),
+                governance_events: Vec::new(),
+                todo_items: Vec::new(),
+                structured_input: None,
+                last_known_cwd: Some(root.clone()),
+            },
+        )
+        .unwrap();
+        fs::write(
+            handle.legacy_replay_log_path("session-a"),
+            serde_json::to_string(&SessionReplayEntry {
+                session_id: "session-a".to_string(),
+                recorded_at: 43,
+                kind: SessionReplayEntryKind::AssistantResponse,
+                title: Some("summary".to_string()),
+                body: "completed work".to_string(),
+                state: Some("complete".to_string()),
+            })
+            .unwrap()
+                + "\n",
+        )
+        .unwrap();
+
+        let snapshot = handle.load_session_snapshot("session-a").unwrap().unwrap();
+        let replay = handle.load_replay_log("session-a").unwrap();
+        let session = handle.load_session("session-a").unwrap();
+
+        assert_eq!(snapshot.last_completed_turn_id, Some(2));
+        assert_eq!(replay.len(), 1);
+        assert!(session.resume_ready);
+        assert!(handle.context_ledger_path("session-a").exists());
+        assert!(!handle.legacy_snapshot_path("session-a").exists());
+        assert!(!handle.legacy_replay_log_path("session-a").exists());
+        assert!(!handle.legacy_session_path("session-a").exists());
+        assert!(handle.session_path("session-a").exists());
     }
 
     #[test]

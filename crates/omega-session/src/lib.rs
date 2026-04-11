@@ -6,6 +6,10 @@ use omega_command::{
     CommandHint, CommandHintProvider, CommandHintResolution, OmegaCommandDescriptor,
     OmegaCommandInvocation, OmegaCommandRegistry, OmegaCommandSource, OmegaCommandSubcommand,
 };
+use omega_compression::{
+    LedgerSessionContextCompressor, SessionCompactionRequest, SessionContextCompressor,
+    SessionContextLoadGoal, SessionContextLoadRequest, session_context_budget_tokens,
+};
 use omega_context::{
     ArchiveTrigger, DocType, DocumentMutationMode, DocumentOp, FileRecord, FileStatus,
     GovernanceEventSignal, OmegaContextFacade, SearchMode, SearchQuery, TurnData,
@@ -29,6 +33,7 @@ use omega_hooks::HookHost;
 use omega_project::{
     OmegaProjectHandle, ProjectDetailSnapshot, ProjectDetectionKind, ProjectRegistry,
     ProjectResolutionInput, ProjectSessionSnapshot, ProjectSessionStatus,
+    SessionContextRecord, SessionContextRecordKind,
     ProjectSessionStepSummary, ProjectSessionTodoItem, ProjectSessionTodoStatus,
     ProjectSessionTurnSummary, ProjectSessionUpdate, ProjectSkillRoutingSnapshot,
     ProjectSessionRoutingSnapshot, SessionReplayEntry, SessionReplayEntryKind,
@@ -141,14 +146,7 @@ struct AgentSlot {
 }
 
 struct SessionRuntimeState {
-    session_id: String,
-}
-
-struct StartupSessionState {
-    session_id: String,
-    session_context: SessionContext,
-    cwd: std::path::PathBuf,
-    startup_restore_snapshot: Option<SessionRestoreSnapshot>,
+    session_id: Option<String>,
 }
 
 pub struct AgentSession {
@@ -183,15 +181,7 @@ impl AgentSession {
             explicit_root: None,
         })?;
         let todo_manager = Arc::new(Mutex::new(TodoManager::new()));
-        let startup_session = load_startup_session_state(
-            &active_project,
-            &config.scene_catalog.root_workflow_id,
-            &todo_manager,
-        )?;
-        let resolved_cwd = startup_session
-            .as_ref()
-            .map(|state| state.cwd.clone())
-            .unwrap_or_else(|| active_project.root());
+        let resolved_cwd = config.cwd.clone();
         let (runtime_bindings, dispatcher) = load_runtime_bindings(
             &active_project,
             resolved_cwd.clone(),
@@ -209,29 +199,7 @@ impl AgentSession {
         agent.set_max_tokens(config.max_output_tokens);
         let checkpoint = agent.messages().to_vec();
         let (active_turn_tx, _active_turn_rx) = watch::channel(0u64);
-        let (session_id, session_context, startup_restore_snapshot) =
-            if let Some(state) = startup_session {
-                (
-                    state.session_id,
-                    state.session_context,
-                    state.startup_restore_snapshot,
-                )
-            } else {
-                let session_id = Uuid::new_v4().simple().to_string();
-                active_project.upsert_session(ProjectSessionUpdate {
-                    session_id: session_id.clone(),
-                    title: Some(session_title(&session_id)),
-                    status: ProjectSessionStatus::Active,
-                    turn_count: 0,
-                    last_user_turn_preview: None,
-                    archived_turn_count: Some(0),
-                })?;
-                (
-                    session_id,
-                    SessionContext::new(config.scene_catalog.root_workflow_id.clone()),
-                    None,
-                )
-            };
+        let session_context = SessionContext::new(config.scene_catalog.root_workflow_id.clone());
 
         if config
             .workflow_catalog
@@ -269,14 +237,14 @@ impl AgentSession {
             client: config.client,
             base_system: config.system,
             cwd: Arc::new(Mutex::new(resolved_cwd)),
-            session_runtime: Arc::new(Mutex::new(SessionRuntimeState { session_id })),
+            session_runtime: Arc::new(Mutex::new(SessionRuntimeState { session_id: None })),
             todo_manager,
             runtime_bindings: Arc::new(Mutex::new(runtime_bindings)),
             runtime_handle: config.runtime_handle,
             scene_catalog: config.scene_catalog,
             workflow_catalog: config.workflow_catalog,
             prompt_catalog: config.prompt_catalog,
-            startup_restore_snapshot,
+            startup_restore_snapshot: None,
             context_window: config.context_window,
             max_output_tokens: config.max_output_tokens,
             bash_allowed_commands: config.bash_allowed_commands,
@@ -311,6 +279,10 @@ impl AgentSession {
         self.startup_restore_snapshot.clone()
     }
 
+    pub fn has_bound_session(&self) -> bool {
+        self.session_runtime.lock().unwrap().session_id.is_some()
+    }
+
     pub fn checkpoint_current_messages(&self) {
         let current_messages = self
             .agent_slot
@@ -331,7 +303,7 @@ impl AgentSession {
         self.cwd.lock().unwrap().clone()
     }
 
-    fn current_session_id(&self) -> String {
+    fn current_session_id(&self) -> Option<String> {
         self.session_runtime.lock().unwrap().session_id.clone()
     }
 
@@ -436,7 +408,22 @@ impl AgentSession {
         drop(slot);
         self.active_turn_tx.send_replace(turn_id);
         let project_handle = self.active_project_handle();
-        let session_id = self.current_session_id();
+        let session_id = match self.current_session_id() {
+            Some(session_id) => session_id,
+            None => {
+                let session_id = Uuid::new_v4().simple().to_string();
+                project_handle.upsert_session(ProjectSessionUpdate {
+                    session_id: session_id.clone(),
+                    title: Some(session_title(&session_id)),
+                    status: ProjectSessionStatus::Active,
+                    turn_count: 0,
+                    last_user_turn_preview: None,
+                    archived_turn_count: Some(0),
+                })?;
+                self.session_runtime.lock().unwrap().session_id = Some(session_id.clone());
+                session_id
+            }
+        };
         project_handle.upsert_session(ProjectSessionUpdate {
             session_id: session_id.clone(),
             title: Some(session_title(&session_id)),
@@ -464,7 +451,6 @@ impl AgentSession {
         let session_context = self.session_context.clone();
         let context_window = self.context_window;
         let max_output_tokens = self.max_output_tokens;
-        let session_id = self.current_session_id();
         thread::spawn(move || {
             let thread_turn_rx = cancel_turn_rx.clone();
             agent.add_user_message(&input);
@@ -638,14 +624,6 @@ impl AgentSession {
         self.active_turn_tx.send_replace(turn_id);
         let project_state = self.project_state.clone();
         let session_id = self.current_session_id();
-        self.active_project_handle().upsert_session(ProjectSessionUpdate {
-            session_id: session_id.clone(),
-            title: Some(session_title(&session_id)),
-            status: ProjectSessionStatus::Active,
-            turn_count: turn_id,
-            last_user_turn_preview: Some(preview_text(&input, 160)),
-            archived_turn_count: None,
-        })?;
         let session_context = self.session_context.clone();
         let scene_catalog = self.scene_catalog.clone();
         let cwd = self.cwd.clone();
@@ -705,7 +683,7 @@ impl AgentSession {
                     max_output_tokens,
                     turn_id,
                     &*tx,
-                    &session_id,
+                    session_id.as_deref(),
                     &scene_catalog.root_workflow_id,
                     &cwd,
                     invocation,
@@ -717,43 +695,57 @@ impl AgentSession {
             };
 
             let active_session_id = session_runtime.lock().unwrap().session_id.clone();
-            let replay_entries = match &output {
-                Ok(output) => build_command_replay_entries(&active_session_id, &input, &output.body, output.state),
-                Err(error) => build_command_replay_entries(
-                    &active_session_id,
-                    &input,
-                    &format!("Error: {error}"),
-                    ResponseSectionState::Failed,
-                ),
-            };
+            let replay_entries = active_session_id
+                .as_deref()
+                .map(|active_session_id| match &output {
+                    Ok(output) => build_command_replay_entries(
+                        active_session_id,
+                        &input,
+                        &output.body,
+                        output.state,
+                    ),
+                    Err(error) => build_command_replay_entries(
+                        active_session_id,
+                        &input,
+                        &format!("Error: {error}"),
+                        ResponseSectionState::Failed,
+                    ),
+                })
+                .unwrap_or_default();
 
-            let archive_data = build_turn_archive(turn_id, &active_session_id, &turn_context);
+            let archive_data = active_session_id
+                .as_deref()
+                .map(|active_session_id| build_turn_archive(turn_id, active_session_id, &turn_context));
             {
                 let mut shared = session_context.lock().unwrap();
                 *shared = turn_context;
             }
             let context_facade = active_project_handle(&project_state).context_facade();
-            if let Err(error) = context_facade.memory.archive_turn(&archive_data) {
-                error!(turn_id, error = %error, "failed to archive command turn memory");
-            } else if let Ok(snapshot) = context_facade.memory.diagnostics_snapshot() {
-                context_facade.diagnostics.record_memory_snapshot(&snapshot);
+            if let Some(archive_data) = archive_data.as_ref() {
+                if let Err(error) = context_facade.memory.archive_turn(archive_data) {
+                    error!(turn_id, error = %error, "failed to archive command turn memory");
+                } else if let Ok(snapshot) = context_facade.memory.diagnostics_snapshot() {
+                    context_facade.diagnostics.record_memory_snapshot(&snapshot);
+                }
             }
 
-            let archived_turn_count = match persist_session_artifacts(
-                &active_project_handle(&project_state),
-                &active_session_id,
-                &cwd.lock().unwrap().clone(),
-                &session_context.lock().unwrap().clone(),
-                &todo_manager,
-                Some(turn_id),
-                &replay_entries,
-            ) {
-                Ok(count) => Some(count),
-                Err(error) => {
-                    error!(turn_id, error = %error, "failed to persist command session snapshot");
-                    None
+            let archived_turn_count = active_session_id.as_deref().and_then(|active_session_id| {
+                match persist_session_artifacts(
+                    &active_project_handle(&project_state),
+                    active_session_id,
+                    &cwd.lock().unwrap().clone(),
+                    &session_context.lock().unwrap().clone(),
+                    &todo_manager,
+                    Some(turn_id),
+                    &replay_entries,
+                ) {
+                    Ok(count) => Some(count),
+                    Err(error) => {
+                        error!(turn_id, error = %error, "failed to persist command session snapshot");
+                        None
+                    }
                 }
-            };
+            });
 
             let replacement_messages = match &output {
                 Ok(output) => output.agent_messages.clone(),
@@ -793,17 +785,22 @@ impl AgentSession {
                 )
             };
 
-            if let Ok(snapshot) = active_project_handle(&project_state)
-                .upsert_session(ProjectSessionUpdate {
-                    session_id: active_session_id.clone(),
-                    title: Some(session_title),
-                    status: ProjectSessionStatus::Active,
-                    turn_count: turn_id,
-                    last_user_turn_preview: Some(latest_user_turn_preview),
-                    archived_turn_count,
-                })
-                .and_then(|_| active_project_handle(&project_state).detail_snapshot())
-            {
+            let project_snapshot = if let Some(active_session_id) = active_session_id.as_deref() {
+                active_project_handle(&project_state)
+                    .upsert_session(ProjectSessionUpdate {
+                        session_id: active_session_id.to_string(),
+                        title: Some(session_title),
+                        status: ProjectSessionStatus::Active,
+                        turn_count: turn_id,
+                        last_user_turn_preview: Some(latest_user_turn_preview),
+                        archived_turn_count,
+                    })
+                    .and_then(|_| active_project_handle(&project_state).detail_snapshot())
+            } else {
+                active_project_handle(&project_state).detail_snapshot()
+            };
+
+            if let Ok(snapshot) = project_snapshot {
                 ui_emit::send_project_status(&*tx, turn_id, snapshot);
             }
 
@@ -956,7 +953,7 @@ fn execute_command(
     max_output_tokens: u32,
     turn_id: u64,
     tx: &dyn RuntimeMessageBridge,
-    session_id: &str,
+    session_id: Option<&str>,
     root_workflow_id: &str,
     cwd: &Arc<Mutex<std::path::PathBuf>>,
     invocation: OmegaCommandInvocation,
@@ -1026,7 +1023,7 @@ fn command_prefers_overlay_only(invocation: &OmegaCommandInvocation) -> bool {
 
 fn execute_project_command(
     project_state: &Arc<Mutex<ProjectRuntimeState>>,
-    session_id: &str,
+    session_id: Option<&str>,
     cwd: &Arc<Mutex<std::path::PathBuf>>,
     invocation: OmegaCommandInvocation,
     turn_context: &mut SessionContext,
@@ -1111,22 +1108,24 @@ fn execute_project_command(
                 });
             }
 
-            current_handle.upsert_session(ProjectSessionUpdate {
-                session_id: session_id.to_string(),
-                title: Some(session_title_from_context(turn_context)),
-                status: ProjectSessionStatus::Idle,
-                turn_count: 0,
-                last_user_turn_preview: Some(preview_text(&turn_context.latest_user_turn, 160)),
-                archived_turn_count: None,
-            })?;
-            next_handle.upsert_session(ProjectSessionUpdate {
-                session_id: session_id.to_string(),
-                title: Some(session_title_from_context(turn_context)),
-                status: ProjectSessionStatus::Active,
-                turn_count: 0,
-                last_user_turn_preview: Some(preview_text(&turn_context.latest_user_turn, 160)),
-                archived_turn_count: None,
-            })?;
+            if let Some(session_id) = session_id {
+                current_handle.upsert_session(ProjectSessionUpdate {
+                    session_id: session_id.to_string(),
+                    title: Some(session_title_from_context(turn_context)),
+                    status: ProjectSessionStatus::Idle,
+                    turn_count: 0,
+                    last_user_turn_preview: Some(preview_text(&turn_context.latest_user_turn, 160)),
+                    archived_turn_count: None,
+                })?;
+                next_handle.upsert_session(ProjectSessionUpdate {
+                    session_id: session_id.to_string(),
+                    title: Some(session_title_from_context(turn_context)),
+                    status: ProjectSessionStatus::Active,
+                    turn_count: 0,
+                    last_user_turn_preview: Some(preview_text(&turn_context.latest_user_turn, 160)),
+                    archived_turn_count: None,
+                })?;
+            }
             {
                 let mut state = project_state.lock().unwrap();
                 state.active_handle = Arc::clone(&next_handle);
@@ -1445,7 +1444,7 @@ fn execute_session_command(
     max_output_tokens: u32,
     turn_id: u64,
     tx: &dyn RuntimeMessageBridge,
-    session_id: &str,
+    session_id: Option<&str>,
     root_workflow_id: &str,
     cwd: &Arc<Mutex<std::path::PathBuf>>,
     mut invocation: OmegaCommandInvocation,
@@ -1459,7 +1458,7 @@ fn execute_session_command(
 
     let Some(subcommand) = invocation.subcommand.as_deref() else {
         let sessions = project_handle.list_sessions()?;
-        let request = build_session_picker_request(&sessions, &active_session_id, false);
+        let request = build_session_picker_request(&sessions, active_session_id.as_deref(), false);
         tx.send(RuntimeMessageEnvelope::state(
             turn_id,
             StateMessage::ShowOverlay {
@@ -1494,7 +1493,7 @@ fn execute_session_command(
             if matches!(status_filter.as_deref(), Some(value) if value != "active" && value != "idle" && value != "archived") {
                 return Err(anyhow::anyhow!("status filter must be active, idle, or archived"));
             }
-            let request = build_session_picker_request(&filtered, &active_session_id, false);
+            let request = build_session_picker_request(&filtered, active_session_id.as_deref(), false);
             tx.send(RuntimeMessageEnvelope::state(
                 turn_id,
                 StateMessage::ShowOverlay {
@@ -1516,10 +1515,14 @@ fn execute_session_command(
             let target_session_id = invocation
                 .args
                 .first()
-                .ok_or_else(|| anyhow::anyhow!("usage: /session info <session-id>"))?;
-            let session = project_handle.load_session(target_session_id)?;
-            let snapshot = project_handle.load_session_snapshot(target_session_id)?;
-            let replay_log = project_handle.load_replay_log(target_session_id)?;
+                .cloned()
+                .or_else(|| active_session_id.clone())
+                .ok_or_else(|| anyhow::anyhow!(
+                    "no current session is bound; use /session list, /session new, or /session resume"
+                ))?;
+            let session = project_handle.load_session(&target_session_id)?;
+            let snapshot = project_handle.load_session_snapshot(&target_session_id)?;
+            let ledger_info = load_session_ledger_info(&project_handle, &target_session_id)?;
             tx.send(RuntimeMessageEnvelope::state(
                 turn_id,
                 StateMessage::ShowOverlay {
@@ -1528,7 +1531,7 @@ fn execute_session_command(
                         content: UiContent::Text(render_session_info(
                             &session,
                             snapshot.as_ref(),
-                            replay_log.len(),
+                            &ledger_info,
                         )),
                     },
                 },
@@ -1542,28 +1545,30 @@ fn execute_session_command(
             })
         }
         "new" => {
-            progress("Phase: persist current session state");
-            let current_cwd = cwd.lock().unwrap().clone();
-            let archived_turn_count = persist_session_artifacts(
-                &project_handle,
-                session_id,
-                &current_cwd,
-                previous_session_context,
-                todo_manager,
-                None,
-                &[],
-            )?;
-            project_handle.upsert_session(ProjectSessionUpdate {
-                session_id: session_id.to_string(),
-                title: Some(session_title_from_context(previous_session_context)),
-                status: ProjectSessionStatus::Idle,
-                turn_count: 0,
-                last_user_turn_preview: Some(preview_text(
-                    &previous_session_context.latest_user_turn,
-                    160,
-                )),
-                archived_turn_count: Some(archived_turn_count),
-            })?;
+            if let Some(session_id) = session_id {
+                progress("Phase: persist current session state");
+                let current_cwd = cwd.lock().unwrap().clone();
+                let archived_turn_count = persist_session_artifacts(
+                    &project_handle,
+                    session_id,
+                    &current_cwd,
+                    previous_session_context,
+                    todo_manager,
+                    None,
+                    &[],
+                )?;
+                project_handle.upsert_session(ProjectSessionUpdate {
+                    session_id: session_id.to_string(),
+                    title: Some(session_title_from_context(previous_session_context)),
+                    status: ProjectSessionStatus::Idle,
+                    turn_count: 0,
+                    last_user_turn_preview: Some(preview_text(
+                        &previous_session_context.latest_user_turn,
+                        160,
+                    )),
+                    archived_turn_count: Some(archived_turn_count),
+                })?;
+            }
 
             let new_session_id = Uuid::new_v4().simple().to_string();
             let title = if invocation.args.is_empty() {
@@ -1571,7 +1576,7 @@ fn execute_session_command(
             } else {
                 invocation.args.join(" ")
             };
-            session_runtime.lock().unwrap().session_id = new_session_id.clone();
+            session_runtime.lock().unwrap().session_id = Some(new_session_id.clone());
             *turn_context = SessionContext::new(root_workflow_id.to_string());
             reset_todo_manager(todo_manager)?;
             *cwd.lock().unwrap() = project_handle.root();
@@ -1603,7 +1608,14 @@ fn execute_session_command(
                     snapshot: Box::new(SessionRestoreSnapshot {
                         session_id: new_session_id.clone(),
                         title: title.clone(),
-                        replay_log: Vec::new(),
+                        visible_history: Vec::new(),
+                        turn_count: 0,
+                        archived_turn_count: 0,
+                        latest_user_turn_preview: None,
+                        recent_context_record_count: 0,
+                        checkpoint_summary_count: 0,
+                        search_hit_count: 0,
+                        truncated_history: false,
                         todo_rendered: todo_manager.lock().unwrap().render(),
                         root_workflow_id: root_workflow_id.to_string(),
                         active_workflow_id: turn_context.routing.active_workflow_id.clone(),
@@ -1629,7 +1641,7 @@ fn execute_session_command(
         "resume" | "switch" => {
             if invocation.args.is_empty() {
                 let sessions = project_handle.list_sessions()?;
-                let request = build_session_picker_request(&sessions, &active_session_id, true);
+                let request = build_session_picker_request(&sessions, active_session_id.as_deref(), true);
                 tx.send(RuntimeMessageEnvelope::state(
                     turn_id,
                     StateMessage::ShowOverlay {
@@ -1654,16 +1666,28 @@ fn execute_session_command(
                 .to_string();
             progress("Phase: load target session snapshot");
             let target_session = project_handle.load_session(&target_session_id)?;
-            let snapshot = project_handle
-                .load_session_snapshot(&target_session_id)?
+            let compressor = LedgerSessionContextCompressor::new(Arc::clone(&project_handle));
+            let resume_projection = compressor.load(SessionContextLoadRequest {
+                session_id: target_session_id.clone(),
+                max_tokens: session_context_budget_tokens(),
+                goal: SessionContextLoadGoal::ResumeContext,
+                query: None,
+            })?;
+            let snapshot = resume_projection
+                .reconstructed_working_set
                 .ok_or_else(|| anyhow::anyhow!("session exists but is not resume-ready"))?;
-            let replay_log = project_handle.load_replay_log(&target_session_id)?;
+            let replay_projection = compressor.load(SessionContextLoadRequest {
+                session_id: target_session_id.clone(),
+                max_tokens: session_context_budget_tokens(),
+                goal: SessionContextLoadGoal::UiHydration,
+                query: None,
+            })?;
 
-            if target_session_id != session_id {
+            if session_id.is_some() && Some(target_session_id.as_str()) != session_id {
                 let current_cwd = cwd.lock().unwrap().clone();
                 let archived_turn_count = persist_session_artifacts(
                     &project_handle,
-                    session_id,
+                    session_id.expect("checked current bound session"),
                     &current_cwd,
                     previous_session_context,
                     todo_manager,
@@ -1671,7 +1695,9 @@ fn execute_session_command(
                     &[],
                 )?;
                 project_handle.upsert_session(ProjectSessionUpdate {
-                    session_id: session_id.to_string(),
+                    session_id: session_id
+                        .expect("checked current bound session")
+                        .to_string(),
                     title: Some(session_title_from_context(previous_session_context)),
                     status: ProjectSessionStatus::Idle,
                     turn_count: 0,
@@ -1687,7 +1713,7 @@ fn execute_session_command(
             *turn_context = session_context_from_snapshot(&snapshot);
             restore_todo_manager(todo_manager, &snapshot.todo_items)?;
             *cwd.lock().unwrap() = normalized_restored_cwd(project_handle.root(), snapshot.last_known_cwd.clone());
-            session_runtime.lock().unwrap().session_id = target_session_id.clone();
+            session_runtime.lock().unwrap().session_id = Some(target_session_id.clone());
             rebind_agent_to_current_project_with_messages(
                 agent_slot,
                 turn_checkpoint,
@@ -1715,7 +1741,11 @@ fn execute_session_command(
                 StateMessage::SessionRestored {
                     snapshot: Box::new(build_session_restore_snapshot(
                         &target_session,
-                        replay_log,
+                        replay_projection.recent_records,
+                        resume_projection.recent_records.len(),
+                        resume_projection.checkpoint_records.len(),
+                        resume_projection.matched_records.len(),
+                        replay_projection.truncated_history,
                         root_workflow_id,
                         &turn_context.routing,
                         &todo_manager.lock().unwrap().render(),
@@ -1728,10 +1758,13 @@ fn execute_session_command(
                     String::new()
                 } else {
                     format!(
-                        "Resumed session {}\nTitle: {}\nReplay entries: {}\nResume ready: {}",
+                        "Resumed session {}\nTitle: {}\nContext strategy: recent records={}, compression summaries={}, search hits={}\nHistory folded: {}\nResume ready: {}",
                         target_session.session_id,
                         target_session.title,
-                        target_session.archived_turn_count,
+                        resume_projection.recent_records.len(),
+                        resume_projection.checkpoint_records.len(),
+                        resume_projection.matched_records.len(),
+                        replay_projection.truncated_history,
                         target_session.resume_ready,
                     )
                 },
@@ -1745,13 +1778,17 @@ fn execute_session_command(
             let target_session_id = invocation
                 .args
                 .first()
-                .ok_or_else(|| anyhow::anyhow!("usage: /session archive <session-id>"))?;
-            if target_session_id == session_runtime.lock().unwrap().session_id.as_str() {
+                .cloned()
+                .or_else(|| active_session_id.clone())
+                .ok_or_else(|| anyhow::anyhow!(
+                    "no current session is bound; use /session list, /session new, or /session resume"
+                ))?;
+            if active_session_id.as_deref() == Some(target_session_id.as_str()) {
                 return Err(anyhow::anyhow!(
                     "refusing to archive the active session; create or resume another session first"
                 ));
             }
-            let session = project_handle.load_session(target_session_id)?;
+            let session = project_handle.load_session(&target_session_id)?;
             project_handle.upsert_session(ProjectSessionUpdate {
                 session_id: session.session_id.clone(),
                 title: Some(session.title.clone()),
@@ -1762,7 +1799,7 @@ fn execute_session_command(
             })?;
             if picker_mode {
                 let sessions = project_handle.list_sessions()?;
-                let request = build_session_picker_request(&sessions, &active_session_id, false);
+                let request = build_session_picker_request(&sessions, active_session_id.as_deref(), false);
                 tx.send(RuntimeMessageEnvelope::state(
                     turn_id,
                     StateMessage::ShowOverlay {
@@ -1789,16 +1826,20 @@ fn execute_session_command(
             let target_session_id = invocation
                 .args
                 .first()
-                .ok_or_else(|| anyhow::anyhow!("usage: /session delete <session-id>"))?;
-            if target_session_id == session_runtime.lock().unwrap().session_id.as_str() {
+                .cloned()
+                .or_else(|| active_session_id.clone())
+                .ok_or_else(|| anyhow::anyhow!(
+                    "no current session is bound; use /session list, /session new, or /session resume"
+                ))?;
+            if active_session_id.as_deref() == Some(target_session_id.as_str()) {
                 return Err(anyhow::anyhow!(
                     "refusing to delete the active session; create or resume another session first"
                 ));
             }
-            project_handle.delete_session_artifacts(target_session_id)?;
+            project_handle.delete_session_artifacts(&target_session_id)?;
             if picker_mode {
                 let sessions = project_handle.list_sessions()?;
-                let request = build_session_picker_request(&sessions, &active_session_id, false);
+                let request = build_session_picker_request(&sessions, active_session_id.as_deref(), false);
                 tx.send(RuntimeMessageEnvelope::state(
                     turn_id,
                     StateMessage::ShowOverlay {
@@ -2522,65 +2563,19 @@ fn persist_session_artifacts(
     };
     project_handle.save_session_snapshot(&snapshot)?;
     project_handle.append_replay_entries(session_id, replay_entries)?;
-    Ok(snapshot.recent_turn_summaries.len() as u64)
-}
-
-fn load_startup_session_state(
-    project_handle: &Arc<OmegaProjectHandle>,
-    root_workflow_id: &str,
-    todo_manager: &CoreSharedTodoManager,
-) -> anyhow::Result<Option<StartupSessionState>> {
-    let Some(active_session_id) = project_handle.record().active_session_id else {
-        return Ok(None);
-    };
-
-    let session = match project_handle.load_session(&active_session_id) {
-        Ok(session) => session,
-        Err(_) => return Ok(None),
-    };
-
-    let snapshot = project_handle.load_session_snapshot(&active_session_id)?;
-    let replay_log = project_handle.load_replay_log(&active_session_id)?;
-    let session_context = snapshot
-        .as_ref()
-        .map(session_context_from_snapshot)
-        .unwrap_or_else(|| SessionContext::new(root_workflow_id.to_string()));
-    let restored_cwd = snapshot
-        .as_ref()
-        .map(|snapshot| normalized_restored_cwd(project_handle.root(), snapshot.last_known_cwd.clone()))
-        .unwrap_or_else(|| project_handle.root());
-
-    if let Some(snapshot) = snapshot.as_ref() {
-        restore_todo_manager(todo_manager, &snapshot.todo_items)?;
+    let checkpoint_records = LedgerSessionContextCompressor::with_budget(
+        Arc::clone(project_handle),
+        session_context_budget_tokens(),
+    )
+    .compact(SessionCompactionRequest {
+        session_id: session_id.to_string(),
+        max_tokens: session_context_budget_tokens(),
+    })?
+    .checkpoint_records;
+    if !checkpoint_records.is_empty() {
+        project_handle.append_context_records(session_id, &checkpoint_records)?;
     }
-
-    project_handle.upsert_session(ProjectSessionUpdate {
-        session_id: session.session_id.clone(),
-        title: Some(session.title.clone()),
-        status: ProjectSessionStatus::Active,
-        turn_count: session.turn_count,
-        last_user_turn_preview: session.last_user_turn_preview.clone(),
-        archived_turn_count: Some(session.archived_turn_count),
-    })?;
-
-    let startup_restore_snapshot = match snapshot {
-        Some(_) => Some(build_session_restore_snapshot(
-            &project_handle.load_session(&active_session_id)?,
-            replay_log,
-            root_workflow_id,
-            &session_context.routing,
-            &todo_manager.lock().unwrap().render(),
-            project_handle.detail_snapshot()?,
-        )),
-        None => None,
-    };
-
-    Ok(Some(StartupSessionState {
-        session_id: active_session_id,
-        session_context,
-        cwd: restored_cwd,
-        startup_restore_snapshot,
-    }))
+    Ok(snapshot.recent_turn_summaries.len() as u64)
 }
 
 fn project_todo_status(status: TodoStatus) -> ProjectSessionTodoStatus {
@@ -2718,7 +2713,11 @@ fn build_command_replay_entries(
 
 fn build_session_restore_snapshot(
     session: &omega_project::ProjectSessionRef,
-    replay_log: Vec<SessionReplayEntry>,
+    visible_history: Vec<SessionContextRecord>,
+    recent_context_record_count: usize,
+    checkpoint_summary_count: usize,
+    search_hit_count: usize,
+    truncated_history: bool,
     root_workflow_id: &str,
     routing: &session_state::RoutingContext,
     todo_rendered: &str,
@@ -2737,7 +2736,14 @@ fn build_session_restore_snapshot(
     SessionRestoreSnapshot {
         session_id: session.session_id.clone(),
         title: session.title.clone(),
-        replay_log,
+        visible_history,
+        turn_count: session.turn_count,
+        archived_turn_count: session.archived_turn_count,
+        latest_user_turn_preview: session.last_user_turn_preview.clone(),
+        recent_context_record_count,
+        checkpoint_summary_count,
+        search_hit_count,
+        truncated_history,
         todo_rendered: todo_rendered.to_string(),
         root_workflow_id: root_workflow_id.to_string(),
         active_workflow_id,
@@ -2893,7 +2899,7 @@ fn take_hidden_command_flag(args: &mut Vec<String>, flag: &str) -> bool {
 
 fn build_session_picker_request(
     sessions: &[omega_project::ProjectSessionRef],
-    active_session_id: &str,
+    active_session_id: Option<&str>,
     prioritize_resume_ready: bool,
 ) -> OperatorPickerRequest {
     let mut sessions = sessions.to_vec();
@@ -2901,6 +2907,81 @@ fn build_session_picker_request(
         session_picker_sort_key(left, active_session_id, prioritize_resume_ready)
             .cmp(&session_picker_sort_key(right, active_session_id, prioritize_resume_ready))
     });
+
+    let detail_action = OperatorPickerAction {
+        action_id: "session-detail".to_string(),
+        label: "Detail".to_string(),
+        shortcut: if prioritize_resume_ready {
+            OperatorPickerShortcut::Ctrl('o')
+        } else {
+            OperatorPickerShortcut::Enter
+        },
+        requires_selection: true,
+        overlay_behavior: OperatorPickerOverlayBehavior::KeepOpen,
+        intent: OperatorPickerIntent::SubmitSlashCommand {
+            command_template: format!("/session info {{id}} {SESSION_PICKER_FLAG}"),
+        },
+    };
+    let resume_action = OperatorPickerAction {
+        action_id: "session-resume".to_string(),
+        label: "Resume".to_string(),
+        shortcut: if prioritize_resume_ready {
+            OperatorPickerShortcut::Enter
+        } else {
+            OperatorPickerShortcut::Ctrl('r')
+        },
+        requires_selection: true,
+        overlay_behavior: OperatorPickerOverlayBehavior::CloseOverlay,
+        intent: OperatorPickerIntent::SubmitSlashCommand {
+            command_template: format!("/session resume {{id}} {SESSION_PICKER_FLAG}"),
+        },
+    };
+    let primary_action = if prioritize_resume_ready {
+        resume_action.clone()
+    } else {
+        detail_action.clone()
+    };
+    let mut secondary_actions = if prioritize_resume_ready {
+        vec![detail_action, resume_action]
+    } else {
+        vec![resume_action]
+    };
+    secondary_actions.extend([
+        OperatorPickerAction {
+            action_id: "session-archive".to_string(),
+            label: "Archive".to_string(),
+            shortcut: OperatorPickerShortcut::Ctrl('a'),
+            requires_selection: true,
+            overlay_behavior: OperatorPickerOverlayBehavior::KeepOpen,
+            intent: OperatorPickerIntent::SubmitSlashCommand {
+                command_template: format!("/session archive {{id}} {SESSION_PICKER_FLAG}"),
+            },
+        },
+        OperatorPickerAction {
+            action_id: "session-delete".to_string(),
+            label: "Delete".to_string(),
+            shortcut: OperatorPickerShortcut::Ctrl('d'),
+            requires_selection: true,
+            overlay_behavior: OperatorPickerOverlayBehavior::KeepOpen,
+            intent: OperatorPickerIntent::RequestConfirmSlashCommand {
+                title_template: " Confirm session delete ".to_string(),
+                message_template: "Delete session {title} ({id}) and remove its saved artifacts?"
+                    .to_string(),
+                confirm_label: "Delete".to_string(),
+                command_template: format!("/session delete {{id}} {SESSION_PICKER_FLAG}"),
+            },
+        },
+        OperatorPickerAction {
+            action_id: "session-new".to_string(),
+            label: "New".to_string(),
+            shortcut: OperatorPickerShortcut::Ctrl('n'),
+            requires_selection: false,
+            overlay_behavior: OperatorPickerOverlayBehavior::CloseOverlay,
+            intent: OperatorPickerIntent::SubmitSlashCommand {
+                command_template: format!("/session new {SESSION_PICKER_FLAG}"),
+            },
+        },
+    ]);
 
     OperatorPickerRequest {
         picker_id: SESSION_PICKER_ID.to_string(),
@@ -2919,71 +3000,17 @@ fn build_session_picker_request(
             .iter()
             .map(|session| build_session_picker_item(session, active_session_id))
             .collect(),
-        primary_action: OperatorPickerAction {
-            action_id: "session-detail".to_string(),
-            label: "Detail".to_string(),
-            shortcut: OperatorPickerShortcut::Enter,
-            requires_selection: true,
-            overlay_behavior: OperatorPickerOverlayBehavior::KeepOpen,
-            intent: OperatorPickerIntent::SubmitSlashCommand {
-                command_template: format!("/session info {{id}} {SESSION_PICKER_FLAG}"),
-            },
-        },
-        secondary_actions: vec![
-            OperatorPickerAction {
-                action_id: "session-resume".to_string(),
-                label: "Resume".to_string(),
-                shortcut: OperatorPickerShortcut::Ctrl('r'),
-                requires_selection: true,
-                overlay_behavior: OperatorPickerOverlayBehavior::CloseOverlay,
-                intent: OperatorPickerIntent::SubmitSlashCommand {
-                    command_template: format!("/session resume {{id}} {SESSION_PICKER_FLAG}"),
-                },
-            },
-            OperatorPickerAction {
-                action_id: "session-archive".to_string(),
-                label: "Archive".to_string(),
-                shortcut: OperatorPickerShortcut::Ctrl('a'),
-                requires_selection: true,
-                overlay_behavior: OperatorPickerOverlayBehavior::KeepOpen,
-                intent: OperatorPickerIntent::SubmitSlashCommand {
-                    command_template: format!("/session archive {{id}} {SESSION_PICKER_FLAG}"),
-                },
-            },
-            OperatorPickerAction {
-                action_id: "session-delete".to_string(),
-                label: "Delete".to_string(),
-                shortcut: OperatorPickerShortcut::Ctrl('d'),
-                requires_selection: true,
-                overlay_behavior: OperatorPickerOverlayBehavior::KeepOpen,
-                intent: OperatorPickerIntent::RequestConfirmSlashCommand {
-                    title_template: " Confirm session delete ".to_string(),
-                    message_template: "Delete session {title} ({id}) and remove its saved artifacts?"
-                        .to_string(),
-                    confirm_label: "Delete".to_string(),
-                    command_template: format!("/session delete {{id}} {SESSION_PICKER_FLAG}"),
-                },
-            },
-            OperatorPickerAction {
-                action_id: "session-new".to_string(),
-                label: "New".to_string(),
-                shortcut: OperatorPickerShortcut::Ctrl('n'),
-                requires_selection: false,
-                overlay_behavior: OperatorPickerOverlayBehavior::CloseOverlay,
-                intent: OperatorPickerIntent::SubmitSlashCommand {
-                    command_template: format!("/session new {SESSION_PICKER_FLAG}"),
-                },
-            },
-        ],
+        primary_action,
+        secondary_actions,
     }
 }
 
 fn build_session_picker_item(
     session: &omega_project::ProjectSessionRef,
-    active_session_id: &str,
+    active_session_id: Option<&str>,
 ) -> OperatorPickerItem {
     let mut badges = Vec::new();
-    if session.session_id == active_session_id {
+    if Some(session.session_id.as_str()) == active_session_id {
         badges.push("current".to_string());
     } else {
         badges.push(project_session_status_label(session.status).to_string());
@@ -3017,10 +3044,14 @@ fn build_session_picker_item(
 
 fn session_picker_sort_key(
     session: &omega_project::ProjectSessionRef,
-    active_session_id: &str,
+    active_session_id: Option<&str>,
     prioritize_resume_ready: bool,
 ) -> (u8, u8, u8, std::cmp::Reverse<u64>, String) {
-    let current_rank = if session.session_id == active_session_id { 0 } else { 1 };
+    let current_rank = if Some(session.session_id.as_str()) == active_session_id {
+        0
+    } else {
+        1
+    };
     let resume_rank = if prioritize_resume_ready && session.resume_ready {
         0
     } else {
@@ -3040,20 +3071,84 @@ fn session_picker_sort_key(
     )
 }
 
+struct SessionLedgerInfo {
+    total_record_count: usize,
+    replay_entry_count: usize,
+    working_set_snapshot_count: usize,
+    checkpoint_count: usize,
+    latest_checkpoint_summary: Option<String>,
+}
+
+fn load_session_ledger_info(
+    project_handle: &Arc<OmegaProjectHandle>,
+    session_id: &str,
+) -> anyhow::Result<SessionLedgerInfo> {
+    let records = project_handle.load_context_records(session_id)?;
+    let replay_entry_count = records
+        .iter()
+        .filter(|record| matches!(record.record, SessionContextRecordKind::ReplayEntry { .. }))
+        .count();
+    let working_set_snapshot_count = records
+        .iter()
+        .filter(|record| {
+            matches!(
+                record.record,
+                SessionContextRecordKind::WorkingSetSnapshot { .. }
+            )
+        })
+        .count();
+    let checkpoint_count = records
+        .iter()
+        .filter(|record| {
+            matches!(
+                record.record,
+                SessionContextRecordKind::CompressionCheckpoint { .. }
+            )
+        })
+        .count();
+    let latest_checkpoint_summary = records.iter().rev().find_map(|record| match &record.record {
+        SessionContextRecordKind::CompressionCheckpoint { summary, .. } => {
+            Some(preview_text(summary, 120))
+        }
+        SessionContextRecordKind::WorkingSetSnapshot { .. }
+        | SessionContextRecordKind::ReplayEntry { .. } => None,
+    });
+
+    Ok(SessionLedgerInfo {
+        total_record_count: records.len(),
+        replay_entry_count,
+        working_set_snapshot_count,
+        checkpoint_count,
+        latest_checkpoint_summary,
+    })
+}
+
 fn render_session_info(
     session: &omega_project::ProjectSessionRef,
     snapshot: Option<&ProjectSessionSnapshot>,
-    replay_entry_count: usize,
+    ledger_info: &SessionLedgerInfo,
 ) -> String {
     format!(
-        "Session: {}\nSession ID: {}\nStatus: {}\nTurns: {}\nResume ready: {}\nArchived turns: {}\nReplay entries: {}\nLatest user preview: {}\nSnapshot workflow: {}\nSnapshot skills: {}",
+        "Session: {}\nSession ID: {}\nStatus: {}\nTurns: {}\nResume ready: {}\nArchived turns: {}\nCanonical ledger: {}\nLedger records: {}\nReplay entries: {}\nWorking snapshots: {}\nCheckpoint summaries: {}\nLatest checkpoint summary: {}\nLatest user preview: {}\nSnapshot workflow: {}\nSnapshot skills: {}",
         session.title,
         session.session_id,
         project_session_status_label(session.status),
         session.turn_count,
         session.resume_ready,
         session.archived_turn_count,
-        replay_entry_count,
+        if ledger_info.total_record_count > 0 {
+            "present"
+        } else {
+            "empty"
+        },
+        ledger_info.total_record_count,
+        ledger_info.replay_entry_count,
+        ledger_info.working_set_snapshot_count,
+        ledger_info.checkpoint_count,
+        ledger_info
+            .latest_checkpoint_summary
+            .as_deref()
+            .unwrap_or("none"),
         session.last_user_turn_preview.as_deref().unwrap_or("none"),
         snapshot
             .map(|snapshot| snapshot.routing.active_workflow_id.as_str())

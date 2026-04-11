@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 omega-command = { path = "../omega-command" }
+omega-compression = { path = "../omega-compression" }
 omega-context = { path = "../omega-context" }
 omega-core = { path = "../omega-core" }
 omega-hooks = { path = "../omega-hooks" }

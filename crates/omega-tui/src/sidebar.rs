@@ -139,6 +139,7 @@ mod tests {
             diagnostics_expanded: false,
             delivery_expanded: false,
             skills_expanded: false,
+            project_expanded: false,
             knowledge_expanded: false,
             todos_expanded: false,
             logs_expanded: true,

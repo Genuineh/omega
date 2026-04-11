@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::{mpsc, Arc};
 
 use omega_context::{ContextDiagnostics, ContextSupervisionSnapshot, StepKnowledgeSummary};
-use omega_project::{ProjectDetailSnapshot, SessionReplayEntry};
+use omega_project::{ProjectDetailSnapshot, SessionContextRecord};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeUiEnvelope {
@@ -186,7 +186,14 @@ pub enum StatusValue {
 pub struct SessionRestoreSnapshot {
     pub session_id: String,
     pub title: String,
-    pub replay_log: Vec<SessionReplayEntry>,
+    pub visible_history: Vec<SessionContextRecord>,
+    pub turn_count: u64,
+    pub archived_turn_count: u64,
+    pub latest_user_turn_preview: Option<String>,
+    pub recent_context_record_count: usize,
+    pub checkpoint_summary_count: usize,
+    pub search_hit_count: usize,
+    pub truncated_history: bool,
     pub todo_rendered: String,
     pub root_workflow_id: String,
     pub active_workflow_id: String,

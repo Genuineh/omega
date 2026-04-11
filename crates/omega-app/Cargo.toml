@@ -12,6 +12,7 @@ name = "omega"
 path = "src/main.rs"
 
 [dependencies]
+omega-compression = { path = "../omega-compression" }
 omega-core = { path = "../omega-core" }
 omega-keymap = { path = "../omega-keymap" }
 omega-observability = { path = "../omega-observability" }

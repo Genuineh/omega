@@ -88,6 +88,21 @@ pub struct ContextExecuteItem {
     pub item_label: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionHistoryQuery {
+    pub session_id: String,
+    pub text: String,
+    pub queries: Vec<String>,
+    pub max_results: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionHistoryHit {
+    pub source: String,
+    pub title: String,
+    pub preview: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct StepContextRequest {
     pub skill_system_prompt: String,
@@ -98,6 +113,7 @@ pub struct StepContextRequest {
     pub document_hits: Vec<SearchResult>,
     pub memory_hits: Vec<MemoryQueryHit>,
     pub observation_hits: Vec<ProjectObservation>,
+    pub session_history_hits: Vec<SessionHistoryHit>,
     pub structured_input: Option<Value>,
     pub todo_snapshot: Option<String>,
     pub current_execute_item: Option<ContextExecuteItem>,
@@ -105,6 +121,7 @@ pub struct StepContextRequest {
     pub tool_manifests: Vec<ToolManifestMetadata>,
     pub tool_definitions: Vec<ToolDefinition>,
     pub messages: Vec<Message>,
+    pub session_ledger_context: Option<String>,
     pub recall_rewrite_reason: Option<String>,
     pub recall_rewrite_queries: Vec<String>,
     pub recall_recovery_path: Option<String>,
@@ -476,6 +493,7 @@ pub struct RecallPlan {
     pub document_hits: Vec<SearchResult>,
     pub memory_hits: Vec<MemoryQueryHit>,
     pub observations: Vec<ProjectObservation>,
+    pub session_history_hits: Vec<SessionHistoryHit>,
     pub document_summary: Option<DocumentHitSummary>,
 }
 
@@ -632,6 +650,10 @@ pub trait KnowledgeQueryService: Send + Sync {
     fn search(&self, query: SearchQuery) -> Result<Vec<SearchResult>>;
 }
 
+pub trait SessionHistoryService: Send + Sync {
+    fn query(&self, query: SessionHistoryQuery) -> Result<Vec<SessionHistoryHit>>;
+}
+
 pub trait DocumentGovernanceService: Send + Sync {
     fn manage_document(&self, op: DocumentOp) -> Result<DocumentOpResult>;
     fn manage_todo(&self, op: TodoOp) -> Result<TodoOpResult>;
@@ -657,10 +679,19 @@ pub struct ContextFacadeServices {
     assembler: Arc<dyn ContextAssembler>,
     memory: Arc<dyn MemoryService>,
     query: Arc<dyn KnowledgeQueryService>,
+    session_history: Arc<dyn SessionHistoryService>,
     governance: Arc<dyn DocumentGovernanceService>,
     diagnostics: Arc<dyn ContextDiagnosticsProvider>,
     document_backend_enabled: bool,
     recall_budget: RecallBudgetConfig,
+}
+
+struct NoopSessionHistoryService;
+
+impl SessionHistoryService for NoopSessionHistoryService {
+    fn query(&self, _query: SessionHistoryQuery) -> Result<Vec<SessionHistoryHit>> {
+        Ok(Vec::new())
+    }
 }
 
 impl ContextFacadeServices {
@@ -682,6 +713,7 @@ impl ContextFacadeServices {
                 #[cfg(feature = "document-backend")]
                 Some(Arc::clone(&documents)),
             )),
+            session_history: Arc::new(NoopSessionHistoryService),
             governance: Arc::new(LocalDocumentGovernanceService::new(
                 root,
                 #[cfg(feature = "document-backend")]
@@ -692,12 +724,21 @@ impl ContextFacadeServices {
             recall_budget,
         }
     }
+
+    pub fn with_session_history_service(
+        mut self,
+        session_history: Arc<dyn SessionHistoryService>,
+    ) -> Self {
+        self.session_history = session_history;
+        self
+    }
 }
 
 pub struct OmegaContextFacade {
     pub assembler: Arc<dyn ContextAssembler>,
     pub memory: Arc<dyn MemoryService>,
     pub query: Arc<dyn KnowledgeQueryService>,
+    pub session_history: Arc<dyn SessionHistoryService>,
     pub governance: Arc<dyn DocumentGovernanceService>,
     pub diagnostics: Arc<dyn ContextDiagnosticsProvider>,
     pub document_backend_enabled: bool,
@@ -710,6 +751,7 @@ impl OmegaContextFacade {
             assembler: services.assembler,
             memory: services.memory,
             query: services.query,
+            session_history: services.session_history,
             governance: services.governance,
             diagnostics: services.diagnostics,
             document_backend_enabled: services.document_backend_enabled,
@@ -731,6 +773,7 @@ impl OmegaContextFacade {
         request.document_hits = recall.document_hits;
         request.memory_hits = recall.memory_hits;
         request.observation_hits = recall.observations;
+        request.session_history_hits = recall.session_history_hits;
         let mut assembled = self.assembler.assemble_step_context(request, token_counter)?;
         assembled.document_summary = recall.document_summary;
         self.sync_memory_snapshot();
@@ -745,8 +788,14 @@ impl OmegaContextFacade {
             return Ok(RecallPlan::default());
         }
 
+        let session_history_hits = self.session_history.query(SessionHistoryQuery {
+            session_id: request.session.session_id.clone(),
+            text: bundle.primary_query(),
+            queries: planned_queries.clone(),
+            max_results: 4,
+        })?;
         let memory_hits = self.memory.query(MemoryQuery {
-            session_id: Some(request.session.session_id.clone()),
+            session_id: None,
             text: Some(bundle.primary_query()),
             queries: planned_queries.clone(),
             raw_query: Some(bundle.raw_query.clone()),
@@ -784,6 +833,7 @@ impl OmegaContextFacade {
                 observations,
                 self.recall_budget.observation_hits_tokens,
             ),
+            session_history_hits,
             document_summary,
         })
     }
@@ -2378,11 +2428,13 @@ fn build_step_system_blocks(
 ) -> Vec<SystemBlock> {
     let mut blocks = Vec::new();
     let stable_context = render_stable_session_context(&request.session);
+    let ledger_context = render_session_ledger_context(request.session_ledger_context.as_deref());
     let stable_sections = [
         request.skill_system_prompt.clone(),
         format!("Workflow phase: {}", request.step.label),
         render_visible_tools(&request.step, &request.tool_manifests),
         stable_context,
+        ledger_context,
     ]
     .into_iter()
     .filter(|section| !section.trim().is_empty())
@@ -2398,6 +2450,14 @@ fn build_step_system_blocks(
     if !summary_context.trim().is_empty() {
         blocks.push(
             SystemBlock::text(summary_context).with_cache_control(PromptCacheControl::ephemeral()),
+        );
+    }
+
+    let session_history_context = render_session_history_hits_context(&request.session_history_hits);
+    if !session_history_context.trim().is_empty() {
+        blocks.push(
+            SystemBlock::text(session_history_context)
+                .with_cache_control(PromptCacheControl::ephemeral()),
         );
     }
 
@@ -2437,6 +2497,7 @@ fn build_output_repair_system_blocks(
 ) -> Vec<SystemBlock> {
     let mut blocks = Vec::new();
     let stable_context = render_stable_session_context(&request.session);
+    let ledger_context = render_session_ledger_context(request.session_ledger_context.as_deref());
     let stable_sections = [
         request.skill_system_prompt.clone(),
         format!(
@@ -2445,6 +2506,7 @@ fn build_output_repair_system_blocks(
         ),
         "Visible tools: none".to_string(),
         stable_context,
+        ledger_context,
     ]
     .into_iter()
     .filter(|section| !section.trim().is_empty())
@@ -2792,6 +2854,19 @@ fn render_stable_session_context(session: &ContextSession) -> String {
     sections.join("\n\n")
 }
 
+fn render_session_ledger_context(session_ledger_context: Option<&str>) -> String {
+    let Some(session_ledger_context) = session_ledger_context else {
+        return String::new();
+    };
+    if session_ledger_context.trim().is_empty() {
+        return String::new();
+    }
+    format!(
+        "<session_ledger_context>\n{}\n</session_ledger_context>",
+        session_ledger_context.trim_end()
+    )
+}
+
 fn render_step_summaries_context(step_summaries: &[ContextStepSummary]) -> String {
     if step_summaries.is_empty() {
         return String::new();
@@ -2800,6 +2875,26 @@ fn render_step_summaries_context(step_summaries: &[ContextStepSummary]) -> Strin
         "<step_summaries>\n{}\n</step_summaries>",
         render_step_summaries(step_summaries)
     )
+}
+
+fn render_session_history_hits_context(session_history_hits: &[SessionHistoryHit]) -> String {
+    if session_history_hits.is_empty() {
+        return String::new();
+    }
+
+    let lines = session_history_hits
+        .iter()
+        .map(|hit| {
+            format!(
+                "- [{}] {}\n{}",
+                hit.source,
+                hit.title.trim_end(),
+                hit.preview.trim_end()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    format!("<session_history_hits>\n{}\n</session_history_hits>", lines)
 }
 
 fn render_document_hits_context(document_hits: &[SearchResult]) -> String {
@@ -3035,13 +3130,13 @@ mod tests {
     use crate::{DocType, FileStatus, FileType, SearchMode, SearchResult};
 
     use super::{
-        build_recall_query_bundle, dedupe_document_hits_by_path, render_output_contract,
-        render_visible_tools, CompactionPolicy, ContextAssembler, ContextExecuteItem,
-        ContextRouting, ContextSession, ContextStep, ContextTokenCounter,
+        build_recall_query_bundle, build_step_system_blocks, dedupe_document_hits_by_path,
+        render_output_contract, render_visible_tools, CompactionPolicy, ContextAssembler,
+        ContextExecuteItem, ContextRouting, ContextSession, ContextStep, ContextTokenCounter,
         ContextWorkflowRole, DefaultContextAssembler, DocumentHealthReport, HealthScore,
         LocalMemoryService, MemoryService, OmegaContextFacade, OutputRepairContextRequest,
-        OutputRepairFailure, RecallBudgetConfig, ScanResult, StepContextRequest, TurnData,
-        TurnRetentionSignals,
+        OutputRepairFailure, RecallBudgetConfig, ScanResult, SessionHistoryHit,
+        StepContextRequest, TurnData, TurnRetentionSignals,
     };
 
     struct FixedTokenCounter;
@@ -3126,6 +3221,7 @@ mod tests {
             document_hits: Vec::new(),
             memory_hits: Vec::new(),
             observation_hits: Vec::new(),
+            session_history_hits: Vec::new(),
             structured_input: Some(serde_json::json!({"goal": "fix"})),
             todo_snapshot: Some("[>] #task-1".to_string()),
             current_execute_item: Some(ContextExecuteItem {
@@ -3156,6 +3252,9 @@ mod tests {
                 input_schema: serde_json::json!({"type": "object"}),
             }],
             messages: vec![Message::user("hello")],
+            session_ledger_context: Some(
+                "Compacted 3 earlier turns into checkpoints covering records 1-12.".to_string(),
+            ),
             recall_rewrite_reason: None,
             recall_rewrite_queries: Vec::new(),
             recall_recovery_path: None,
@@ -3190,6 +3289,38 @@ mod tests {
                 examples: Vec::new(),
                 anti_patterns: Vec::new(),
             })
+    }
+
+    #[test]
+    fn build_step_system_blocks_renders_session_ledger_context() {
+        let request = step_request();
+        let rendered = build_step_system_blocks(&request, &request.session.step_summaries)
+            .into_iter()
+            .map(|block| block.text)
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
+        assert!(rendered.contains("<session_ledger_context>"));
+        assert!(rendered.contains("Compacted 3 earlier turns into checkpoints"));
+    }
+
+    #[test]
+    fn build_step_system_blocks_renders_session_history_hits() {
+        let mut request = step_request();
+        request.session_history_hits = vec![SessionHistoryHit {
+            source: "checkpoint".to_string(),
+            title: "checkpoint:1-9".to_string(),
+            preview: "Widget cache invalidation history".to_string(),
+        }];
+
+        let rendered = build_step_system_blocks(&request, &request.session.step_summaries)
+            .into_iter()
+            .map(|block| block.text)
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
+        assert!(rendered.contains("<session_history_hits>"));
+        assert!(rendered.contains("Widget cache invalidation history"));
     }
 
     #[test]
@@ -3519,6 +3650,58 @@ mod tests {
             Some(HealthScore::NeedsAttention)
         );
         assert_eq!(diagnostics.cache, Some(assembled.cache_diagnostics));
+    }
+
+    #[test]
+    fn assemble_step_context_queries_memory_across_sessions() {
+        let root = std::env::temp_dir().join(format!(
+            "omega-context-cross-session-memory-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let facade = OmegaContextFacade::local(root);
+        facade
+            .memory
+            .archive_turn(&TurnData {
+                session_id: "session-other".to_string(),
+                turn_id: 7,
+                workflow_id: "feature".to_string(),
+                user_intent: "cache invalidation history".to_string(),
+                summaries: vec![context_summary(
+                    "feature",
+                    "report",
+                    "Report",
+                    "Cache invalidation history for the old widget pipeline.",
+                )],
+                signals: TurnRetentionSignals {
+                    developer_preferences: vec![
+                        "Remember cache invalidation history for the widget pipeline.".to_string(),
+                    ],
+                    ..TurnRetentionSignals::default()
+                },
+            })
+            .unwrap();
+
+        let mut request = step_request();
+        request.session.session_id = "session-current".to_string();
+        request.session.latest_user_turn = "cache invalidation history".to_string();
+
+        let assembled = facade
+            .assemble_step_context(request, &FixedTokenCounter)
+            .unwrap();
+        let rendered = assembled
+            .system_blocks
+            .iter()
+            .map(|block| block.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
+        assert!(rendered.contains("<archived_memory_hits>"));
+        assert!(rendered.contains("cache invalidation history"));
     }
 
     #[test]

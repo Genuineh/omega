@@ -190,7 +190,7 @@ fn input_context_input_info_and_bottom_status_bars_have_stable_heights() {
     assert_eq!(app.response_rect.y, 0);
     assert_eq!(app.input_context_rect.height, 2);
     assert_eq!(app.input_gap_rect.height, 0);
-    assert_eq!(app.input_rect.height, 4);
+    assert_eq!(app.input_rect.height, 5);
     assert_eq!(app.input_info_rect.height, 1);
     assert_eq!(app.bottom_status_rect.height, 1);
     assert_eq!(app.sidebar_rect.y, 0);

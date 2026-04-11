@@ -19,6 +19,7 @@ _任务编号以 `docs/specs/omega-agent-impl-plan.md` 为准；`8A/8B`、`15A/1
 - **Task 11A ~ 11F-3**: 已完成并转入基线能力，不再作为独立主线推进；原 Task 11 的上下文压缩需求已被这条子任务链替代。
 
 ### Medium
+- **2026-04-11 session ledger baseline**: `Task 17I ~ 17N` 已完成。startup 现停在 runtime-only `Unbound` lifecycle；session storage 已收口到 per-session `session.context.jsonl` canonical ledger，并带 legacy sidecar 自动迁移；`omega-compression` 已接管 app-owned `400k` budget、checkpoint compaction/backfill 与 historical search；`/session resume` / restore hydration / prompt assembly 现都从 ledger projection 或 session-ledger historical hits 派生，restore/detail UX 也会显式展示 `recent records + compression summaries + search hits`。后续剩余工作只属于 recall/rerank 质量与更深层 checkpoint retrieval 演进，不再阻塞 Task 17 基线。
 - **2026-04-03 `.storeignore` vector-index follow-up**: 为知识库扫描新增 `.omega/.storeignore` 仓库级规则文件，只控制“哪些文件不进入 embedding/LanceDB 派生向量索引”，而不是跳过整个 `FileStore`/tantivy/治理管线；后续实现必须保证 keyword 检索与文档治理仍可见这些文件，semantic/hybrid 仅对未忽略文件建立向量结果。
 - **2026-04-07 memory knowledge follow-up**: `omega-context` 已把 recall hit budget 从硬编码切到 `.omega/model.toml` 的 `[context.recall]` 覆盖项，`omega-session` / `omega-memory` 已补齐 `GovernanceEvent` retention evidence，并让 `/document` command turn 真正归档到 memory；`LocalMemoryService::compact_context()` 也已从 stub 变为真实 archived-turn summary compaction。当前剩余 follow-up 主要是 memory query 仍以 lexical scoring 为主，暂未引入更强的 retrieval/rerank 语义层。
 - **2026-04-07 recall quality follow-up**: 最新排查确认 recall planner 现在仍直接把 `latest_user_turn` 原句送去 memory/document recall，而 `omega-memory` 的 query scorer 仍以 whitespace lexical `contains` 为主；这会让中文、长自然语言和弱锚点请求稳定出现空命中。下一轮应按 `11G-7 ~ 11G-10` 的顺序补 deterministic query planning、memory/document retrieval quality 和 bounded LLM rewrite fallback，同时用 `11F-8` 把 `selected summaries` 与真实 memory/observation hits 的 UI 语义拆开。
@@ -2151,7 +2152,8 @@ _基础体验已在 M1.7 完成，此处保留高级特性。_
 - **Summary**: session picker 现已接通 `Enter=详情`、`Ctrl-R=resume`、`Ctrl-A=archive`、`Ctrl-D=delete(confirm)`、`Ctrl-N=new` 的闭环动作；领域变更仍通过隐藏 `--picker` 的 slash command 桥接回 `omega-session` handler，成功路径会刷新/切换 overlay 或触发 restore hydration，而不是继续追加普通 command section 文本。
 
 ### Task 17I: omega-session / omega-app / omega-project / omega-tui — Lazy Session Binding And Startup-Unbound Lifecycle
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-04-10
 - **Priority**: High
 - **Description**: 重构 session 生命周期：应用启动只完成 project/bootstrap 与 session catalog 加载，不再自动创建或恢复 session；首条真实用户消息或显式 `/session new` 才创建并绑定 session，显式 `/session resume` 才绑定旧 session。
 - **Complexity**: M
@@ -2159,9 +2161,11 @@ _基础体验已在 M1.7 完成，此处保留高级特性。_
 - **Blocked by**: None
 - **Blocks**: Task 17J, Task 17L, Task 17M, Task 17N
 - **Related**: docs/specs/omega-session-resume.md, docs/specs/omega-project-system.md, docs/specs/omega-runtime-message-pipeline.md
+- **Summary**: `omega-session` 现已切到 startup `Unbound` lifecycle：`AgentSession::new()` 不再 eager create / eager restore session，首条真实用户消息才会 lazy-bind 新 session，`/session new|resume` 则作为显式 binding 入口；`/project` 与 `/session list|info|new|resume` 在 unbound 状态下都能正常工作，依赖当前 binding 的 `/session info|archive|delete` 在不带参数时会返回明确错误，`omega-tui` 启动也已改为 project status + unbound notice，而不是直接 hydrate 旧会话。
 
 ### Task 17J: omega-project / omega-session — Canonical `session.context.jsonl` Schema And Legacy Migration
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-04-10
 - **Priority**: High
 - **Description**: 用每-session 目录下的 `session.context.jsonl` 取代现有 `<session-id>.snapshot.json` 与 `<session-id>.log.jsonl` 双 sidecar，并定义统一的 typed record schema、append/load surface 与 legacy artifact 迁移路径。
 - **Complexity**: L
@@ -2169,9 +2173,11 @@ _基础体验已在 M1.7 完成，此处保留高级特性。_
 - **Blocked by**: Task 17I
 - **Blocks**: Task 17K, Task 17L, Task 17N
 - **Related**: docs/specs/omega-session-resume.md, docs/specs/omega-context-management.md, docs/specs/omega-project-system.md
+- **Summary**: `omega-project` 现已把 session 持久化切到 per-session 目录：`<session-id>/session.json` 负责 catalog，`<session-id>/session.context.jsonl` 负责 canonical ledger。旧的 `save_session_snapshot()/append_replay_entries()/load_session_snapshot()/load_replay_log()` 已全部改为对 ledger 做 typed append/projection，legacy `<session-id>.snapshot.json` / `<session-id>.log.jsonl` 会在首次读取时自动迁移为 ledger 并清理旧 sidecar，`resume_ready` 也改为基于 ledger 中是否存在可恢复 working-set snapshot 判断。
 
 ### Task 17K: omega-compression / omega-context / omega-app — Session Ledger Compaction, Budgeting, And Historical Search
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-04-11
 - **Priority**: High
 - **Description**: 扩展 `omega-compression`，使其能够基于 `session.context.jsonl` 做 token 估算、默认 400k budget 的近期优先装载、compression checkpoint 生成，以及 query-driven historical search / recall。
 - **Complexity**: L
@@ -2179,9 +2185,11 @@ _基础体验已在 M1.7 完成，此处保留高级特性。_
 - **Blocked by**: Task 17J
 - **Blocks**: Task 17L, Task 17N
 - **Related**: docs/specs/omega-session-resume.md, docs/specs/omega-context-management.md, docs/specs/omega-knowledge-evolution.md
+- **Summary**: `omega-compression` 已落地完整的 ledger-aware load/search/compact 基线：default `400k` budget、app-owned config 注入、recency-first `load()`、`HistoricalSearch` lexical matching、working-set reconstruction、`truncated_history` 标记，以及真实的 `CompressionCheckpoint` compaction 输出。`ResumeContext` / `PromptAssembly` 在历史被裁剪时还会额外回填最新 checkpoint summary，并对 recent/checkpoint/search 三路记录做去重；正常 session save path 也会把新生成的 checkpoint 追加回 canonical ledger。后续 recall/rerank 质量提升另行推进，不再阻塞本任务。
 
 ### Task 17L: omega-session / omega-context / omega-app — Ledger-Driven Resume And Context Assembly
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-04-11
 - **Priority**: High
 - **Description**: 将 session restore、prompt context assembly 与 UI hydration 全部改为从 `session.context.jsonl` 的 compression projection 派生，替换当前 snapshot/replay sidecar 恢复链路。
 - **Complexity**: L
@@ -2189,9 +2197,11 @@ _基础体验已在 M1.7 完成，此处保留高级特性。_
 - **Blocked by**: Task 17I, Task 17J, Task 17K
 - **Blocks**: Task 17M, Task 17N
 - **Related**: docs/specs/omega-session-resume.md, docs/specs/omega-runtime-message-pipeline.md, docs/specs/omega-runtime-ui-message-contract.md
+- **Summary**: `/session resume`、restore hydration 与 prompt assembly 现已完全切到 ledger projection：`omega-session` 通过 `omega-compression` 恢复 `reconstructed_working_set` 与 `visible_history`，`SessionRestored` 会透传 ledger-backed history 与 restore 策略计数，TUI 再据此重建 timeline。新 turn 的 `UserTurn` / `AssistantTurn` / `CommandSection` / `WorkingSetSnapshot` / `CompressionCheckpoint` 也都会继续写回 canonical ledger。实际 model request 的 prompt assembly 现在既会通过 `StepContextRequest` 注入 checkpoint/truncation ledger note，也会通过 project-owned session ledger search 注入 `<session_history_hits>`；`omega-memory` 则只保留 repo-wide long-term recall aid 语义，不再承担 session-local resume/history 主链路。
 
 ### Task 17M: omega-command / omega-session / omega-tui — Unbound Startup Session UX And Operator Flow Rebase
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-04-11
 - **Priority**: Medium
 - **Description**: 在 startup `Unbound` 模型下重调 `/session` picker、detail、resume/new 行为与状态提示，确保用户在未绑定 session 时也能明确选择“新建会话”或“恢复旧会话”，并在恢复后看到来自 ledger projection 的日志说明。
 - **Complexity**: M
@@ -2199,13 +2209,16 @@ _基础体验已在 M1.7 完成，此处保留高级特性。_
 - **Blocked by**: Task 17I, Task 17L
 - **Blocks**: Task 17N
 - **Related**: docs/specs/omega-session-resume.md, docs/specs/omega-operator-picker-overlay.md, docs/specs/omega-tui-overlay-popups.md
+- **Summary**: startup `Unbound` picker/new/resume 流已完整切换到新的 lifecycle 语义：`/session` 默认进入 picker，`/session new` 与 `/session resume` 都会显式完成 binding；restore 完成后，主视图 notice 与 direct command body 都会明确显示 `recent records / compression summaries / search hits` 的装配统计，并在 `truncated_history = true` 时提示更早历史可通过 search/detail 查看。`/session info` detail 也已补齐 canonical ledger 存在性、record/replay/snapshot/checkpoint 计数与最新 checkpoint 摘要。
 
 ### Task 17N: Session Ledger Migration, Regression, And Documentation Sync
-- **Status**: Pending
+- **Status**: Completed
+- **Completed**: 2026-04-11
 - **Priority**: Medium
 - **Description**: 为 lazy-start lifecycle、canonical ledger、compression-driven recall 与 unbound startup UI 补齐回归测试、迁移验证和开发文档同步，清理 phase-1 sidecar 假设的残留描述。
 - **Complexity**: M
 - **Planning Note**: 至少覆盖 startup 不建 session、首条消息创建 session、legacy sidecar 自动迁移、400k budget 默认值、历史折叠提示、query recall 以及 delete/archive/new/resume 的新语义。`docs/guide/omega-dev-guide.md` 需要在实现完成后从“startup 复用 active session”改写到新的 lazy binding 基线。
+- **Summary**: 当前已补齐并跑通的回归覆盖包括：`omega-compression` 全量 crate tests（含 checkpoint compaction / latest-checkpoint backfill）、`omega-session` library 全量回归、`omega-tui` library 全量回归、`omega-app` restore policy regression、checkpoint write-back 的 `omega-session` persistence test、prompt assembly 的 checkpoint-backed ledger-context regression、prompt assembly 的 session-ledger historical-hit regression、`omega-context` 的 session history render / cross-session memory recall tests，以及 `.omega/model.toml` session budget 默认值与 override 的配置测试。`docs/guide/omega-dev-guide.md` 与 `docs/specs/omega-session-resume.md` 也已同步到 lazy binding + canonical ledger + restore strategy count 的现行基线。
 - **Blocked by**: Task 17I, Task 17J, Task 17K, Task 17L, Task 17M
 - **Related**: docs/specs/omega-session-resume.md, docs/guide/omega-dev-guide.md
 

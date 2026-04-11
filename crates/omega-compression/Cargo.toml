@@ -5,7 +5,11 @@ edition.workspace = true
 
 [dependencies]
 omega-client = { path = "../omega-client" }
+omega-project = { path = "../omega-project" }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

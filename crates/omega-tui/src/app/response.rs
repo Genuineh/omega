@@ -5,7 +5,7 @@ use omega_session::{
     SessionRestoreSnapshot, StatusSlot, StatusValue, StepSubflowRef, StepSubflowState, ToolRun,
     ToolRunStatus,
 };
-use omega_project::SessionReplayEntryKind;
+use omega_project::{SessionContextRecordKind, SessionReplayEntryKind};
 
 use crate::render::markdown::{parse_markdown_lines, MdLineKind, StyledSpan};
 
@@ -150,15 +150,15 @@ impl App {
         self.set_status_slot(StatusSlot::Agent, StatusValue::Label("Idle".to_string()));
         self.set_todo_snapshot(self.active_turn_id, &snapshot.todo_rendered);
 
-        for (index, entry) in snapshot.replay_log.iter().enumerate() {
+        for (index, record) in snapshot.visible_history.iter().enumerate() {
+            let SessionContextRecordKind::ReplayEntry { entry } = &record.record else {
+                continue;
+            };
+
             match entry.kind {
                 SessionReplayEntryKind::UserTurn => self.push_msg(MsgKind::User, &entry.body),
-                SessionReplayEntryKind::AssistantResponse => {
-                    self.push_msg(MsgKind::Agent, &entry.body)
-                }
-                SessionReplayEntryKind::SystemNotice => {
-                    self.push_msg(MsgKind::Separator, &entry.body)
-                }
+                SessionReplayEntryKind::AssistantResponse => self.push_msg(MsgKind::Agent, &entry.body),
+                SessionReplayEntryKind::SystemNotice => self.push_msg(MsgKind::Separator, &entry.body),
                 SessionReplayEntryKind::ToolSummary => {
                     self.add_log(format!("[tool] {}", entry.body));
                 }
@@ -190,6 +190,31 @@ impl App {
                 }
             }
         }
+
+        let mut restore_notice = format!(
+            "Restored session {} ({}) with {} turns.",
+            snapshot.session_id, snapshot.title, snapshot.turn_count
+        );
+        if let Some(preview) = snapshot.latest_user_turn_preview.as_deref() {
+            restore_notice.push_str(&format!(" Latest user turn: {}.", preview));
+        }
+        restore_notice.push_str(&format!(
+            " Context strategy: recent records={}, compression summaries={}, search hits={}.",
+            snapshot.recent_context_record_count,
+            snapshot.checkpoint_summary_count,
+            snapshot.search_hit_count,
+        ));
+        if snapshot.truncated_history {
+            restore_notice.push_str(
+                " Earlier history is folded; use search/detail to inspect older records.",
+            );
+        } else {
+            restore_notice.push_str(" Full visible ledger history restored.");
+        }
+        if snapshot.archived_turn_count > 0 {
+            restore_notice.push_str(&format!(" Archived turns: {}.", snapshot.archived_turn_count));
+        }
+        self.push_msg(MsgKind::Separator, &restore_notice);
 
         if !self.output_msgs.is_empty() {
             self.response_state

@@ -3,7 +3,7 @@ status: draft
 last_verified_commit: N/A
 owner: omega-team
 created: 2026-04-10
-updated: 2026-04-10
+updated: 2026-04-11
 version: 0.2
 supersedes: []
 related_prds: []
@@ -254,6 +254,9 @@ pub struct SessionRestoreSnapshot {
     pub turn_count: u64,
     pub archived_turn_count: u64,
     pub latest_user_turn_preview: Option<String>,
+    pub recent_context_record_count: usize,
+    pub checkpoint_summary_count: usize,
+    pub search_hit_count: usize,
     pub truncated_history: bool,
 }
 
@@ -267,8 +270,9 @@ pub enum StateMessage {
 
 - `SessionRestored` 使用新的 current turn envelope 发送，避免旧 `turn_id` 混入当前过滤语义。
 - policy/TUI 收到 `SessionRestored` 后，先清空当前 response/activity view state，再基于 `visible_history` 做一次性 hydration。
+- `SessionRestoreSnapshot` 还必须显式携带 `recent_context_record_count`、`checkpoint_summary_count` 与 `search_hit_count`，供 restore notice、direct command body 与 detail overlay 说明本次恢复采用的装配策略，而不是只给一个模糊的“history restored”。
 - `truncated_history = true` 时，UI 必须明确提示“更早历史已折叠，可通过搜索/详情继续查看”，避免用户误以为日志丢失。
-- 恢复完成后追加一条新的 `SystemNotice`，明确显示已恢复的 session id、标题、turn 数与上下文装配策略，例如“近期记录 + 压缩摘要 + 搜索命中”。
+- 恢复完成后追加一条新的 `SystemNotice`，明确显示已恢复的 session id、标题、turn 数与上下文装配策略，例如“recent records=12, compression summaries=1, search hits=2”；若 `truncated_history = true`，还需同时提示更早历史应通过 search/detail 查看。
 
 ## Command Specification
 
@@ -300,7 +304,7 @@ Phase 1 命令面：
 | Subcommand | Input | Output | Errors |
 |-----------|-------|--------|--------|
 | `list` | optional status filter | 打开 session picker overlay，展示当前 project 内 session 列表 | filter 无效 |
-| `info` | `session_id` | 打开 detail overlay，展示 metadata、ledger / compaction availability、最近 turn 摘要、归档计数 | session 不存在 |
+| `info` | `session_id` | 打开 detail overlay，展示 metadata、canonical ledger / compaction availability、record/replay/snapshot/checkpoint 计数、latest checkpoint 摘要与归档计数 | session 不存在 |
 | `new` | optional title | 创建并绑定新 session；若当前 runtime 已绑定旧 session，则旧 binding 退回未选中状态 | 持久化失败 |
 | `resume` / `switch` | optional `session_id` | 有参数时执行恢复；无参数时打开 session picker 并把 resume-ready 目标置前 | session 不存在、ledger 缺失、跨 project |
 | `archive` | `session_id` | 将目标 session 标记 Archived，并保留 session metadata 与 canonical ledger；默认从 picker 触发并原地刷新列表 | 目标是当前 active session 且未确认切换 |

@@ -170,7 +170,8 @@ pub enum OperatorPickerIntent {
 
 对 session picker，建议动作为：
 
-- `Enter`: 打开所选 session 的 detail overlay
+- `/session` 或 `/session list` 入口下，`Enter`: 打开所选 session 的 detail overlay
+- `/session resume` 或 `/session switch` 入口下，`Enter`: 直接 resume 所选 session；detail 改为显式次级动作
 - `Ctrl-R`: resume 所选 session；成功后关闭 picker，并进入 restore hydration
 - `Ctrl-A`: archive 所选 session；成功后 picker 原地刷新
 - `Ctrl-D`: delete 所选 session；先进入 confirm overlay，再执行删除，成功后 picker 原地刷新

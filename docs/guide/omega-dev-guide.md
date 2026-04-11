@@ -1,8 +1,9 @@
 ---
 status: active
 owner: omega-team
+last_verified_commit: N/A
 created: 2026-03-18
-updated: 2026-04-10
+updated: 2026-04-11
 audience: developers
 level: intermediate
 ---
@@ -81,9 +82,9 @@ cargo run -p omega-app --features document-backend
 
 | Crate | 当前职责 |
 |-------|----------|
-| `omega-context` | 对外统一上下文 facade |
+| `omega-context` | 对外统一上下文 facade，组装 prompt-facing context、document/memory recall 与 session-ledger history hits |
 | `omega-project` | project root、session catalog、`/project` command ownership 与 `.omega/` project state |
-| `omega-memory` | 会话记忆、summary ranking 与 compaction |
+| `omega-memory` | repo-wide 长期记忆 archive、summary ranking 与 compaction |
 | `omega-document` | 文件治理、索引、检索与文档工具后端 |
 | `omega-todo` | todo 工具与快照模型 |
 | `omega-tasks` | 持久化任务层预留 |
@@ -108,7 +109,7 @@ cargo run -p omega-app --features document-backend
 | `omega-theme` | TUI 主题与视觉令牌 |
 | `omega-keymap` | keymap 与 `.omega` 键位配置 |
 | `omega-hooks` | step lifecycle hook 相关能力 |
-| `omega-compression` | 历史压缩相关能力预留 |
+| `omega-compression` | session ledger load/search、预算裁剪与后续历史压缩入口 |
 | `omega-test-support` | 脚本化测试支撑 |
 
 ## 常见任务
@@ -142,13 +143,12 @@ cargo test-document-commands
 
 ### 管理 session 与恢复上下文
 
-当前 session artifacts 全部保存在仓库内的 `.omega/sessions/`：
+当前 session artifacts 全部保存在仓库内的 `.omega/sessions/`，并已切到 per-session 目录 + canonical ledger：
 
 | 文件 | 用途 |
 |------|------|
-| `<session-id>.json` | session catalog entry，记录 title、status、turn 计数和 resume-ready 元数据 |
-| `<session-id>.snapshot.json` | restore seed，保存 routing、skill routing、todo snapshot、step summaries 和最近 cwd |
-| `<session-id>.log.jsonl` | 用于 restore hydration 的 replay log |
+| `<session-id>/session.json` | session catalog entry，记录 title、status、turn 计数和 resume-ready 元数据 |
+| `<session-id>/session.context.jsonl` | canonical context ledger，统一承载 working-set snapshot 与 replay/history records |
 
 TUI 中的默认入口已经切到 overlay-first：
 
@@ -175,9 +175,9 @@ TUI 中的默认入口已经切到 overlay-first：
 /session delete <session-id>
 ```
 
-应用启动时会优先复用当前 project record 上的 active session，而不是先新建一个占位 session 再等待手工 `/session resume`。如果该 active session 带有 snapshot/replay log，TUI 会在启动阶段直接 hydrate 旧 response/log timeline；如果没有可恢复快照，则继续复用同一个 session id 但以空白 runtime state 启动。
+应用启动现在默认停在 runtime-only `Unbound` 状态：不会自动创建 session，也不会自动恢复上次 active session。首条真实用户消息会 lazy-create 并绑定一个新 session；显式 `/session new` 也会创建并绑定新 session；显式 `/session resume` 才会绑定并恢复旧 session。`project record.active_session_id` 现在只作为最近选择提示和 picker 排序线索，不再驱动启动自动恢复。
 
-session restore 不会重放旧 workflow step 或 tool run。当前实现只恢复 session-local runtime state，并把后续 memory recall / observation recall 收口到当前 `session_id`，避免不同 project session 之间继续串用 archived turn history。
+session restore 不会重放旧 workflow step 或 tool run。当前恢复链路已经改为通过 `omega-compression` 读取 `session.context.jsonl` 的 projection：默认按 `400k` token budget 做近期优先装载，并为 TUI hydration 投影可见 replay records；老的 `<session-id>.snapshot.json` / `<session-id>.log.jsonl` 若存在，会在首次读取时自动迁移到 canonical ledger。实际 prompt assembly 现在也会消费两类 ledger-derived surface：一类是 checkpoint / truncation 的 `<session_ledger_context>` note，另一类是基于 canonical ledger historical search 命中的 `<session_history_hits>`。与之对应，`omega-memory` 的 archive query 已退回 repo-wide long-term recall aid，不再承担 session-local history 的主链路语义。恢复后的 notice 与 direct `/session resume <id>` 结果会显式展示 `recent records / compression summaries / search hits` 的装配统计；`/session info <session-id>` 也会显示 canonical ledger 是否存在、record/replay/snapshot/checkpoint 计数与最新 checkpoint 摘要。后续 recall/rerank 质量与更深层 checkpoint retrieval 继续作为独立 follow-up 推进，不再属于 Task 17 baseline。
 
 ### 格式化与静态检查
 

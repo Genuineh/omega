@@ -9,6 +9,7 @@ use serde::Deserialize;
 pub const DEFAULT_MODEL_CONFIG_PATH: &str = ".omega/model.toml";
 const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 32_000;
 const DEFAULT_CONTEXT_WINDOW: u32 = 200_000;
+const DEFAULT_SESSION_CONTEXT_BUDGET_TOKENS: usize = 400_000;
 
 const DEFAULT_MODEL_CONFIG_TOML: &str = r#"# Model budget configuration
 #
@@ -17,6 +18,10 @@ const DEFAULT_MODEL_CONFIG_TOML: &str = r#"# Model budget configuration
 # step context, and response) fits in a single request.
 [context]
 context_window = 200000
+
+# `session_context_budget_tokens` controls how much session ledger history the
+# resume and recall pipeline may reconstruct by default.
+session_context_budget_tokens = 400000
 
 # `max_tokens` controls the maximum assistant response length per request.
 # It does NOT cap the full context window — only the output portion.
@@ -49,6 +54,7 @@ feature_non_execute_blocked = ["bash", "apply_patch", "create_file", "edit_file"
 pub struct AgentModelConfig {
     pub context_window: u32,
     pub max_output_tokens: u32,
+    pub session_context_budget_tokens: usize,
     pub bash_allowed_commands: Vec<String>,
     pub provider: ProviderPacingConfig,
 }
@@ -65,6 +71,7 @@ impl Default for AgentModelConfig {
         Self {
             context_window: DEFAULT_CONTEXT_WINDOW,
             max_output_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
+            session_context_budget_tokens: DEFAULT_SESSION_CONTEXT_BUDGET_TOKENS,
             bash_allowed_commands: default_bash_allowed_commands(),
             provider: ProviderPacingConfig::default(),
         }
@@ -163,6 +170,12 @@ impl AgentModelConfig {
                 }
                 config.context_window = context_window;
             }
+            if let Some(session_context_budget_tokens) = context.session_context_budget_tokens {
+                if session_context_budget_tokens == 0 {
+                    anyhow::bail!("context.session_context_budget_tokens must be >= 1");
+                }
+                config.session_context_budget_tokens = session_context_budget_tokens;
+            }
         }
         if let Some(request) = file.request {
             if let Some(max_tokens) = request.max_tokens {
@@ -254,6 +267,8 @@ struct AgentModelConfigFile {
 struct ContextConfigFile {
     #[serde(default)]
     context_window: Option<u32>,
+    #[serde(default)]
+    session_context_budget_tokens: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -313,6 +328,7 @@ mod tests {
         assert!(loaded.warnings.is_empty());
         assert_eq!(loaded.config.max_output_tokens, 32_000);
         assert_eq!(loaded.config.context_window, 200_000);
+        assert_eq!(loaded.config.session_context_budget_tokens, 400_000);
         assert!(loaded
             .config
             .bash_allowed_commands
@@ -325,6 +341,7 @@ mod tests {
             .any(|command| command == "grep"));
         assert!(written.contains("max_tokens = 32000"));
         assert!(written.contains("context_window = 200000"));
+        assert!(written.contains("session_context_budget_tokens = 400000"));
         assert!(written.contains("allowed_commands"));
         assert!(written.contains("request_throttle_ms = 100"));
         assert!(loaded.config.provider.request_throttle_interval.is_none());
@@ -339,7 +356,7 @@ mod tests {
         std::fs::create_dir_all(&omega_dir).unwrap();
         std::fs::write(
             omega_dir.join("model.toml"),
-            "[context]\ncontext_window = 128000\n\n[request]\nmax_tokens = 64000\n",
+            "[context]\ncontext_window = 128000\nsession_context_budget_tokens = 512000\n\n[request]\nmax_tokens = 64000\n",
         )
         .unwrap();
 
@@ -348,6 +365,7 @@ mod tests {
         assert!(loaded.warnings.is_empty());
         assert_eq!(loaded.config.max_output_tokens, 64_000);
         assert_eq!(loaded.config.context_window, 128_000);
+        assert_eq!(loaded.config.session_context_budget_tokens, 512_000);
     }
 
     #[test]

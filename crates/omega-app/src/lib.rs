@@ -5,6 +5,7 @@ mod env_config;
 mod model_config;
 mod runtime_message_policy;
 
+use omega_compression::set_session_context_budget_tokens;
 use omega_core::{DynLlmClient, MinimaxClient, MinimaxConfig};
 use omega_keymap::KeymapManager;
 use omega_observability::init_tracing_channel;
@@ -68,6 +69,7 @@ pub async fn run() -> anyhow::Result<()> {
     for warning in &loaded_model_config.warnings {
         warn!(%warning, source = %loaded_model_config.source_label(), "model config fallback activated");
     }
+    set_session_context_budget_tokens(loaded_model_config.config.session_context_budget_tokens);
 
     let config = apply_provider_pacing_overrides(
         MinimaxConfig::from_env().map_err(|e| anyhow::anyhow!("{e}"))?,
@@ -105,6 +107,7 @@ pub async fn run() -> anyhow::Result<()> {
     info!(
         context_window = loaded_model_config.config.context_window,
         max_output_tokens = loaded_model_config.config.max_output_tokens,
+        session_context_budget_tokens = loaded_model_config.config.session_context_budget_tokens,
         provider_request_throttle_ms,
         provider_max_concurrent_requests,
         provider_rate_limit_retry_delay_ms,
@@ -180,6 +183,7 @@ mod tests {
         let config = AgentModelConfig::default();
         assert_eq!(config.max_output_tokens, 32_000);
         assert_eq!(config.context_window, 200_000);
+        assert_eq!(config.session_context_budget_tokens, 400_000);
         assert!(config
             .bash_allowed_commands
             .iter()
