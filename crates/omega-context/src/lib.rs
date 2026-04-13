@@ -15,6 +15,7 @@ use omega_client::{
 };
 #[cfg(feature = "document-backend")]
 use omega_document::OmegaDocument;
+use omega_project_layout::{OmegaProjectLayout, STORE_MANIFEST_PATH, STORE_TANTIVY_DIR_PATH};
 pub use document_model::{
     ArchiveTrigger, DocType, DocumentActivitySummary, DocumentHealthReport,
     DocumentHealthStatus, DocumentMutationMode, DocumentOp, DocumentOperatorUsage,
@@ -1225,6 +1226,7 @@ impl KnowledgeQueryService for LocalKnowledgeQueryService {
 
         #[cfg(not(feature = "document-backend"))]
         {
+            let layout = OmegaProjectLayout::new(self.root.clone());
             Ok(ScanResult {
                 files_indexed: 0,
                 chunks_indexed: 0,
@@ -1233,16 +1235,8 @@ impl KnowledgeQueryService for LocalKnowledgeQueryService {
                 vector_ignored_paths: Vec::new(),
                 indexed_paths: Vec::new(),
                 embedded_paths: Vec::new(),
-                manifest_path: self
-                    .root
-                    .join(".omega/store/files.jsonl")
-                    .display()
-                    .to_string(),
-                keyword_index_path: self
-                    .root
-                    .join(".omega/store/tantivy")
-                    .display()
-                    .to_string(),
+                manifest_path: layout.store_manifest_path().display().to_string(),
+                keyword_index_path: layout.store_tantivy_dir().display().to_string(),
                 active_version: None,
                 pending_version: None,
                 archived_version_path: None,
@@ -1367,12 +1361,13 @@ impl LocalDiagnostics {
     }
 
     fn store_diagnostics(&self, turn_archive_count: u32) -> ContextStoreDiagnostics {
+        let layout = OmegaProjectLayout::new(self.root.clone());
         ContextStoreDiagnostics {
-            lance_db_size_bytes: dir_size_bytes(&self.root.join(".omega/store/lance")),
-            tantivy_index_size_bytes: dir_size_bytes(&self.root.join(".omega/store/tantivy")),
-            todo_items_count: count_jsonl_items(&self.root.join(".omega/store/todos.jsonl")),
+            lance_db_size_bytes: dir_size_bytes(&layout.store_lance_dir()),
+            tantivy_index_size_bytes: dir_size_bytes(&layout.store_tantivy_dir()),
+            todo_items_count: count_jsonl_items(&layout.store_todos_path()),
             turn_archive_count,
-            turn_archive_size_bytes: dir_size_bytes(&self.root.join(".omega/memory/turns")),
+            turn_archive_size_bytes: dir_size_bytes(&layout.memory_turns_dir()),
         }
     }
 }
@@ -3124,6 +3119,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use omega_client::{ChatRequest, ContentBlock, Message, ToolDefinition};
+    use omega_project_layout::{STORE_MANIFEST_PATH, STORE_TANTIVY_DIR_PATH};
     use omega_tools::{ToolFamily, ToolManifestMetadata, ToolPromptProfile};
     use omega_workflow::{DataFormat, OutputRecoveryMode};
 
@@ -3603,8 +3599,8 @@ mod tests {
             vector_ignored_paths: Vec::new(),
             indexed_paths: Vec::new(),
             embedded_paths: Vec::new(),
-            manifest_path: ".omega/store/files.jsonl".to_string(),
-            keyword_index_path: ".omega/store/tantivy".to_string(),
+            manifest_path: STORE_MANIFEST_PATH.to_string(),
+            keyword_index_path: STORE_TANTIVY_DIR_PATH.to_string(),
             active_version: None,
             pending_version: None,
             archived_version_path: None,

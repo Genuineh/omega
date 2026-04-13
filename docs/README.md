@@ -22,8 +22,8 @@ version: v1.0
 | If you need to work on... | Read these first |
 |------|------------------|
 | Runtime and app boundary | `docs/specs/omega-app-package.md`, `docs/specs/omega-runtime-message-pipeline.md`, `docs/specs/omega-runtime-ui-message-contract.md`, `docs/specs/omega-task-delivery-observability.md` |
-| Context assembly and session data | `docs/specs/omega-context-management.md`, `docs/specs/omega-session-resume.md`, `docs/specs/omega-operator-picker-overlay.md`, `docs/specs/omega-step-session-asset-model.md`, `docs/specs/omega-step-lifecycle-hooks.md` |
-| Project identity and knowledge ownership | `docs/specs/omega-project-system.md`, `docs/specs/omega-context-management.md`, `docs/specs/omega-command-system.md`, `docs/specs/omega-tui-document-memory-supervision.md` |
+| Context assembly and session data | `docs/specs/omega-context-management.md`, `docs/specs/omega-session-resume.md`, `docs/specs/omega-project-path-layout.md`, `docs/specs/omega-operator-picker-overlay.md`, `docs/specs/omega-step-session-asset-model.md`, `docs/specs/omega-step-lifecycle-hooks.md` |
+| Project identity and knowledge ownership | `docs/specs/omega-project-system.md`, `docs/specs/omega-project-path-layout.md`, `docs/specs/omega-context-management.md`, `docs/specs/omega-command-system.md`, `docs/specs/omega-tui-document-memory-supervision.md` |
 | Knowledge evolution and long-term project memory | `docs/specs/omega-knowledge-evolution.md`, `docs/specs/omega-context-management.md`, `docs/specs/omega-tui-document-memory-supervision.md` |
 | Tools and workflow policy | `docs/specs/omega-tool-system-upgrade.md`, `docs/specs/omega-tool-prompt-optimization.md`, `docs/specs/omega-workflow-package.md`, `docs/specs/omega-scene-routing.md`, `docs/specs/omega-root-skill-routing.md` |
 | Command system and document knowledge | `docs/specs/omega-command-system.md`, `docs/specs/omega-session-resume.md`, `docs/specs/omega-operator-picker-overlay.md`, `docs/specs/omega-project-system.md`, `docs/specs/omega-context-management.md`, `docs/specs/omega-tui-document-memory-supervision.md` |
@@ -57,6 +57,7 @@ version: v1.0
 
 ## Change Log
 
+- 2026-04-11: Added `docs/specs/omega-project-path-layout.md` to the context/session and project-ownership reading paths so the `.omega/` vs `.omega-state/` split has a stable planning entry point.
 - 2026-04-10: Added `docs/specs/omega-operator-picker-overlay.md` to the context/session, command-system, and TUI interaction reading paths so overlay-first operator selection has a stable planning entry point.
 - 2026-04-10: Added `docs/specs/omega-session-resume.md` to the context/session and command-system reading paths so session restore and `/session` control-plane planning has a stable entry point.
 - 2026-04-09: Added `docs/specs/omega-project-system.md` to the active reading paths so project-owned document/memory/session planning has a stable entry point.

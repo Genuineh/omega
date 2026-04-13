@@ -70,7 +70,7 @@ Status note (2026-04-07): `Phase 1 ~ Phase 6` 的 retention / memory query / obs
 
 ### 1. Local Source Of Truth Remains Primary
 
-真实文件树、`.omega/store/files.jsonl`、store version ledger、document governance 结果与 turn archive 仍是主真相。
+真实文件树、`.omega-state/store/files.jsonl`、store version ledger、document governance 结果与 turn archive 仍是主真相。
 
 任何 observation、insight card 或 recall cache 都只能是派生层，且必须指回主真相。
 
@@ -207,7 +207,7 @@ pub trait MemoryService: Send + Sync {
 
 ### Ownership
 
-观察层由 `omega-context` 编排生成，但存储保持 repo-local。推荐初版落在 `.omega/memory/observations.jsonl`，原因是：
+观察层由 `omega-context` 编排生成，但存储保持 repo-local。推荐初版落在 `.omega-state/memory/observations.jsonl`，原因是：
 
 - 仍属于长期项目记忆而非 document source-of-truth
 - 可以同时引用 turn archive 与 document/store evidence
@@ -447,7 +447,7 @@ fallback 要求：
 | Topic | Decision | Rationale |
 |------|----------|-----------|
 | Unified recall timing | Defer until Phase 4 | `MemoryService` still lacks query API |
-| Observation storage | Repo-local JSONL under `.omega/memory/observations.jsonl` | Keeps derived knowledge local without changing document source-of-truth |
+| Observation storage | Repo-local JSONL under `.omega-state/memory/observations.jsonl` | Keeps derived knowledge local without changing document source-of-truth |
 | Retention profiles | Add at archive-time | Noise should be filtered before long-term storage |
 | Strategy-specific chunking | Later phase | Requires parser and maintenance cost not suitable for low-risk rollout |
 | Relation graph | Lightweight and deferred | Current codebase has no graph maintenance path |

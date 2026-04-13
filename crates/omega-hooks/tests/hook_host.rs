@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use omega_project_layout::OmegaProjectLayout;
 use omega_hooks::{
     HookAdvanceOutcome, HookDispatchInput, HookEventKind, HookHost, HookSessionContextSnapshot,
     HookStepKey, HookTodoSnapshot, HookWorkflowRole, DEFAULT_HOOKS_DIR, DEFAULT_HOOK_MANIFEST_FILE,
@@ -11,7 +12,7 @@ use omega_test_support::persistent_test_root;
 fn hook_host_loads_dynamic_fixture_and_preserves_storage_until_after_step() {
     let root = unique_test_root("hook-host");
     let hook_dir = root.join(DEFAULT_HOOKS_DIR).join("todo_managed_execute");
-    let artifact_path = compile_fixture_hook(&hook_dir, "todo_managed_execute");
+    let artifact_path = compile_fixture_hook(&root, &hook_dir, "todo_managed_execute");
     std::fs::write(
         hook_dir.join(DEFAULT_HOOK_MANIFEST_FILE),
         format!(
@@ -188,10 +189,14 @@ fn base_input(event: HookEventKind) -> HookDispatchInput {
     }
 }
 
-fn compile_fixture_hook(hook_dir: &Path, crate_name: &str) -> PathBuf {
+fn compile_fixture_hook(root: &Path, hook_dir: &Path, crate_name: &str) -> PathBuf {
     std::fs::create_dir_all(hook_dir).unwrap();
     let source_path = hook_dir.join("fixture.rs");
-    let artifact_path = hook_dir.join(format!("lib{crate_name}.so"));
+    let artifact_dir = OmegaProjectLayout::new(root.to_path_buf())
+        .hook_artifacts_dir()
+        .join(crate_name);
+    std::fs::create_dir_all(&artifact_dir).unwrap();
+    let artifact_path = artifact_dir.join(format!("lib{crate_name}.so"));
     std::fs::write(&source_path, fixture_source()).unwrap();
 
     let status = Command::new("rustc")

@@ -1,0 +1,23 @@
+# Default omega scene routing
+root_workflow = "root"
+default_scene = "feature"
+
+[[scenes]]
+id = "chat"
+label = "Chat"
+workflow = "chat"
+
+[[scenes]]
+id = "research"
+label = "Research"
+workflow = "research"
+
+[[scenes]]
+id = "deep-research"
+label = "Deep Research"
+workflow = "deep-research"
+
+[[scenes]]
+id = "feature"
+label = "Feature"
+workflow = "feature"

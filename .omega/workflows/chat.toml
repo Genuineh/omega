@@ -1,0 +1,12 @@
+# Default chat workflow
+name = "chat"
+
+[[steps]]
+id = "chat"
+label = "Chat"
+prompt = ".omega/prompt/step/chat.md"
+loop_mode = "agent_loop"
+max_iterations = 200
+tool_request = { mode = "block", groups = ["chat_blocked"] }
+skill_request = { mode = "match_task" }
+enabled = true

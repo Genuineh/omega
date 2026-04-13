@@ -3,9 +3,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use omega_project_layout::{OmegaProjectLayout, ENV_CONFIG_PATH};
 use serde::Deserialize;
 
-pub const DEFAULT_ENV_CONFIG_PATH: &str = ".omega/env.toml";
+pub const DEFAULT_ENV_CONFIG_PATH: &str = ENV_CONFIG_PATH;
 
 const DEFAULT_ENV_CONFIG_TOML: &str = r#"# Repository-local environment overrides loaded by omega-app at startup.
 #
@@ -63,7 +64,7 @@ impl LoadedAppEnvConfig {
 
 impl AppEnvConfig {
     pub fn load_and_apply(root: &Path) -> LoadedAppEnvConfig {
-        let path = root.join(DEFAULT_ENV_CONFIG_PATH);
+        let path = OmegaProjectLayout::new(root.to_path_buf()).env_config_path();
         if !path.exists() {
             return match Self::write_default_file(&path) {
                 Ok(()) => match Self::load_from_file(&path) {

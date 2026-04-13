@@ -1,0 +1,23 @@
+{
+    "type": "object",
+    "required": ["goal", "tasks", "validation_targets"],
+    "properties": {
+        "goal": { "type": "string" },
+        "tasks": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["id", "title", "description"],
+                "properties": {
+                    "id": { "type": "string" },
+                    "title": { "type": "string" },
+                    "description": { "type": "string" }
+                }
+            }
+        },
+        "validation_targets": {
+            "type": "array",
+            "items": { "type": "string" }
+        }
+    }
+}

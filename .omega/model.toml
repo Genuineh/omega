@@ -1,0 +1,28 @@
+# Model budget configuration
+#
+# `context_window` is the model's full context window size (input + output).
+# This controls how much total content (system prompt, history, summaries,
+# step context, and response) fits in a single request.
+[context]
+context_window = 204800
+
+# `max_tokens` controls the maximum assistant response length per request.
+# It does NOT cap the full context window — only the output portion.
+[request]
+max_tokens = 32000
+
+[tools.bash]
+allowed_commands = ["cat", "echo", "false", "find", "grep", "head", "ls", "printf", "pwd", "rg", "sleep", "tail", "touch", "tr", "true", "wait", "wc", "yes"]
+
+[tools.batch]
+max_requests = 8
+
+[tools.groups]
+root_routing_blocked = ["bash", "batch", "read_file", "list_dir", "glob_search", "grep_search", "web_search", "web_fetch", "apply_patch", "create_file", "edit_file", "todo", "todo_read", "todo_write", "ask_user_question", "task", "write_file", "load_skill", "search_codebase", "manage_document"]
+chat_blocked = ["apply_patch", "create_file", "edit_file", "todo", "todo_read", "todo_write", "ask_user_question", "write_file", "manage_document"]
+feature_non_execute_blocked = ["bash", "apply_patch", "create_file", "edit_file", "todo", "todo_read", "todo_write", "ask_user_question", "write_file", "manage_document"]
+
+[provider]
+request_throttle_ms = 100
+max_concurrent_requests = 1
+rate_limit_retry_delay_ms = 10000

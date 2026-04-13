@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 omega-todo = { path = "../omega-todo" }
+omega-project-layout = { path = "../omega-project-layout" }
 anyhow.workspace = true
 arrow-array.workspace = true
 arrow-schema.workspace = true

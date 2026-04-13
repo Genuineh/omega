@@ -51,7 +51,7 @@ Omega 的第一条命令族应是 `/document`。它不是“再造一个新的�
 - 不把 command system 设计成又一套模型工具注册表。
 - 不让 `omega-app` 或 `omega-tui` 直接调用 `omega-document`。
 - 不在第一阶段支持任意脚本化 repo commands 或复杂 plugin marketplace。
-- 不引入新的外部向量存储服务；仓库级知识库继续以 `.omega/store/` 为本地持久化基线。
+- 不引入新的外部向量存储服务；仓库级知识库继续以 `.omega-state/store/` 为本地持久化基线。
 
 ## Reference Findings From Claude Code
 
@@ -347,7 +347,7 @@ pub trait CommandHintProvider: Send + Sync {
 
 | Subcommand | Service Boundary | Existing API | 说明 |
 |------------|------------------|--------------|------|
-| `/document init` | `KnowledgeQueryService` | `scan_workspace()` | 初始化 `.omega/store/`，构建或刷新 manifest、Tantivy、LanceDB |
+| `/document init` | `KnowledgeQueryService` | `scan_workspace()` | 初始化 `.omega-state/store/`，构建或刷新 manifest、Tantivy、LanceDB |
 | `/document sync` | `KnowledgeQueryService` | `scan_workspace()` | 与 `init` 走同一增量扫描管线，但面向日常刷新语义 |
 | `/document query` | `KnowledgeQueryService` | `search(SearchQuery)` | 默认 hybrid retrieval，作为项目级 RAG 查询入口 |
 | `/document health` | `DocumentGovernanceService` | `check_document_health()` | 输出治理与索引健康状态 |
@@ -362,7 +362,7 @@ pub trait CommandHintProvider: Send + Sync {
 要求：
 
 - 直接调用 `scan_workspace()`。
-- 在空仓库或首次启用时创建 `.omega/store/files.jsonl`、`.omega/store/tantivy/`、`.omega/store/lance/` 等派生存储。
+- 在空仓库或首次启用时创建 `.omega-state/store/files.jsonl`、`.omega-state/store/tantivy/`、`.omega-state/store/lance/` 等派生存储。
 - 输出至少包括 `files_indexed`、`chunks_indexed`、`deleted_marked`、keyword/vector index readiness。
 - 如果当前编译未启用 `document-backend`，命令必须被隐藏或明确标记 unavailable，而不是运行时报 panic。
 - 成功后刷新 diagnostics/supervision snapshot，让 TUI 能马上看到最新 index 状态。
@@ -402,7 +402,7 @@ pub trait CommandHintProvider: Send + Sync {
 
 | 维度 | `/document init` | `/document sync` |
 |------|-----------------|-----------------|
-| 主要场景 | 首次建立知识库；`.omega/store/` 尚不存在或需完全重建 | 日常刷新；`store/` 已存在，只需消化增量变更 |
+| 主要场景 | 首次建立知识库；`.omega-state/store/` 尚不存在或需完全重建 | 日常刷新；`store/` 已存在，只需消化增量变更 |
 | store 创建 | 显式创建目录与持久化文件 | 若 store 不存在则报错，提示用户先运行 `init` |
 | 扫描范围 | 全量扫描整个 workspace | 仅处理 changed files（长远目标；首轮实现可与 `init` 共用全量路径，但必须在输出中标注 `full-scan fallback`）|
 | 输出侧重 | 构建摘要：`files_indexed`、`chunks_indexed`、store creation paths | 刷新摘要：`files_changed`、`deleted_marked`、index freshness timestamp |

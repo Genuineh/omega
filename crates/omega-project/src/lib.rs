@@ -10,18 +10,13 @@ use omega_context::{
     ContextMemoryDiagnostics, GovernanceEventSignal, OmegaContextFacade,
     SessionHistoryHit, SessionHistoryQuery, SessionHistoryService,
 };
+use omega_project_layout::{
+    OmegaProjectLayout, SESSION_RECORD_FILE, SESSION_REPLAY_LOG_SUFFIX,
+    SESSION_SNAPSHOT_SUFFIX,
+};
 use serde::{Deserialize, Serialize};
 
-const PROJECT_DIR: &str = ".omega";
-const PROJECT_METADATA_FILE: &str = "project.json";
-const PROJECT_CONFIG_TOML: &str = "project.toml";
-const PROJECT_CONFIG_JSON: &str = "project.json";
-const PROJECT_SESSIONS_DIR: &str = "sessions";
 const PROJECT_ID_LEN: usize = 12;
-const SESSION_RECORD_FILE: &str = "session.json";
-const SESSION_CONTEXT_LEDGER_FILE: &str = "session.context.jsonl";
-const SESSION_SNAPSHOT_SUFFIX: &str = ".snapshot.json";
-const SESSION_REPLAY_LOG_SUFFIX: &str = ".log.jsonl";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectRecord {
@@ -293,6 +288,10 @@ impl OmegaProjectHandle {
         self.record.lock().unwrap().root.clone()
     }
 
+    fn layout(&self) -> OmegaProjectLayout {
+        OmegaProjectLayout::new(self.root())
+    }
+
     pub fn display_name(&self) -> String {
         self.record.lock().unwrap().display_name.clone()
     }
@@ -355,39 +354,44 @@ impl OmegaProjectHandle {
     }
 
     pub fn list_sessions(&self) -> Result<Vec<ProjectSessionRef>> {
-        let sessions_dir = self.sessions_dir();
-        if !sessions_dir.exists() {
-            return Ok(Vec::new());
-        }
-
         let mut sessions = BTreeMap::new();
-        for entry in fs::read_dir(&sessions_dir)
-            .with_context(|| format!("read project sessions directory {}", sessions_dir.display()))?
-            .filter_map(|entry| entry.ok())
-        {
-            let path = entry.path();
-            if path.is_dir() {
-                let session_path = path.join(SESSION_RECORD_FILE);
-                if session_path.exists() {
-                    let session = read_session_record(&session_path)?;
-                    sessions.insert(session.session_id.clone(), session);
+        for sessions_dir in [self.sessions_dir(), self.layout().legacy_sessions_dir()] {
+            if !sessions_dir.exists() {
+                continue;
+            }
+
+            for entry in fs::read_dir(&sessions_dir)
+                .with_context(|| {
+                    format!("read project sessions directory {}", sessions_dir.display())
+                })?
+                .filter_map(|entry| entry.ok())
+            {
+                let path = entry.path();
+                if path.is_dir() {
+                    let session_path = path.join(SESSION_RECORD_FILE);
+                    if session_path.exists() {
+                        let session = read_session_record(&session_path)?;
+                        sessions.insert(session.session_id.clone(), session);
+                    }
+                    continue;
                 }
-                continue;
-            }
 
-            if !path.extension().is_some_and(|ext| ext == "json") {
-                continue;
-            }
+                if !path.extension().is_some_and(|ext| ext == "json") {
+                    continue;
+                }
 
-            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-                continue;
-            };
-            if name.ends_with(SESSION_SNAPSHOT_SUFFIX) || name.ends_with(SESSION_REPLAY_LOG_SUFFIX) {
-                continue;
-            }
+                let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                    continue;
+                };
+                if name.ends_with(SESSION_SNAPSHOT_SUFFIX)
+                    || name.ends_with(SESSION_REPLAY_LOG_SUFFIX)
+                {
+                    continue;
+                }
 
-            let session = read_session_record(&path)?;
-            sessions.entry(session.session_id.clone()).or_insert(session);
+                let session = read_session_record(&path)?;
+                sessions.entry(session.session_id.clone()).or_insert(session);
+            }
         }
 
         let mut sessions = sessions.into_values().collect::<Vec<_>>();
@@ -627,42 +631,40 @@ impl OmegaProjectHandle {
     }
 
     pub fn delete_local_state(&self) -> Result<()> {
-        let omega_dir = self.root().join(PROJECT_DIR);
-        if omega_dir.exists() {
-            fs::remove_dir_all(&omega_dir)
-                .with_context(|| format!("delete project state {}", omega_dir.display()))?;
+        let state_root = self.layout().state_root();
+        if state_root.exists() {
+            fs::remove_dir_all(&state_root)
+                .with_context(|| format!("delete project state {}", state_root.display()))?;
         }
         Ok(())
     }
 
     fn sessions_dir(&self) -> PathBuf {
-        self.root().join(PROJECT_DIR).join(PROJECT_SESSIONS_DIR)
+        self.layout().sessions_dir()
     }
 
     fn session_dir(&self, session_id: &str) -> PathBuf {
-        self.sessions_dir().join(session_id)
+        self.layout().session_dir(session_id)
     }
 
     fn session_path(&self, session_id: &str) -> PathBuf {
-        self.session_dir(session_id).join(SESSION_RECORD_FILE)
+        self.layout().session_record_path(session_id)
     }
 
     fn legacy_session_path(&self, session_id: &str) -> PathBuf {
-        self.sessions_dir().join(format!("{session_id}.json"))
+        self.layout().legacy_session_record_path(session_id)
     }
 
     fn context_ledger_path(&self, session_id: &str) -> PathBuf {
-        self.session_dir(session_id).join(SESSION_CONTEXT_LEDGER_FILE)
+        self.layout().session_context_ledger_path(session_id)
     }
 
     fn legacy_snapshot_path(&self, session_id: &str) -> PathBuf {
-        self.sessions_dir()
-            .join(format!("{session_id}{SESSION_SNAPSHOT_SUFFIX}"))
+        self.layout().legacy_snapshot_path(session_id)
     }
 
     fn legacy_replay_log_path(&self, session_id: &str) -> PathBuf {
-        self.sessions_dir()
-            .join(format!("{session_id}{SESSION_REPLAY_LOG_SUFFIX}"))
+        self.layout().legacy_replay_log_path(session_id)
     }
 
     fn refresh_resume_ready(&self, session_id: &str) -> Result<ProjectSessionRef> {
@@ -717,11 +719,7 @@ impl ProjectSessionHistoryService {
     }
 
     fn context_ledger_path(&self, session_id: &str) -> PathBuf {
-        self.root
-            .join(PROJECT_DIR)
-            .join(PROJECT_SESSIONS_DIR)
-            .join(session_id)
-            .join(SESSION_CONTEXT_LEDGER_FILE)
+        OmegaProjectLayout::new(self.root.clone()).session_context_ledger_path(session_id)
     }
 }
 
@@ -767,9 +765,18 @@ fn resolve_project_record(input: &ProjectResolutionInput) -> Result<ProjectRecor
         }
     };
 
-    let metadata_path = resolution.root.join(PROJECT_DIR).join(PROJECT_METADATA_FILE);
+    let layout = OmegaProjectLayout::new(resolution.root.clone());
+    let metadata_path = layout.project_state_path();
     if metadata_path.exists() {
         let mut record = read_project_record(&metadata_path)?;
+        record.last_opened_at = now_unix_seconds();
+        record.detection_kind = resolution.detection_kind;
+        return Ok(record);
+    }
+
+    let legacy_metadata_path = layout.legacy_project_state_path();
+    if legacy_metadata_path.exists() {
+        let mut record = read_project_record(&legacy_metadata_path)?;
         record.last_opened_at = now_unix_seconds();
         record.detection_kind = resolution.detection_kind;
         return Ok(record);
@@ -827,8 +834,9 @@ fn resolve_explicit_root(path: &Path) -> Result<PathBuf> {
 
 fn walk_project_markers(start: &Path) -> Option<PathBuf> {
     for candidate in start.ancestors() {
-        if candidate.join(PROJECT_DIR).join(PROJECT_CONFIG_TOML).exists()
-            || candidate.join(PROJECT_DIR).join(PROJECT_CONFIG_JSON).exists()
+        if OmegaProjectLayout::new(candidate.to_path_buf())
+            .project_manifest_path()
+            .exists()
             || candidate.join(".git").exists()
             || candidate.join("Cargo.toml").exists()
             || candidate.join("package.json").exists()
@@ -858,23 +866,13 @@ fn detect_kind_for_path(path: &Path, is_file_hint: bool) -> ProjectDetectionKind
 }
 
 fn read_project_name(root: &Path) -> Result<Option<String>> {
-    let toml_path = root.join(PROJECT_DIR).join(PROJECT_CONFIG_TOML);
+    let layout = OmegaProjectLayout::new(root.to_path_buf());
+    let toml_path = layout.project_manifest_path();
     if toml_path.exists() {
         let content = fs::read_to_string(&toml_path)
             .with_context(|| format!("read project config {}", toml_path.display()))?;
         let parsed: ProjectConfigToml = toml::from_str(&content)
             .with_context(|| format!("parse project config {}", toml_path.display()))?;
-        if parsed.name.as_deref().is_some_and(|value| !value.trim().is_empty()) {
-            return Ok(parsed.name);
-        }
-    }
-
-    let json_path = root.join(PROJECT_DIR).join(PROJECT_CONFIG_JSON);
-    if json_path.exists() {
-        let content = fs::read_to_string(&json_path)
-            .with_context(|| format!("read project config {}", json_path.display()))?;
-        let parsed: ProjectConfigJson = serde_json::from_str(&content)
-            .with_context(|| format!("parse project config {}", json_path.display()))?;
         if parsed.name.as_deref().is_some_and(|value| !value.trim().is_empty()) {
             return Ok(parsed.name);
         }
@@ -888,26 +886,26 @@ struct ProjectConfigToml {
     name: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-struct ProjectConfigJson {
-    name: Option<String>,
-}
-
 fn ensure_project_layout(root: &Path) -> Result<()> {
-    fs::create_dir_all(root.join(PROJECT_DIR).join(PROJECT_SESSIONS_DIR)).with_context(|| {
-        format!(
-            "create project layout at {}",
-            root.join(PROJECT_DIR).display()
-        )
+    let layout = OmegaProjectLayout::new(root.to_path_buf());
+    fs::create_dir_all(layout.sessions_dir()).with_context(|| {
+        format!("create project layout at {}", layout.state_root().display())
     })?;
     Ok(())
 }
 
 fn write_project_record(record: &ProjectRecord) -> Result<()> {
     ensure_project_layout(&record.root)?;
-    let path = record.root.join(PROJECT_DIR).join(PROJECT_METADATA_FILE);
+    let layout = OmegaProjectLayout::new(record.root.clone());
+    let path = layout.project_state_path();
     fs::write(&path, serde_json::to_vec_pretty(record)?)
         .with_context(|| format!("write project record {}", path.display()))?;
+
+    let legacy_path = layout.legacy_project_state_path();
+    if legacy_path.exists() {
+        fs::remove_file(&legacy_path)
+            .with_context(|| format!("delete legacy project record {}", legacy_path.display()))?;
+    }
     Ok(())
 }
 
@@ -1137,7 +1135,7 @@ mod tests {
 
         assert_eq!(handle.root(), root.canonicalize().unwrap());
         assert_eq!(handle.record().detection_kind, ProjectDetectionKind::CurrentFile);
-        assert!(root.join(PROJECT_DIR).join(PROJECT_METADATA_FILE).exists());
+        assert!(OmegaProjectLayout::new(root.clone()).project_state_path().exists());
     }
 
     #[test]
@@ -1202,6 +1200,43 @@ mod tests {
         assert_eq!(sessions[0].session_id, "session-b");
         assert_eq!(handle.record().active_session_id.as_deref(), Some("session-b"));
         assert!(!sessions[0].resume_ready);
+    }
+
+    #[test]
+    fn list_sessions_includes_legacy_flat_records() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path().join("workspace");
+        fs::create_dir_all(&root).unwrap();
+
+        let registry = ProjectRegistry::new();
+        let handle = registry
+            .resolve(ProjectResolutionInput {
+                current_file_path: None,
+                cwd: root.clone(),
+                explicit_root: Some(root.clone()),
+            })
+            .unwrap();
+
+        write_json_record(
+            &handle.legacy_session_path("legacy-session"),
+            &ProjectSessionRef {
+                session_id: "legacy-session".to_string(),
+                title: "Legacy Session".to_string(),
+                started_at: 1,
+                last_active_at: 2,
+                status: ProjectSessionStatus::Idle,
+                turn_count: 3,
+                last_user_turn_preview: Some("legacy".to_string()),
+                resume_ready: false,
+                archived_turn_count: 0,
+            },
+        )
+        .unwrap();
+
+        let sessions = handle.list_sessions().unwrap();
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].session_id, "legacy-session");
     }
 
     #[test]
@@ -1462,9 +1497,10 @@ mod tests {
     fn project_name_prefers_repo_local_config() {
         let temp_dir = tempfile::tempdir().unwrap();
         let root = temp_dir.path().join("workspace");
-        fs::create_dir_all(root.join(PROJECT_DIR)).unwrap();
+        let layout = OmegaProjectLayout::new(root.clone());
+        fs::create_dir_all(layout.config_root()).unwrap();
         fs::write(
-            root.join(PROJECT_DIR).join(PROJECT_CONFIG_TOML),
+            layout.project_manifest_path(),
             "name = \"Omega Docs\"\n",
         )
         .unwrap();

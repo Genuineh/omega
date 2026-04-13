@@ -139,11 +139,11 @@ cargo test-document-commands
 
 `cargo test -p omega-app` 现在默认不再拉起 `document-backend`，用于日常快速回归；`cargo test-document-backend` 只覆盖文档存储/keyword+semantic+hybrid retrieval 后端，`cargo test-document-commands` 单独覆盖 `omega-session` 的 `/document` command 集成。feature-enabled session 文档测试默认强制 mock embedding backend，避免真实模型下载与 `.fastembed_cache` 污染工作树。
 
-当前 project system 基线已经完整落地：session 启动时会先解析 active project，把 `.omega/` 下的 project metadata / session catalog 作为仓库级状态；`/document` 默认绑定 active project root，而 `/project list|switch|info|sessions|knowledge|delete` 提供显式运维入口。`/project switch` 不只更新 cwd/dispatcher，也会同步重绑 repo-scoped skills、hooks 和 tool surface。TUI 除底部 project badge 外，Sidebar 现也有正式 `Project` panel，并可通过键盘或鼠标打开统一 project detail overlay。
+当前 project system 基线已经完整落地：repo-local Omega 布局现已拆成 `.omega/` config/source root 与 `.omega-state/` runtime state root。`/document` 默认绑定 active project root，而 `/project list|switch|info|sessions|knowledge|delete` 提供显式运维入口；`/project switch` 不只更新 cwd/dispatcher，也会同步重绑 repo-scoped skills、hooks 和 tool surface。TUI 除底部 project badge 外，Sidebar 现也有正式 `Project` panel，并可通过键盘或鼠标打开统一 project detail overlay。
 
 ### 管理 session 与恢复上下文
 
-当前 session artifacts 全部保存在仓库内的 `.omega/sessions/`，并已切到 per-session 目录 + canonical ledger：
+当前 session artifacts 全部保存在仓库内的 `.omega-state/sessions/`，并已切到 per-session 目录 + canonical ledger：
 
 | 文件 | 用途 |
 |------|------|
@@ -203,6 +203,16 @@ sed -n '1,160p' docs/README.md
 | `.omega/workflows/*.toml` | child workflow 定义 |
 | `.omega/theme.toml` | TUI 主题覆盖 |
 
+运行时生成状态默认位于 `.omega-state/`，其中常见目录包括：
+
+| 路径 | 用途 |
+|------|------|
+| `.omega-state/project.json` | generated project metadata snapshot |
+| `.omega-state/sessions/` | session catalog entries 与 canonical ledgers |
+| `.omega-state/memory/` | archived turns 与 observations |
+| `.omega-state/store/` | document manifest、tantivy、LanceDB、store version/history |
+| `.omega-state/hooks/` | compiled hook artifacts |
+
 ## 当前架构约束
 
 - `omega-app` 拥有应用 bootstrap 与 runtime message policy。
@@ -231,6 +241,7 @@ Omega 使用 `tracing` 输出两类日志：
 - 如果要排查 `/document`、`search_codebase` 或 hybrid retrieval，请改用 `OMEGA_LOG=debug cargo run -p omega-app --features document-backend`
 - 如果怀疑节流或 429，检查 `.omega/model.toml` 的 `[provider]` 覆盖项
 - 如果 TUI 视图异常，先确认当前文档基线是否与 `docs/TODO.md` 和相关 spec 一致
+- `.omega-state/` 默认是可清理、不可提交的 runtime state；`.omega/` 则是 repo-local config/source root，可按仓库策略纳入版本控制
 
 ## Troubleshooting
 

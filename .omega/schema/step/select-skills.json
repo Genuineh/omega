@@ -1,0 +1,16 @@
+{
+  "type": "object",
+  "required": ["selected_skill_ids"],
+  "properties": {
+    "selected_skill_ids": {
+      "type": "array",
+      "maxItems": 5,
+      "uniqueItems": true,
+      "items": { "type": "string" }
+    },
+    "selection_reason": {
+      "type": "string",
+      "maxLength": 240
+    }
+  }
+}

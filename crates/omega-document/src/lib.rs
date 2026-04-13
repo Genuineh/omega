@@ -15,6 +15,13 @@ use futures_util::{future::BoxFuture, FutureExt, TryStreamExt};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use lancedb::index::Index as LanceIndex;
 use lancedb::query::{ExecutableQuery, QueryBase};
+use omega_project_layout::{
+    DOC_RULES_PATH, STOREIGNORE_PATH, STORE_COMMIT_LOG_PATH as INDEX_COMMIT_LOG_PATH,
+    STORE_DIR_PATH as STORE_DIR, STORE_HISTORY_DIR_PATH as STORE_HISTORY_DIR,
+    STORE_LANCE_DIR_PATH as LANCE_DIR, STORE_MANIFEST_PATH as FILE_MANIFEST_PATH,
+    STORE_STAGING_DIR_PATH as STORE_STAGING_DIR, STORE_TANTIVY_DIR_PATH as TANTIVY_DIR,
+    STORE_TODOS_PATH as TODO_STORE_PATH, STORE_VERSION_PATH,
+};
 use omega_todo::{TodoItem, TodoManager};
 use serde::{Deserialize, Serialize};
 use tantivy::collector::TopDocs;
@@ -23,17 +30,6 @@ use tantivy::schema::{Field, Schema, Value, FAST, INDEXED, STORED, STRING, TEXT}
 use tantivy::{doc, Index};
 use walkdir::WalkDir;
 
-const STORE_DIR: &str = ".omega/store";
-const FILE_MANIFEST_PATH: &str = ".omega/store/files.jsonl";
-const TODO_STORE_PATH: &str = ".omega/store/todos.jsonl";
-const TANTIVY_DIR: &str = ".omega/store/tantivy";
-const LANCE_DIR: &str = ".omega/store/lance";
-const INDEX_COMMIT_LOG_PATH: &str = ".omega/store/index-commit-log.json";
-const STORE_VERSION_PATH: &str = ".omega/store/store-version.json";
-const STORE_HISTORY_DIR: &str = ".omega/store/history";
-const STORE_STAGING_DIR: &str = ".omega/store/staging";
-const DOC_RULES_PATH: &str = ".omega/doc-rules.toml";
-const STOREIGNORE_PATH: &str = ".omega/.storeignore";
 const DEFAULT_MAX_RESULTS: usize = 10;
 const SEARCH_PREVIEW_LIMIT: usize = 200;
 const CHUNK_TARGET_CHARS: usize = 2_000;
@@ -3147,6 +3143,7 @@ mod tests {
         ArchiveTrigger, DocType, DocumentMutationMode, DocumentOp, FileStatus, OmegaDocument,
         SearchMode, SearchQuery, TodoOp,
     };
+    use omega_project_layout::{STORE_DIR_PATH, STORE_MANIFEST_PATH, STORE_VERSION_PATH};
     use omega_todo::{TodoItem, TodoStatus};
 
     static TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -3195,7 +3192,7 @@ mod tests {
 
         let scan = documents.scan_workspace().unwrap();
         assert!(scan.files_indexed >= 5);
-        assert!(root.join(".omega/store/files.jsonl").exists());
+        assert!(root.join(STORE_MANIFEST_PATH).exists());
 
         let results = documents
             .search(SearchQuery {
@@ -3223,10 +3220,10 @@ mod tests {
         let ledger = documents.file_store.load_version_ledger().unwrap();
         let active = ledger.active_version.expect("active version should exist");
 
-        assert!(root.join(".omega/store/store-version.json").exists());
+        assert!(root.join(STORE_VERSION_PATH).exists());
         assert_eq!(scan.active_version.as_ref(), Some(&active));
         assert!(active.version_id.starts_with("store-v"));
-        assert_eq!(active.storage_path, ".omega/store");
+        assert_eq!(active.storage_path, STORE_DIR_PATH);
         assert!(active.promoted_at.is_some());
         assert!(active.manifest_revision >= 1);
     }

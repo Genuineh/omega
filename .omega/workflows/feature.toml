@@ -1,0 +1,51 @@
+# Default feature workflow
+name = "feature"
+
+[[steps]]
+id = "explore"
+label = "Explore"
+prompt = ".omega/prompt/step/explore.md"
+loop_mode = "agent_loop"
+max_iterations = 200
+tool_request = { mode = "block", groups = ["feature_non_execute_blocked"] }
+skill_request = { mode = "match_task" }
+output_contract = { mode = "required", format = "json", schema_path = ".omega/schema/step/explore.json", max_retries = 2, recovery_mode = "repair_then_regenerate" }
+enabled = true
+
+[[steps]]
+id = "plan"
+label = "Plan"
+prompt = ".omega/prompt/step/plan.md"
+loop_mode = "agent_loop"
+max_iterations = 200
+tool_request = { mode = "block", groups = ["feature_non_execute_blocked"] }
+skill_request = { mode = "match_task" }
+input_contract = { mode = "required", sources = ["explore"] }
+output_contract = { mode = "required", format = "json", schema_path = ".omega/schema/step/plan.json", max_retries = 2, recovery_mode = "repair_then_regenerate" }
+enabled = true
+
+[[steps]]
+id = "execute"
+label = "Execute"
+prompt = ".omega/prompt/step/execute.md"
+loop_mode = "agent_loop"
+max_iterations = 200
+max_step_repeats = 10
+hooks = ["todo_managed_execute"]
+loop_contract = { kind = "todo_items", source = "plan.tasks", child_step_prefix = "execute", max_item_repeats = 3 }
+tool_request = { mode = "inherit" }
+skill_request = { mode = "match_task" }
+input_contract = { mode = "required", sources = ["plan"] }
+output_contract = { mode = "required", format = "json", schema_path = ".omega/schema/step/execute.json", max_retries = 2, recovery_mode = "repair_then_regenerate" }
+enabled = true
+
+[[steps]]
+id = "report"
+label = "Report"
+prompt = ".omega/prompt/step/report.md"
+loop_mode = "agent_loop"
+max_iterations = 200
+tool_request = { mode = "block", groups = ["feature_non_execute_blocked"] }
+skill_request = { mode = "match_task" }
+input_contract = { mode = "optional", sources = ["explore", "plan", "execute"] }
+enabled = true

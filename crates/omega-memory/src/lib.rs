@@ -5,6 +5,7 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
+use omega_project_layout::OmegaProjectLayout;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -692,7 +693,7 @@ impl LocalMemoryStore {
     }
 
     fn turns_dir(&self) -> PathBuf {
-        self.root.join(".omega/memory/turns")
+        OmegaProjectLayout::new(self.root.clone()).memory_turns_dir()
     }
 
     fn turn_path(&self, session_id: &str, turn_id: u64) -> PathBuf {
@@ -705,7 +706,7 @@ impl LocalMemoryStore {
     }
 
     fn observations_path(&self) -> PathBuf {
-        self.root.join(".omega/memory/observations.jsonl")
+        OmegaProjectLayout::new(self.root.clone()).memory_observations_path()
     }
 
     fn write_turn_locked(&self, record: &ArchivedTurnRecord) -> Result<()> {
@@ -1499,7 +1500,10 @@ mod tests {
         assert!(stats.retained_candidates_accepted >= 3);
         assert!(stats.retained_candidates_dropped >= 1);
         assert!(root
-            .join(".omega/memory/turns/session-session-a-turn-00000000000000000007.json")
+            .join(format!(
+                "{}/session-session-a-turn-00000000000000000007.json",
+                omega_project_layout::MEMORY_TURNS_DIR_PATH
+            ))
             .exists());
     }
 

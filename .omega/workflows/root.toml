@@ -1,0 +1,25 @@
+# Default root workflow
+name = "root"
+
+[[steps]]
+id = "select-workflow"
+label = "Select Workflow"
+prompt = ".omega/prompt/step/select-workflow.md"
+loop_mode = "agent_loop"
+max_iterations = 4
+tool_request = { mode = "block", groups = ["root_routing_blocked"] }
+skill_request = { mode = "match_task" }
+output_contract = { mode = "required", format = "json", max_retries = 1, recovery_mode = "repair_then_regenerate" }
+enabled = true
+
+[[steps]]
+id = "select-skills"
+label = "Select Skills"
+prompt = ".omega/prompt/step/select-skills.md"
+loop_mode = "agent_loop"
+max_iterations = 4
+tool_request = { mode = "block", groups = ["root_routing_blocked"] }
+skill_request = { mode = "disable" }
+input_contract = { mode = "required", sources = ["select-workflow"] }
+output_contract = { mode = "required", format = "json", schema_path = ".omega/schema/step/select-skills.json", max_retries = 1, recovery_mode = "repair_then_regenerate" }
+enabled = true

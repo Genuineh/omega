@@ -1,0 +1,26 @@
+# Default omega-tui theme overrides
+theme = "dark"
+
+[input]
+border_type = "rounded"
+text_fg = "#569cd6"
+normal_border_fg = "#a3bbd6"
+insert_border_fg = "#4ec9b0"
+
+[context_bar]
+label_fg = "#747e8c"
+hint_fg = "#acb3bd"
+
+[status_bar]
+label_fg = "#747e8c"
+divider_fg = "#626b78"
+idle_fg = "#7bc78f"
+running_fg = "#ffc468"
+
+[surfaces]
+text_fg = "#d4d4d4"
+focus_border_fg = "#4ec9b0"
+border_dim_fg = "#303030"
+
+[messages]
+tool_fg = "#dcdcaa"

@@ -1,0 +1,24 @@
+# Default research workflow
+name = "research"
+
+[[steps]]
+id = "explore"
+label = "Explore"
+prompt = ".omega/prompt/step/explore.md"
+loop_mode = "agent_loop"
+max_iterations = 200
+tool_request = { mode = "block", groups = ["feature_non_execute_blocked"] }
+skill_request = { mode = "match_task" }
+output_contract = { mode = "required", format = "json", schema_path = ".omega/schema/step/explore.json", max_retries = 2, recovery_mode = "repair_then_regenerate" }
+enabled = true
+
+[[steps]]
+id = "report"
+label = "Report"
+prompt = ".omega/prompt/step/report.md"
+loop_mode = "agent_loop"
+max_iterations = 200
+tool_request = { mode = "block", groups = ["feature_non_execute_blocked"] }
+skill_request = { mode = "match_task" }
+input_contract = { mode = "required", sources = ["explore"] }
+enabled = true

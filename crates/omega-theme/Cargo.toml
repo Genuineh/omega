@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+omega-project-layout = { path = "../omega-project-layout" }
 ratatui.workspace = true
 serde.workspace = true
 toml.workspace = true

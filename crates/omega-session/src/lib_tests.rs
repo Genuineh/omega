@@ -323,7 +323,18 @@ fn write_named_skill(root: &Path, name: &str, description: &str, body: &str) {
 fn compile_hook_fixture(hook_dir: &Path, crate_name: &str) -> PathBuf {
     let _ = std::fs::create_dir_all(hook_dir);
     let source_path = hook_dir.join("fixture.rs");
-    let artifact_path = hook_dir.join(format!("lib{crate_name}.so"));
+    let hook_id = hook_dir
+        .file_name()
+        .and_then(|value| value.to_str())
+        .expect("hook source dir should end with hook id");
+    let artifact_dir = hook_dir
+        .parent()
+        .and_then(|path| path.parent())
+        .and_then(|path| path.parent())
+        .map(|root| root.join(".omega-state/hooks").join(hook_id))
+        .expect("hook source dir should be rooted under .omega/hooks/<hook-id>");
+    let _ = std::fs::create_dir_all(&artifact_dir);
+    let artifact_path = artifact_dir.join(format!("lib{crate_name}.so"));
     let _ = std::fs::write(&source_path, hook_fixture_source());
 
     let status = Command::new("rustc")
@@ -2316,7 +2327,7 @@ fn spawn_command_session_resume_reports_non_resume_ready_sessions() {
 
     let _new_events = run_command(&session, "/session new Scratch", 58301);
     let ledger_path = root
-        .join(".omega")
+        .join(".omega-state")
         .join("sessions")
         .join(&original_session_id)
         .join("session.context.jsonl");
@@ -2546,7 +2557,7 @@ fn spawn_command_document_init_streams_scan_phases_and_samples() {
     assert!(body.contains("Phase: scan complete, preparing command summary"));
     assert!(body.contains("Indexed files:"));
     assert!(body.contains("Embedded files:"));
-    assert!(body.contains("Manifest: .omega/store/files.jsonl"));
+    assert!(body.contains("Manifest: .omega-state/store/files.jsonl"));
 }
 
 #[test]

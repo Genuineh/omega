@@ -3,9 +3,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
+use omega_project_layout::{OmegaProjectLayout, HOOK_SOURCE_DIR_PATH};
 use serde::{Deserialize, Serialize};
 
-pub const DEFAULT_HOOKS_DIR: &str = ".omega/hooks";
+pub const DEFAULT_HOOKS_DIR: &str = HOOK_SOURCE_DIR_PATH;
 pub const DEFAULT_HOOK_MANIFEST_FILE: &str = "Hook.toml";
 pub const DEFAULT_HOOK_API_VERSION: u32 = 1;
 
@@ -33,7 +34,7 @@ pub struct HookCatalog {
 
 impl HookCatalog {
     pub fn load(root: &Path) -> Result<Self> {
-        let hooks_root = root.join(DEFAULT_HOOKS_DIR);
+        let hooks_root = OmegaProjectLayout::new(root.to_path_buf()).hook_source_dir();
         if !hooks_root.exists() {
             return Ok(Self {
                 root: root.to_path_buf(),
@@ -51,7 +52,7 @@ impl HookCatalog {
 
         let mut manifests = BTreeMap::new();
         for manifest_path in manifest_paths {
-            let entry = HookManifestEntry::load(&manifest_path)?;
+            let entry = HookManifestEntry::load(root, &manifest_path)?;
             let hook_id = entry.manifest.id.clone();
             if manifests.insert(hook_id.clone(), entry).is_some() {
                 bail!(
@@ -86,7 +87,7 @@ impl HookCatalog {
 }
 
 impl HookManifestEntry {
-    pub fn load(manifest_path: &Path) -> Result<Self> {
+    pub fn load(root: &Path, manifest_path: &Path) -> Result<Self> {
         let raw = fs::read_to_string(manifest_path)
             .with_context(|| format!("failed to read hook manifest {}", manifest_path.display()))?;
         let manifest = toml::from_str::<HookManifest>(&raw).with_context(|| {
@@ -123,7 +124,7 @@ impl HookManifestEntry {
             );
         }
 
-        let artifact_path = resolve_artifact_path(manifest_path, &manifest.artifact);
+        let artifact_path = resolve_artifact_path(root, &manifest.id, &manifest.artifact);
 
         Ok(Self {
             manifest_path: manifest_path.to_path_buf(),
@@ -138,13 +139,52 @@ impl HookManifestEntry {
     }
 }
 
-fn resolve_artifact_path(manifest_path: &Path, artifact: &Path) -> PathBuf {
+fn resolve_artifact_path(root: &Path, hook_id: &str, artifact: &Path) -> PathBuf {
     if artifact.is_absolute() {
-        artifact.to_path_buf()
-    } else {
-        manifest_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join(artifact)
+        return artifact.to_path_buf();
+    }
+
+    if artifact
+        .to_string_lossy()
+        .starts_with("builtin:")
+    {
+        return artifact.to_path_buf();
+    }
+
+    OmegaProjectLayout::new(root.to_path_buf())
+        .hook_artifacts_dir()
+        .join(hook_id)
+        .join(artifact)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{resolve_artifact_path, HookManifestEntry};
+
+    #[test]
+    fn relative_hook_artifacts_resolve_under_state_root() {
+        let root = std::env::temp_dir().join("omega-hooks-layout-test");
+        let artifact_path = resolve_artifact_path(&root, "sample-hook", std::path::Path::new("libsample.so"));
+
+        assert_eq!(
+            artifact_path,
+            root.join(".omega-state/hooks/sample-hook/libsample.so")
+        );
+    }
+
+    #[test]
+    fn builtin_artifact_tokens_stay_unresolved() {
+        let root = std::env::temp_dir().join("omega-hooks-layout-test");
+        let manifest_dir = root.join(".omega/hooks/sample-hook");
+        std::fs::create_dir_all(&manifest_dir).unwrap();
+        let manifest_path = manifest_dir.join("Hook.toml");
+        std::fs::write(
+            &manifest_path,
+            "id = \"sample-hook\"\npackage = \"builtin\"\nartifact = \"builtin:sample-hook\"\napi_version = 1\n",
+        )
+        .unwrap();
+
+        let entry = HookManifestEntry::load(&root, &manifest_path).unwrap();
+        assert_eq!(entry.artifact_path, std::path::PathBuf::from("builtin:sample-hook"));
     }
 }

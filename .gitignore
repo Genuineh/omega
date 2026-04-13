@@ -21,6 +21,6 @@ Thumbs.db
 # Repository-local agent config
 .claude/
 .github/agents/
-.omega/
+.omega-state/
 .learn/
-.fastembed_cache/
+.fastembed_cache

@@ -1,0 +1,3 @@
+# Default omega-tui behavior overrides
+[response]
+show_thinking = true

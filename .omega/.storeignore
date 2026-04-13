@@ -1,0 +1,35 @@
+# Exclude files from the workspace document store entirely.
+# Matched paths are skipped before they reach files.jsonl, tantivy,
+# or LanceDB-derived indexes.
+#
+# Syntax:
+# - Empty lines are ignored.
+# - Lines starting with # are comments.
+# - Patterns are repo-relative globs.
+# - A trailing / matches everything under that directory.
+# - Negation (!) is not supported yet.
+#
+# Examples:
+# docs/archive/**
+# learn/**
+# tmp/
+
+# Build output mirrored from the root .gitignore.
+target/
+# Local config / generated folders, and lockfile, not needed in the store.
+.claude/
+.github/
+Cargo.lock
+# Historical docs should stay in git history, but not in the live store.
+docs/archive/**
+
+# Imported external source snapshots are useful for manual study, but they are
+# too large and too off-target for the repo's main vector index.
+learn/claude-code-source-code/**
+learn/hindsight/**
+
+.omega/**
+.omega-state/**
+.fastembed_cache/**
+**/.fastembed_cache/**
+

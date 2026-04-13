@@ -159,7 +159,7 @@ tool 注册不是 `OmegaContextFacade` 的核心职责，而是 omega-context �
 **会话内多轮记忆**。绑定到单个 `AgentSession` 生命周期。omega-context 内部调用。
 
 职责：
-- **Turn Archive**：每轮结束后提取 turn-level summary 并持久化到 `.omega/memory/turns/{turn_id}.jsonl`。
+- **Turn Archive**：每轮结束后提取 turn-level summary 并持久化到 `.omega-state/memory/turns/{turn_id}.jsonl`。
 - **Micro-Compact**：对 thinking blocks、tool output、冗余元数据进行选择性压缩，保留语义骨架。
 - **Cache Strategy**：管理 Anthropic `cache_control` 锚点，确保稳定的 system prompt 前缀命中缓存。
 - **Summary Trigger**：当累计 token 达到上下文窗口阈值或显式 workflow 触发时，自动执行摘要。
@@ -238,7 +238,7 @@ pub struct CacheDiagnostics {
 每轮结束时 memory 执行 turn archival pipeline：
 
 ```
-raw messages → extract entities/decisions → generate turn summary → persist to .omega/memory/turns/{turn_id}.jsonl
+raw messages → extract entities/decisions → generate turn summary → persist to .omega-state/memory/turns/{turn_id}.jsonl
 ```
 
 Turn summary 结构：
@@ -343,7 +343,7 @@ pub enum DocType {
 }
 ```
 
-`FileStore` 是系统的元数据真源（source of truth），默认持久化到 `.omega/store/files.jsonl`。tantivy 与 LanceDB 都是派生索引，而不是主存储。
+`FileStore` 是系统的元数据真源（source of truth），默认持久化到 `.omega-state/store/files.jsonl`。tantivy 与 LanceDB 都是派生索引，而不是主存储。
 
 #### 3.2 Embedded Vector Database
 
@@ -356,7 +356,7 @@ pub enum DocType {
 | 向量搜索 | 原生 ANN (IVF-PQ, HNSW) | tantivy 无原生向量搜索 |
 | 过滤查询 | SQL-like filter + vector search 组合 | Qdrant 功能强但重 |
 | Rust SDK | `lancedb` crate，原生支持 | 无需 FFI |
-| 存储位置 | `.omega/store/lance/` | 随项目走，无外部依赖 |
+| 存储位置 | `.omega-state/store/lance/` | 随项目走，无外部依赖 |
 
 LanceDB 表结构：
 
@@ -426,8 +426,8 @@ pub struct IndexCommitLog {
 ```
 
 目标边界：
-- 声明“哪些路径完全不进入 `.omega/store` 知识库产物”。
-- 不替代 walk-level 硬排除（`.git/`、`target/`、`.omega/store/`）。
+- 声明“哪些路径完全不进入 `.omega-state/store` 知识库产物”。
+- 不替代 walk-level 硬排除（`.git/`、`target/`、`.omega-state/store/`）。
 - 匹配文件不会写入 `FileStore` manifest、tantivy 或 LanceDB。
 - `/document init|sync` 需要暴露 ignored/indexed/embedded 样本，便于解释本次处理范围。
 
@@ -482,7 +482,7 @@ pub struct ScanResult {
 
 验收标准：
 - 缺失 `.omega/.storeignore` 时行为与当前实现完全一致。
-- 新增规则后，匹配文件不会写入 `.omega/store/files.jsonl`。
+- 新增规则后，匹配文件不会写入 `.omega-state/store/files.jsonl`。
 - keyword / semantic / hybrid 都不会返回被排除文件。
 - `/document init|sync` Response 至少展示 ignored/indexed/embedded 的样本列表。
 - 测试覆盖 parser、scan 统计、semantic/hybrid 边界与 revision 回放。
@@ -713,7 +713,7 @@ pub struct DocumentHealthReport {
 取代纯内存 `CoreSharedTodoManager`，提供跨 session 持久化：
 
 ```
-.omega/store/todos.jsonl   # 持久化 todo items
+.omega-state/store/todos.jsonl   # 持久化 todo items
 ```
 
 兼容现有 `TodoManager` 接口（`update()` / `render()` / `has_open_items()` / `should_nag()`），增加：
@@ -728,7 +728,7 @@ pub struct DocumentHealthReport {
 为不依赖 embedding 的快速关键词搜索提供 [tantivy](https://github.com/quickwit-oss/tantivy) full-text index：
 
 ```
-.omega/store/tantivy/   # tantivy index 目录
+.omega-state/store/tantivy/   # tantivy index 目录
 ```
 
 索引字段：`path`、`content`、`language`、`file_type`、`doc_type`。
@@ -1232,7 +1232,7 @@ pub struct MockTokenEstimator {
 
 ```toml
 [memory]
-turn_archive_dir = ".omega/memory/turns"
+turn_archive_dir = ".omega-state/memory/turns"
 max_archived_turns = 100
 compact_threshold = 0.7          # fraction of context_window
 thinking_compression_ratio = 10
@@ -1248,9 +1248,9 @@ scan_interval_minutes = 10       # 增量扫描间隔
 background_indexing = true       # 启动后异步索引
 
 [store]
-lance_path = ".omega/store/lance"
-tantivy_path = ".omega/store/tantivy"
-todo_path = ".omega/store/todos.jsonl"
+lance_path = ".omega-state/store/lance"
+tantivy_path = ".omega-state/store/tantivy"
+todo_path = ".omega-state/store/todos.jsonl"
 
 [governance]
 rules_path = ".omega/doc-rules.toml"  # 自定义规则（可选）

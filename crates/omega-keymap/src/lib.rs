@@ -5,9 +5,10 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use omega_project_layout::{OmegaProjectLayout, KEYMAP_CONFIG_PATH};
 use serde::Deserialize;
 
-pub const DEFAULT_KEYMAP_PATH: &str = ".omega/keymap.toml";
+pub const DEFAULT_KEYMAP_PATH: &str = KEYMAP_CONFIG_PATH;
 const DEFAULT_LEADER_TIMEOUT_MS: u64 = 300;
 const DEFAULT_KEYMAP_TOML: &str = r#"# Default omega-tui keymap
 # Normal-mode commands use the leader prefix to avoid collisions with text input.
@@ -441,7 +442,7 @@ impl KeymapManager {
     }
 
     pub fn load(root: &Path) -> KeymapLoadResult {
-        let path = root.join(DEFAULT_KEYMAP_PATH);
+        let path = OmegaProjectLayout::new(root.to_path_buf()).keymap_path();
         if !path.exists() {
             match Self::write_default_file(&path) {
                 Ok(()) => {
@@ -893,7 +894,7 @@ mod tests {
         fs::create_dir_all(&omega_dir).unwrap();
         fs::write(
             omega_dir.join("keymap.toml"),
-            "[leader]\nkey = \"ctrl+g\"\ntimeout_ms = 1200\n\n[[bindings]]\nkeys = \"leader j k\"\naction = \"enter_insert_mode\"\nmode = \"normal\"\ninput_capable = true\n",
+            "[leader]\nkey = \"g\"\ntimeout_ms = 1200\n\n[[bindings]]\nkeys = \"leader j k\"\naction = \"enter_insert_mode\"\nmode = \"normal\"\ninput_capable = true\n",
         )
         .unwrap();
 
@@ -907,7 +908,7 @@ mod tests {
 
         assert_eq!(manager.leader_timeout(), Duration::from_millis(1200));
         assert_eq!(
-            manager.resolve(&context, press(KeyCode::Char('g'), KeyModifiers::CONTROL)),
+            manager.resolve(&context, press(KeyCode::Char('g'), KeyModifiers::NONE)),
             KeyResolution::PendingLeader
         );
     }

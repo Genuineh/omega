@@ -2,11 +2,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
+use omega_project_layout::{OmegaProjectLayout, THEME_CONFIG_PATH};
 use ratatui::style::Color;
 use ratatui::widgets::BorderType;
 use serde::Deserialize;
 
-pub const DEFAULT_THEME_PATH: &str = ".omega/theme.toml";
+pub const DEFAULT_THEME_PATH: &str = THEME_CONFIG_PATH;
 
 const DEFAULT_THEME_TOML: &str = r##"# Default omega-tui theme overrides
 theme = "dark"
@@ -400,7 +401,7 @@ impl OmegaTheme {
     }
 
     pub fn load(root: &Path) -> LoadedTheme {
-        let path = root.join(DEFAULT_THEME_PATH);
+        let path = OmegaProjectLayout::new(root.to_path_buf()).theme_path();
         if !path.exists() {
             match Self::write_default_file(&path) {
                 Ok(()) => {

@@ -1,0 +1,23 @@
+{
+    "type": "object",
+    "required": ["objective", "key_findings", "constraints", "risks", "affected_paths"],
+    "properties": {
+        "objective": { "type": "string" },
+        "key_findings": {
+            "type": "array",
+            "items": { "type": "string" }
+        },
+        "constraints": {
+            "type": "array",
+            "items": { "type": "string" }
+        },
+        "risks": {
+            "type": "array",
+            "items": { "type": "string" }
+        },
+        "affected_paths": {
+            "type": "array",
+            "items": { "type": "string" }
+        }
+    }
+}

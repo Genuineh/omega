@@ -7,4 +7,5 @@ edition.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 toml.workspace = true
+omega-project-layout = { path = "../omega-project-layout" }
 omega-tools-builtin = { path = "../omega-tools-builtin" }

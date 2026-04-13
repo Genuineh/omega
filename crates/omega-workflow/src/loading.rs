@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
+use omega_project_layout::OmegaProjectLayout;
 
 use crate::config::{SceneCatalogConfig, ToolPolicyModelConfig, WorkflowConfig};
 use crate::constants::{
@@ -21,7 +22,7 @@ use crate::StepOutputContract;
 
 impl ToolPolicyConfig {
     fn load(root: &Path, warnings: &mut Vec<String>) -> Self {
-        let path = root.join(DEFAULT_MODEL_CONFIG_PATH);
+        let path = OmegaProjectLayout::new(root.to_path_buf()).model_config_path();
         if !path.exists() {
             return Self::builtin_default();
         }
@@ -50,7 +51,7 @@ impl ToolPolicyConfig {
 
 impl SceneCatalog {
     pub fn load(root: &Path, warnings: &mut Vec<String>) -> Self {
-        let path = root.join(DEFAULT_SCENES_PATH);
+        let path = OmegaProjectLayout::new(root.to_path_buf()).scenes_path();
         if !path.exists() {
             return match Self::write_default_file(&path) {
                 Ok(()) => match Self::load_from_file(&path) {
@@ -187,7 +188,7 @@ impl WorkflowCatalog {
         }
 
         if workflow_id == FEATURE_WORKFLOW_ID {
-            let legacy_path = root.join(DEFAULT_WORKFLOW_PATH);
+            let legacy_path = OmegaProjectLayout::new(root.to_path_buf()).legacy_workflow_path();
             if legacy_path.exists() {
                 let definition = WorkflowDefinition::load_from_file(&legacy_path, tool_policy)?;
                 return Ok((definition, WorkflowSource::File(legacy_path)));
@@ -256,7 +257,8 @@ impl LoadedWorkflowCatalog {
 }
 
 fn workflow_path_for_id(root: &Path, workflow_id: &str) -> PathBuf {
-    root.join(DEFAULT_WORKFLOWS_DIR)
+    OmegaProjectLayout::new(root.to_path_buf())
+        .workflows_dir()
         .join(format!("{workflow_id}.toml"))
 }
 

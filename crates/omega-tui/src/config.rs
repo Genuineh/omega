@@ -2,9 +2,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use omega_project_layout::{OmegaProjectLayout, TUI_CONFIG_PATH};
 use serde::Deserialize;
 
-pub const DEFAULT_TUI_CONFIG_PATH: &str = ".omega/tui.toml";
+pub const DEFAULT_TUI_CONFIG_PATH: &str = TUI_CONFIG_PATH;
 
 const DEFAULT_TUI_CONFIG_TOML: &str = r#"# Default omega-tui behavior overrides
 [response]
@@ -55,7 +56,7 @@ impl LoadedTuiBehaviorConfig {
 
 impl TuiBehaviorConfig {
     pub fn load(root: &Path) -> LoadedTuiBehaviorConfig {
-        let path = root.join(DEFAULT_TUI_CONFIG_PATH);
+        let path = OmegaProjectLayout::new(root.to_path_buf()).tui_config_path();
         if !path.exists() {
             match Self::write_default_file(&path) {
                 Ok(()) => {

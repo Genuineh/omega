@@ -4,9 +4,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use omega_core::default_bash_allowed_commands;
+use omega_project_layout::{OmegaProjectLayout, MODEL_CONFIG_PATH};
 use serde::Deserialize;
 
-pub const DEFAULT_MODEL_CONFIG_PATH: &str = ".omega/model.toml";
+pub const DEFAULT_MODEL_CONFIG_PATH: &str = MODEL_CONFIG_PATH;
 const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 32_000;
 const DEFAULT_CONTEXT_WINDOW: u32 = 200_000;
 const DEFAULT_SESSION_CONTEXT_BUDGET_TOKENS: usize = 400_000;
@@ -109,7 +110,7 @@ impl LoadedAgentModelConfig {
 
 impl AgentModelConfig {
     pub fn load(root: &Path) -> LoadedAgentModelConfig {
-        let path = root.join(DEFAULT_MODEL_CONFIG_PATH);
+        let path = OmegaProjectLayout::new(root.to_path_buf()).model_config_path();
         if !path.exists() {
             return match Self::write_default_file(&path) {
                 Ok(()) => match Self::load_from_file(&path) {

@@ -76,8 +76,11 @@ overlay-first 的 `/session` operator UX 仍保留，交互层契约继续由 [d
 
 ```text
 <project-root>/.omega/
-  project.json
-  sessions/
+    project.toml
+
+<project-root>/.omega-state/
+    project.json
+    sessions/
     <session-id>/
       session.json               # lightweight catalog metadata
       session.context.jsonl      # canonical append-only context ledger

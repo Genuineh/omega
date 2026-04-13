@@ -8,6 +8,7 @@ members = [
     "crates/omega-message",
     "crates/omega-tasks",
     "crates/omega-skills",
+    "crates/omega-project-layout",
     "crates/omega-worktree",
     "crates/omega-keymap",
     "crates/omega-theme",

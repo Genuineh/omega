@@ -120,7 +120,7 @@ omega-project 实现这些 traits，并把 project-scoped knowledge 暴露给 se
 
 1. 如果存在显式选择且当前文件仍位于该 root 下，保持当前 project。
 2. 否则从 `current_file_path` 或 `cwd` 向上查找项目根标记：
-   - `.omega/project.toml` 或 `.omega/project.json`
+    - `.omega/project.toml`
    - `.git/`
    - 仓库入口文件，如 `Cargo.toml`、`package.json`
 3. 找到根目录后做 canonicalize，并生成稳定 `project_id`。
@@ -146,11 +146,19 @@ project_id = short_hash(canonical_project_root_path)
 
 ```text
 <project-root>/.omega/
-  project.json              # project metadata snapshot
-  sessions/
-    <session-id>.json       # session metadata and last-active summary
-  memory/                   # project-bound archived turns, observations, facts
-  store/                    # omega-document manifest / tantivy / vector store
+    project.toml              # optional user-managed project manifest
+    workflows/
+    hooks/
+
+<project-root>/.omega-state/
+    project.json              # generated project metadata snapshot
+    sessions/
+        <session-id>/
+            session.json
+            session.context.jsonl
+    memory/                   # archived turns, observations, facts
+    store/                    # omega-document manifest / tantivy / vector store
+    hooks/                    # compiled hook artifacts
 ```
 
 如需跨仓库 `list/switch`，再补一层 app-owned recent-project registry，仅保存 `project_id -> root path` 的最近使用缓存；repo-local 数据仍是 source of truth。
@@ -319,7 +327,7 @@ pub struct ProjectTurnData {
 | `/project info [project_id]` | 查看 project 详情，包含 root、detection、session count、document/memory readiness |
 | `/project sessions [project_id]` | 查看该 project 关联 sessions，支持 active/idle/archived 状态摘要 |
 | `/project knowledge [project_id]` | 查看该 project 的 document/memory 摘要、最近文档与 knowledge totals |
-| `/project delete <project_id>` | 删除 project registry entry；默认只忘记 registry，`--purge` 才删除 `.omega/project.json` / session catalog / local recent cache |
+| `/project delete <project_id>` | 删除 project registry entry；默认只忘记 registry，`--purge` 才删除 `.omega-state/project.json` / session catalog / local recent cache |
 
 当前实现说明：`/project delete <project-id|path>` 只允许删除非 active project，并直接移除目标 project 的 repo-local `.omega/` 状态后忘记当前进程内 registry entry；`--purge` 语义暂未拆分。
 
@@ -412,7 +420,7 @@ overlay 至少展示：
 ## Open Questions
 
 - `loose project` 是否允许后续升级为显式 repo project，及其 `project_id` 迁移规则。
-- `project delete --purge` 是否删除 `.omega/store/` 与 `.omega/memory/` 全量数据，还是只删 registry + session catalog，保留知识库存量。
+- `project delete --purge` 是否删除 `.omega-state/store/` 与 `.omega-state/memory/` 全量数据，还是只删 registry + session catalog，保留知识库存量。
 - 当当前文件跨项目切换时，是否强制关闭当前 session，还是允许用户显式选择“保留旧 session 仅查看、新建 session 用于新 project”。
 
 ## Change Log

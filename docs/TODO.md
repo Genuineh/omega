@@ -19,6 +19,7 @@ _任务编号以 `docs/specs/omega-agent-impl-plan.md` 为准；`8A/8B`、`15A/1
 - **Task 11A ~ 11F-3**: 已完成并转入基线能力，不再作为独立主线推进；原 Task 11 的上下文压缩需求已被这条子任务链替代。
 
 ### Medium
+- **2026-04-13 `.omega` config/state split completed**: `Task 18K ~ 18N` 已完成。workspace 现已新增 shared `omega-project-layout` / `OmegaProjectLayout`，保留 `.omega/` 作为 repo-local config/source root，并把 generated `project.json`、`sessions/`、`memory/`、`store/` 与 hook artifacts 迁到 `.omega-state/`；`omega-project` 保留 legacy `.omega/<runtime>` fallback/迁移，`omega-memory` / `omega-document` / `omega-context` / `omega-session` 已切到新 state root，config loaders 与 hook loader 也已同步收口，`.gitignore` 和开发文档现默认只忽略 `.omega-state/`。详见 `docs/specs/omega-project-path-layout.md`。
 - **2026-04-11 session ledger baseline**: `Task 17I ~ 17N` 已完成。startup 现停在 runtime-only `Unbound` lifecycle；session storage 已收口到 per-session `session.context.jsonl` canonical ledger，并带 legacy sidecar 自动迁移；`omega-compression` 已接管 app-owned `400k` budget、checkpoint compaction/backfill 与 historical search；`/session resume` / restore hydration / prompt assembly 现都从 ledger projection 或 session-ledger historical hits 派生，restore/detail UX 也会显式展示 `recent records + compression summaries + search hits`。后续剩余工作只属于 recall/rerank 质量与更深层 checkpoint retrieval 演进，不再阻塞 Task 17 基线。
 - **2026-04-03 `.storeignore` vector-index follow-up**: 为知识库扫描新增 `.omega/.storeignore` 仓库级规则文件，只控制“哪些文件不进入 embedding/LanceDB 派生向量索引”，而不是跳过整个 `FileStore`/tantivy/治理管线；后续实现必须保证 keyword 检索与文档治理仍可见这些文件，semantic/hybrid 仅对未忽略文件建立向量结果。
 - **2026-04-07 memory knowledge follow-up**: `omega-context` 已把 recall hit budget 从硬编码切到 `.omega/model.toml` 的 `[context.recall]` 覆盖项，`omega-session` / `omega-memory` 已补齐 `GovernanceEvent` retention evidence，并让 `/document` command turn 真正归档到 memory；`LocalMemoryService::compact_context()` 也已从 stub 变为真实 archived-turn summary compaction。当前剩余 follow-up 主要是 memory query 仍以 lexical scoring 为主，暂未引入更强的 retrieval/rerank 语义层。
@@ -75,7 +76,7 @@ _以下保留详细里程碑与历史记录；待办项的 `Priority` 字段已�
 - **Complexity**: L
 - **Related**: docs/specs/omega-project-system.md
 - **Blocks**: Task 17A, Task 18B, Task 18C, Task 18D, Task 18E, Task 18G, Task 18H, Task 18I, Task 18J
-- **Summary**: 已新增 `omega-project` crate，落地 project detection、stable `project_id`、repo-local `.omega/project.json` 与 `.omega/sessions/` catalog，并让 project handle 成为 session/runtime 侧访问 repo-scoped context/document/memory 的 phase-1 上层入口；ownership 收口与 sidebar surface 仍由 `Task 18G ~ 18J` 继续完成。
+- **Summary**: 已新增 `omega-project` crate，落地 project detection、stable `project_id`、repo-local `.omega/project.toml` manifest 与 `.omega-state/project.json` / `.omega-state/sessions/` state root，并让 project handle 成为 session/runtime 侧访问 repo-scoped context/document/memory 的 phase-1 上层入口；ownership 收口与 sidebar surface 仍由 `Task 18G ~ 18J` 继续完成。
 
 ### Task 18A: omega-project / omega-app — 基于当前文件的 project 识别与激活
 - **Status**: Completed
@@ -184,6 +185,55 @@ _以下保留详细里程碑与历史记录；待办项的 `Priority` 字段已�
 - **Blocked by**: Task 18G, Task 18H, Task 18I
 - **Related**: docs/specs/omega-project-system.md, docs/specs/omega-tui-document-memory-supervision.md, docs/guide/omega-dev-guide.md
 - **Summary**: `omega-tui` Sidebar 现已新增 `Project` section，支持 rail badge、sidebar summary、键盘/鼠标 focus 与 `Enter/x` 打开 project detail overlay；并补齐 `/project switch` runtime rebinding 与 project panel 的回归测试，使 Task 18 的 project ownership/UI 路径完成闭环。
+
+### ── M3B: Project Path Layout Split ──
+
+> 验证方式：`cargo test -p omega-project -p omega-app -p omega-session -p omega-memory -p omega-context -p omega-workflow -p omega-hooks -p omega-keymap -p omega-theme -p omega-tui --color never`
+> 对标：`.omega/` 只保留 repo-local config/source assets，`.omega-state/` 承载 runtime-generated project state，legacy `.omega/<runtime>` 具备平滑迁移
+> 前置：`Task 18J` 已完成；不得跳过 shared layout helper 直接分散改 path literal
+
+### Task 18K: omega-project — typed project layout 与 legacy path migration scaffold
+- **Status**: Completed
+- **Completed**: 2026-04-13
+- **Priority**: High
+- **Description**: 在 `omega-project` 中新增共享 `OmegaProjectLayout`，统一计算 `config_root` / `state_root` 与各子路径 helper；同时建立从 legacy `.omega/{project.json,sessions,memory,store}` 到 `.omega-state/*` 的迁移脚手架，并停止把 generated project state 当作 project detection 依据。
+- **Complexity**: L
+- **Blocked by**: Task 18J
+- **Blocks**: Task 18L, Task 18M, Task 18N
+- **Related**: docs/specs/omega-project-path-layout.md, docs/specs/omega-project-system.md
+- **Summary**: 已新增独立 `omega-project-layout` crate，并让 `omega-project` 通过 `OmegaProjectLayout` 统一计算 config/state roots、session ledger 路径与 legacy fallback；project detection 现只依赖 `.omega/project.toml` 与常规 repo markers，不再把 generated `project.json` 当成 config marker。
+
+### Task 18L: omega-session / omega-memory / omega-document / omega-context — runtime-owned state 迁到 `.omega-state/`
+- **Status**: Completed
+- **Completed**: 2026-04-13
+- **Priority**: High
+- **Description**: 把 session catalog/ledger、memory archive/observations、document manifest/index/version/history，以及相关 diagnostics/command output path 全部迁到 `.omega-state/`；同时保持 `.omega/.storeignore` 与 `.omega/doc-rules.toml` 继续作为 config-root 输入，不把规则文件一起迁走。
+- **Complexity**: L
+- **Blocked by**: Task 18K
+- **Blocks**: Task 18N
+- **Related**: docs/specs/omega-project-path-layout.md, docs/specs/omega-session-resume.md, docs/specs/omega-context-management.md, docs/specs/omega-command-system.md
+- **Summary**: `omega-project`、`omega-memory`、`omega-document`、`omega-context` 与 `omega-session` 已把 runtime-owned session/memory/store 持久化切到 `.omega-state/`，并保留 `.omega/.storeignore` 与 `.omega/doc-rules.toml` 作为 config-root 输入；相关 diagnostics、command output 与回归测试也已同步更新。
+
+### Task 18M: omega-app / omega-workflow / omega-hooks / omega-keymap / omega-theme / omega-tui — 保留 `.omega/` 配置根并拆分 hook source/artifact
+- **Status**: Completed
+- **Completed**: 2026-04-13
+- **Priority**: High
+- **Description**: 让配置加载与默认模板生成继续指向 `.omega/`，并统一经 shared layout helper 暴露；将 `.omega/hooks/` 收敛为 source/manifest root，把 compiled artifacts 或 runtime-owned hook outputs 迁到 `.omega-state/hooks/`，同时更新相关 UI/help text，明确哪些路径是可提交配置、哪些是生成态。
+- **Complexity**: L
+- **Blocked by**: Task 18K
+- **Blocks**: Task 18N
+- **Related**: docs/specs/omega-project-path-layout.md, docs/specs/omega-app-package.md, docs/specs/omega-workflow-package.md, docs/specs/omega-step-lifecycle-hooks.md, docs/specs/omega-theme-package.md, docs/specs/omega-tui-modal-keymap.md
+- **Summary**: `omega-app`、`omega-workflow`、`omega-keymap`、`omega-theme` 与 `omega-tui` 现已通过 shared layout 解析 `.omega/` 下的 repo-local config；`omega-hooks` 则保留 `.omega/hooks/` 作为 manifest/source root，并把相对 artifact 统一解析到 `.omega-state/hooks/<hook-id>/`，相关 hook fixtures 已同步迁移。
+
+### Task 18N: 全局收尾 — docs/tests/fixtures/ignore rules 与用户可见路径提示同步迁移
+- **Status**: Completed
+- **Completed**: 2026-04-13
+- **Priority**: High
+- **Description**: 对 `docs/`、测试、fixtures、搜索基线、预期 command output 与 contributor guidance 做一次全局 sweep，清理 stale `.omega/<runtime>` 引用，并补齐 `.omega-state/` 的 ignore/documentation 约束，确保路径合同不会在文档和回归用例中继续漂移。
+- **Complexity**: M
+- **Blocked by**: Task 18L, Task 18M
+- **Related**: docs/specs/omega-project-path-layout.md, docs/guide/omega-dev-guide.md, docs/README.md
+- **Summary**: 已更新 `.gitignore` 只忽略 `.omega-state/`，并同步修正文档、测试、fixtures 与用户可见路径提示，使 active contributor guidance 不再把 `.omega/` 误写成 runtime state root。
 
 ### ── M1.7: TUI 基础美化 ──
 

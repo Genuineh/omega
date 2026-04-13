@@ -1,0 +1,30 @@
+{
+    "type": "object",
+    "required": ["completed_tasks", "open_tasks", "validation_results", "changed_paths"],
+    "properties": {
+        "completed_tasks": {
+            "type": "array",
+            "items": { "type": "string" }
+        },
+        "open_tasks": {
+            "type": "array",
+            "items": { "type": "string" }
+        },
+        "validation_results": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["target", "status"],
+                "properties": {
+                    "target": { "type": "string" },
+                    "status": { "type": "string" },
+                    "details": { "type": "string" }
+                }
+            }
+        },
+        "changed_paths": {
+            "type": "array",
+            "items": { "type": "string" }
+        }
+    }
+}
