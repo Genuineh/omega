@@ -3,7 +3,7 @@ status: active
 owner: omega-team
 last_verified_commit: N/A
 created: 2026-03-18
-updated: 2026-04-11
+updated: 2026-04-13
 audience: developers
 level: intermediate
 ---
@@ -19,6 +19,8 @@ level: intermediate
 - 构建、测试并运行当前应用
 - 理解主路径上的 crate 分层
 - 知道配置、日志和排障入口在哪里
+
+`docs/TODO.md` 现在只保留 open work 和 current baseline；如果你在找已完成里程碑的完整背景，请改看对应 spec 或其 changelog。
 
 ## Prerequisites
 
@@ -63,7 +65,7 @@ cargo run -p omega-app --features document-backend
 
 ## 当前工作区结构
 
-当前 workspace 有 26 个 crate。日常开发不需要记住所有 crate 的细枝末节，先按主路径和支撑层理解即可。
+当前 workspace 有 28 个 crate。日常开发不需要记住所有 crate 的细枝末节，先按主路径和支撑层理解即可。
 
 ### 主运行路径
 
@@ -83,7 +85,7 @@ cargo run -p omega-app --features document-backend
 | Crate | 当前职责 |
 |-------|----------|
 | `omega-context` | 对外统一上下文 facade，组装 prompt-facing context、document/memory recall 与 session-ledger history hits |
-| `omega-project` | project root、session catalog、`/project` command ownership 与 `.omega/` project state |
+| `omega-project` | project root、session catalog、`/project` command ownership，以及 `.omega/` / `.omega-state/` layout ownership |
 | `omega-memory` | repo-wide 长期记忆 archive、summary ranking 与 compaction |
 | `omega-document` | 文件治理、索引、检索与文档工具后端 |
 | `omega-todo` | todo 工具与快照模型 |
@@ -266,7 +268,7 @@ export OMEGA_MINIMAX_API_KEY="your-api-key"
 ### 文档入口看起来互相冲突
 
 **Problem**: 同一主题出现多份文档，不知道该信哪一份
-**Solution**: 先看 `docs/README.md` 的分组导航；如果文档位于 `docs/archive/`，默认视为历史材料，不作为 active source of truth
+**Solution**: 先看 `docs/README.md` 的分组导航；`docs/TODO.md` 只负责 open work；如果文档位于 `docs/archive/`，默认视为历史材料，不作为 active source of truth
 
 ## Best Practices
 

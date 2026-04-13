@@ -3,7 +3,7 @@ status: active
 last_verified_commit: N/A
 owner: omega-team
 created: 2026-03-18
-updated: 2026-03-26
+updated: 2026-04-13
 version: 1.2
 related_prds: []
 ---
@@ -43,12 +43,20 @@ Rust, tokio, reqwest, ratatui, serde, uuid
 
 | Bucket | Status | Notes |
 |--------|--------|-------|
-| Tasks 1-14 | Mostly implemented | 基础 crate 已落地；后续若做重构，优先以各 crate 自身 spec 或 TODO 子任务为准 |
+| Tasks 1-14 | Implemented baseline | 基础 crate 已落地；后续若做重构，优先以各 crate 自身 spec 或 TODO 子任务为准 |
 | Task 15 foundation | Implemented baseline | `omega-app`、`omega-session`、`omega-observability`、`omega-workflow` 与 scene-aware routing 主路径已建立 |
 | Task 15 runtime visibility | Implemented baseline | 流式 response/thinking、step tool lane、context diagnostics 与 runtime reducer 已落地 |
 | Task 15 message pipeline | Implemented follow-up | 主路径已收敛到 `RuntimeMessageEnvelope` + app-owned `RuntimeMessagePolicy` + `TuiEngine`；`RuntimeUiEnvelope` 降为 compat surface |
-| Task 17 command system | Planned follow-up | command registry、`/document` 与 `/project` 已落地；下一阶段是 `/session` resume + management control plane |
+| Task 17 command system | Implemented baseline | command registry、`/document`、`/project`、`/session` picker/control plane、canonical ledger 与 lazy binding 已落地 |
+| Task 18 project ownership | Implemented baseline | project-owned context/document/memory/session 边界与 `.omega/` / `.omega-state/` layout split 已落地 |
+| Current open follow-ups | In progress | 仍然打开的主线是 `Task 10`、`Task 15F-36 ~ 15F-38`、`Task 15B-52`、`Task 15B-54` 与最终 `Task 16` |
 | Task 16 | Pending | 仍保留为最终整合验证里程碑 |
+
+## Current Focus
+
+- `Task 10`: 补完父 Agent 到 child execution 的 `task` tool 接线，并把 subagent run 变成正式 runtime-visible surface。
+- `Task 15F-36 ~ 15F-38`: 把当前 delivery UI baseline 收敛为 session/app-owned contract 与 evidence-backed accounting。
+- `Task 15B-52` 与 `Task 15B-54`: 只保留必要的 TUI 默认密度与主题系统化工作，不再把已完成的视觉刷新历史继续堆回 TODO。
 
 <a id="task-15"></a>
 ## Task 15: omega-tui - TUI 界面
@@ -82,6 +90,7 @@ Rust, tokio, reqwest, ratatui, serde, uuid
 
 ### Change Log
 
+- 2026-04-13: Refreshed the progress snapshot after Task 17 and Task 18 completion, and aligned the current-focus section with the trimmed active TODO.
 - 2026-04-10: 新增 `docs/specs/omega-operator-picker-overlay.md` 作为 session/operator picker UX 规划入口，避免把 picker/action hotkey 细节堆回 session spec 或本索引页。
 - 2026-04-10: 新增 `docs/specs/omega-session-resume.md` 作为 Task 17 下一阶段规划入口，收口 `/session` control plane、resume snapshot 与 replay hydration 设计。
 - 2026-04-02: 新增 Task 17 command system 规划入口，明确 `/document` 是首个命令族，并将细节下沉到 `docs/specs/omega-command-system.md`。

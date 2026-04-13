@@ -11,11 +11,19 @@ version: v1.0
 
 | Read this | Purpose |
 |------|---------|
-| `docs/TODO.md` | Current priorities, recent maintenance, and milestone status |
+| `docs/TODO.md` | Open work only: current priorities, active dependencies, and current baselines |
 | `docs/specs/omega-agent-spec.md` | Canonical agent contract |
 | `docs/specs/omega-agent-impl-plan.md` | Entry point for the split implementation plan |
 | `docs/guide/omega-dev-guide.md` | Local development workflow |
 | `docs/decisions/README.md` | ADR index for durable architecture decisions |
+
+## Current Active Work
+
+| Track | Read these first |
+|------|------------------|
+| Subagent completion | `docs/TODO.md`, `docs/specs/omega-agent-impl-plan.md`, `docs/specs/omega-tui-runtime-experience.md` |
+| Delivery summary contract | `docs/TODO.md`, `docs/specs/omega-task-delivery-observability.md`, `docs/specs/omega-runtime-message-pipeline.md`, `docs/specs/omega-runtime-ui-message-contract.md` |
+| TUI visual polish | `docs/TODO.md`, `docs/specs/omega-tui-visual-refresh.md`, `docs/specs/omega-tui-ui-reference.md` |
 
 ## Active Reading Paths
 
@@ -36,6 +44,7 @@ version: v1.0
 
 - `docs/specs/omega-agent-impl-plan.md` is the index for the implementation-plan subtree. Read it first, then jump into the child plan that matches the current task.
 - `docs/specs/omega-step-session-asset-model.md` is the index for the step/session asset subtree. Use the child docs only when you need detailed contracts for assets, context/data flow, or routing/diagnostics.
+- `docs/TODO.md` intentionally no longer keeps long completed-task history. If a task is not open there, treat the relevant spec and its change log as the source of truth.
 
 ## Archived But Still Useful
 
@@ -57,6 +66,7 @@ version: v1.0
 
 ## Change Log
 
+- 2026-04-13: Narrowed `docs/TODO.md` to open work and current baselines only, and added a dedicated `Current Active Work` section so readers can jump straight to the still-open tracks.
 - 2026-04-11: Added `docs/specs/omega-project-path-layout.md` to the context/session and project-ownership reading paths so the `.omega/` vs `.omega-state/` split has a stable planning entry point.
 - 2026-04-10: Added `docs/specs/omega-operator-picker-overlay.md` to the context/session, command-system, and TUI interaction reading paths so overlay-first operator selection has a stable planning entry point.
 - 2026-04-10: Added `docs/specs/omega-session-resume.md` to the context/session and command-system reading paths so session restore and `/session` control-plane planning has a stable entry point.
