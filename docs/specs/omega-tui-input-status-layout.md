@@ -1,10 +1,10 @@
 ---
 content_revision: 101
 created: 2026-03-19
-generation_id: gen_000016_r000101
+generation_id: gen_000017_r000101
 last_verified_commit: N/A
 owner: omega-team
-projection_version: 16
+projection_version: 17
 related_prds: []
 source_doc_id: "spec:docs-specs-omega-tui-input-status-layout"
 status: implemented

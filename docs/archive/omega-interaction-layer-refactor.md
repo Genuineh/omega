@@ -3,9 +3,9 @@ archived: true
 archived_date: 2026-03-20
 content_revision: 101
 created: 2026-03-19
-generation_id: gen_000016_r000101
+generation_id: gen_000017_r000101
 owner: omega-team
-projection_version: 16
+projection_version: 17
 reason: omega-repl path retired; interaction model converged to omega-tui single entry
 related_prds: []
 replaced_by:

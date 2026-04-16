@@ -2,11 +2,11 @@
 audience: developers
 content_revision: 101
 created: 2026-03-18
-generation_id: gen_000016_r000101
+generation_id: gen_000017_r000101
 last_verified_commit: N/A
 level: intermediate
 owner: omega-team
-projection_version: 16
+projection_version: 17
 source_doc_id: "guide:docs-guide-omega-dev-guide"
 status: active
 updated: 2026-04-13

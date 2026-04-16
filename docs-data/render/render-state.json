@@ -2,9 +2,9 @@
   "schema_version": 1,
   "generated_root": "docs",
   "content_revision": 101,
-  "projection_version": 16,
-  "generation_id": "gen_000016_r000101",
-  "last_rendered_at": 1776305332,
+  "projection_version": 17,
+  "generation_id": "gen_000017_r000101",
+  "last_rendered_at": 1776305495,
   "rendered_doc_ids": [
     "adr:docs-decisions-001-crate-architecture",
     "adr:docs-decisions-002-rust-ratatui",
