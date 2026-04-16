@@ -2,9 +2,9 @@
 archived: 2026-04-02
 content_revision: 101
 created: 2026-03-19
-generation_id: gen_000015_r000101
+generation_id: gen_000016_r000101
 owner: omega-team
-projection_version: 15
+projection_version: 16
 related_prds:
   - docs/archive/observability-logging.md
 source_doc_id: "archive:docs-archive-omega-tui-non-ui-extraction"

@@ -1288,38 +1288,35 @@ fn render_document(
             .collect();
         if !open.is_empty() {
             open.sort_by(|a, b| {
-                a.status
-                    .as_str()
-                    .cmp(b.status.as_str())
-                    .then(a.priority.as_str().cmp(b.priority.as_str()))
-                    .then(a.task_id.cmp(&b.task_id))
+                a.priority.as_str().cmp(b.priority.as_str()).then(a.task_id.cmp(&b.task_id))
             });
             output.push('\n');
             output.push_str("## Doc Tasks\n\n");
-            let mut current_status = String::new();
             for task in &open {
-                let status = task.status.as_str().to_string();
-                if status != current_status {
-                    if !current_status.is_empty() {
-                        output.push('\n');
+                let status_label = {
+                    let s = task.status.as_str().replace('_', " ");
+                    let mut chars = s.chars();
+                    match chars.next() {
+                        None => String::new(),
+                        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
                     }
-                    let label = {
-                        let s = status.replace('_', " ");
-                        let mut chars = s.chars();
-                        match chars.next() {
-                            None => String::new(),
-                            Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
-                        }
-                    };
-                    output.push_str(&format!("### {label}\n\n"));
-                    current_status = status;
+                };
+                output.push_str(&format!("### {}: {}\n\n", task.task_id, task.title));
+                output.push_str(&format!("- **Status**: {}\n", status_label));
+                output.push_str(&format!("- **Priority**: {}\n", task.priority.as_str()));
+                if !task.summary.is_empty() {
+                    output.push_str(&format!("- **Summary**: {}\n", task.summary));
                 }
-                output.push_str(&format!(
-                    "- **{}** ({}): {}\n",
-                    task.task_id,
-                    task.priority.as_str(),
-                    task.title
-                ));
+                if !task.depends_on.is_empty() {
+                    let deps = task
+                        .depends_on
+                        .iter()
+                        .map(|d| format!("`{d}`"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    output.push_str(&format!("- **Depends on**: {}\n", deps));
+                }
+                output.push('\n');
             }
         }
     }

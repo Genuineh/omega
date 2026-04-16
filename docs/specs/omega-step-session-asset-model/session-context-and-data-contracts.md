@@ -1,10 +1,10 @@
 ---
 content_revision: 101
 created: 2026-03-25
-generation_id: gen_000015_r000101
+generation_id: gen_000016_r000101
 last_verified_commit: N/A
 owner: omega-team
-projection_version: 15
+projection_version: 16
 related_prds: []
 source_doc_id: "spec:docs-specs-omega-step-session-asset-model-session-context-and-data-contracts"
 status: active

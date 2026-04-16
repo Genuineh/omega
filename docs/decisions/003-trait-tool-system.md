@@ -3,8 +3,8 @@ adr_number: 003
 author: omega-team
 content_revision: 101
 date: 2026-03-18
-generation_id: gen_000015_r000101
-projection_version: 15
+generation_id: gen_000016_r000101
+projection_version: 16
 reviewed_by: []
 source_doc_id: "adr:docs-decisions-003-trait-tool-system"
 status: accepted

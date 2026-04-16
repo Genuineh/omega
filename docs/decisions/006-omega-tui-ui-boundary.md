@@ -3,8 +3,8 @@ adr_number: 006
 author: omega-team
 content_revision: 101
 date: 2026-03-19
-generation_id: gen_000015_r000101
-projection_version: 15
+generation_id: gen_000016_r000101
+projection_version: 16
 related_spec: docs/specs/omega-app-package.md
 reviewed_by: []
 source_doc_id: "adr:docs-decisions-006-omega-tui-ui-boundary"

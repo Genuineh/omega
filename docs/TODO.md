@@ -1,9 +1,9 @@
 ---
 content_revision: 101
-generation_id: gen_000015_r000101
+generation_id: gen_000016_r000101
 last_verified_commit: N/A
 owner: omega-team
-projection_version: 15
+projection_version: 16
 source_doc_id: "todo:docs-todo"
 status: active
 updated: 2026-04-15
@@ -133,10 +133,37 @@ updated: 2026-04-15
 
 ## Doc Tasks
 
-### Backlog
+### DOC-0021B: Implement /plan links subcommand
 
-- **DOC-0021B** (p1): Implement /plan links subcommand
-- **DOC-0021C** (p1): Update /plan list Enter to use links navigator
-- **DOC-0021D** (p1): Implement /plan view-file subcommand
-- **DOC-0021F** (p1): Tests for plan task navigator flow
-- **DOC-0021E** (p2): Add presentation_links cross-reference in links picker
+- **Status**: Backlog
+- **Priority**: p1
+- **Summary**: Add /plan links <id> to omega-session emitting a second-level OperatorPickerRequest with design, implementation, doc, and log link items.
+- **Depends on**: `DOC-0021A`
+
+### DOC-0021C: Update /plan list Enter to use links navigator
+
+- **Status**: Backlog
+- **Priority**: p1
+- **Summary**: Change the primary Enter action of the /plan list picker from OpenDetail to SubmitSlashCommand /plan links {id} with CloseOverlay behavior.
+- **Depends on**: `DOC-0021B`
+
+### DOC-0021D: Implement /plan view-file subcommand
+
+- **Status**: Backlog
+- **Priority**: p1
+- **Summary**: Add /plan view-file <path> to omega-session that reads a workspace-relative file and emits a DetailOverlay with its content.
+- **Depends on**: `DOC-0021A`
+
+### DOC-0021F: Tests for plan task navigator flow
+
+- **Status**: Backlog
+- **Priority**: p1
+- **Summary**: Write regression tests covering /plan links, /plan view-file, the updated /plan list Enter action, path traversal rejection, and the full three-level navigation sequence.
+- **Depends on**: `DOC-0021B`, `DOC-0021C`, `DOC-0021D`
+
+### DOC-0021E: Add presentation_links cross-reference in links picker
+
+- **Status**: Backlog
+- **Priority**: p2
+- **Summary**: Extend /plan links to look up the matching StructuredDocTask by plan_task_id and include its presentation_links as doc-category items.
+- **Depends on**: `DOC-0021B`
