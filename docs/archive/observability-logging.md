@@ -1,10 +1,10 @@
 ---
 archived: 2026-04-02
-content_revision: 96
+content_revision: 101
 created: 2026-03-18
-generation_id: gen_000013_r000096
+generation_id: gen_000015_r000101
 owner: omega-team
-projection_version: 13
+projection_version: 15
 related_prds: []
 source_doc_id: "archive:docs-archive-observability-logging"
 status: archived

@@ -602,12 +602,13 @@ impl StructuredDocsManager {
         let mut manifest = self.load_manifest()?;
         let mut warnings = Vec::new();
         let records = self.select_records(&doc_ids, &mut warnings)?;
+        let doc_tasks = self.load_doc_tasks().unwrap_or_default();
         let mut generated_paths = Vec::new();
         let version_info = projection_version_for_render(&mut manifest, mode);
         for record in &records {
             generated_paths.push(record.render.presentation_path.clone());
             if matches!(mode, DocumentMutationMode::Apply) {
-                let rendered = render_document(record, Some(version_info_for_record(&version_info, &record.doc_id)));
+                let rendered = render_document(record, Some(version_info_for_record(&version_info, &record.doc_id)), &doc_tasks);
                 let target = self.root.join(&record.render.presentation_path);
                 if let Some(parent) = target.parent() {
                     fs::create_dir_all(parent)
@@ -662,6 +663,7 @@ impl StructuredDocsManager {
         let mut warnings = Vec::new();
         let records = self.select_records(&doc_ids, &mut warnings)?;
         let all_records = self.load_all_doc_records()?;
+        let doc_tasks = self.load_doc_tasks().unwrap_or_default();
         let record_map = all_records
             .iter()
             .map(|record| (record.doc_id.clone(), record.clone()))
@@ -689,6 +691,7 @@ impl StructuredDocsManager {
             let expected = normalize_markdown(&render_document(
                 record,
                 Some(version_info_for_record(&expected_version, &record.doc_id)),
+                &doc_tasks,
             ));
             report
                 .compared_paths
@@ -1208,7 +1211,11 @@ fn resolve_plan_dependencies(
     Ok(resolved)
 }
 
-fn render_document(record: &StructuredDocumentRecord, version_info: Option<StructuredDocVersionInfo>) -> String {
+fn render_document(
+    record: &StructuredDocumentRecord,
+    version_info: Option<StructuredDocVersionInfo>,
+    doc_tasks: &[StructuredDocTaskRecord],
+) -> String {
     let mut frontmatter = BTreeMap::new();
     if let Some(status) = record.status.as_ref() {
         frontmatter.insert("status".to_string(), Value::String(status.clone()));
@@ -1269,6 +1276,51 @@ fn render_document(record: &StructuredDocumentRecord, version_info: Option<Struc
         output.push('\n');
         if index + 1 != record.sections.len() {
             output.push('\n');
+        }
+    }
+    if record.doc_type == DocType::Todo {
+        let mut open: Vec<&StructuredDocTaskRecord> = doc_tasks
+            .iter()
+            .filter(|t| {
+                !matches!(t.status, PlannedTaskStatus::Done | PlannedTaskStatus::Archived)
+                    && t.doc_scope.contains(&DocType::Todo)
+            })
+            .collect();
+        if !open.is_empty() {
+            open.sort_by(|a, b| {
+                a.status
+                    .as_str()
+                    .cmp(b.status.as_str())
+                    .then(a.priority.as_str().cmp(b.priority.as_str()))
+                    .then(a.task_id.cmp(&b.task_id))
+            });
+            output.push('\n');
+            output.push_str("## Doc Tasks\n\n");
+            let mut current_status = String::new();
+            for task in &open {
+                let status = task.status.as_str().to_string();
+                if status != current_status {
+                    if !current_status.is_empty() {
+                        output.push('\n');
+                    }
+                    let label = {
+                        let s = status.replace('_', " ");
+                        let mut chars = s.chars();
+                        match chars.next() {
+                            None => String::new(),
+                            Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+                        }
+                    };
+                    output.push_str(&format!("### {label}\n\n"));
+                    current_status = status;
+                }
+                output.push_str(&format!(
+                    "- **{}** ({}): {}\n",
+                    task.task_id,
+                    task.priority.as_str(),
+                    task.title
+                ));
+            }
         }
     }
     normalize_markdown(&output)

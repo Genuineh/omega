@@ -1,9 +1,9 @@
 ---
-content_revision: 96
-generation_id: gen_000013_r000096
+content_revision: 101
+generation_id: gen_000015_r000101
 last_verified_commit: N/A
 owner: omega-team
-projection_version: 13
+projection_version: 15
 source_doc_id: "todo:docs-todo"
 status: active
 updated: 2026-04-15
@@ -130,3 +130,13 @@ updated: 2026-04-15
 
 - `docs/README.md` 是阅读入口索引；`docs/TODO.md` 只负责 open work 与当前基线，不再充当历史总账。
 - 若需要某个已完成任务的完整背景，请进入对应 spec 或使用 git history，而不是继续把完成记录回填到本文件。
+
+## Doc Tasks
+
+### Backlog
+
+- **DOC-0021B** (p1): Implement /plan links subcommand
+- **DOC-0021C** (p1): Update /plan list Enter to use links navigator
+- **DOC-0021D** (p1): Implement /plan view-file subcommand
+- **DOC-0021F** (p1): Tests for plan task navigator flow
+- **DOC-0021E** (p2): Add presentation_links cross-reference in links picker

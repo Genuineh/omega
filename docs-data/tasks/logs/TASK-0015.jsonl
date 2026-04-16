@@ -1,1 +1,2 @@
 {"seq":1,"kind":"created","actor":"command","summary":"Created task Update /plan list Enter to use links navigator","related_session_id":null,"related_turn_id":null,"related_delivery_id":null}
+{"seq":2,"kind":"note_added","actor":"command","summary":"Updated task fields","related_session_id":null,"related_turn_id":null,"related_delivery_id":null}
