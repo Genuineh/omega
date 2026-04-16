@@ -1,9 +1,9 @@
 ---
-content_revision: 117
-generation_id: gen_000033_r000117
+content_revision: 118
+generation_id: gen_000037_r000118
 last_verified_commit: N/A
 owner: omega-team
-projection_version: 33
+projection_version: 37
 source_doc_id: "todo:docs-todo"
 status: active
 updated: 2026-04-15
@@ -133,78 +133,43 @@ updated: 2026-04-15
 
 ## Project Tasks
 
-### TASK-0014: Implement /plan links subcommand
-
-- **Status**: Backlog
-- **Priority**: p1
-- **Summary**: Add /plan links <id> to omega-session emitting a second-level OperatorPickerRequest with design, implementation, doc, and log link items.
-- **Depends on**: `TASK-0013`
-
-### TASK-0015: Update /plan list Enter to use links navigator
-
-- **Status**: Backlog
-- **Priority**: p1
-- **Summary**: Change the primary Enter action of the /plan list picker from OpenDetail to SubmitSlashCommand /plan links {id} with CloseOverlay behavior.
-- **Depends on**: `TASK-0014`
-
-### TASK-0016: Implement /plan view-file subcommand
-
-- **Status**: Backlog
-- **Priority**: p1
-- **Summary**: Add /plan view-file <path> to omega-session that reads a workspace-relative file and emits a DetailOverlay with its content.
-- **Depends on**: `TASK-0013`
-
-### TASK-0018: Tests for plan task navigator flow
-
-- **Status**: Backlog
-- **Priority**: p1
-- **Summary**: Write regression tests covering /plan links, /plan view-file, the updated /plan list Enter action, path traversal rejection, and the full three-level navigation sequence.
-- **Depends on**: `TASK-0014`, `TASK-0015`, `TASK-0016`
-
-### TASK-0025: Write task store unification spec
+### TASK-0019: Create benchmark manifest and CLI
 
 - **Status**: Ready
 - **Priority**: p1
-- **Summary**: 撰写 task store 统一规格，定义 PlannedTask schema 扩展、doc-tasks.jsonl 退役路径、TODO renderer 改造方向和数据迁移合同。
+- **Summary**: 建立 `omega-benchmark` 的 suite manifest、case loader、run config 和 batch CLI 主入口。
 
-### TASK-0026: Extend PlannedTask schema for doc-facing fields
+### TASK-0020: Add Omega benchmark target
+
+- **Status**: Ready
+- **Priority**: p1
+- **Summary**: 建立 frontend-neutral 的 Omega benchmark target，统一收集 response、tool trace 和 delivery summary。
+- **Depends on**: `TASK-0019`
+
+### TASK-0021: Implement BFCL-style tool suite
 
 - **Status**: Backlog
 - **Priority**: p1
-- **Summary**: 在 PlannedTask 上新增 doc_scope 和 presentation_links 字段（或等价映射），让 project task 能直接控制 TODO 渲染和文档交叉引用。
-- **Depends on**: `TASK-0025`
+- **Summary**: 实现 BFCL 风格工具调用评估，包括 simple、multiple、parallel 和 irrelevance case。
+- **Depends on**: `TASK-0019`, `TASK-0020`
 
-### TASK-0027: Migrate TODO renderer to project-tasks
-
-- **Status**: Backlog
-- **Priority**: p1
-- **Summary**: 把 TODO.md 的 open-work 渲染从 doc_tasks 改为 project_tasks，消除 Doc Tasks section，让所有任务统一展示为 Project Tasks。
-- **Depends on**: `TASK-0026`
-
-### TASK-0028: Remove doc-task code paths
+### TASK-0022: Implement GAIA-style task suite
 
 - **Status**: Backlog
 - **Priority**: p1
-- **Summary**: 移除 omega-document、omega-doc-cli、omega-session 中所有 doc-task 专属代码路径：StructuredDocTaskRecord 类型、load/save_doc_tasks、sync_doc_task_to_plan、upsert_task(doc)、remove_task(doc)、CLI doc-task commands。
-- **Depends on**: `TASK-0027`
+- **Summary**: 实现 GAIA 风格综合任务评估，覆盖多步推理、工具协作和 evidence-aware completion。
+- **Depends on**: `TASK-0019`, `TASK-0020`
 
-### TASK-0029: Data migration and doc-tasks.jsonl retirement
-
-- **Status**: Backlog
-- **Priority**: p1
-- **Summary**: 将 doc-tasks.jsonl 中残留的有价值 metadata（presentation_links、doc_scope）回填到对应的 project task，然后退役该文件。
-- **Depends on**: `TASK-0028`
-
-### TASK-0030: Update skills, specs, and docs for unified task store
+### TASK-0023: Implement data quality evaluation
 
 - **Status**: Backlog
 - **Priority**: p1
-- **Summary**: 更新所有引用 doc-tasks 的 skill、spec 和文档，使其只引用 project-tasks 作为唯一 task store。
-- **Depends on**: `TASK-0029`
+- **Summary**: 实现数据生成质量评估，统一 judge、win rate、schema validity 和人工抽样接口。
+- **Depends on**: `TASK-0019`, `TASK-0020`
 
-### TASK-0017: Add presentation_links cross-reference in links picker
+### TASK-0024: Add reports and regression baselines
 
 - **Status**: Backlog
 - **Priority**: p2
-- **Summary**: Extend /plan links to look up the matching StructuredDocTask by plan_task_id and include its presentation_links as doc-category items.
-- **Depends on**: `TASK-0014`
+- **Summary**: 沉淀 run summary、baseline compare 和回归报告，形成可持续比较的 benchmark 输出面。
+- **Depends on**: `TASK-0021`, `TASK-0022`, `TASK-0023`

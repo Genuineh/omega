@@ -2148,7 +2148,7 @@ fn spawn_command_plan_create_list_show_and_select_manage_project_tasks() {
 }
 
 #[test]
-fn spawn_command_plan_list_reads_project_tasks_and_shows_picker_overlay() {
+fn spawn_command_plan_list_enter_uses_links_navigator() {
     let root = unique_session_test_root("plan-command-project-task-store");
     write_document_fixture(&root);
     std::fs::create_dir_all(root.join("docs-data/tasks")).unwrap();
@@ -2191,7 +2191,12 @@ fn spawn_command_plan_list_reads_project_tasks_and_shows_picker_overlay() {
         other => panic!("expected /plan list picker overlay, got {other:?}"),
     };
     assert_eq!(picker.items.len(), 2);
-    assert_eq!(picker.primary_action.label, "Detail");
+    assert_eq!(picker.primary_action.label, "Links");
+    assert!(matches!(
+        &picker.primary_action.intent,
+        OperatorPickerIntent::SubmitSlashCommand { command_template }
+            if command_template == "/plan links {id}"
+    ));
     assert!(picker.items.iter().any(|item| item.title == "Bootstrap plan tasks"));
     assert!(picker.secondary_actions.iter().any(|action| {
         action.label == "Select"
@@ -2201,6 +2206,183 @@ fn spawn_command_plan_list_reads_project_tasks_and_shows_picker_overlay() {
                     if command_template == "/plan select {id}"
             )
     }));
+}
+
+#[test]
+fn spawn_command_plan_links_unknown_task_returns_error() {
+    let root = unique_session_test_root("plan-command-links-unknown-task");
+    write_document_fixture(&root);
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: Arc::new(IdleClient),
+        system: "system".to_string(),
+        cwd: root,
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+
+    let events = run_command(&session, "/plan links TASK-9999", 58439);
+    assert!(command_body(&events).contains("Error: unknown task 'TASK-9999'"));
+    assert!(show_overlay_content(&events, OverlayTarget::Picker).is_none());
+}
+
+#[test]
+fn spawn_command_plan_links_emits_picker_overlay() {
+    let root = unique_session_test_root("plan-command-links-picker");
+    write_document_fixture(&root);
+    std::fs::create_dir_all(root.join("docs/specs")).unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("docs/specs/navigator.md"),
+        "# Navigator\n\nDesign link preview.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/navigator.rs"),
+        "pub fn navigator() -> &'static str {\n    \"ok\"\n}\n",
+    )
+    .unwrap();
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: Arc::new(IdleClient),
+        system: "system".to_string(),
+        cwd: root.clone(),
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+
+    let _create = run_command(&session, "/plan create Build navigator", 5840);
+    let _design = run_command(
+        &session,
+        "/plan link TASK-0001 design docs/specs/navigator.md",
+        5841,
+    );
+    let _implementation = run_command(
+        &session,
+        "/plan link TASK-0001 implementation src/navigator.rs",
+        5842,
+    );
+    let _log = run_command(&session, "/plan log TASK-0001 Investigate navigator flow", 5843);
+
+    let links_events = run_command(&session, "/plan links TASK-0001", 5844);
+    let links_body = command_body(&links_events);
+    assert!(
+        !links_body.contains("Error:"),
+        "unexpected links command body: {links_body}"
+    );
+    let picker = match show_overlay_content(&links_events, OverlayTarget::Picker) {
+        Some(UiContent::OperatorPicker(request)) => request,
+        other => panic!("expected /plan links picker overlay, got {other:?}"),
+    };
+    assert!(picker.title.contains("TASK-0001"));
+    assert!(matches!(
+        &picker.primary_action.intent,
+        OperatorPickerIntent::SubmitSlashCommand { command_template }
+            if command_template == "/plan open-link TASK-0001 {id}"
+    ));
+    assert!(picker.items.iter().any(|item| {
+        item.id == "docs/specs/navigator.md" && item.badges.iter().any(|badge| badge == "doc")
+    }));
+    assert!(picker.items.iter().any(|item| item.id == "src/navigator.rs"));
+    assert!(picker
+        .items
+        .iter()
+        .any(|item| item.id.starts_with("log-entry:")));
+    assert!(picker.secondary_actions.iter().any(|action| {
+        action.label == "Back"
+            && matches!(
+                &action.intent,
+                OperatorPickerIntent::SubmitSlashCommand { command_template }
+                    if command_template == "/plan list"
+            )
+    }));
+}
+
+#[test]
+fn spawn_command_plan_view_file_emits_detail_overlay() {
+    let root = unique_session_test_root("plan-command-view-file");
+    write_document_fixture(&root);
+    std::fs::create_dir_all(root.join("docs/specs")).unwrap();
+    std::fs::write(
+        root.join("docs/specs/navigator.md"),
+        "---\nstatus: draft\n---\n\n# Navigator\n\nUseful content.\n",
+    )
+    .unwrap();
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: Arc::new(IdleClient),
+        system: "system".to_string(),
+        cwd: root.clone(),
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+
+    let view_events = run_command(&session, "/plan view-file docs/specs/navigator.md", 5845);
+    let view_body = command_body(&view_events);
+    assert!(
+        !view_body.contains("Error:"),
+        "unexpected view-file command body: {view_body}"
+    );
+    let overlay = match show_overlay_content(&view_events, OverlayTarget::Detail) {
+        Some(UiContent::Text(text)) => text,
+        other => panic!("expected /plan view-file detail overlay, got {other:?}"),
+    };
+    assert!(overlay.contains("Navigator"));
+    assert!(overlay.contains("Useful content."));
+}
+
+#[test]
+fn spawn_command_plan_view_file_rejects_path_traversal() {
+    let root = unique_session_test_root("plan-command-view-file-traversal");
+    write_document_fixture(&root);
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: Arc::new(IdleClient),
+        system: "system".to_string(),
+        cwd: root.clone(),
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+
+    let view_events = run_command(&session, "/plan view-file ../Cargo.toml", 5846);
+    assert!(command_body(&view_events).contains("Error:"));
+    assert!(show_overlay_content(&view_events, OverlayTarget::Detail).is_none());
 }
 
 #[test]

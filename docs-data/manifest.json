@@ -15,8 +15,8 @@
   "project_plan_manifest_path": "docs-data/tasks/project-plan.toml",
   "relation_store_path": "docs-data/relations/links.jsonl",
   "render_state_path": "docs-data/render/render-state.json",
-  "content_revision": 117,
-  "projection_version": 33,
-  "last_generation_id": "gen_000033_r000117",
-  "updated_at": 1776313233
+  "content_revision": 118,
+  "projection_version": 37,
+  "last_generation_id": "gen_000037_r000118",
+  "updated_at": 1776317711
 }

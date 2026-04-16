@@ -1,8 +1,8 @@
 ---
-content_revision: 117
-generation_id: gen_000033_r000117
+content_revision: 118
+generation_id: gen_000037_r000118
 owner: omega-team
-projection_version: 33
+projection_version: 37
 source_doc_id: "spec:omega-plan-task-detail-navigator"
 status: draft
 ---

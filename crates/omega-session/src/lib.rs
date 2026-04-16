@@ -40,7 +40,7 @@ use omega_plan::{
     NewPlannedTask, PlannedTask, PlannedTaskStatus, PlannedTaskUpdate, ProjectPlanAccess,
     ProjectPlanStore, SelectedProjectTaskContext, TaskActor, TaskArtifactKind,
     TaskArtifactLink, TaskDependencyOperation, TaskLinkSurface, TaskListFilter,
-    TaskOrderPlacement, TaskPriority,
+    TaskLogEntry, TaskLogKind, TaskOrderPlacement, TaskPriority,
 };
 use omega_project::{
     OmegaProjectHandle, ProjectDetailSnapshot, ProjectDetectionKind, ProjectRegistry,
@@ -64,6 +64,7 @@ const REPAIR_PASS_MAX_ITERATIONS: u32 = 1;
 const SESSION_PICKER_FLAG: &str = "--picker";
 const SESSION_PICKER_ID: &str = "session-operator";
 const PLAN_LIST_PICKER_ID: &str = "plan-list";
+const PLAN_LINKS_PICKER_ID_PREFIX: &str = "plan-links:";
 
 mod hook_adapter;
 mod output;
@@ -1093,6 +1094,21 @@ fn command_registry(project_handle: &Arc<OmegaProjectHandle>) -> OmegaCommandReg
                     "Link a design or implementation artifact",
                     Some("<task-id> <design|implementation> <path> [label...]"),
                 ),
+                OmegaCommandSubcommand::new(
+                    "links",
+                    "Open the task link navigator overlay",
+                    Some("<task-id>"),
+                ),
+                OmegaCommandSubcommand::new(
+                    "view-file",
+                    "Open a task-linked file in the detail overlay",
+                    Some("<path>"),
+                ),
+                OmegaCommandSubcommand::new(
+                    "open-link",
+                    "Open a task navigator item in the detail overlay",
+                    Some("<task-id> <path-or-log-entry>"),
+                ),
                 OmegaCommandSubcommand::new("select", "Bind or clear the current session task", Some("<task-id|none>")),
                 OmegaCommandSubcommand::new(
                     "send",
@@ -1434,7 +1450,7 @@ fn execute_plan_command(
 ) -> anyhow::Result<CommandExecutionOutput> {
     let Some(subcommand) = invocation.subcommand.as_deref() else {
         return Err(anyhow::anyhow!(
-            "missing subcommand for '/plan'; expected list, show, create, update, prioritize, depends, log, link, select, send, sync-todo, migrate-todo, or load"
+            "missing subcommand for '/plan'; expected list, show, create, update, prioritize, depends, log, link, links, view-file, select, send, sync-todo, migrate-todo, or load"
         ));
     };
 
@@ -1489,6 +1505,56 @@ fn execute_plan_command(
                 body: render_plan_task_detail(&store, &task)?,
                 state: ResponseSectionState::Complete,
                 activity: format!("/plan show loaded {}", task.id),
+                knowledge_summary: None,
+                agent_messages: None,
+            })
+        }
+        "links" => {
+            let task_id = invocation
+                .args
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("usage: /plan links <task-id>"))?;
+            let task = store
+                .get_task(task_id)?
+                .ok_or_else(|| anyhow::anyhow!("unknown task '{task_id}'"))?;
+            let project_root = active_project_handle(project_state).root();
+            let request = build_plan_links_picker_request(&project_root, &store, &task)?;
+            tx.send(RuntimeMessageEnvelope::state(
+                turn_id,
+                StateMessage::ShowOverlay {
+                    request: OverlayRequest {
+                        target: OverlayTarget::Picker,
+                        content: UiContent::OperatorPicker(request),
+                    },
+                },
+            ));
+
+            Ok(CommandExecutionOutput {
+                body: String::new(),
+                state: ResponseSectionState::Complete,
+                activity: format!("/plan links loaded {}", task.id),
+                knowledge_summary: None,
+                agent_messages: None,
+            })
+        }
+        "view-file" => {
+            let relative_path = parse_plan_view_file_args(&invocation.args)?;
+            let project_root = active_project_handle(project_state).root();
+            let content = render_plan_view_file_content(&project_root, &relative_path)?;
+            tx.send(RuntimeMessageEnvelope::state(
+                turn_id,
+                StateMessage::ShowOverlay {
+                    request: OverlayRequest {
+                        target: OverlayTarget::Detail,
+                        content: UiContent::Text(content),
+                    },
+                },
+            ));
+
+            Ok(CommandExecutionOutput {
+                body: String::new(),
+                state: ResponseSectionState::Complete,
+                activity: format!("/plan view-file opened {}", relative_path),
                 knowledge_summary: None,
                 agent_messages: None,
             })
@@ -1571,6 +1637,40 @@ fn execute_plan_command(
                 body: render_plan_task_detail(&store, &task)?,
                 state: ResponseSectionState::Complete,
                 activity: format!("/plan link updated {}", task.id),
+                knowledge_summary: None,
+                agent_messages: None,
+            })
+        }
+        "open-link" => {
+            let (task_id, target_id) = parse_plan_open_link_args(&invocation.args)?;
+            let overlay_content = if let Some(seq) = target_id.strip_prefix("log-entry:") {
+                let sequence = seq
+                    .parse::<u64>()
+                    .with_context(|| format!("invalid plan log entry id '{target_id}'"))?;
+                let entry = store
+                    .load_logs(&task_id, None)?
+                    .into_iter()
+                    .find(|entry| entry.seq == sequence)
+                    .ok_or_else(|| anyhow::anyhow!("unknown log entry '{}' for task '{}'", target_id, task_id))?;
+                render_plan_log_entry_detail(&task_id, &entry)
+            } else {
+                let project_root = active_project_handle(project_state).root();
+                render_plan_view_file_content(&project_root, &target_id)?
+            };
+            tx.send(RuntimeMessageEnvelope::state(
+                turn_id,
+                StateMessage::ShowOverlay {
+                    request: OverlayRequest {
+                        target: OverlayTarget::Detail,
+                        content: UiContent::Text(overlay_content),
+                    },
+                },
+            ));
+
+            Ok(CommandExecutionOutput {
+                body: String::new(),
+                state: ResponseSectionState::Complete,
+                activity: format!("/plan open-link opened {} for {}", target_id, task_id),
                 knowledge_summary: None,
                 agent_messages: None,
             })
@@ -3656,6 +3756,26 @@ fn parse_plan_link_args(
     Ok((args[0].clone(), surface, args[2].clone(), label))
 }
 
+fn parse_plan_view_file_args(args: &[String]) -> anyhow::Result<String> {
+    if args.is_empty() {
+        return Err(anyhow::anyhow!("usage: /plan view-file <path>"));
+    }
+    let path = args.join(" ");
+    if path.trim().is_empty() {
+        return Err(anyhow::anyhow!("usage: /plan view-file <path>"));
+    }
+    Ok(path)
+}
+
+fn parse_plan_open_link_args(args: &[String]) -> anyhow::Result<(String, String)> {
+    if args.len() < 2 {
+        return Err(anyhow::anyhow!(
+            "usage: /plan open-link <task-id> <path-or-log-entry>"
+        ));
+    }
+    Ok((args[0].clone(), args[1..].join(" ")))
+}
+
 fn parse_plan_send_args(
     args: &[String],
     current_selected_task_id: Option<String>,
@@ -3724,6 +3844,155 @@ fn infer_task_artifact_kind(path: &str, surface: TaskLinkSurface) -> TaskArtifac
     } else {
         TaskArtifactKind::Code
     }
+}
+
+fn is_doc_artifact_kind(kind: TaskArtifactKind) -> bool {
+    matches!(
+        kind,
+        TaskArtifactKind::Prd
+            | TaskArtifactKind::Spec
+            | TaskArtifactKind::Guide
+            | TaskArtifactKind::Adr
+    )
+}
+
+fn task_artifact_kind_label(kind: TaskArtifactKind) -> &'static str {
+    match kind {
+        TaskArtifactKind::Prd => "prd",
+        TaskArtifactKind::Spec => "spec",
+        TaskArtifactKind::Guide => "guide",
+        TaskArtifactKind::Adr => "adr",
+        TaskArtifactKind::Code => "code",
+        TaskArtifactKind::Test => "test",
+        TaskArtifactKind::Delivery => "delivery",
+    }
+}
+
+fn task_log_kind_label(kind: TaskLogKind) -> &'static str {
+    match kind {
+        TaskLogKind::Created => "created",
+        TaskLogKind::NoteAdded => "note",
+        TaskLogKind::DeliveryAttached => "delivery",
+        TaskLogKind::PartialDelivery => "partial-delivery",
+    }
+}
+
+fn plan_link_display_name(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(path)
+        .to_string()
+}
+
+fn preview_plan_link_file(project_root: &std::path::Path, relative_path: &str) -> Option<String> {
+    let resolved = resolve_project_relative_file(project_root, relative_path).ok()?;
+    let content = std::fs::read_to_string(&resolved).ok()?;
+    let stripped = strip_basic_markdown(&content);
+    let preview = stripped
+        .lines()
+        .take(8)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string();
+    (!preview.is_empty()).then_some(preview)
+}
+
+fn resolve_project_relative_file(
+    project_root: &std::path::Path,
+    relative_path: &str,
+) -> anyhow::Result<std::path::PathBuf> {
+    let relative_path = relative_path.trim();
+    if relative_path.is_empty() {
+        anyhow::bail!("path cannot be empty");
+    }
+    let relative = std::path::Path::new(relative_path);
+    if relative.is_absolute() {
+        anyhow::bail!("/plan view-file path must be project-root relative, not absolute");
+    }
+    let root = std::fs::canonicalize(project_root)
+        .with_context(|| format!("failed to canonicalize {}", project_root.display()))?;
+    let unresolved = root.join(relative);
+    let resolved = std::fs::canonicalize(&unresolved)
+        .with_context(|| format!("failed to resolve path {}", unresolved.display()))?;
+    if resolved.strip_prefix(&root).is_err() {
+        anyhow::bail!("/plan view-file path must stay within the active project root");
+    }
+    if !resolved.is_file() {
+        anyhow::bail!("/plan view-file path must reference a file");
+    }
+    Ok(resolved)
+}
+
+fn render_plan_view_file_content(
+    project_root: &std::path::Path,
+    relative_path: &str,
+) -> anyhow::Result<String> {
+    let resolved = resolve_project_relative_file(project_root, relative_path)?;
+    let content = std::fs::read_to_string(&resolved)
+        .with_context(|| format!("failed to read {}", resolved.display()))?;
+    let stripped = strip_basic_markdown(&content);
+    Ok(format!("File: {}\n\n{}", relative_path, stripped.trim()))
+}
+
+fn render_plan_log_entry_detail(task_id: &str, entry: &TaskLogEntry) -> String {
+    format!(
+        "Task: {}\nLog entry: #{}\nKind: {}\nActor: {:?}\nSummary: {}\nSession: {}\nTurn: {}\nDelivery: {}",
+        task_id,
+        entry.seq,
+        task_log_kind_label(entry.kind),
+        entry.actor,
+        entry.summary,
+        entry.related_session_id.as_deref().unwrap_or("none"),
+        entry
+            .related_turn_id
+            .map(|value| value.to_string())
+            .as_deref()
+            .unwrap_or("none"),
+        entry.related_delivery_id.as_deref().unwrap_or("none"),
+    )
+}
+
+fn strip_basic_markdown(content: &str) -> String {
+    let mut lines = Vec::new();
+    let mut in_frontmatter = false;
+    let mut saw_first_line = false;
+
+    for raw_line in content.lines() {
+        let trimmed_end = raw_line.trim_end();
+        if !saw_first_line {
+            saw_first_line = true;
+            if trimmed_end.trim() == "---" {
+                in_frontmatter = true;
+                continue;
+            }
+        }
+        if in_frontmatter {
+            if trimmed_end.trim() == "---" {
+                in_frontmatter = false;
+            }
+            continue;
+        }
+
+        let trimmed_start = trimmed_end.trim_start();
+        if trimmed_start.starts_with("```") {
+            continue;
+        }
+        let normalized = strip_markdown_heading(trimmed_start).unwrap_or(trimmed_end);
+        lines.push(normalized.to_string());
+    }
+
+    lines.join("\n")
+}
+
+fn strip_markdown_heading(line: &str) -> Option<&str> {
+    let hashes = line.chars().take_while(|character| *character == '#').count();
+    if hashes == 0 {
+        return None;
+    }
+    line.get(hashes..)
+        .and_then(|remainder| remainder.strip_prefix(' '))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4723,13 +4992,13 @@ fn build_plan_list_picker_request(
             .map(|task| build_plan_list_picker_item(store, task, selected_task_id))
             .collect::<anyhow::Result<Vec<_>>>()?,
         primary_action: OperatorPickerAction {
-            action_id: "plan-list-detail".to_string(),
-            label: "Detail".to_string(),
+            action_id: "plan-list-links".to_string(),
+            label: "Links".to_string(),
             shortcut: OperatorPickerShortcut::Enter,
             requires_selection: true,
-            overlay_behavior: OperatorPickerOverlayBehavior::KeepOpen,
+            overlay_behavior: OperatorPickerOverlayBehavior::CloseOverlay,
             intent: OperatorPickerIntent::SubmitSlashCommand {
-                command_template: "/plan show {id}".to_string(),
+                command_template: "/plan links {id}".to_string(),
             },
         },
         secondary_actions: vec![OperatorPickerAction {
@@ -4743,6 +5012,98 @@ fn build_plan_list_picker_request(
             },
         }],
     })
+}
+
+fn build_plan_links_picker_request(
+    project_root: &std::path::Path,
+    store: &ProjectPlanStore,
+    task: &PlannedTask,
+) -> anyhow::Result<OperatorPickerRequest> {
+    let context = store
+        .resolve_task_context(&task.id)?
+        .ok_or_else(|| anyhow::anyhow!("unknown task '{}'", task.id))?;
+    let mut items = Vec::new();
+    for link in &context.design_links {
+        items.push(build_plan_link_picker_item(project_root, link, TaskLinkSurface::Design));
+    }
+    for link in &context.implementation_links {
+        items.push(build_plan_link_picker_item(
+            project_root,
+            link,
+            TaskLinkSurface::Implementation,
+        ));
+    }
+    for entry in &context.recent_logs {
+        items.push(build_plan_log_picker_item(&task.id, entry));
+    }
+
+    Ok(OperatorPickerRequest {
+        picker_id: format!("{PLAN_LINKS_PICKER_ID_PREFIX}{}", task.id),
+        title: format!(" {}: {} ", task.id, task.title),
+        empty_state: "No linked artifacts or recent logs are available for this task.".to_string(),
+        filter_enabled: true,
+        items,
+        primary_action: OperatorPickerAction {
+            action_id: "plan-links-open".to_string(),
+            label: "Open".to_string(),
+            shortcut: OperatorPickerShortcut::Enter,
+            requires_selection: true,
+            overlay_behavior: OperatorPickerOverlayBehavior::CloseOverlay,
+            intent: OperatorPickerIntent::SubmitSlashCommand {
+                command_template: format!("/plan open-link {} {{id}}", task.id),
+            },
+        },
+        secondary_actions: vec![OperatorPickerAction {
+            action_id: "plan-links-back".to_string(),
+            label: "Back".to_string(),
+            shortcut: OperatorPickerShortcut::Ctrl('l'),
+            requires_selection: false,
+            overlay_behavior: OperatorPickerOverlayBehavior::CloseOverlay,
+            intent: OperatorPickerIntent::SubmitSlashCommand {
+                command_template: "/plan list".to_string(),
+            },
+        }],
+    })
+}
+
+fn build_plan_link_picker_item(
+    project_root: &std::path::Path,
+    link: &TaskArtifactLink,
+    surface: TaskLinkSurface,
+) -> OperatorPickerItem {
+    let mut badges = Vec::new();
+    if is_doc_artifact_kind(link.kind) {
+        badges.push("doc".to_string());
+    } else {
+        badges.push(match surface {
+            TaskLinkSurface::Design => "design".to_string(),
+            TaskLinkSurface::Implementation => "implementation".to_string(),
+        });
+    }
+    badges.push(task_artifact_kind_label(link.kind).to_string());
+
+    OperatorPickerItem {
+        id: link.path.clone(),
+        title: link
+            .label
+            .clone()
+            .unwrap_or_else(|| plan_link_display_name(&link.path)),
+        subtitle: Some(link.path.clone()),
+        badges,
+        preview: preview_plan_link_file(project_root, &link.path),
+        disabled_reason: None,
+    }
+}
+
+fn build_plan_log_picker_item(task_id: &str, entry: &TaskLogEntry) -> OperatorPickerItem {
+    OperatorPickerItem {
+        id: format!("log-entry:{}", entry.seq),
+        title: preview_text(&entry.summary, 80),
+        subtitle: Some(format!("#{} {}", entry.seq, task_log_kind_label(entry.kind))),
+        badges: vec!["log".to_string()],
+        preview: Some(render_plan_log_entry_detail(task_id, entry)),
+        disabled_reason: None,
+    }
 }
 
 fn build_plan_list_picker_item(
