@@ -22,7 +22,7 @@ pub use document_model::{
     DocumentHealthStatus, DocumentMutationMode, DocumentOp, DocumentOperatorUsage,
     DocumentOpResult, DocumentStoreVersion, FileRecord, FileStatus, FileType, HealthScore,
     MetadataUpdate, ScanResult, SearchFilter, SearchMode, SearchQuery, SearchResult,
-    SortField, StructuredDocRelationRecord, StructuredDocTaskRecord,
+    SortField, StructuredDocRelationRecord,
     StructuredDocumentRecord, StructuredDocumentRelation, StructuredDocumentRender,
     StructuredDocumentSection, StructuredDocsExtractionReport, StructuredDocsManifest,
     StructuredDocsRenderState, StructuredDocsValidationIssue,
@@ -2216,7 +2216,6 @@ impl ToolHandler for ManageDocumentHandler {
                 "has_plan": result.plan.is_some(),
                 "file_count": result.files.len(),
                 "record_count": result.records.len(),
-                "doc_task_count": result.doc_tasks.len(),
                 "relation_count": result.relations.len(),
                 "has_manifest": result.manifest.is_some(),
                 "has_render_state": result.render_state.is_some(),
@@ -2356,8 +2355,6 @@ struct ManageDocumentInput {
     #[serde(default)]
     record: Option<StructuredDocumentRecord>,
     #[serde(default)]
-    task: Option<StructuredDocTaskRecord>,
-    #[serde(default)]
     relation: Option<StructuredDocRelationRecord>,
     #[serde(default)]
     doc_ids: Vec<String>,
@@ -2402,10 +2399,6 @@ impl ManageDocumentInput {
             "upsert_record" => Ok(DocumentOp::UpsertRecord {
                 mode: self.mode.unwrap_or(DocumentMutationMode::Check),
                 record: required_field(self.record, "record")?,
-            }),
-            "upsert_task" => Ok(DocumentOp::UpsertTask {
-                mode: self.mode.unwrap_or(DocumentMutationMode::Check),
-                task: required_field(self.task, "task")?,
             }),
             "upsert_relation" => Ok(DocumentOp::UpsertRelation {
                 mode: self.mode.unwrap_or(DocumentMutationMode::Check),

@@ -1,4 +1,3 @@
-use omega_plan::{PlannedTaskKind, PlannedTaskStatus, TaskPriority};
 use omega_todo::TodoItem;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -298,7 +297,6 @@ pub struct StructuredDocsManifest {
     pub schema_version: u32,
     pub generated_root: String,
     pub record_sets: Vec<String>,
-    pub task_store_path: String,
     pub relation_store_path: String,
     pub render_state_path: String,
     pub updated_at: u64,
@@ -342,34 +340,6 @@ pub struct StructuredDocumentRecord {
     #[serde(default)]
     pub relations: Vec<StructuredDocumentRelation>,
     pub render: StructuredDocumentRender,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StructuredDocTaskRecord {
-    pub task_id: String,
-    pub title: String,
-    #[serde(default)]
-    pub plan_task_id: Option<String>,
-    #[serde(default)]
-    pub kind: PlannedTaskKind,
-    #[serde(default)]
-    pub status: PlannedTaskStatus,
-    #[serde(default)]
-    pub priority: TaskPriority,
-    #[serde(default)]
-    pub summary: String,
-    #[serde(default)]
-    pub requirement: String,
-    #[serde(default)]
-    pub acceptance: Vec<String>,
-    #[serde(default)]
-    pub depends_on: Vec<String>,
-    #[serde(default)]
-    pub presentation_links: Vec<String>,
-    #[serde(default)]
-    pub tags: Vec<String>,
-    #[serde(default)]
-    pub doc_scope: Vec<DocType>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -428,7 +398,6 @@ pub struct DocumentOpResult {
     pub files: Vec<FileRecord>,
     pub manifest: Option<StructuredDocsManifest>,
     pub records: Vec<StructuredDocumentRecord>,
-    pub doc_tasks: Vec<StructuredDocTaskRecord>,
     pub relations: Vec<StructuredDocRelationRecord>,
     pub render_state: Option<StructuredDocsRenderState>,
     pub validation: Option<StructuredDocsValidationReport>,
@@ -465,10 +434,6 @@ pub enum DocumentOp {
     UpsertRecord {
         mode: DocumentMutationMode,
         record: StructuredDocumentRecord,
-    },
-    UpsertTask {
-        mode: DocumentMutationMode,
-        task: StructuredDocTaskRecord,
     },
     UpsertRelation {
         mode: DocumentMutationMode,

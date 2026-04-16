@@ -1,0 +1,34 @@
+{
+  "task_id": "DOC-0022F",
+  "title": "Add reports and regression baselines",
+  "kind": "feature",
+  "status": "backlog",
+  "priority": "p2",
+  "summary": "沉淀 run summary、baseline compare 和回归报告，形成可持续比较的 benchmark 输出面。",
+  "requirement": "Add reporting, baseline snapshots, and regression comparison so benchmark runs can be compared across models, prompts, and runtime revisions.",
+  "acceptance": [
+    "run summaries aggregate per-track metrics",
+    "baseline snapshots can be stored and compared",
+    "report output highlights regressions and improvements"
+  ],
+  "depends_on": [
+    "DOC-0022C",
+    "DOC-0022D",
+    "DOC-0022E"
+  ],
+  "presentation_links": [
+    "docs/prds/omega-benchmark-evaluation.md",
+    "docs/specs/omega-benchmark-system.md",
+    "docs/TODO.md"
+  ],
+  "tags": [
+    "benchmark",
+    "reporting",
+    "baseline"
+  ],
+  "doc_scope": [
+    "prd",
+    "spec",
+    "todo"
+  ]
+}

@@ -2148,14 +2148,14 @@ fn spawn_command_plan_create_list_show_and_select_manage_project_tasks() {
 }
 
 #[test]
-fn spawn_command_plan_list_bootstraps_doc_tasks_and_shows_picker_overlay() {
-    let root = unique_session_test_root("plan-command-doc-task-bootstrap");
+fn spawn_command_plan_list_reads_project_tasks_and_shows_picker_overlay() {
+    let root = unique_session_test_root("plan-command-project-task-store");
     write_document_fixture(&root);
     std::fs::create_dir_all(root.join("docs-data/tasks")).unwrap();
     std::fs::write(
-        root.join("docs-data/tasks/doc-tasks.jsonl"),
-        r#"{"task_id":"DOC-1000A","title":"Bootstrap plan tasks","plan_task_id":null,"kind":"chore","status":"ready","priority":"p1","summary":"Create project tasks from doc tasks","requirement":"Backfill project tasks from structured doc tasks","acceptance":["project task store exists"],"depends_on":[],"presentation_links":["docs/specs/omega-project-plan-system.md"],"tags":["structured-docs"],"doc_scope":["spec"]}
-{"task_id":"DOC-1000B","title":"Validate bootstrap order","plan_task_id":null,"kind":"chore","status":"blocked","priority":"p2","summary":"Keep dependency mapping stable","requirement":"Preserve doc task dependencies in omega-plan","acceptance":["dependency chain is preserved"],"depends_on":["DOC-1000A"],"presentation_links":["docs/specs/omega-structured-document-system.md"],"tags":["structured-docs"],"doc_scope":["spec"]}
+        root.join("docs-data/tasks/project-tasks.jsonl"),
+        r#"{"id":"TASK-0001","title":"Bootstrap plan tasks","kind":"chore","status":"ready","priority":"p1","order_key":1000,"summary":"Create project tasks from project task store","requirement":"Read project tasks from docs-data/tasks/project-tasks.jsonl","acceptance":["project task store exists"],"parent_id":null,"depends_on":[],"tags":["structured-docs"],"design_links":[{"kind":"spec","path":"docs/specs/omega-project-plan-system.md","label":null}],"implementation_links":[],"doc_scope":["spec"]}
+{"id":"TASK-0002","title":"Validate bootstrap order","kind":"chore","status":"blocked","priority":"p2","order_key":2000,"summary":"Keep dependency mapping stable","requirement":"Preserve task dependencies in omega-plan","acceptance":["dependency chain is preserved"],"parent_id":null,"depends_on":["TASK-0001"],"tags":["structured-docs"],"design_links":[{"kind":"spec","path":"docs/specs/omega-structured-document-system.md","label":null}],"implementation_links":[],"doc_scope":["spec"]}
 "#,
     )
     .unwrap();

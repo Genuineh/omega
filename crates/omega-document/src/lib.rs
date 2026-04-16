@@ -33,7 +33,7 @@ use walkdir::WalkDir;
 mod structured_docs;
 
 pub use structured_docs::{
-    StructuredDocRelationRecord, StructuredDocTaskRecord, StructuredDocumentRecord,
+    StructuredDocRelationRecord, StructuredDocumentRecord,
     StructuredDocumentRelation, StructuredDocumentRender, StructuredDocumentSection,
     StructuredDocsExtractionReport, StructuredDocsManifest, StructuredDocsRenderState,
     StructuredDocsSnapshot,
@@ -379,7 +379,6 @@ pub struct DocumentOpResult {
     pub files: Vec<FileRecord>,
     pub manifest: Option<StructuredDocsManifest>,
     pub records: Vec<StructuredDocumentRecord>,
-    pub doc_tasks: Vec<StructuredDocTaskRecord>,
     pub relations: Vec<StructuredDocRelationRecord>,
     pub render_state: Option<StructuredDocsRenderState>,
     pub validation: Option<StructuredDocsValidationReport>,
@@ -426,10 +425,6 @@ pub enum DocumentOp {
         mode: DocumentMutationMode,
         record: StructuredDocumentRecord,
     },
-    UpsertTask {
-        mode: DocumentMutationMode,
-        task: StructuredDocTaskRecord,
-    },
     UpsertRelation {
         mode: DocumentMutationMode,
         relation: StructuredDocRelationRecord,
@@ -443,10 +438,6 @@ pub enum DocumentOp {
         doc_id: String,
         reason: ArchiveTrigger,
         replaced_by: Option<String>,
-    },
-    DeleteTask {
-        mode: DocumentMutationMode,
-        task_id: String,
     },
     DeleteRelation {
         mode: DocumentMutationMode,
@@ -804,7 +795,6 @@ impl OmegaDocument {
                 files: Vec::new(),
                 manifest: None,
                 records: Vec::new(),
-                doc_tasks: Vec::new(),
                 relations: Vec::new(),
                 render_state: None,
                 validation: None,
@@ -835,7 +825,6 @@ impl OmegaDocument {
                     files,
                     manifest: None,
                     records: Vec::new(),
-                    doc_tasks: Vec::new(),
                     relations: Vec::new(),
                     render_state: None,
                     validation: None,
@@ -845,9 +834,6 @@ impl OmegaDocument {
             }
             DocumentOp::UpsertRecord { mode, record } => {
                 self.structured_result(Some(mode), self.structured_docs().upsert_record(mode, record)?)
-            }
-            DocumentOp::UpsertTask { mode, task } => {
-                self.structured_result(Some(mode), self.structured_docs().upsert_task(mode, task)?)
             }
             DocumentOp::UpsertRelation { mode, relation } => self.structured_result(
                 Some(mode),
@@ -866,10 +852,6 @@ impl OmegaDocument {
                 Some(mode),
                 self.structured_docs()
                     .archive_record(mode, &doc_id, reason, replaced_by.as_deref())?,
-            ),
-            DocumentOp::DeleteTask { mode, task_id } => self.structured_result(
-                Some(mode),
-                self.structured_docs().delete_task(mode, &task_id)?,
             ),
             DocumentOp::DeleteRelation {
                 mode,
@@ -962,7 +944,6 @@ impl OmegaDocument {
             files: Vec::new(),
             manifest: outcome.manifest,
             records: outcome.records,
-            doc_tasks: outcome.doc_tasks,
             relations: outcome.relations,
             render_state: outcome.render_state,
             validation: outcome.validation,
@@ -1195,7 +1176,6 @@ impl OmegaDocument {
                 files: Vec::new(),
                 manifest: None,
                 records: Vec::new(),
-                doc_tasks: Vec::new(),
                 relations: Vec::new(),
                 render_state: None,
                 validation: None,
@@ -1213,7 +1193,6 @@ impl OmegaDocument {
                         files: Vec::new(),
                         manifest: None,
                         records: Vec::new(),
-                        doc_tasks: Vec::new(),
                         relations: Vec::new(),
                         render_state: None,
                         validation: None,
@@ -1261,7 +1240,6 @@ impl OmegaDocument {
                         })],
                     manifest: None,
                     records: Vec::new(),
-                    doc_tasks: Vec::new(),
                     relations: Vec::new(),
                     render_state: None,
                     validation: None,
@@ -1322,7 +1300,6 @@ impl OmegaDocument {
                 files: Vec::new(),
                 manifest: None,
                 records: Vec::new(),
-                doc_tasks: Vec::new(),
                 relations: Vec::new(),
                 render_state: None,
                 validation: None,
@@ -1340,7 +1317,6 @@ impl OmegaDocument {
                         files: Vec::new(),
                         manifest: None,
                         records: Vec::new(),
-                        doc_tasks: Vec::new(),
                         relations: Vec::new(),
                         render_state: None,
                         validation: None,
@@ -1379,7 +1355,6 @@ impl OmegaDocument {
                         .collect(),
                     manifest: None,
                     records: Vec::new(),
-                    doc_tasks: Vec::new(),
                     relations: Vec::new(),
                     render_state: None,
                     validation: None,
@@ -1410,7 +1385,6 @@ impl OmegaDocument {
                 files: Vec::new(),
                 manifest: None,
                 records: Vec::new(),
-                doc_tasks: Vec::new(),
                 relations: Vec::new(),
                 render_state: None,
                 validation: None,
@@ -1452,7 +1426,6 @@ impl OmegaDocument {
                 files: vec![next],
                 manifest: None,
                 records: Vec::new(),
-                doc_tasks: Vec::new(),
                 relations: Vec::new(),
                 render_state: None,
                 validation: None,
@@ -1471,7 +1444,6 @@ impl OmegaDocument {
             files: vec![next],
             manifest: None,
             records: Vec::new(),
-            doc_tasks: Vec::new(),
             relations: Vec::new(),
             render_state: None,
             validation: None,
@@ -3416,12 +3388,12 @@ mod tests {
 
     use super::{
         ArchiveTrigger, DocType, DocumentMutationMode, DocumentOp, FileStatus, OmegaDocument,
-        SearchMode, SearchQuery, StructuredDocTaskRecord, StructuredDocumentRecord,
+        SearchMode, SearchQuery, StructuredDocumentRecord,
         StructuredDocumentRelation, StructuredDocumentRender, StructuredDocumentSection, TodoOp,
     };
-    use omega_plan::ProjectPlanAccess;
+    use omega_plan::{NewPlannedTask, ProjectPlanAccess};
     use omega_project_layout::{STORE_DIR_PATH, STORE_MANIFEST_PATH, STORE_VERSION_PATH};
-    use omega_plan::{PlannedTaskKind, PlannedTaskStatus, TaskPriority};
+    use omega_plan::TaskPriority;
     use omega_todo::{TodoItem, TodoStatus};
 
     static TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -4077,100 +4049,64 @@ mod tests {
     }
 
     #[test]
-    fn structured_doc_task_syncs_to_project_plan() {
-        let root = temp_root("structured-task");
+    fn todo_projection_renders_project_tasks_with_todo_scope() {
+        let root = temp_root("structured-todo-project-tasks");
         seed_repo(&root);
         let documents = OmegaDocument::new(root.clone());
-
         documents
-            .manage_document(DocumentOp::UpsertTask {
+            .manage_document(DocumentOp::UpsertRecord {
                 mode: DocumentMutationMode::Apply,
-                task: StructuredDocTaskRecord {
-                    task_id: "DOC-0019A".to_string(),
-                    title: "Define structured docs contract".to_string(),
-                    plan_task_id: None,
-                    kind: PlannedTaskKind::Chore,
-                    status: PlannedTaskStatus::Ready,
-                    priority: TaskPriority::P1,
-                    summary: "Freeze docs-data schema".to_string(),
-                    requirement: "Define docs-data schema and render contract".to_string(),
-                    acceptance: vec!["manifest exists".to_string()],
-                    depends_on: Vec::new(),
-                    presentation_links: vec!["docs/specs/omega-structured-document-system.md".to_string()],
-                    tags: vec!["structured-docs".to_string()],
-                    doc_scope: vec![DocType::Spec],
+                record: StructuredDocumentRecord {
+                    doc_id: "todo:docs-todo".to_string(),
+                    doc_type: DocType::Todo,
+                    slug: "docs-todo".to_string(),
+                    title: "TODO".to_string(),
+                    status: Some("active".to_string()),
+                    owner: Some("omega-team".to_string()),
+                    created: Some("2026-04-16".to_string()),
+                    updated: Some("2026-04-16".to_string()),
+                    version: None,
+                    source_path: "docs/TODO.md".to_string(),
+                    frontmatter: std::collections::BTreeMap::new(),
+                    sections: vec![StructuredDocumentSection {
+                        section_id: "scope".to_string(),
+                        heading: "Scope".to_string(),
+                        body_markdown: "Current TODO projection.".to_string(),
+                    }],
+                    relations: Vec::new(),
+                    render: StructuredDocumentRender {
+                        template: "todo-v1".to_string(),
+                        presentation_path: "docs/TODO.md".to_string(),
+                    },
                 },
             })
             .unwrap();
 
-        let plan_store = omega_plan::ProjectPlanStore::open_or_scaffold(&root).unwrap();
-        let tasks = plan_store
-            .list_tasks(omega_plan::TaskListFilter::default())
-            .unwrap();
-        assert_eq!(tasks.len(), 1);
-        assert_eq!(tasks[0].title, "Define structured docs contract");
-        assert_eq!(tasks[0].priority, TaskPriority::P1);
-        assert!(tasks[0]
-            .design_links
-            .iter()
-            .any(|link| link.path == "docs/specs/omega-structured-document-system.md"));
-        assert!(root.join("docs-data/tasks/doc-tasks.jsonl").exists());
-    }
+        let store = omega_plan::ProjectPlanStore::open_or_scaffold(&root).unwrap();
+        let mut visible = NewPlannedTask::simple("Visible project task", TaskPriority::P1);
+        visible.summary = "Should appear in TODO".to_string();
+        visible.requirement = "Appear in the TODO projection".to_string();
+        visible.doc_scope = vec!["todo".to_string()];
+        let visible = store.create_task(visible).unwrap();
 
-    #[test]
-    fn structured_doc_task_reuses_bootstrapped_plan_tasks_without_duplicates() {
-        let root = temp_root("structured-task-bootstrap-reuse");
-        seed_repo(&root);
-        std::fs::create_dir_all(root.join("docs-data/tasks")).unwrap();
-        std::fs::write(
-            root.join("docs-data/tasks/doc-tasks.jsonl"),
-            r#"{"task_id":"DOC-0019A","title":"Define structured docs contract","plan_task_id":null,"kind":"chore","status":"ready","priority":"p1","summary":"Freeze docs-data schema","requirement":"Define docs-data schema and render contract","acceptance":["manifest exists"],"depends_on":[],"presentation_links":["docs/specs/omega-structured-document-system.md"],"tags":["structured-docs"],"doc_scope":["spec"]}
-{"task_id":"DOC-0019B","title":"Sync plan graph from structured tasks","plan_task_id":null,"kind":"chore","status":"blocked","priority":"p2","summary":"Bridge structured tasks into omega-plan","requirement":"Reuse bootstrapped plan tasks during structured task upserts","acceptance":["no duplicate plan tasks are created"],"depends_on":["DOC-0019A"],"presentation_links":["docs/specs/omega-project-plan-system.md"],"tags":["structured-docs"],"doc_scope":["spec"]}
-"#,
-        )
-        .unwrap();
+        let mut hidden = NewPlannedTask::simple("Hidden project task", TaskPriority::P1);
+        hidden.summary = "Should stay out of TODO".to_string();
+        hidden.requirement = "Do not appear in the TODO projection".to_string();
+        store.create_task(hidden).unwrap();
 
-        let documents = OmegaDocument::new(root.clone());
         documents
-            .manage_document(DocumentOp::UpsertTask {
+            .manage_document(DocumentOp::RenderProjection {
                 mode: DocumentMutationMode::Apply,
-                task: StructuredDocTaskRecord {
-                    task_id: "DOC-0019B".to_string(),
-                    title: "Sync plan graph from structured tasks".to_string(),
-                    plan_task_id: None,
-                    kind: PlannedTaskKind::Chore,
-                    status: PlannedTaskStatus::Blocked,
-                    priority: TaskPriority::P2,
-                    summary: "Bridge structured tasks into omega-plan".to_string(),
-                    requirement: "Reuse bootstrapped plan tasks during structured task upserts"
-                        .to_string(),
-                    acceptance: vec!["no duplicate plan tasks are created".to_string()],
-                    depends_on: vec!["DOC-0019A".to_string()],
-                    presentation_links: vec![
-                        "docs/specs/omega-project-plan-system.md".to_string(),
-                    ],
-                    tags: vec!["structured-docs".to_string()],
-                    doc_scope: vec![DocType::Spec],
-                },
+                doc_ids: vec!["todo:docs-todo".to_string()],
             })
             .unwrap();
 
-        let plan_store = omega_plan::ProjectPlanStore::open_or_scaffold(&root).unwrap();
-        let tasks = plan_store
-            .list_tasks(omega_plan::TaskListFilter::default())
-            .unwrap();
-
-        assert_eq!(tasks.len(), 2);
-        assert_eq!(tasks[1].depends_on, vec![tasks[0].id.clone()]);
-
-        let doc_tasks = std::fs::read_to_string(root.join("docs-data/tasks/doc-tasks.jsonl")).unwrap();
-        let plan_task_ids = doc_tasks
-            .lines()
-            .map(|line| serde_json::from_str::<StructuredDocTaskRecord>(line).unwrap())
-            .map(|task| task.plan_task_id.expect("bootstrap should assign plan task ids"))
-            .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(plan_task_ids.len(), 2);
-        assert_eq!(plan_task_ids, tasks.iter().map(|task| task.id.clone()).collect());
+        let todo = std::fs::read_to_string(root.join("docs/TODO.md")).unwrap();
+        assert!(todo.contains("## Project Tasks"));
+        assert!(todo.contains(&format!("### {}: {}", visible.id, visible.title)));
+        assert!(todo.contains("Should appear in TODO"));
+        assert!(!todo.contains("## Doc Tasks"));
+        assert!(!todo.contains("Hidden project task"));
     }
 
     #[test]

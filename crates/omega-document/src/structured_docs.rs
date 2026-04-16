@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -6,9 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use omega_plan::{
-    NewPlannedTask, PlannedTaskKind, PlannedTaskStatus, PlannedTaskUpdate, ProjectPlanAccess,
-    ProjectPlanStore, TaskArtifactKind, TaskArtifactLink, TaskDependencyOperation,
-    TaskLinkSurface, TaskOrderPlacement, TaskPriority,
+    PlannedTask, PlannedTaskStatus, ProjectPlanAccess, ProjectPlanStore, TaskListFilter,
 };
 use omega_project_layout::OmegaProjectLayout;
 use serde::de::DeserializeOwned;
@@ -26,7 +24,6 @@ pub struct StructuredDocsManifest {
     pub schema_version: u32,
     pub generated_root: String,
     pub record_sets: Vec<String>,
-    pub task_store_path: String,
     #[serde(default = "default_project_task_store_path")]
     pub project_task_store_path: String,
     #[serde(default = "default_project_task_log_dir")]
@@ -50,7 +47,6 @@ impl Default for StructuredDocsManifest {
             schema_version: STRUCTURED_DOCS_SCHEMA_VERSION,
             generated_root: "docs".to_string(),
             record_sets: known_record_sets(),
-            task_store_path: "docs-data/tasks/doc-tasks.jsonl".to_string(),
             project_task_store_path: default_project_task_store_path(),
             project_task_log_dir: default_project_task_log_dir(),
             project_plan_manifest_path: default_project_plan_manifest_path(),
@@ -117,34 +113,6 @@ pub struct StructuredDocumentRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StructuredDocTaskRecord {
-    pub task_id: String,
-    pub title: String,
-    #[serde(default)]
-    pub plan_task_id: Option<String>,
-    #[serde(default)]
-    pub kind: PlannedTaskKind,
-    #[serde(default)]
-    pub status: PlannedTaskStatus,
-    #[serde(default)]
-    pub priority: TaskPriority,
-    #[serde(default)]
-    pub summary: String,
-    #[serde(default)]
-    pub requirement: String,
-    #[serde(default)]
-    pub acceptance: Vec<String>,
-    #[serde(default)]
-    pub depends_on: Vec<String>,
-    #[serde(default)]
-    pub presentation_links: Vec<String>,
-    #[serde(default)]
-    pub tags: Vec<String>,
-    #[serde(default)]
-    pub doc_scope: Vec<DocType>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StructuredDocRelationRecord {
     pub relation_id: String,
     pub source: String,
@@ -175,7 +143,6 @@ pub struct StructuredDocsSnapshot {
     pub manifest: StructuredDocsManifest,
     pub render_state: StructuredDocsRenderState,
     pub records: Vec<StructuredDocumentRecord>,
-    pub doc_tasks: Vec<StructuredDocTaskRecord>,
     pub relations: Vec<StructuredDocRelationRecord>,
 }
 
@@ -241,7 +208,6 @@ pub(crate) struct StructuredDocumentOpOutcome {
     pub message: String,
     pub manifest: Option<StructuredDocsManifest>,
     pub records: Vec<StructuredDocumentRecord>,
-    pub doc_tasks: Vec<StructuredDocTaskRecord>,
     pub relations: Vec<StructuredDocRelationRecord>,
     pub render_state: Option<StructuredDocsRenderState>,
     pub validation: Option<StructuredDocsValidationReport>,
@@ -298,48 +264,6 @@ impl StructuredDocsManager {
         outcome.message = format!("updated structured doc record {}", record.doc_id);
         outcome.manifest = Some(manifest);
         outcome.records = vec![record];
-        Ok(outcome)
-    }
-
-    pub(crate) fn upsert_task(
-        &self,
-        mode: DocumentMutationMode,
-        task: StructuredDocTaskRecord,
-    ) -> Result<StructuredDocumentOpOutcome> {
-        let mut task = canonicalize_doc_task(task)?;
-        validate_doc_task(&task)?;
-        self.ensure_layout()?;
-        let mut manifest = self.load_manifest()?;
-        let stored_tasks = self.load_doc_tasks()?;
-        if task.plan_task_id.is_none() {
-            task.plan_task_id = stored_tasks
-                .iter()
-                .find(|candidate| candidate.task_id == task.task_id)
-                .and_then(|candidate| candidate.plan_task_id.clone());
-        }
-
-        let mut outcome = StructuredDocumentOpOutcome {
-            message: format!("{} structured doc task {}", mode_label(mode), task.task_id),
-            manifest: Some(manifest.clone()),
-            doc_tasks: vec![task.clone()],
-            ..StructuredDocumentOpOutcome::default()
-        };
-
-        if matches!(mode, DocumentMutationMode::Apply) {
-            outcome
-                .warnings
-                .extend(self.sync_doc_task_to_plan(&mut task, &stored_tasks)?);
-            let mut tasks = self.load_doc_tasks().unwrap_or(stored_tasks);
-            upsert_by_key(&mut tasks, &task.task_id, |item| item.task_id.clone(), task.clone());
-            tasks.sort_by(|left, right| left.task_id.cmp(&right.task_id));
-            self.save_doc_tasks(&tasks)?;
-            bump_content_revision(&mut manifest);
-            self.save_manifest(&manifest)?;
-            outcome.message = format!("updated structured doc task {}", task.task_id);
-            outcome.manifest = Some(manifest);
-            outcome.doc_tasks = vec![task];
-        }
-
         Ok(outcome)
     }
 
@@ -517,45 +441,6 @@ impl StructuredDocsManager {
         anyhow::bail!("unknown structured doc record '{}'", doc_id)
     }
 
-    pub(crate) fn delete_task(
-        &self,
-        mode: DocumentMutationMode,
-        task_id: &str,
-    ) -> Result<StructuredDocumentOpOutcome> {
-        self.ensure_layout()?;
-        let mut tasks = self.load_doc_tasks()?;
-        let index = tasks
-            .iter()
-            .position(|task| task.task_id == task_id)
-            .ok_or_else(|| anyhow::anyhow!("unknown structured doc task '{}'", task_id))?;
-        let removed = tasks.remove(index);
-
-        if matches!(mode, DocumentMutationMode::Apply) {
-            self.save_doc_tasks(&tasks)?;
-            if let Some(plan_task_id) = removed.plan_task_id.as_ref() {
-                let plan_store = ProjectPlanStore::open_or_scaffold(&self.root)?;
-                if plan_store.get_task(plan_task_id)?.is_some() {
-                    plan_store.update_task(
-                        plan_task_id,
-                        PlannedTaskUpdate {
-                            status: Some(PlannedTaskStatus::Archived),
-                            ..PlannedTaskUpdate::default()
-                        },
-                    )?;
-                }
-            }
-            let mut manifest = self.load_manifest()?;
-            bump_content_revision(&mut manifest);
-            self.save_manifest(&manifest)?;
-        }
-
-        Ok(StructuredDocumentOpOutcome {
-            message: format!("{} structured doc task {}", mode_label(mode), task_id),
-            doc_tasks: vec![removed],
-            ..StructuredDocumentOpOutcome::default()
-        })
-    }
-
     pub(crate) fn delete_relation(
         &self,
         mode: DocumentMutationMode,
@@ -588,7 +473,6 @@ impl StructuredDocsManager {
             manifest: self.load_manifest()?,
             render_state: self.load_render_state()?,
             records: self.load_all_doc_records()?,
-            doc_tasks: self.load_doc_tasks()?,
             relations: self.load_doc_relations()?,
         })
     }
@@ -602,13 +486,17 @@ impl StructuredDocsManager {
         let mut manifest = self.load_manifest()?;
         let mut warnings = Vec::new();
         let records = self.select_records(&doc_ids, &mut warnings)?;
-        let doc_tasks = self.load_doc_tasks().unwrap_or_default();
+        let project_tasks = self.load_project_tasks().unwrap_or_default();
         let mut generated_paths = Vec::new();
         let version_info = projection_version_for_render(&mut manifest, mode);
         for record in &records {
             generated_paths.push(record.render.presentation_path.clone());
             if matches!(mode, DocumentMutationMode::Apply) {
-                let rendered = render_document(record, Some(version_info_for_record(&version_info, &record.doc_id)), &doc_tasks);
+                let rendered = render_document(
+                    record,
+                    Some(version_info_for_record(&version_info, &record.doc_id)),
+                    &project_tasks,
+                );
                 let target = self.root.join(&record.render.presentation_path);
                 if let Some(parent) = target.parent() {
                     fs::create_dir_all(parent)
@@ -663,7 +551,7 @@ impl StructuredDocsManager {
         let mut warnings = Vec::new();
         let records = self.select_records(&doc_ids, &mut warnings)?;
         let all_records = self.load_all_doc_records()?;
-        let doc_tasks = self.load_doc_tasks().unwrap_or_default();
+        let project_tasks = self.load_project_tasks().unwrap_or_default();
         let record_map = all_records
             .iter()
             .map(|record| (record.doc_id.clone(), record.clone()))
@@ -691,7 +579,7 @@ impl StructuredDocsManager {
             let expected = normalize_markdown(&render_document(
                 record,
                 Some(version_info_for_record(&expected_version, &record.doc_id)),
-                &doc_tasks,
+                &project_tasks,
             ));
             report
                 .compared_paths
@@ -1030,12 +918,9 @@ impl StructuredDocsManager {
         Ok(records)
     }
 
-    fn load_doc_tasks(&self) -> Result<Vec<StructuredDocTaskRecord>> {
-        load_jsonl(&self.layout.docs_data_doc_tasks_path())
-    }
-
-    fn save_doc_tasks(&self, tasks: &[StructuredDocTaskRecord]) -> Result<()> {
-        save_jsonl(&self.layout.docs_data_doc_tasks_path(), tasks)
+    fn load_project_tasks(&self) -> Result<Vec<PlannedTask>> {
+        let plan_store = ProjectPlanStore::open_or_scaffold(&self.root)?;
+        plan_store.list_tasks(TaskListFilter::default())
     }
 
     fn load_doc_relations(&self) -> Result<Vec<StructuredDocRelationRecord>> {
@@ -1046,175 +931,12 @@ impl StructuredDocsManager {
         save_jsonl(&self.layout.docs_data_links_path(), relations)
     }
 
-    fn sync_doc_task_to_plan(
-        &self,
-        task: &mut StructuredDocTaskRecord,
-        stored_tasks: &[StructuredDocTaskRecord],
-    ) -> Result<Vec<String>> {
-        let plan_store = ProjectPlanStore::open_or_scaffold(&self.root)?;
-        let mut warnings = Vec::new();
-        let synced_tasks = self.load_doc_tasks().unwrap_or_else(|_| stored_tasks.to_vec());
-        let desired_dependencies = resolve_plan_dependencies(
-            &plan_store,
-            &task.task_id,
-            &task.depends_on,
-            &synced_tasks,
-            &mut warnings,
-        )?;
-        let desired_links = task
-            .presentation_links
-            .iter()
-            .filter(|path| !path.trim().is_empty())
-            .map(|path| TaskArtifactLink {
-                kind: infer_artifact_kind(path),
-                path: path.trim().to_string(),
-                label: None,
-            })
-            .collect::<Vec<_>>();
-
-        let plan_task_id = task
-            .plan_task_id
-            .clone()
-            .or_else(|| {
-                synced_tasks
-                    .iter()
-                    .find(|candidate| candidate.task_id == task.task_id)
-                    .and_then(|candidate| candidate.plan_task_id.clone())
-            })
-            .filter(|task_id| plan_store.get_task(task_id).ok().flatten().is_some());
-        let plan_task = if let Some(plan_task_id) = plan_task_id {
-            let current = plan_store
-                .get_task(&plan_task_id)?
-                .ok_or_else(|| anyhow::anyhow!("unknown plan task '{}'", plan_task_id))?;
-            if current.kind != task.kind {
-                warnings.push(format!(
-                    "plan task '{}' keeps existing kind '{}' because omega-plan does not support kind mutation",
-                    plan_task_id,
-                    match current.kind {
-                        PlannedTaskKind::Task => "task",
-                        PlannedTaskKind::Feature => "feature",
-                        PlannedTaskKind::Research => "research",
-                        PlannedTaskKind::Refactor => "refactor",
-                        PlannedTaskKind::Chore => "chore",
-                    }
-                ));
-            }
-            let mut updated = plan_store.update_task(
-                &plan_task_id,
-                PlannedTaskUpdate {
-                    title: Some(task.title.clone()),
-                    summary: Some(task.summary.clone()),
-                    requirement: Some(task.requirement.clone()),
-                    status: Some(task.status),
-                    acceptance: Some(task.acceptance.clone()),
-                    tags: Some(task.tags.clone()),
-                },
-            )?;
-            if updated.priority != task.priority {
-                updated = plan_store.reprioritize_task(
-                    &plan_task_id,
-                    task.priority,
-                    TaskOrderPlacement::default(),
-                )?;
-            }
-            sync_dependencies(&plan_store, &updated.id, &updated.depends_on, &desired_dependencies)?;
-            sync_design_links(&plan_store, &updated.id, &desired_links)?;
-            updated
-        } else {
-            let created = plan_store.create_task(NewPlannedTask {
-                title: task.title.clone(),
-                kind: task.kind,
-                status: task.status,
-                priority: task.priority,
-                summary: task.summary.clone(),
-                requirement: task.requirement.clone(),
-                acceptance: task.acceptance.clone(),
-                parent_id: None,
-                depends_on: desired_dependencies.clone(),
-                tags: task.tags.clone(),
-            })?;
-            sync_design_links(&plan_store, &created.id, &desired_links)?;
-            created
-        };
-        task.plan_task_id = Some(plan_task.id);
-        Ok(warnings)
-    }
-}
-
-fn sync_dependencies(
-    store: &ProjectPlanStore,
-    task_id: &str,
-    current_dependencies: &[String],
-    desired_dependencies: &[String],
-) -> Result<()> {
-    let current = current_dependencies.iter().cloned().collect::<BTreeSet<_>>();
-    let desired = desired_dependencies.iter().cloned().collect::<BTreeSet<_>>();
-    for dependency in current.difference(&desired) {
-        store.mutate_dependency(task_id, dependency, TaskDependencyOperation::Remove)?;
-    }
-    for dependency in desired.difference(&current) {
-        store.mutate_dependency(task_id, dependency, TaskDependencyOperation::Add)?;
-    }
-    Ok(())
-}
-
-fn sync_design_links(
-    store: &ProjectPlanStore,
-    task_id: &str,
-    desired_links: &[TaskArtifactLink],
-) -> Result<()> {
-    for link in desired_links {
-        store.add_artifact_link(task_id, TaskLinkSurface::Design, link.clone())?;
-    }
-    Ok(())
-}
-
-fn resolve_plan_dependencies(
-    store: &ProjectPlanStore,
-    task_id: &str,
-    desired_dependencies: &[String],
-    stored_tasks: &[StructuredDocTaskRecord],
-    warnings: &mut Vec<String>,
-) -> Result<Vec<String>> {
-    let mut resolved = Vec::new();
-    for dependency in desired_dependencies {
-        if dependency == task_id {
-            warnings.push(format!("ignoring self dependency '{}'", dependency));
-            continue;
-        }
-        let plan_task_id = if dependency.starts_with("TASK-") {
-            Some(dependency.clone())
-        } else {
-            stored_tasks
-                .iter()
-                .find(|candidate| candidate.task_id == *dependency)
-                .and_then(|candidate| candidate.plan_task_id.clone())
-        };
-        let Some(plan_task_id) = plan_task_id else {
-            warnings.push(format!(
-                "dependency '{}' has no synced omega-plan task yet",
-                dependency
-            ));
-            continue;
-        };
-        if store.get_task(&plan_task_id)?.is_none() {
-            warnings.push(format!(
-                "dependency '{}' resolved to missing omega-plan task '{}'",
-                dependency, plan_task_id
-            ));
-            continue;
-        }
-        resolved.push(plan_task_id);
-    }
-    resolved.sort();
-    resolved.dedup();
-    Ok(resolved)
 }
 
 fn render_document(
     record: &StructuredDocumentRecord,
     version_info: Option<StructuredDocVersionInfo>,
-    doc_tasks: &[StructuredDocTaskRecord],
+    project_tasks: &[PlannedTask],
 ) -> String {
     let mut frontmatter = BTreeMap::new();
     if let Some(status) = record.status.as_ref() {
@@ -1279,19 +1001,22 @@ fn render_document(
         }
     }
     if record.doc_type == DocType::Todo {
-        let mut open: Vec<&StructuredDocTaskRecord> = doc_tasks
+        let mut open: Vec<&PlannedTask> = project_tasks
             .iter()
             .filter(|t| {
                 !matches!(t.status, PlannedTaskStatus::Done | PlannedTaskStatus::Archived)
-                    && t.doc_scope.contains(&DocType::Todo)
+                    && t
+                        .doc_scope
+                        .iter()
+                        .any(|scope| scope.eq_ignore_ascii_case(doc_type_tag(DocType::Todo)))
             })
             .collect();
         if !open.is_empty() {
             open.sort_by(|a, b| {
-                a.priority.as_str().cmp(b.priority.as_str()).then(a.task_id.cmp(&b.task_id))
+                a.priority.as_str().cmp(b.priority.as_str()).then(a.id.cmp(&b.id))
             });
             output.push('\n');
-            output.push_str("## Doc Tasks\n\n");
+            output.push_str("## Project Tasks\n\n");
             for task in &open {
                 let status_label = {
                     let s = task.status.as_str().replace('_', " ");
@@ -1301,7 +1026,7 @@ fn render_document(
                         Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
                     }
                 };
-                output.push_str(&format!("### {}: {}\n\n", task.task_id, task.title));
+                output.push_str(&format!("### {}: {}\n\n", task.id, task.title));
                 output.push_str(&format!("- **Status**: {}\n", status_label));
                 output.push_str(&format!("- **Priority**: {}\n", task.priority.as_str()));
                 if !task.summary.is_empty() {
@@ -1897,28 +1622,6 @@ fn canonicalize_record(mut record: StructuredDocumentRecord) -> Result<Structure
     Ok(record)
 }
 
-fn canonicalize_doc_task(mut task: StructuredDocTaskRecord) -> Result<StructuredDocTaskRecord> {
-    task.task_id = task.task_id.trim().to_string();
-    task.title = task.title.trim().to_string();
-    if task.summary.trim().is_empty() {
-        task.summary = task.title.clone();
-    } else {
-        task.summary = task.summary.trim().to_string();
-    }
-    if task.requirement.trim().is_empty() {
-        task.requirement = task.summary.clone();
-    } else {
-        task.requirement = task.requirement.trim().to_string();
-    }
-    trim_dedupe_sort(&mut task.acceptance);
-    trim_dedupe_sort(&mut task.depends_on);
-    trim_dedupe_sort(&mut task.presentation_links);
-    trim_dedupe_sort(&mut task.tags);
-    task.doc_scope.sort_by(|left, right| doc_type_tag(*left).cmp(doc_type_tag(*right)));
-    task.doc_scope.dedup();
-    Ok(task)
-}
-
 fn canonicalize_relation(
     mut relation: StructuredDocRelationRecord,
 ) -> Result<StructuredDocRelationRecord> {
@@ -1946,16 +1649,6 @@ fn validate_record(record: &StructuredDocumentRecord) -> Result<()> {
     }
     if record.render.presentation_path.trim().is_empty() {
         anyhow::bail!("structured doc record presentation_path cannot be empty");
-    }
-    Ok(())
-}
-
-fn validate_doc_task(task: &StructuredDocTaskRecord) -> Result<()> {
-    if task.task_id.trim().is_empty() {
-        anyhow::bail!("structured doc task id cannot be empty");
-    }
-    if task.title.trim().is_empty() {
-        anyhow::bail!("structured doc task title cannot be empty");
     }
     Ok(())
 }
@@ -2125,20 +1818,6 @@ fn default_presentation_path(doc_type: DocType, slug: &str) -> String {
     }
 }
 
-fn infer_artifact_kind(path: &str) -> TaskArtifactKind {
-    if path.starts_with("docs/specs/") {
-        TaskArtifactKind::Spec
-    } else if path.starts_with("docs/prds/") {
-        TaskArtifactKind::Prd
-    } else if path.starts_with("docs/guide/") || path == "docs/README.md" {
-        TaskArtifactKind::Guide
-    } else if path.starts_with("docs/decisions/") {
-        TaskArtifactKind::Adr
-    } else {
-        TaskArtifactKind::Code
-    }
-}
-
 fn slugify(value: &str) -> String {
     let mut slug = String::new();
     let mut previous_dash = false;
@@ -2207,15 +1886,6 @@ fn dedupe_sort_relations(relations: &mut Vec<StructuredDocumentRelation>) {
             .then(left.target.cmp(&right.target))
     });
     relations.dedup_by(|left, right| left.kind == right.kind && left.target == right.target);
-}
-
-fn trim_dedupe_sort(values: &mut Vec<String>) {
-    for value in values.iter_mut() {
-        *value = value.trim().to_string();
-    }
-    values.retain(|value| !value.is_empty());
-    values.sort();
-    values.dedup();
 }
 
 fn normalize_relative_path(root: &Path, path: &Path) -> Result<String> {

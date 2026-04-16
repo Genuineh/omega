@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use anyhow::{anyhow, bail, Context, Result};
 use omega_document::{
     ArchiveTrigger, DocType, DocumentMutationMode, DocumentOp, DocumentOpResult, OmegaDocument,
-    StructuredDocRelationRecord, StructuredDocTaskRecord, StructuredDocumentRecord,
-    StructuredDocsCutoverResult, StructuredDocsSnapshot, StructuredDocsValidationReport,
+    StructuredDocRelationRecord, StructuredDocumentRecord, StructuredDocsCutoverResult,
+    StructuredDocsSnapshot, StructuredDocsValidationReport,
 };
 use omega_project_layout::OmegaProjectLayout;
 use serde::Serialize;
@@ -18,14 +18,12 @@ use crate::output::{to_pretty_json, CliOutput};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ListKind {
     Docs,
-    Tasks,
     Relations,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EntityKind {
     Record,
-    Task,
     Relation,
 }
 
@@ -34,12 +32,6 @@ enum EntityKind {
 enum GetOutput {
     Record {
         record: StructuredDocumentRecord,
-        content_revision: u64,
-        projection_version: Option<u64>,
-        generation_id: Option<String>,
-    },
-    Task {
-        task: StructuredDocTaskRecord,
         content_revision: u64,
         projection_version: Option<u64>,
         generation_id: Option<String>,
@@ -94,7 +86,6 @@ fn run_inner(mut args: Vec<String>) -> Result<CliOutput> {
         "get" => get_command(args),
         "list" => list_command(args),
         "record" => nested_mutation_command(EntityKind::Record, args),
-        "task" => nested_mutation_command(EntityKind::Task, args),
         "relation" => nested_mutation_command(EntityKind::Relation, args),
         "remove" => remove_command(args),
         "help" | "--help" | "-h" => Ok(CliOutput::new(SUCCESS, usage(), String::new())),
@@ -321,21 +312,6 @@ fn get_command(mut args: Vec<String>) -> Result<CliOutput> {
             projection_version.map(|value| value.to_string()).unwrap_or_else(|| "n/a".to_string()),
             generation_id.unwrap_or_else(|| "n/a".to_string()),
         ),
-        GetOutput::Task {
-            task,
-            content_revision,
-            projection_version,
-            generation_id,
-        } => format!(
-            "task {}\ntitle: {}\nstatus: {:?}\npriority: {:?}\ncontent_revision: {}\nprojection_version: {}\ngeneration_id: {}\n",
-            task.task_id,
-            task.title,
-            task.status,
-            task.priority,
-            content_revision,
-            projection_version.map(|value| value.to_string()).unwrap_or_else(|| "n/a".to_string()),
-            generation_id.unwrap_or_else(|| "n/a".to_string()),
-        ),
         GetOutput::Relation {
             relation,
             content_revision,
@@ -360,11 +336,10 @@ fn list_command(mut args: Vec<String>) -> Result<CliOutput> {
     let root = take_root(&mut args)?;
     let doc_type = take_doc_type(&mut args)?;
     if args.len() != 1 {
-        bail!("list requires one target: docs, tasks, or relations");
+        bail!("list requires one target: docs or relations");
     }
     let list_kind = match args[0].as_str() {
         "docs" => ListKind::Docs,
-        "tasks" => ListKind::Tasks,
         "relations" => ListKind::Relations,
         other => bail!("unknown list target '{other}'"),
     };
@@ -387,20 +362,6 @@ fn list_command(mut args: Vec<String>) -> Result<CliOutput> {
             let mut stdout = format!("docs: {}\n", records.len());
             for record in records {
                 stdout.push_str(&format!("- {} :: {}\n", record.doc_id, record.title));
-            }
-            Ok(CliOutput::new(SUCCESS, stdout, String::new()))
-        }
-        ListKind::Tasks => {
-            if json {
-                return Ok(CliOutput::new(
-                    SUCCESS,
-                    to_pretty_json(&json!({ "kind": "tasks", "tasks": snapshot.doc_tasks })),
-                    String::new(),
-                ));
-            }
-            let mut stdout = format!("tasks: {}\n", snapshot.doc_tasks.len());
-            for task in snapshot.doc_tasks {
-                stdout.push_str(&format!("- {} :: {}\n", task.task_id, task.title));
             }
             Ok(CliOutput::new(SUCCESS, stdout, String::new()))
         }
@@ -431,7 +392,7 @@ fn nested_mutation_command(kind: EntityKind, mut args: Vec<String>) -> Result<Cl
     let input_path = take_option_flag(&mut args, "--input")?
         .ok_or_else(|| anyhow!("--input is required"))?;
     if args.len() != 1 || args[0] != "upsert" {
-        bail!("expected '<record|task|relation> upsert --input <path>'");
+        bail!("expected '<record|relation> upsert --input <path>'");
     }
 
     let payload = fs::read_to_string(&input_path)
@@ -442,11 +403,6 @@ fn nested_mutation_command(kind: EntityKind, mut args: Vec<String>) -> Result<Cl
             mode,
             record: serde_json::from_str::<StructuredDocumentRecord>(&payload)
                 .context("failed to parse record json")?,
-        })?,
-        EntityKind::Task => documents.manage_document(DocumentOp::UpsertTask {
-            mode,
-            task: serde_json::from_str::<StructuredDocTaskRecord>(&payload)
-                .context("failed to parse task json")?,
         })?,
         EntityKind::Relation => documents.manage_document(DocumentOp::UpsertRelation {
             mode,
@@ -475,7 +431,6 @@ fn remove_command(mut args: Vec<String>) -> Result<CliOutput> {
     let documents = OmegaDocument::new(root);
     let result = match entity_kind {
         EntityKind::Record => documents.manage_document(DocumentOp::DeleteRecord { mode, doc_id: id })?,
-        EntityKind::Task => documents.manage_document(DocumentOp::DeleteTask { mode, task_id: id })?,
         EntityKind::Relation => documents.manage_document(DocumentOp::DeleteRelation {
             mode,
             relation_id: id,
@@ -579,7 +534,6 @@ fn parse_doc_type(value: &str) -> Result<DocType> {
 fn parse_entity_kind(value: &str) -> Result<EntityKind> {
     match value.trim().to_ascii_lowercase().as_str() {
         "record" | "doc" => Ok(EntityKind::Record),
-        "task" => Ok(EntityKind::Task),
         "relation" => Ok(EntityKind::Relation),
         other => bail!("unknown entity kind '{other}'"),
     }
@@ -602,8 +556,6 @@ fn parse_archive_trigger(value: &str) -> Result<ArchiveTrigger> {
 fn infer_entity_kind(id: &str) -> EntityKind {
     if id.contains(':') {
         EntityKind::Record
-    } else if id.starts_with("DOC-") || id.starts_with("TASK-") {
-        EntityKind::Task
     } else {
         EntityKind::Relation
     }
@@ -613,14 +565,6 @@ fn find_by_id(snapshot: &StructuredDocsSnapshot, id: &str) -> Option<GetOutput> 
     if let Some(record) = snapshot.records.iter().find(|record| record.doc_id == id) {
         return Some(GetOutput::Record {
             record: record.clone(),
-            content_revision: snapshot.manifest.content_revision,
-            projection_version: snapshot.render_state.projection_version,
-            generation_id: snapshot.render_state.generation_id.clone(),
-        });
-    }
-    if let Some(task) = snapshot.doc_tasks.iter().find(|task| task.task_id == id) {
-        return Some(GetOutput::Task {
-            task: task.clone(),
             content_revision: snapshot.manifest.content_revision,
             projection_version: snapshot.render_state.projection_version,
             generation_id: snapshot.render_state.generation_id.clone(),
@@ -684,9 +628,6 @@ fn render_document_result_output(result: DocumentOpResult, json: bool, strict: b
     stdout.push('\n');
     if !result.records.is_empty() {
         stdout.push_str(&format!("records: {}\n", result.records.len()));
-    }
-    if !result.doc_tasks.is_empty() {
-        stdout.push_str(&format!("tasks: {}\n", result.doc_tasks.len()));
     }
     if !result.relations.is_empty() {
         stdout.push_str(&format!("relations: {}\n", result.relations.len()));
@@ -757,12 +698,11 @@ fn usage() -> String {
         "  extract <SOURCE...> [--root <path>] [--doc-type <type>] [--check|--plan|--apply] [--json]",
         "  cutover <SOURCE...> [--root <path>] [--doc-type <type>] [--json]",
         "  archive <doc-id> [--reason <reason>] [--replaced-by <doc-id>] [--root <path>] [--check|--plan|--apply] [--json]",
-        "  get <doc-id|task-id|relation-id> [--root <path>] [--json]",
-        "  list <docs|tasks|relations> [--root <path>] [--type <doc-type>] [--json]",
+        "  get <doc-id|relation-id> [--root <path>] [--json]",
+        "  list <docs|relations> [--root <path>] [--type <doc-type>] [--json]",
         "  record upsert --input <json> [--root <path>] [--check|--plan|--apply] [--json]",
-        "  task upsert --input <json> [--root <path>] [--check|--plan|--apply] [--json]",
         "  relation upsert --input <json> [--root <path>] [--check|--plan|--apply] [--json]",
-        "  remove <id> [--kind <record|task|relation>] [--root <path>] [--check|--plan|--apply] [--json]",
+        "  remove <id> [--kind <record|relation>] [--root <path>] [--check|--plan|--apply] [--json]",
     ]
     .join("\n")
         + "\n"

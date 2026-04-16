@@ -1,0 +1,31 @@
+{
+  "task_id": "DOC-0022A",
+  "title": "Create benchmark manifest and CLI",
+  "kind": "feature",
+  "status": "ready",
+  "priority": "p1",
+  "summary": "建立 `omega-benchmark` 的 suite manifest、case loader、run config 和 batch CLI 主入口。",
+  "requirement": "Implement the foundational manifest and command surface for omega-benchmark so suites, cases, and run configs can be selected and executed deterministically.",
+  "acceptance": [
+    "suite manifests load from omega-benchmark",
+    "cases can be selected by suite and tag",
+    "run config captures model, timeout, and tool budget",
+    "CLI can start a benchmark run and emit a run id"
+  ],
+  "depends_on": [],
+  "presentation_links": [
+    "docs/prds/omega-benchmark-evaluation.md",
+    "docs/specs/omega-benchmark-system.md",
+    "docs/TODO.md"
+  ],
+  "tags": [
+    "benchmark",
+    "cli",
+    "foundation"
+  ],
+  "doc_scope": [
+    "prd",
+    "spec",
+    "todo"
+  ]
+}

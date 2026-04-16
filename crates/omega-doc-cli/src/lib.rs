@@ -11,10 +11,10 @@ mod tests {
 
     use omega_document::{
         DocType, DocumentMutationMode, DocumentOp, OmegaDocument, StructuredDocRelationRecord,
-        StructuredDocTaskRecord, StructuredDocumentRecord, StructuredDocumentRender,
+        StructuredDocumentRecord, StructuredDocumentRender,
         StructuredDocumentRelation, StructuredDocumentSection,
     };
-    use omega_plan::{PlannedTaskKind, PlannedTaskStatus, ProjectPlanAccess, ProjectPlanStore, TaskPriority};
+    use omega_plan::ProjectPlanAccess;
     use tempfile::tempdir;
 
     use crate::run;
@@ -91,56 +91,6 @@ mod tests {
 
         assert_eq!(output.exit_code, 0);
         assert!(!root.path().join("docs/specs/test-doc.md").exists());
-    }
-
-    #[test]
-    fn task_upsert_and_remove_archives_plan_task() {
-        let root = tempdir().unwrap();
-        fs::create_dir_all(root.path().join("docs/specs")).unwrap();
-        let task_path = root.path().join("task.json");
-        fs::write(
-            &task_path,
-            serde_json::to_string_pretty(&StructuredDocTaskRecord {
-                task_id: "DOC-9000".to_string(),
-                title: "CLI task".to_string(),
-                plan_task_id: None,
-                kind: PlannedTaskKind::Chore,
-                status: PlannedTaskStatus::Ready,
-                priority: TaskPriority::P1,
-                summary: "summary".to_string(),
-                requirement: "requirement".to_string(),
-                acceptance: vec!["works".to_string()],
-                depends_on: Vec::new(),
-                presentation_links: vec!["docs/specs/test-doc.md".to_string()],
-                tags: vec!["cli".to_string()],
-                doc_scope: vec![DocType::Spec],
-            })
-            .unwrap(),
-        )
-        .unwrap();
-
-        let upsert = run(vec![
-            "task".to_string(),
-            "upsert".to_string(),
-            "--input".to_string(),
-            task_path.display().to_string(),
-            "--root".to_string(),
-            root.path().display().to_string(),
-        ]);
-        assert_eq!(upsert.exit_code, 0);
-
-        let remove = run(vec![
-            "remove".to_string(),
-            "DOC-9000".to_string(),
-            "--root".to_string(),
-            root.path().display().to_string(),
-        ]);
-        assert_eq!(remove.exit_code, 0);
-
-        let store = ProjectPlanStore::open_or_scaffold(root.path()).unwrap();
-        let tasks = store.list_tasks(Default::default()).unwrap();
-        assert_eq!(tasks.len(), 1);
-        assert_eq!(tasks[0].status, PlannedTaskStatus::Archived);
     }
 
     #[test]

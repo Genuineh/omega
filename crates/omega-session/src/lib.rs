@@ -2517,14 +2517,6 @@ fn render_document_operation_result(result: &omega_context::DocumentOpResult) ->
         }
     }
 
-    if !result.doc_tasks.is_empty() {
-        body.push_str(&format!("\nStructured doc tasks: {}", result.doc_tasks.len()));
-        for task in result.doc_tasks.iter().take(5) {
-            let plan_id = task.plan_task_id.as_deref().unwrap_or("pending-sync");
-            body.push_str(&format!("\n- {} -> {}", task.task_id, plan_id));
-        }
-    }
-
     if !result.relations.is_empty() {
         body.push_str(&format!("\nStructured relations: {}", result.relations.len()));
         for relation in result.relations.iter().take(5) {
@@ -3794,6 +3786,7 @@ fn migrate_todo_into_plan(
             parent_id: None,
             depends_on: Vec::new(),
             tags: vec![source_tag.clone()],
+			doc_scope: Vec::new(),
         })?;
         store.append_note(
             &task.id,
@@ -4486,6 +4479,7 @@ fn apply_plan_load_drafts(
                     requirement: Some(draft.description.clone()),
                     status: Some(draft.status),
                     acceptance: Some(Vec::new()),
+                    doc_scope: None,
                     tags: Some(tags),
                 },
             )?;
@@ -4503,6 +4497,7 @@ fn apply_plan_load_drafts(
                 parent_id: None,
                 depends_on: Vec::new(),
                 tags: vec![draft.source_tag.clone()],
+				doc_scope: Vec::new(),
             })?;
             result.created_task_ids.push(created.id.clone());
             created.id

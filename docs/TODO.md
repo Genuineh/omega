@@ -1,9 +1,9 @@
 ---
-content_revision: 101
-generation_id: gen_000017_r000101
+content_revision: 117
+generation_id: gen_000033_r000117
 last_verified_commit: N/A
 owner: omega-team
-projection_version: 17
+projection_version: 33
 source_doc_id: "todo:docs-todo"
 status: active
 updated: 2026-04-15
@@ -131,39 +131,80 @@ updated: 2026-04-15
 - `docs/README.md` 是阅读入口索引；`docs/TODO.md` 只负责 open work 与当前基线，不再充当历史总账。
 - 若需要某个已完成任务的完整背景，请进入对应 spec 或使用 git history，而不是继续把完成记录回填到本文件。
 
-## Doc Tasks
+## Project Tasks
 
-### DOC-0021B: Implement /plan links subcommand
+### TASK-0014: Implement /plan links subcommand
 
 - **Status**: Backlog
 - **Priority**: p1
 - **Summary**: Add /plan links <id> to omega-session emitting a second-level OperatorPickerRequest with design, implementation, doc, and log link items.
-- **Depends on**: `DOC-0021A`
+- **Depends on**: `TASK-0013`
 
-### DOC-0021C: Update /plan list Enter to use links navigator
+### TASK-0015: Update /plan list Enter to use links navigator
 
 - **Status**: Backlog
 - **Priority**: p1
 - **Summary**: Change the primary Enter action of the /plan list picker from OpenDetail to SubmitSlashCommand /plan links {id} with CloseOverlay behavior.
-- **Depends on**: `DOC-0021B`
+- **Depends on**: `TASK-0014`
 
-### DOC-0021D: Implement /plan view-file subcommand
+### TASK-0016: Implement /plan view-file subcommand
 
 - **Status**: Backlog
 - **Priority**: p1
 - **Summary**: Add /plan view-file <path> to omega-session that reads a workspace-relative file and emits a DetailOverlay with its content.
-- **Depends on**: `DOC-0021A`
+- **Depends on**: `TASK-0013`
 
-### DOC-0021F: Tests for plan task navigator flow
+### TASK-0018: Tests for plan task navigator flow
 
 - **Status**: Backlog
 - **Priority**: p1
 - **Summary**: Write regression tests covering /plan links, /plan view-file, the updated /plan list Enter action, path traversal rejection, and the full three-level navigation sequence.
-- **Depends on**: `DOC-0021B`, `DOC-0021C`, `DOC-0021D`
+- **Depends on**: `TASK-0014`, `TASK-0015`, `TASK-0016`
 
-### DOC-0021E: Add presentation_links cross-reference in links picker
+### TASK-0025: Write task store unification spec
+
+- **Status**: Ready
+- **Priority**: p1
+- **Summary**: 撰写 task store 统一规格，定义 PlannedTask schema 扩展、doc-tasks.jsonl 退役路径、TODO renderer 改造方向和数据迁移合同。
+
+### TASK-0026: Extend PlannedTask schema for doc-facing fields
+
+- **Status**: Backlog
+- **Priority**: p1
+- **Summary**: 在 PlannedTask 上新增 doc_scope 和 presentation_links 字段（或等价映射），让 project task 能直接控制 TODO 渲染和文档交叉引用。
+- **Depends on**: `TASK-0025`
+
+### TASK-0027: Migrate TODO renderer to project-tasks
+
+- **Status**: Backlog
+- **Priority**: p1
+- **Summary**: 把 TODO.md 的 open-work 渲染从 doc_tasks 改为 project_tasks，消除 Doc Tasks section，让所有任务统一展示为 Project Tasks。
+- **Depends on**: `TASK-0026`
+
+### TASK-0028: Remove doc-task code paths
+
+- **Status**: Backlog
+- **Priority**: p1
+- **Summary**: 移除 omega-document、omega-doc-cli、omega-session 中所有 doc-task 专属代码路径：StructuredDocTaskRecord 类型、load/save_doc_tasks、sync_doc_task_to_plan、upsert_task(doc)、remove_task(doc)、CLI doc-task commands。
+- **Depends on**: `TASK-0027`
+
+### TASK-0029: Data migration and doc-tasks.jsonl retirement
+
+- **Status**: Backlog
+- **Priority**: p1
+- **Summary**: 将 doc-tasks.jsonl 中残留的有价值 metadata（presentation_links、doc_scope）回填到对应的 project task，然后退役该文件。
+- **Depends on**: `TASK-0028`
+
+### TASK-0030: Update skills, specs, and docs for unified task store
+
+- **Status**: Backlog
+- **Priority**: p1
+- **Summary**: 更新所有引用 doc-tasks 的 skill、spec 和文档，使其只引用 project-tasks 作为唯一 task store。
+- **Depends on**: `TASK-0029`
+
+### TASK-0017: Add presentation_links cross-reference in links picker
 
 - **Status**: Backlog
 - **Priority**: p2
 - **Summary**: Extend /plan links to look up the matching StructuredDocTask by plan_task_id and include its presentation_links as doc-category items.
-- **Depends on**: `DOC-0021B`
+- **Depends on**: `TASK-0014`

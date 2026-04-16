@@ -1,0 +1,33 @@
+{
+  "task_id": "DOC-0022B",
+  "title": "Add Omega benchmark target",
+  "kind": "feature",
+  "status": "ready",
+  "priority": "p1",
+  "summary": "建立 frontend-neutral 的 Omega benchmark target，统一收集 response、tool trace 和 delivery summary。",
+  "requirement": "Add a benchmark target adapter that can execute Omega through a frontend-neutral runtime boundary and normalize response, tool, and delivery evidence for scoring.",
+  "acceptance": [
+    "benchmark target can execute a single case against Omega",
+    "response and tool trace are normalized into one case result shape",
+    "delivery summary is attached when available",
+    "target boundary does not depend on omega-tui"
+  ],
+  "depends_on": [
+    "DOC-0022A"
+  ],
+  "presentation_links": [
+    "docs/prds/omega-benchmark-evaluation.md",
+    "docs/specs/omega-benchmark-system.md",
+    "docs/TODO.md"
+  ],
+  "tags": [
+    "benchmark",
+    "runtime",
+    "adapter"
+  ],
+  "doc_scope": [
+    "prd",
+    "spec",
+    "todo"
+  ]
+}

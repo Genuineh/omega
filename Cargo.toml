@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "omega-benchmark",
     "crates/omega-app",
     "crates/omega-client",
     "crates/omega-command",

@@ -1,5 +1,4 @@
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
@@ -139,6 +138,8 @@ pub struct PlannedTask {
 	pub tags: Vec<String>,
 	pub design_links: Vec<TaskArtifactLink>,
 	pub implementation_links: Vec<TaskArtifactLink>,
+	#[serde(default)]
+	pub doc_scope: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -162,34 +163,6 @@ pub struct TaskListFilter {
 	pub priority: Option<TaskPriority>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct StructuredDocTaskCompatRecord {
-	task_id: String,
-	title: String,
-	#[serde(default)]
-	plan_task_id: Option<String>,
-	#[serde(default)]
-	kind: PlannedTaskKind,
-	#[serde(default)]
-	status: PlannedTaskStatus,
-	#[serde(default)]
-	priority: TaskPriority,
-	#[serde(default)]
-	summary: String,
-	#[serde(default)]
-	requirement: String,
-	#[serde(default)]
-	acceptance: Vec<String>,
-	#[serde(default)]
-	depends_on: Vec<String>,
-	#[serde(default)]
-	presentation_links: Vec<String>,
-	#[serde(default)]
-	tags: Vec<String>,
-	#[serde(default)]
-	doc_scope: Vec<String>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewPlannedTask {
 	pub title: String,
@@ -202,6 +175,7 @@ pub struct NewPlannedTask {
 	pub parent_id: Option<String>,
 	pub depends_on: Vec<String>,
 	pub tags: Vec<String>,
+	pub doc_scope: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -212,6 +186,7 @@ pub struct PlannedTaskUpdate {
 	pub status: Option<PlannedTaskStatus>,
 	pub acceptance: Option<Vec<String>>,
 	pub tags: Option<Vec<String>>,
+	pub doc_scope: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -256,6 +231,7 @@ impl NewPlannedTask {
 			parent_id: None,
 			depends_on: Vec::new(),
 			tags: Vec::new(),
+			doc_scope: Vec::new(),
 		}
 	}
 }
@@ -322,16 +298,13 @@ impl ProjectPlanStore {
 		if !manifest_path.exists() {
 			store.save_manifest(&ProjectPlanManifest::default())?;
 		}
-		let mut manifest = store.load_manifest()?;
+		let manifest = store.load_manifest()?;
 		if manifest.schema_version > PLAN_SCHEMA_VERSION {
 			anyhow::bail!(
 				"unsupported project plan schema {}; supported up to {}",
 				manifest.schema_version,
 				PLAN_SCHEMA_VERSION
 			);
-		}
-		if store.bootstrap_doc_tasks_if_needed(&mut manifest)? {
-			store.save_manifest(&manifest)?;
 		}
 		Ok(store)
 	}
@@ -355,6 +328,7 @@ impl ProjectPlanStore {
 			tags: draft.tags,
 			design_links: Vec::new(),
 			implementation_links: Vec::new(),
+			doc_scope: draft.doc_scope,
 		};
 		self.save_task(&task)?;
 		self.save_manifest(&manifest)?;
@@ -391,6 +365,9 @@ impl ProjectPlanStore {
 		}
 		if let Some(tags) = update.tags {
 			task.tags = tags;
+		}
+		if let Some(doc_scope) = update.doc_scope {
+			task.doc_scope = doc_scope;
 		}
 		self.save_task(&task)?;
 		self.append_log(
@@ -701,144 +678,6 @@ impl ProjectPlanStore {
 		Ok(())
 	}
 
-	fn bootstrap_doc_tasks_if_needed(&self, manifest: &mut ProjectPlanManifest) -> Result<bool> {
-		if !self.load_tasks()?.is_empty() {
-			return Ok(false);
-		}
-
-		let mut doc_tasks = self.load_doc_task_compat_records()?;
-		if doc_tasks.is_empty() {
-			return Ok(false);
-		}
-
-		let mut explicit_id_counts = BTreeMap::new();
-		let mut next_task_seq = manifest.next_task_seq.max(1);
-		for task in &doc_tasks {
-			if let Some(plan_task_id) = task.plan_task_id.as_deref().filter(|id| is_task_id(id)) {
-				*explicit_id_counts
-					.entry(plan_task_id.to_string())
-					.or_insert(0usize) += 1;
-				if let Some(seq) = parse_task_sequence(plan_task_id) {
-					next_task_seq = next_task_seq.max(seq + 1);
-				}
-			}
-		}
-
-		let preserved_ids = explicit_id_counts
-			.iter()
-			.filter(|(_, count)| **count == 1)
-			.map(|(task_id, _)| task_id.clone())
-			.collect::<BTreeSet<_>>();
-		let mut assigned_ids = preserved_ids.clone();
-		let mut doc_task_to_plan_id = BTreeMap::new();
-		let mut updated_doc_tasks = false;
-
-		for task in &mut doc_tasks {
-			let assigned_id = task
-				.plan_task_id
-				.as_ref()
-				.filter(|task_id| preserved_ids.contains(*task_id))
-				.cloned()
-				.unwrap_or_else(|| allocate_task_id(&mut next_task_seq, &mut assigned_ids));
-			if task.plan_task_id.as_deref() != Some(assigned_id.as_str()) {
-				task.plan_task_id = Some(assigned_id.clone());
-				updated_doc_tasks = true;
-			}
-			doc_task_to_plan_id.insert(task.task_id.clone(), assigned_id);
-		}
-
-		let mut priority_counts = [0i64; 4];
-		let mut planned_tasks = Vec::with_capacity(doc_tasks.len());
-		for task in &doc_tasks {
-			let order_key = next_priority_order_key(task.priority, &mut priority_counts);
-			let depends_on = task
-				.depends_on
-				.iter()
-				.filter_map(|dependency| {
-					if dependency.starts_with("TASK-") {
-						assigned_ids.contains(dependency).then(|| dependency.clone())
-					} else {
-						doc_task_to_plan_id.get(dependency).cloned()
-					}
-				})
-				.collect::<Vec<_>>();
-			let design_links = task
-				.presentation_links
-				.iter()
-				.filter_map(|path| {
-					let path = path.trim();
-					(!path.is_empty()).then(|| TaskArtifactLink {
-						kind: infer_artifact_kind(path),
-						path: path.to_string(),
-						label: None,
-					})
-				})
-				.collect::<Vec<_>>();
-			planned_tasks.push(PlannedTask {
-				id: task
-					.plan_task_id
-					.clone()
-					.expect("bootstrap should always assign plan task ids"),
-				title: task.title.trim().to_string(),
-				kind: task.kind,
-				status: task.status,
-				priority: task.priority,
-				order_key,
-				summary: task.summary.trim().to_string(),
-				requirement: task.requirement.trim().to_string(),
-				acceptance: task.acceptance.clone(),
-				parent_id: None,
-				depends_on,
-				tags: task.tags.clone(),
-				design_links,
-				implementation_links: Vec::new(),
-			});
-		}
-
-		planned_tasks.sort_by(compare_tasks);
-		self.save_tasks(&planned_tasks)?;
-		if updated_doc_tasks {
-			self.save_doc_task_compat_records(&doc_tasks)?;
-		}
-		manifest.next_task_seq = next_task_seq;
-		Ok(true)
-	}
-
-	fn load_doc_task_compat_records(&self) -> Result<Vec<StructuredDocTaskCompatRecord>> {
-		let path = self.layout.docs_data_doc_tasks_path();
-		if !path.exists() {
-			return Ok(Vec::new());
-		}
-		let file = fs::File::open(&path)
-			.with_context(|| format!("failed to open structured doc task store {}", path.display()))?;
-		BufReader::new(file)
-			.lines()
-			.map(|line| -> Result<Option<StructuredDocTaskCompatRecord>> {
-				let line = line?;
-				if line.trim().is_empty() {
-					return Ok(None);
-				}
-				Ok(Some(
-					serde_json::from_str::<StructuredDocTaskCompatRecord>(&line).with_context(|| {
-						format!("failed to parse structured doc task from {}", path.display())
-					})?,
-				))
-			})
-			.collect::<Result<Vec<_>>>()
-			.map(|records| records.into_iter().flatten().collect())
-	}
-
-	fn save_doc_task_compat_records(&self, tasks: &[StructuredDocTaskCompatRecord]) -> Result<()> {
-		let path = self.layout.docs_data_doc_tasks_path();
-		let mut file = fs::File::create(&path)
-			.with_context(|| format!("failed to write structured doc task store {}", path.display()))?;
-		for task in tasks {
-			writeln!(file, "{}", serde_json::to_string(task)?)
-				.with_context(|| format!("failed to write structured doc task store {}", path.display()))?;
-		}
-		Ok(())
-	}
-
 	fn dependency_reaches(&self, start_id: &str, target_id: &str) -> Result<bool> {
 		if start_id == target_id {
 			return Ok(true);
@@ -919,51 +758,6 @@ fn compare_tasks(left: &PlannedTask, right: &PlannedTask) -> Ordering {
 		.then_with(|| left.id.cmp(&right.id))
 }
 
-fn allocate_task_id(next_task_seq: &mut u64, assigned_ids: &mut BTreeSet<String>) -> String {
-	loop {
-		let candidate = format!("TASK-{:04}", *next_task_seq);
-		*next_task_seq += 1;
-		if assigned_ids.insert(candidate.clone()) {
-			return candidate;
-		}
-	}
-}
-
-fn is_task_id(task_id: &str) -> bool {
-	parse_task_sequence(task_id).is_some()
-}
-
-fn parse_task_sequence(task_id: &str) -> Option<u64> {
-	task_id.strip_prefix("TASK-")?.parse().ok()
-}
-
-fn next_priority_order_key(priority: TaskPriority, counts: &mut [i64; 4]) -> i64 {
-	let index = match priority {
-		TaskPriority::P0 => 0,
-		TaskPriority::P1 => 1,
-		TaskPriority::P2 => 2,
-		TaskPriority::P3 => 3,
-	};
-	counts[index] += 1;
-	counts[index] * TASK_ORDER_GAP
-}
-
-fn infer_artifact_kind(path: &str) -> TaskArtifactKind {
-	if path.starts_with("docs/prds/") {
-		TaskArtifactKind::Prd
-	} else if path.starts_with("docs/specs/") {
-		TaskArtifactKind::Spec
-	} else if path.starts_with("docs/guide/") {
-		TaskArtifactKind::Guide
-	} else if path.starts_with("docs/decisions/") {
-		TaskArtifactKind::Adr
-	} else if path.contains("/tests/") || path.ends_with("_test.rs") || path.ends_with(".test.rs") {
-		TaskArtifactKind::Test
-	} else {
-		TaskArtifactKind::Code
-	}
-}
-
 #[cfg(test)]
 mod tests {
 	use omega_test_support::test_root;
@@ -986,33 +780,6 @@ mod tests {
 	}
 
 	#[test]
-	fn open_or_scaffold_bootstraps_project_tasks_from_doc_tasks() {
-		let root = test_root("plan-store-doc-task-bootstrap");
-		std::fs::create_dir_all(root.join("docs-data/tasks")).unwrap();
-		std::fs::write(
-			root.join("docs-data/tasks/doc-tasks.jsonl"),
-			r#"{"task_id":"DOC-1000A","title":"Bootstrap plan tasks","plan_task_id":null,"kind":"chore","status":"ready","priority":"p1","summary":"Create project tasks from doc tasks","requirement":"Backfill project tasks from structured doc tasks","acceptance":["project task store exists"],"depends_on":[],"presentation_links":["docs/specs/omega-project-plan-system.md"],"tags":["structured-docs"],"doc_scope":["spec"]}
-{"task_id":"DOC-1000B","title":"Validate bootstrap order","plan_task_id":null,"kind":"chore","status":"blocked","priority":"p2","summary":"Keep dependency mapping stable","requirement":"Preserve doc task dependencies in omega-plan","acceptance":["dependency chain is preserved"],"depends_on":["DOC-1000A"],"presentation_links":["docs/specs/omega-structured-document-system.md"],"tags":["structured-docs"],"doc_scope":["spec"]}
-"#,
-		)
-		.unwrap();
-
-		let store = ProjectPlanStore::open_or_scaffold(root.path()).unwrap();
-		let tasks = store.list_tasks(TaskListFilter::default()).unwrap();
-
-		assert_eq!(tasks.len(), 2);
-		assert_eq!(tasks[0].id, "TASK-0001");
-		assert_eq!(tasks[0].title, "Bootstrap plan tasks");
-		assert_eq!(tasks[1].id, "TASK-0002");
-		assert_eq!(tasks[1].depends_on, vec!["TASK-0001"]);
-		assert!(root.join("docs-data/tasks/project-tasks.jsonl").exists());
-
-		let doc_tasks = std::fs::read_to_string(root.join("docs-data/tasks/doc-tasks.jsonl")).unwrap();
-		assert!(doc_tasks.contains("\"plan_task_id\":\"TASK-0001\""));
-		assert!(doc_tasks.contains("\"plan_task_id\":\"TASK-0002\""));
-	}
-
-	#[test]
 	fn create_task_persists_and_lists_by_priority_order() {
 		let root = test_root("plan-store-create");
 		let store = ProjectPlanStore::open_or_scaffold(root.path()).unwrap();
@@ -1029,6 +796,20 @@ mod tests {
 		assert_eq!(tasks[1].id, backlog.id);
 		let stored = std::fs::read_to_string(root.join("docs-data/tasks/project-tasks.jsonl")).unwrap();
 		assert!(stored.contains(&backlog.id));
+	}
+
+	#[test]
+	fn create_task_persists_doc_scope_metadata() {
+		let root = test_root("plan-store-doc-scope");
+		let store = ProjectPlanStore::open_or_scaffold(root.path()).unwrap();
+
+		let mut draft = NewPlannedTask::simple("Visible in TODO", TaskPriority::P1);
+		draft.doc_scope = vec!["todo".to_string()];
+		let created = store.create_task(draft).unwrap();
+
+		let reopened = ProjectPlanStore::open_or_scaffold(root.path()).unwrap();
+		let stored = reopened.get_task(&created.id).unwrap().expect("task should exist");
+		assert_eq!(stored.doc_scope, vec!["todo".to_string()]);
 	}
 
 	#[test]

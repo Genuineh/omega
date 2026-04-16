@@ -1,0 +1,4 @@
+{"seq":1,"kind":"created","actor":"command","summary":"Created task Create benchmark manifest and CLI","related_session_id":null,"related_turn_id":null,"related_delivery_id":null}
+{"seq":2,"kind":"note_added","actor":"command","summary":"Linked design artifact docs/TODO.md","related_session_id":null,"related_turn_id":null,"related_delivery_id":null}
+{"seq":3,"kind":"note_added","actor":"command","summary":"Linked design artifact docs/prds/omega-benchmark-evaluation.md","related_session_id":null,"related_turn_id":null,"related_delivery_id":null}
+{"seq":4,"kind":"note_added","actor":"command","summary":"Linked design artifact docs/specs/omega-benchmark-system.md","related_session_id":null,"related_turn_id":null,"related_delivery_id":null}

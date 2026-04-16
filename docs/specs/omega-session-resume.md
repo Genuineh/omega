@@ -1,10 +1,10 @@
 ---
-content_revision: 101
+content_revision: 117
 created: 2026-04-10
-generation_id: gen_000017_r000101
+generation_id: gen_000033_r000117
 last_verified_commit: N/A
 owner: omega-team
-projection_version: 17
+projection_version: 33
 related_prds: []
 source_doc_id: "spec:docs-specs-omega-session-resume"
 status: draft

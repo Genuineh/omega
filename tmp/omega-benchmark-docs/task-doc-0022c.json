@@ -1,0 +1,33 @@
+{
+  "task_id": "DOC-0022C",
+  "title": "Implement BFCL-style tool suite",
+  "kind": "feature",
+  "status": "backlog",
+  "priority": "p1",
+  "summary": "实现 BFCL 风格工具调用评估，包括 simple、multiple、parallel 和 irrelevance case。",
+  "requirement": "Implement a BFCL-style benchmark suite with structured tool-call scoring for tool selection, argument matching, parallel calls, and irrelevant-tool rejection.",
+  "acceptance": [
+    "suite covers simple, multiple, parallel, and irrelevance families",
+    "tool selection and argument scoring are deterministic",
+    "case results preserve tool-call evidence and score breakdown"
+  ],
+  "depends_on": [
+    "DOC-0022A",
+    "DOC-0022B"
+  ],
+  "presentation_links": [
+    "docs/prds/omega-benchmark-evaluation.md",
+    "docs/specs/omega-benchmark-system.md",
+    "docs/TODO.md"
+  ],
+  "tags": [
+    "benchmark",
+    "tool-calling",
+    "bfcl"
+  ],
+  "doc_scope": [
+    "prd",
+    "spec",
+    "todo"
+  ]
+}

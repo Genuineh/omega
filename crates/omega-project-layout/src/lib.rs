@@ -73,7 +73,6 @@ pub const DOCS_DATA_PROJECT_TASK_LOGS_DIR_NAME: &str = "logs";
 pub const DOCS_DATA_RELATIONS_DIR_NAME: &str = "relations";
 pub const DOCS_DATA_RENDER_DIR_NAME: &str = "render";
 pub const DOCS_DATA_RENDER_STATE_FILE: &str = "render-state.json";
-pub const DOCS_DATA_DOC_TASKS_FILE: &str = "doc-tasks.jsonl";
 pub const DOCS_DATA_LINKS_FILE: &str = "links.jsonl";
 pub const WORKFLOWS_DIR_PATH: &str = ".omega/workflows";
 pub const PROMPT_DIR_PATH: &str = ".omega/prompt";
@@ -92,7 +91,6 @@ pub const DOCS_DATA_PROJECT_TASK_LOGS_DIR_PATH: &str = "docs-data/tasks/logs";
 pub const DOCS_DATA_RELATIONS_DIR_PATH: &str = "docs-data/relations";
 pub const DOCS_DATA_RENDER_DIR_PATH: &str = "docs-data/render";
 pub const DOCS_DATA_RENDER_STATE_PATH: &str = "docs-data/render/render-state.json";
-pub const DOCS_DATA_DOC_TASKS_PATH: &str = "docs-data/tasks/doc-tasks.jsonl";
 pub const DOCS_DATA_LINKS_PATH: &str = "docs-data/relations/links.jsonl";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -303,10 +301,6 @@ impl OmegaProjectLayout {
         self.docs_data_records_dir().join(format!("{record_set}.jsonl"))
     }
 
-    pub fn docs_data_doc_tasks_path(&self) -> PathBuf {
-        self.docs_data_tasks_dir().join(DOCS_DATA_DOC_TASKS_FILE)
-    }
-
     pub fn docs_data_project_tasks_path(&self) -> PathBuf {
         self.docs_data_tasks_dir().join(DOCS_DATA_PROJECT_TASKS_FILE)
     }
@@ -390,10 +384,6 @@ mod tests {
         assert_eq!(
             layout.docs_data_record_path("specs"),
             root.join("docs-data/records/specs.jsonl")
-        );
-        assert_eq!(
-            layout.docs_data_doc_tasks_path(),
-            root.join("docs-data/tasks/doc-tasks.jsonl")
         );
         assert_eq!(
             layout.docs_data_links_path(),

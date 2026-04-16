@@ -10,14 +10,13 @@
     "specs",
     "whitepapers"
   ],
-  "task_store_path": "docs-data/tasks/doc-tasks.jsonl",
   "project_task_store_path": "docs-data/tasks/project-tasks.jsonl",
   "project_task_log_dir": "docs-data/tasks/logs",
   "project_plan_manifest_path": "docs-data/tasks/project-plan.toml",
   "relation_store_path": "docs-data/relations/links.jsonl",
   "render_state_path": "docs-data/render/render-state.json",
-  "content_revision": 101,
-  "projection_version": 17,
-  "last_generation_id": "gen_000017_r000101",
-  "updated_at": 1776304392
+  "content_revision": 117,
+  "projection_version": 33,
+  "last_generation_id": "gen_000033_r000117",
+  "updated_at": 1776313233
 }
