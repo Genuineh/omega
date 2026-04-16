@@ -1,15 +1,20 @@
 ---
-status: active
+content_revision: 96
+created: 2026-03-25
+generation_id: gen_000013_r000096
 last_verified_commit: N/A
 owner: omega-team
-created: 2026-03-25
-updated: 2026-03-25
-version: 1.0
-supersedes: []
+projection_version: 13
 related_prds: []
+source_doc_id: "spec:docs-specs-omega-agent-impl-plan-task-15-interaction-foundation"
+status: active
+supersedes: []
+updated: 2026-03-25
 ---
 
 # Omega Agent Plan: Task 15 Interaction Foundation
+
+## Overview
 
 本文覆盖 `Task 15` 的交互层基础边界，以及 `Task 15F-1` 到 `Task 15F-5` 的 workflow/session/routing 主线。
 

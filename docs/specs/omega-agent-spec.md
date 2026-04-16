@@ -1,11 +1,14 @@
 ---
-status: active
+content_revision: 96
+created: 2026-03-18
+generation_id: gen_000013_r000096
 last_verified_commit: N/A
 owner: omega-team
-created: 2026-03-18
-updated: 2026-03-20
-version: 1.0
+projection_version: 13
 related_prds: []
+source_doc_id: "spec:docs-specs-omega-agent-spec"
+status: active
+updated: 2026-03-20
 ---
 
 # Omega Agent 技术规格

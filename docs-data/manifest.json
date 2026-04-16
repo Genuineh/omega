@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "generated_root": "docs",
+  "record_sets": [
+    "archive",
+    "decisions",
+    "guides",
+    "prds",
+    "root",
+    "specs",
+    "whitepapers"
+  ],
+  "task_store_path": "docs-data/tasks/doc-tasks.jsonl",
+  "project_task_store_path": "docs-data/tasks/project-tasks.jsonl",
+  "project_task_log_dir": "docs-data/tasks/logs",
+  "project_plan_manifest_path": "docs-data/tasks/project-plan.toml",
+  "relation_store_path": "docs-data/relations/links.jsonl",
+  "render_state_path": "docs-data/render/render-state.json",
+  "content_revision": 96,
+  "projection_version": 13,
+  "last_generation_id": "gen_000013_r000096",
+  "updated_at": 1776301003
+}

@@ -1,15 +1,18 @@
 ---
-status: draft
+content_revision: 96
+created: 2026-04-08
+generation_id: gen_000013_r000096
 last_verified_commit: N/A
 owner: omega-team
-created: 2026-04-08
-updated: 2026-04-10
-version: 0.1
-supersedes: []
+projection_version: 13
 related_prds:
   - docs/specs/omega-tui-visual-refresh.md
   - docs/specs/omega-tui-message-cards.md
   - docs/specs/omega-tui-overlay-popups.md
+source_doc_id: "spec:docs-specs-omega-tui-ui-reference"
+status: draft
+supersedes: []
+updated: 2026-04-10
 ---
 
 # Omega TUI UI Reference

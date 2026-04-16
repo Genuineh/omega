@@ -1,12 +1,15 @@
 ---
-status: active
+content_revision: 96
+created: 2026-03-19
+generation_id: gen_000013_r000096
 last_verified_commit: N/A
 owner: omega-team
-created: 2026-03-19
-updated: 2026-04-10
-version: 0.3
-supersedes: []
+projection_version: 13
 related_prds: []
+source_doc_id: "spec:docs-specs-omega-tui-modal-keymap"
+status: active
+supersedes: []
+updated: 2026-04-10
 ---
 
 # Omega TUI Modal Keymap Specification

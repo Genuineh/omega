@@ -1,7 +1,11 @@
 ---
-status: active
+content_revision: 96
+generation_id: gen_000013_r000096
 last_verified_commit: N/A
 owner: omega-team
+projection_version: 13
+source_doc_id: "spec:docs-specs-omega-deterministic-test-seams"
+status: active
 version: v0.1
 ---
 

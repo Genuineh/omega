@@ -1,12 +1,15 @@
 ---
-status: implemented
+content_revision: 96
+created: 2026-03-20
+generation_id: gen_000013_r000096
 last_verified_commit: N/A
 owner: omega-team
-created: 2026-03-20
-updated: 2026-04-08
-version: 0.5
-supersedes: []
+projection_version: 13
 related_prds: []
+source_doc_id: "spec:docs-specs-omega-runtime-ui-message-contract"
+status: implemented
+supersedes: []
+updated: 2026-04-08
 ---
 
 # Omega Runtime UI Message Contract Specification

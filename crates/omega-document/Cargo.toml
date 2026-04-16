@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 omega-todo = { path = "../omega-todo" }
 omega-project-layout = { path = "../omega-project-layout" }
+omega-plan = { path = "../omega-plan" }
 anyhow.workspace = true
 arrow-array.workspace = true
 arrow-schema.workspace = true
@@ -16,6 +17,7 @@ globset.workspace = true
 lancedb.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde_yaml = "0.9"
 tantivy.workspace = true
 tokio.workspace = true
 toml.workspace = true

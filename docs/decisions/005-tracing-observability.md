@@ -1,15 +1,20 @@
 ---
 adr_number: 005
-date: 2026-03-18
-status: accepted
 author: omega-team
-reviewed_by: []
+content_revision: 96
+date: 2026-03-18
+generation_id: gen_000013_r000096
+projection_version: 13
 related_prd: docs/archive/observability-logging.md
+reviewed_by: []
+source_doc_id: "adr:docs-decisions-005-tracing-observability"
+status: accepted
 ---
 
 # 005: 使用 tracing 生态构建可观察性基础设施
 
 ## Status
+
 Accepted
 
 ## Context

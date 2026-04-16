@@ -1,12 +1,15 @@
 ---
-status: implemented
+content_revision: 96
+created: 2026-04-08
+generation_id: gen_000013_r000096
 last_verified_commit: N/A
 owner: omega-team
-created: 2026-04-08
-updated: 2026-04-08
-version: 0.4
-supersedes: []
+projection_version: 13
 related_prds: []
+source_doc_id: "spec:docs-specs-omega-root-skill-routing"
+status: implemented
+supersedes: []
+updated: 2026-04-08
 ---
 
 # Omega Root Skill Routing Specification

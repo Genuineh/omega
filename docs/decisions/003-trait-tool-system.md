@@ -1,20 +1,27 @@
 ---
 adr_number: 003
-date: 2026-03-18
-status: accepted
 author: omega-team
+content_revision: 96
+date: 2026-03-18
+generation_id: gen_000013_r000096
+projection_version: 13
 reviewed_by: []
+source_doc_id: "adr:docs-decisions-003-trait-tool-system"
+status: accepted
 ---
 
 # 003: 工具系统采用 Trait 接口
 
 ## Status
+
 Accepted
 
 ## Context
+
 Omega Agent 需要支持多种工具（bash, read, write, edit 等）。我们需要设计一个可扩展的工具系统，便于添加新工具。
 
 ## Decision
+
 采用 Trait 接口设计工具系统：
 
 ```rust
@@ -61,4 +68,5 @@ pub struct ToolDispatcher {
 **Why Rejected**: 过度工程化
 
 ## Notes
+
 - 实现位置: crates/omega-tools, crates/omega-tools-builtin

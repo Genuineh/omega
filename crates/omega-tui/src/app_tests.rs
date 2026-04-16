@@ -362,6 +362,52 @@ fn setting_project_status_builds_project_sidebar_lines_and_badge() {
             session_count: 1,
             active_session_id: Some("session-a".to_string()),
         },
+        plan: omega_project::ProjectPlanSummary {
+            current_task_count: 2,
+            history_task_count: 1,
+            blocked_task_count: 1,
+            selected_task_id: Some("TASK-0002".to_string()),
+            selected_task_title: Some("Ship project panel".to_string()),
+            selected_task: Some(omega_project::ProjectPlanTaskSummary {
+                task_id: "TASK-0002".to_string(),
+                title: "Ship project panel".to_string(),
+                priority: "p0".to_string(),
+                status: "ready".to_string(),
+                summary: "Ship project panel".to_string(),
+                requirement: "Ship the project panel task overlay".to_string(),
+                acceptance: vec!["overlay opens from project panel".to_string()],
+                depends_on: vec!["TASK-0001".to_string()],
+                design_links: vec!["docs/specs/omega-project-plan-system.md".to_string()],
+                implementation_links: vec!["crates/omega-tui/src/app/project.rs".to_string()],
+                recent_logs: vec!["Opened project panel detail".to_string()],
+            }),
+            next_tasks: vec![omega_project::ProjectPlanTaskSummary {
+                task_id: "TASK-0002".to_string(),
+                title: "Ship project panel".to_string(),
+                priority: "p0".to_string(),
+                status: "ready".to_string(),
+                summary: "Ship project panel".to_string(),
+                requirement: "Ship the project panel task overlay".to_string(),
+                acceptance: vec!["overlay opens from project panel".to_string()],
+                depends_on: vec!["TASK-0001".to_string()],
+                design_links: vec!["docs/specs/omega-project-plan-system.md".to_string()],
+                implementation_links: vec!["crates/omega-tui/src/app/project.rs".to_string()],
+                recent_logs: vec!["Opened project panel detail".to_string()],
+            }],
+            blocked_tasks: vec![omega_project::ProjectPlanTaskSummary {
+                task_id: "TASK-0003".to_string(),
+                title: "Unblock projection".to_string(),
+                priority: "p1".to_string(),
+                status: "blocked".to_string(),
+                summary: "Unblock projection".to_string(),
+                requirement: "Resolve plan projection dependency".to_string(),
+                acceptance: vec!["projection sync passes".to_string()],
+                depends_on: vec![],
+                design_links: Vec::new(),
+                implementation_links: Vec::new(),
+                recent_logs: vec!["Waiting on sync-todo".to_string()],
+            }],
+        },
     };
 
     app.set_status_slot(
@@ -371,7 +417,7 @@ fn setting_project_status_builds_project_sidebar_lines_and_badge() {
         },
     );
 
-    assert_eq!(app.rail_badge(SidebarSection::Project), "P 1/6");
+    assert_eq!(app.rail_badge(SidebarSection::Project), "P 2/1");
     assert!(app
         .project_lines
         .iter()
@@ -383,11 +429,115 @@ fn setting_project_status_builds_project_sidebar_lines_and_badge() {
     assert!(app
         .project_lines
         .iter()
+        .any(|line| line.contains("plan: current=2 history=1 blocked=1")));
+    assert!(app
+        .project_lines
+        .iter()
+        .any(|line| line.contains("selected task: TASK-0002 Ship project panel")));
+    assert!(app
+        .project_lines
+        .iter()
+        .any(|line| line.contains("next task: TASK-0002 [p0 ready] Ship project panel")));
+    assert!(app
+        .project_lines
+        .iter()
+        .any(|line| line.contains("blocked task: TASK-0003 [p1 blocked] Unblock projection")));
+    assert!(app
+        .project_lines
+        .iter()
         .any(|line| line.contains("document totals: files=12 chunks=48")));
     assert!(app
         .project_lines
         .iter()
         .any(|line| line.contains("memory totals: turns=6 queries=4 observations=2")));
+}
+
+#[test]
+fn project_panel_can_open_selected_task_detail_overlay() {
+    let mut app = App::new();
+    app.set_status_slot(
+        StatusSlot::Project,
+        StatusValue::ProjectSelection {
+            snapshot: Box::new(omega_project::ProjectDetailSnapshot {
+                record: omega_project::ProjectRecord {
+                    project_id: "proj-123".to_string(),
+                    display_name: "omega".to_string(),
+                    root: std::path::PathBuf::from("/workspace/omega"),
+                    detection_kind: omega_project::ProjectDetectionKind::Explicit,
+                    created_at: 1,
+                    last_opened_at: 2,
+                    active_session_id: Some("session-a".to_string()),
+                },
+                sessions: vec![omega_project::ProjectSessionRef {
+                    session_id: "session-a".to_string(),
+                    title: "Session A".to_string(),
+                    started_at: 1,
+                    last_active_at: 2,
+                    status: omega_project::ProjectSessionStatus::Active,
+                    turn_count: 3,
+                    last_user_turn_preview: Some("review project wiring".to_string()),
+                    resume_ready: true,
+                    archived_turn_count: 3,
+                }],
+                knowledge: omega_project::ProjectKnowledgeSummary {
+                    document: ContextDocumentDiagnostics::default(),
+                    memory: ContextMemoryDiagnostics::default(),
+                    session_count: 1,
+                    active_session_id: Some("session-a".to_string()),
+                },
+                plan: omega_project::ProjectPlanSummary {
+                    current_task_count: 2,
+                    history_task_count: 1,
+                    blocked_task_count: 1,
+                    selected_task_id: Some("TASK-0002".to_string()),
+                    selected_task_title: Some("Ship project panel".to_string()),
+                    selected_task: Some(omega_project::ProjectPlanTaskSummary {
+                        task_id: "TASK-0002".to_string(),
+                        title: "Ship project panel".to_string(),
+                        priority: "p0".to_string(),
+                        status: "ready".to_string(),
+                        summary: "Ship project panel".to_string(),
+                        requirement: "Ship the project panel task overlay".to_string(),
+                        acceptance: vec!["overlay opens from project panel".to_string()],
+                        depends_on: vec!["TASK-0001".to_string()],
+                        design_links: vec!["docs/specs/omega-project-plan-system.md".to_string()],
+                        implementation_links: vec!["crates/omega-tui/src/app/project.rs".to_string()],
+                        recent_logs: vec!["Opened project panel detail".to_string()],
+                    }),
+                    next_tasks: vec![omega_project::ProjectPlanTaskSummary {
+                        task_id: "TASK-0002".to_string(),
+                        title: "Ship project panel".to_string(),
+                        priority: "p0".to_string(),
+                        status: "ready".to_string(),
+                        summary: "Ship project panel".to_string(),
+                        requirement: "Ship the project panel task overlay".to_string(),
+                        acceptance: vec!["overlay opens from project panel".to_string()],
+                        depends_on: vec!["TASK-0001".to_string()],
+                        design_links: vec!["docs/specs/omega-project-plan-system.md".to_string()],
+                        implementation_links: vec!["crates/omega-tui/src/app/project.rs".to_string()],
+                        recent_logs: vec!["Opened project panel detail".to_string()],
+                    }],
+                    blocked_tasks: Vec::new(),
+                },
+            }),
+        },
+    );
+    app.focused_panel = Panel::Project;
+    app.project_state.select(Some(4));
+
+    assert!(app.open_project_detail());
+    match app.overlay.as_ref() {
+        Some(OverlayState::Detail(detail)) => {
+            assert_eq!(detail.title, " Project Task ");
+            assert!(detail.lines.iter().any(|line| line.contains("task: TASK-0002")));
+            assert!(detail
+                .lines
+                .iter()
+                .any(|line| line.contains("requirement: Ship the project panel task overlay")));
+            assert!(detail.lines.iter().any(|line| line.contains("TASK-0001")));
+        }
+        other => panic!("expected project task detail overlay, got {other:?}"),
+    }
 }
 
 #[test]
@@ -566,6 +716,7 @@ fn restore_session_replaces_stale_runtime_state_with_snapshot_replay() {
                 session_count: 1,
                 active_session_id: Some("session-restored".to_string()),
             },
+            plan: omega_project::ProjectPlanSummary::default(),
         }),
     });
 

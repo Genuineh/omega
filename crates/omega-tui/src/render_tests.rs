@@ -623,6 +623,7 @@ fn bottom_status_renders_project_slot_with_name_only() {
                     session_count: 1,
                     active_session_id: Some("session-a".to_string()),
                 },
+                plan: omega_project::ProjectPlanSummary::default(),
             }),
         },
     );

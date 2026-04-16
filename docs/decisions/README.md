@@ -1,11 +1,17 @@
 ---
-status: active
+content_revision: 96
+generation_id: gen_000013_r000096
 last_verified_commit: N/A
 owner: omega-team
+projection_version: 13
+source_doc_id: "adr:docs-decisions-readme"
+status: active
 version: v1.0
 ---
 
 # Architecture Decision Records Index
+
+## Body
 
 | ID | Title | Status | Date |
 |----|-------|--------|------|

@@ -1,13 +1,16 @@
 ---
-status: implemented
+content_revision: 96
+created: 2026-03-26
+generation_id: gen_000013_r000096
 last_verified_commit: N/A
 owner: omega-team
-created: 2026-03-26
-updated: 2026-03-26
-version: 0.3
+projection_version: 13
+related_prds: []
+source_doc_id: "spec:docs-specs-omega-runtime-message-pipeline"
+status: implemented
 supersedes:
   - docs/specs/omega-runtime-event-presentation-boundary.md (v0.1)
-related_prds: []
+updated: 2026-03-26
 ---
 
 # Omega Runtime Message Pipeline Specification

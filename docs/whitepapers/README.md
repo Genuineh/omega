@@ -1,11 +1,17 @@
 ---
-status: active
+content_revision: 96
+generation_id: gen_000013_r000096
 last_verified_commit: N/A
 owner: omega-team
+projection_version: 13
+source_doc_id: "whitepaper:docs-whitepapers-readme"
+status: active
 version: v1.0
 ---
 
 # Whitepapers
+
+## Overview
 
 This directory is reserved for long-form rationale, vision documents, and strategic planning materials that explain *why* Omega makes certain architectural decisions.
 
@@ -14,7 +20,7 @@ This directory is reserved for long-form rationale, vision documents, and strate
 Whitepapers capture the philosophical foundation and long-term vision behind Omega's design. Unlike:
 
 - **Specs** (`docs/specs/`): Technical implementation details and contracts
-- **PRDs** (`docs/prds/`): Feature requirements and product specifications  
+- **PRDs** (`docs/prds/`): Feature requirements and product specifications
 - **Guides** (`docs/guide/`): Usage and contributor workflows
 - **ADRs** (`docs/decisions/`): Specific architectural decisions
 

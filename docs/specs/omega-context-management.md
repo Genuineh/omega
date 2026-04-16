@@ -1,12 +1,15 @@
 ---
-status: active
+content_revision: 96
+created: 2026-03-27
+generation_id: gen_000013_r000096
 last_verified_commit: N/A
 owner: omega-team
-created: 2026-03-27
-updated: 2026-04-03
-version: 0.4
-supersedes: []
+projection_version: 13
 related_prds: []
+source_doc_id: "spec:docs-specs-omega-context-management"
+status: active
+supersedes: []
+updated: 2026-04-03
 ---
 
 # Omega Context Management Specification

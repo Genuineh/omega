@@ -10,6 +10,7 @@ use omega_context::{
     ContextMemoryDiagnostics, GovernanceEventSignal, OmegaContextFacade,
     SessionHistoryHit, SessionHistoryQuery, SessionHistoryService,
 };
+use omega_plan::{PlannedTaskStatus, ProjectPlanAccess, ProjectPlanStore};
 use omega_project_layout::{
     OmegaProjectLayout, SESSION_RECORD_FILE, SESSION_REPLAY_LOG_SUFFIX,
     SESSION_SNAPSHOT_SUFFIX,
@@ -66,10 +67,38 @@ pub struct ProjectKnowledgeSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectPlanTaskSummary {
+    pub task_id: String,
+    pub title: String,
+    pub priority: String,
+    pub status: String,
+    pub summary: String,
+    pub requirement: String,
+    pub acceptance: Vec<String>,
+    pub depends_on: Vec<String>,
+    pub design_links: Vec<String>,
+    pub implementation_links: Vec<String>,
+    pub recent_logs: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ProjectPlanSummary {
+    pub current_task_count: usize,
+    pub history_task_count: usize,
+    pub blocked_task_count: usize,
+    pub selected_task_id: Option<String>,
+    pub selected_task_title: Option<String>,
+    pub selected_task: Option<ProjectPlanTaskSummary>,
+    pub next_tasks: Vec<ProjectPlanTaskSummary>,
+    pub blocked_tasks: Vec<ProjectPlanTaskSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectDetailSnapshot {
     pub record: ProjectRecord,
     pub sessions: Vec<ProjectSessionRef>,
     pub knowledge: ProjectKnowledgeSummary,
+    pub plan: ProjectPlanSummary,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -105,6 +134,8 @@ pub struct ProjectSessionSnapshot {
     pub governance_events: Vec<GovernanceEventSignal>,
     pub todo_items: Vec<ProjectSessionTodoItem>,
     pub structured_input: Option<serde_json::Value>,
+    #[serde(default)]
+    pub selected_task_id: Option<String>,
     pub last_known_cwd: Option<PathBuf>,
 }
 
@@ -409,6 +440,7 @@ impl OmegaProjectHandle {
         let diagnostics = self.context_facade.diagnostics.context_diagnostics();
         let record = self.record();
         let sessions = self.list_sessions()?;
+        let plan = self.project_plan_summary(&record)?;
         Ok(ProjectDetailSnapshot {
             knowledge: ProjectKnowledgeSummary {
                 document: diagnostics.document,
@@ -418,6 +450,58 @@ impl OmegaProjectHandle {
             },
             record,
             sessions,
+            plan,
+        })
+    }
+
+    fn project_plan_summary(&self, record: &ProjectRecord) -> Result<ProjectPlanSummary> {
+        let store = ProjectPlanStore::open_or_scaffold(&record.root)?;
+        let tasks = store.list_tasks(omega_plan::TaskListFilter::default())?;
+        let current_tasks = tasks
+            .iter()
+            .filter(|task| !matches!(task.status, PlannedTaskStatus::Done | PlannedTaskStatus::Archived))
+            .collect::<Vec<_>>();
+        let blocked_tasks = current_tasks
+            .iter()
+            .filter(|task| task.status == PlannedTaskStatus::Blocked)
+            .take(3)
+            .map(|task| project_plan_task_summary(&store, task))
+            .collect::<Result<Vec<_>>>()?;
+        let blocked_task_count = current_tasks
+            .iter()
+            .filter(|task| task.status == PlannedTaskStatus::Blocked)
+            .count();
+        let next_tasks = current_tasks
+            .iter()
+            .take(3)
+            .map(|task| project_plan_task_summary(&store, task))
+            .collect::<Result<Vec<_>>>()?;
+
+        let selected_task = record
+            .active_session_id
+            .as_deref()
+            .map(|session_id| self.load_session_snapshot(session_id))
+            .transpose()?
+            .flatten()
+            .and_then(|snapshot| snapshot.selected_task_id)
+            .map(|task_id| store.get_task(&task_id).map(|task| task.map(|task| (task_id, task))))
+            .transpose()?
+            .flatten();
+        let selected_task_id = selected_task.as_ref().map(|(task_id, _)| task_id.clone());
+        let selected_task_title = selected_task.as_ref().map(|(_, task)| task.title.clone());
+        let selected_task = selected_task
+            .map(|(_, task)| project_plan_task_summary(&store, &task))
+            .transpose()?;
+
+        Ok(ProjectPlanSummary {
+            current_task_count: current_tasks.len(),
+            history_task_count: tasks.len().saturating_sub(current_tasks.len()),
+            blocked_task_count,
+            selected_task_id,
+            selected_task_title,
+            selected_task,
+            next_tasks,
+            blocked_tasks,
         })
     }
 
@@ -707,6 +791,37 @@ impl OmegaProjectHandle {
             .map(|line| serde_json::from_str(line).map_err(anyhow::Error::from))
             .collect()
     }
+}
+
+fn project_plan_task_summary(
+    store: &ProjectPlanStore,
+    task: &omega_plan::PlannedTask,
+) -> Result<ProjectPlanTaskSummary> {
+    Ok(ProjectPlanTaskSummary {
+        task_id: task.id.clone(),
+        title: task.title.clone(),
+        priority: task.priority.as_str().to_string(),
+        status: task.status.as_str().to_string(),
+        summary: task.summary.clone(),
+        requirement: task.requirement.clone(),
+        acceptance: task.acceptance.clone(),
+        depends_on: task.depends_on.clone(),
+        design_links: task
+            .design_links
+            .iter()
+            .map(|link| link.path.clone())
+            .collect(),
+        implementation_links: task
+            .implementation_links
+            .iter()
+            .map(|link| link.path.clone())
+            .collect(),
+        recent_logs: store
+            .load_logs(&task.id, Some(3))?
+            .into_iter()
+            .map(|entry| entry.summary)
+            .collect(),
+    })
 }
 
 struct ProjectSessionHistoryService {
@@ -1302,6 +1417,7 @@ mod tests {
                     active_form: None,
                 }],
                 structured_input: None,
+                selected_task_id: None,
                 last_known_cwd: Some(root.clone()),
             })
             .unwrap();
@@ -1377,6 +1493,7 @@ mod tests {
                 governance_events: Vec::new(),
                 todo_items: Vec::new(),
                 structured_input: None,
+                selected_task_id: None,
                 last_known_cwd: None,
             })
             .unwrap();
@@ -1460,6 +1577,7 @@ mod tests {
                 governance_events: Vec::new(),
                 todo_items: Vec::new(),
                 structured_input: None,
+                selected_task_id: None,
                 last_known_cwd: Some(root.clone()),
             },
         )
@@ -1515,5 +1633,82 @@ mod tests {
             .unwrap();
 
         assert_eq!(handle.display_name(), "Omega Docs");
+    }
+
+    #[test]
+    fn detail_snapshot_includes_project_plan_summary_and_selected_task() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path().join("workspace");
+        fs::create_dir_all(&root).unwrap();
+
+        let registry = ProjectRegistry::new();
+        let handle = registry
+            .resolve(ProjectResolutionInput {
+                current_file_path: None,
+                cwd: root.clone(),
+                explicit_root: Some(root.clone()),
+            })
+            .unwrap();
+
+        handle
+            .upsert_session(ProjectSessionUpdate {
+                session_id: "session-a".to_string(),
+                title: Some("Session A".to_string()),
+                status: ProjectSessionStatus::Active,
+                turn_count: 2,
+                last_user_turn_preview: Some("plan work".to_string()),
+                archived_turn_count: Some(0),
+            })
+            .unwrap();
+
+        let store = omega_plan::ProjectPlanStore::open_or_scaffold(handle.root()).unwrap();
+        let mut selected = omega_plan::NewPlannedTask::simple(
+            "Selected task",
+            omega_plan::TaskPriority::P0,
+        );
+        selected.status = omega_plan::PlannedTaskStatus::Ready;
+        let selected = store.create_task(selected).unwrap();
+        let mut blocked = omega_plan::NewPlannedTask::simple(
+            "Blocked task",
+            omega_plan::TaskPriority::P1,
+        );
+        blocked.status = omega_plan::PlannedTaskStatus::Blocked;
+        store.create_task(blocked).unwrap();
+        let mut history = omega_plan::NewPlannedTask::simple(
+            "History task",
+            omega_plan::TaskPriority::P2,
+        );
+        history.status = omega_plan::PlannedTaskStatus::Done;
+        store.create_task(history).unwrap();
+
+        handle
+            .save_session_snapshot(&ProjectSessionSnapshot {
+                schema_version: 1,
+                project_id: handle.project_id(),
+                session_id: "session-a".to_string(),
+                saved_at: 42,
+                last_completed_turn_id: Some(2),
+                latest_user_turn: Some("plan work".to_string()),
+                recent_turn_summaries: Vec::new(),
+                routing: ProjectSessionRoutingSnapshot::default(),
+                skill_routing: ProjectSkillRoutingSnapshot::default(),
+                step_summaries: Vec::new(),
+                step_outputs: BTreeMap::new(),
+                governance_events: Vec::new(),
+                todo_items: Vec::new(),
+                structured_input: None,
+                selected_task_id: Some(selected.id.clone()),
+                last_known_cwd: Some(root.clone()),
+            })
+            .unwrap();
+
+        let snapshot = handle.detail_snapshot().unwrap();
+        assert_eq!(snapshot.plan.current_task_count, 2);
+        assert_eq!(snapshot.plan.history_task_count, 1);
+        assert_eq!(snapshot.plan.blocked_task_count, 1);
+        assert_eq!(snapshot.plan.selected_task_id.as_deref(), Some(selected.id.as_str()));
+        assert_eq!(snapshot.plan.selected_task_title.as_deref(), Some("Selected task"));
+        assert_eq!(snapshot.plan.next_tasks[0].task_id, selected.id);
+        assert_eq!(snapshot.plan.blocked_tasks[0].title, "Blocked task");
     }
 }

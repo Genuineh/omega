@@ -1,12 +1,15 @@
 ---
-status: active
+content_revision: 96
+created: 2026-03-20
+generation_id: gen_000013_r000096
 last_verified_commit: N/A
 owner: omega-team
-created: 2026-03-20
-updated: 2026-03-20
-version: 0.4
-supersedes: []
+projection_version: 13
 related_prds: []
+source_doc_id: "spec:docs-specs-omega-tui-response-thinking-experience"
+status: active
+supersedes: []
+updated: 2026-03-20
 ---
 
 # Omega TUI Response And Thinking Experience Specification

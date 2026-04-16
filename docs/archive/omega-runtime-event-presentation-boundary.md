@@ -1,18 +1,23 @@
 ---
-status: archived
-owner: omega-team
-created: 2026-03-26
-updated: 2026-03-26
 archived: 2026-03-26
-version: 0.1
-supersedes: []
-superseded_by: docs/specs/omega-runtime-message-pipeline.md
+content_revision: 96
+created: 2026-03-26
+generation_id: gen_000013_r000096
+owner: omega-team
+projection_version: 13
 related_prds: []
+source_doc_id: "archive:docs-archive-omega-runtime-event-presentation-boundary"
+status: archived
+superseded_by: docs/specs/omega-runtime-message-pipeline.md
+supersedes: []
+updated: 2026-03-26
 ---
 
-> **Archived 2026-03-26**: Superseded by `docs/specs/omega-runtime-message-pipeline.md` (v0.2 message pipeline model). The 3-layer event/presenter/update model proposed here was replaced by a simpler message pipeline: session produces `RuntimeMessage`, app consumes and organizes rendering, TUI provides engine.
-
 # Omega Runtime Event And Presentation Boundary Specification
+
+## Overview
+
+> **Archived 2026-03-26**: Superseded by `docs/specs/omega-runtime-message-pipeline.md` (v0.2 message pipeline model). The 3-layer event/presenter/update model proposed here was replaced by a simpler message pipeline: session produces `RuntimeMessage`, app consumes and organizes rendering, TUI provides engine.
 
 ## Overview
 

@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::Result;
 #[cfg(feature = "document-backend")]
 use anyhow::Context;
+use omega_plan::SelectedProjectTaskContext;
 use omega_client::{
     ChatRequest, ContentBlock, Message, MessageContent, PromptCacheControl, Role, SystemBlock,
     ToolDefinition,
@@ -21,7 +22,11 @@ pub use document_model::{
     DocumentHealthStatus, DocumentMutationMode, DocumentOp, DocumentOperatorUsage,
     DocumentOpResult, DocumentStoreVersion, FileRecord, FileStatus, FileType, HealthScore,
     MetadataUpdate, ScanResult, SearchFilter, SearchMode, SearchQuery, SearchResult,
-    SortField, TodoOp, TodoOpResult,
+    SortField, StructuredDocRelationRecord, StructuredDocTaskRecord,
+    StructuredDocumentRecord, StructuredDocumentRelation, StructuredDocumentRender,
+    StructuredDocumentSection, StructuredDocsExtractionReport, StructuredDocsManifest,
+    StructuredDocsRenderState, StructuredDocsValidationIssue,
+    StructuredDocsValidationReport, TodoOp, TodoOpResult,
 };
 pub use omega_memory::StepSummary as ContextStepSummary;
 pub use omega_memory::{
@@ -70,6 +75,7 @@ pub struct ContextSession {
     pub latest_user_turn: String,
     pub routing: ContextRouting,
     pub step_summaries: Vec<ContextStepSummary>,
+    pub selected_task: Option<SelectedProjectTaskContext>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1873,8 +1879,14 @@ fn infer_doc_type_hints(text: &str) -> Vec<DocType> {
     if normalized.contains("spec") {
         hints.push(DocType::Spec);
     }
+    if normalized.contains("prd") {
+        hints.push(DocType::Prd);
+    }
     if normalized.contains("guide") {
         hints.push(DocType::Guide);
+    }
+    if normalized.contains("whitepaper") {
+        hints.push(DocType::Whitepaper);
     }
     if normalized.contains("todo") || normalized.contains("task") {
         hints.push(DocType::Todo);
@@ -2111,7 +2123,19 @@ impl ToolHandler for ManageDocumentHandler {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["create", "archive", "update_metadata", "health_check", "list"]
+                    "enum": [
+                        "create",
+                        "archive",
+                        "update_metadata",
+                        "health_check",
+                        "list",
+                        "upsert_record",
+                        "upsert_task",
+                        "upsert_relation",
+                        "render_projection",
+                        "validate_projection",
+                        "extract_source"
+                    ]
                 },
                 "mode": {
                     "type": "string",
@@ -2123,6 +2147,17 @@ impl ToolHandler for ManageDocumentHandler {
                 "content": { "type": "string" },
                 "reason": { "type": "string", "enum": ["superseded", "completed_and_inactive", "structurally_outdated", "history_only"] },
                 "replaced_by": { "type": "string" },
+                "record": { "type": "object" },
+                "task": { "type": "object" },
+                "relation": { "type": "object" },
+                "doc_ids": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                },
+                "sources": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                },
                 "updates": {
                     "type": "array",
                     "items": {
@@ -2180,6 +2215,13 @@ impl ToolHandler for ManageDocumentHandler {
                 "ok": result.ok,
                 "has_plan": result.plan.is_some(),
                 "file_count": result.files.len(),
+                "record_count": result.records.len(),
+                "doc_task_count": result.doc_tasks.len(),
+                "relation_count": result.relations.len(),
+                "has_manifest": result.manifest.is_some(),
+                "has_render_state": result.render_state.is_some(),
+                "has_validation": result.validation.is_some(),
+                "has_extraction": result.extraction.is_some(),
                 "warning_count": result.warnings.len(),
                 "health": result.health.as_ref().map(|health| json!({
                     "overall_health": health.overall_health,
@@ -2312,6 +2354,16 @@ struct ManageDocumentInput {
     #[serde(default)]
     replaced_by: Option<String>,
     #[serde(default)]
+    record: Option<StructuredDocumentRecord>,
+    #[serde(default)]
+    task: Option<StructuredDocTaskRecord>,
+    #[serde(default)]
+    relation: Option<StructuredDocRelationRecord>,
+    #[serde(default)]
+    doc_ids: Vec<String>,
+    #[serde(default)]
+    sources: Vec<String>,
+    #[serde(default)]
     updates: Vec<MetadataUpdateInput>,
     #[serde(default)]
     status: Option<String>,
@@ -2346,6 +2398,30 @@ impl ManageDocumentInput {
             "list" => Ok(DocumentOp::List {
                 doc_type: self.doc_type.as_deref().map(parse_doc_type).transpose()?,
                 status: self.status.as_deref().map(parse_file_status).transpose()?,
+            }),
+            "upsert_record" => Ok(DocumentOp::UpsertRecord {
+                mode: self.mode.unwrap_or(DocumentMutationMode::Check),
+                record: required_field(self.record, "record")?,
+            }),
+            "upsert_task" => Ok(DocumentOp::UpsertTask {
+                mode: self.mode.unwrap_or(DocumentMutationMode::Check),
+                task: required_field(self.task, "task")?,
+            }),
+            "upsert_relation" => Ok(DocumentOp::UpsertRelation {
+                mode: self.mode.unwrap_or(DocumentMutationMode::Check),
+                relation: required_field(self.relation, "relation")?,
+            }),
+            "render_projection" => Ok(DocumentOp::RenderProjection {
+                mode: self.mode.unwrap_or(DocumentMutationMode::Apply),
+                doc_ids: self.doc_ids,
+            }),
+            "validate_projection" => Ok(DocumentOp::ValidateProjection {
+                doc_ids: self.doc_ids,
+            }),
+            "extract_source" => Ok(DocumentOp::ExtractSource {
+                mode: self.mode.unwrap_or(DocumentMutationMode::Check),
+                sources: self.sources,
+                doc_type: self.doc_type.as_deref().map(parse_doc_type).transpose()?,
             }),
             other => anyhow::bail!("unsupported manage_document action '{other}'"),
         }
@@ -2400,6 +2476,7 @@ fn parse_doc_type(value: &str) -> Result<DocType> {
         "prd" => Ok(DocType::Prd),
         "guide" => Ok(DocType::Guide),
         "adr" => Ok(DocType::Adr),
+        "whitepaper" | "whitepapers" => Ok(DocType::Whitepaper),
         "todo" => Ok(DocType::Todo),
         "archive" => Ok(DocType::Archive),
         "readme" => Ok(DocType::Readme),
@@ -2846,6 +2923,41 @@ fn render_stable_session_context(session: &ContextSession) -> String {
             routing_context.trim_end()
         ));
     }
+    if let Some(selected_task) = session.selected_task.as_ref() {
+        let mut lines = vec![
+            format!("task_id: {}", selected_task.task_id),
+            format!("title: {}", selected_task.title),
+            format!("requirement: {}", selected_task.requirement),
+        ];
+        if !selected_task.acceptance.is_empty() {
+            lines.push("acceptance:".to_string());
+            lines.extend(
+                selected_task
+                    .acceptance
+                    .iter()
+                    .map(|acceptance| format!("- {acceptance}")),
+            );
+        }
+        if !selected_task.dependency_chain.is_empty() {
+            lines.push("dependency_chain:".to_string());
+            lines.extend(
+                selected_task
+                    .dependency_chain
+                    .iter()
+                    .map(|dependency| format!("- {dependency}")),
+            );
+        }
+        if !selected_task.recent_logs.is_empty() {
+            lines.push("recent_logs:".to_string());
+            lines.extend(selected_task.recent_logs.iter().map(|entry| {
+                format!("- #{} {:?}: {}", entry.seq, entry.kind, entry.summary)
+            }));
+        }
+        sections.push(format!(
+            "<selected_project_task>\n{}\n</selected_project_task>",
+            lines.join("\n")
+        ));
+    }
     sections.join("\n\n")
 }
 
@@ -3200,6 +3312,16 @@ mod tests {
                     summary: "Plan summary".to_string(),
                     estimated_tokens: 10,
                 }],
+                selected_task: Some(omega_plan::SelectedProjectTaskContext {
+                    task_id: "TASK-0001".to_string(),
+                    title: "Implement plan store".to_string(),
+                    requirement: "Implement plan store".to_string(),
+                    acceptance: vec!["store tasks durably".to_string()],
+                    dependency_chain: vec!["TASK-0000: previous setup".to_string()],
+                    recent_logs: Vec::new(),
+                    design_links: Vec::new(),
+                    implementation_links: Vec::new(),
+                }),
             },
             step: ContextStep {
                 id: "execute".to_string(),
@@ -3317,6 +3439,20 @@ mod tests {
 
         assert!(rendered.contains("<session_history_hits>"));
         assert!(rendered.contains("Widget cache invalidation history"));
+    }
+
+    #[test]
+    fn build_step_system_blocks_renders_selected_project_task() {
+        let request = step_request();
+        let rendered = build_step_system_blocks(&request, &request.session.step_summaries)
+            .into_iter()
+            .map(|block| block.text)
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
+        assert!(rendered.contains("<selected_project_task>"));
+        assert!(rendered.contains("task_id: TASK-0001"));
+        assert!(rendered.contains("Implement plan store"));
     }
 
     #[test]

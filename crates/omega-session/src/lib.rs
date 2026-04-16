@@ -1,3 +1,4 @@
+use anyhow::Context;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -29,7 +30,18 @@ pub use omega_context::{
 use omega_core::{
     Agent, CoreSharedTodoManager, DynLlmClient, Message, TodoItem, TodoManager, TodoStatus,
 };
+use omega_document::{
+    DocType as StructuredDocType,
+    DocumentMutationMode as StructuredDocumentMutationMode,
+    DocumentOp as StructuredDocumentOp, OmegaDocument, StructuredDocumentSection,
+};
 use omega_hooks::HookHost;
+use omega_plan::{
+    NewPlannedTask, PlannedTask, PlannedTaskStatus, PlannedTaskUpdate, ProjectPlanAccess,
+    ProjectPlanStore, SelectedProjectTaskContext, TaskActor, TaskArtifactKind,
+    TaskArtifactLink, TaskDependencyOperation, TaskLinkSurface, TaskListFilter,
+    TaskOrderPlacement, TaskPriority,
+};
 use omega_project::{
     OmegaProjectHandle, ProjectDetailSnapshot, ProjectDetectionKind, ProjectRegistry,
     ProjectResolutionInput, ProjectSessionSnapshot, ProjectSessionStatus,
@@ -51,6 +63,7 @@ const TOKEN_ESTIMATE_DIVISOR: usize = 4;
 const REPAIR_PASS_MAX_ITERATIONS: u32 = 1;
 const SESSION_PICKER_FLAG: &str = "--picker";
 const SESSION_PICKER_ID: &str = "session-operator";
+const PLAN_LIST_PICKER_ID: &str = "plan-list";
 
 mod hook_adapter;
 mod output;
@@ -147,6 +160,7 @@ struct AgentSlot {
 
 struct SessionRuntimeState {
     session_id: Option<String>,
+    selected_task_id: Option<String>,
 }
 
 pub struct AgentSession {
@@ -159,6 +173,7 @@ pub struct AgentSession {
     base_system: String,
     cwd: Arc<Mutex<std::path::PathBuf>>,
     session_runtime: Arc<Mutex<SessionRuntimeState>>,
+    plan_store: Arc<Mutex<Option<Arc<ProjectPlanStore>>>>,
     todo_manager: CoreSharedTodoManager,
     runtime_bindings: Arc<Mutex<SessionRuntimeBindings>>,
     runtime_handle: Handle,
@@ -180,6 +195,7 @@ impl AgentSession {
             cwd: config.cwd.clone(),
             explicit_root: None,
         })?;
+        let plan_store = Arc::new(ProjectPlanStore::open_or_scaffold(active_project.root())?);
         let todo_manager = Arc::new(Mutex::new(TodoManager::new()));
         let resolved_cwd = config.cwd.clone();
         let (runtime_bindings, dispatcher) = load_runtime_bindings(
@@ -237,7 +253,11 @@ impl AgentSession {
             client: config.client,
             base_system: config.system,
             cwd: Arc::new(Mutex::new(resolved_cwd)),
-            session_runtime: Arc::new(Mutex::new(SessionRuntimeState { session_id: None })),
+            session_runtime: Arc::new(Mutex::new(SessionRuntimeState {
+                session_id: None,
+                selected_task_id: None,
+            })),
+            plan_store: Arc::new(Mutex::new(Some(plan_store))),
             todo_manager,
             runtime_bindings: Arc::new(Mutex::new(runtime_bindings)),
             runtime_handle: config.runtime_handle,
@@ -305,6 +325,20 @@ impl AgentSession {
 
     fn current_session_id(&self) -> Option<String> {
         self.session_runtime.lock().unwrap().session_id.clone()
+    }
+
+    pub fn current_selected_task_id(&self) -> Option<String> {
+        self.session_runtime.lock().unwrap().selected_task_id.clone()
+    }
+
+    pub fn set_selected_task(&self, task_id: Option<String>) -> anyhow::Result<()> {
+        set_selected_task_state(
+            &self.plan_store,
+            &self.session_runtime,
+            &mut self.session_context.lock().unwrap(),
+            task_id,
+        )?;
+        Ok(())
     }
 
     fn current_skill_catalog(&self) -> Arc<SessionSkillCatalog> {
@@ -408,6 +442,7 @@ impl AgentSession {
         drop(slot);
         self.active_turn_tx.send_replace(turn_id);
         let project_handle = self.active_project_handle();
+        let session_runtime = self.session_runtime.clone();
         let session_id = match self.current_session_id() {
             Some(session_id) => session_id,
             None => {
@@ -449,6 +484,7 @@ impl AgentSession {
         let workflow_catalog = self.workflow_catalog.clone();
         let prompt_catalog = self.prompt_catalog.clone();
         let session_context = self.session_context.clone();
+        let plan_store = self.plan_store.clone();
         let context_window = self.context_window;
         let max_output_tokens = self.max_output_tokens;
         thread::spawn(move || {
@@ -459,6 +495,28 @@ impl AgentSession {
                 shared.begin_turn(input.clone(), scene_catalog.root_workflow_id.clone());
                 shared.clone()
             };
+            let selected_task_id = session_runtime.lock().unwrap().selected_task_id.clone();
+            let selected_task_id_for_turn = selected_task_id.clone();
+            let restored_plan_store = plan_store.lock().unwrap().clone();
+            let restore_outcome = match restore_selected_task_state(
+                &session_runtime,
+                &mut turn_context,
+                selected_task_id,
+                &restored_plan_store,
+            ) {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    error!(turn_id, error = %error, "failed to restore selected project task into turn context");
+                    SelectedTaskRestoreOutcome::NoSelection
+                }
+            };
+            if let SelectedTaskRestoreOutcome::ClearedDangling(task_id) = restore_outcome {
+                ui_emit::send_warning_text(
+                    &*tx_result,
+                    turn_id,
+                    &dangling_selected_task_warning(&task_id),
+                );
+            }
             info!(
                 turn_id,
                 root_workflow_id = %scene_catalog.root_workflow_id,
@@ -495,7 +553,11 @@ impl AgentSession {
             let session_title = session_title_from_context(&turn_context);
             let latest_user_turn_preview = preview_text(&turn_context.latest_user_turn, 160);
             let replay_entries = turn_still_active.then(|| match &result {
-                Ok(text) => build_turn_replay_entries(&session_id, &turn_context.latest_user_turn, text),
+                Ok(output) => build_turn_replay_entries(
+                    &session_id,
+                    &turn_context.latest_user_turn,
+                    &output.final_text,
+                ),
                 Err(error) => build_turn_replay_entries(
                     &session_id,
                     &turn_context.latest_user_turn,
@@ -542,6 +604,7 @@ impl AgentSession {
                         .as_ref()
                         .expect("active turn must retain a persisted session snapshot"),
                     &todo_manager,
+                    selected_task_id_for_turn.clone(),
                     Some(turn_id),
                     replay_entries.as_deref().unwrap_or(&[]),
                 ) {
@@ -555,9 +618,9 @@ impl AgentSession {
                 None
             };
 
-            match result {
-                Ok(text) if turn_still_active && !text.is_empty() => {
-                    ui_emit::send_assistant_text(&*tx_result, turn_id, &text);
+            match &result {
+                Ok(output) if turn_still_active && !output.final_text.is_empty() => {
+                    ui_emit::send_assistant_text(&*tx_result, turn_id, &output.final_text);
                 }
                 Ok(_) => {}
                 Err(e) => {
@@ -566,6 +629,53 @@ impl AgentSession {
                         ui_emit::send_error_text(&*tx_result, turn_id, &format!("Error: {e}"));
                     } else {
                         info!(turn_id, error = %e, "canceled turn stopped before completion");
+                    }
+                }
+            }
+
+            if let Some(task_id) = selected_task_id_for_turn.as_deref() {
+                if let Some(store) = restored_plan_store.as_ref() {
+                    let log_result = if turn_still_active {
+                        match &result {
+                            Ok(output) => store.append_log(
+                                task_id,
+                                omega_plan::TaskLogKind::DeliveryAttached,
+                                TaskActor::Assistant,
+                                build_task_delivery_log_summary(
+                                    &input,
+                                    &output.final_text,
+                                    &output.delivery_summary,
+                                ),
+                                Some(session_id.clone()),
+                                Some(turn_id),
+                                Some(format!("turn-{turn_id}")),
+                            ),
+                            Err(error) => store.append_log(
+                                task_id,
+                                omega_plan::TaskLogKind::PartialDelivery,
+                                TaskActor::Assistant,
+                                build_task_turn_log_summary(&input, None, Some(&error.to_string())),
+                                Some(session_id.clone()),
+                                Some(turn_id),
+                                None,
+                            ),
+                        }
+                    } else {
+                        store.append_log(
+                            task_id,
+                            omega_plan::TaskLogKind::PartialDelivery,
+                            TaskActor::System,
+                            format!(
+                                "Turn canceled before completion. Prompt: {}",
+                                preview_text(&input, 120)
+                            ),
+                            Some(session_id.clone()),
+                            Some(turn_id),
+                            None,
+                        )
+                    };
+                    if let Err(error) = log_result {
+                        error!(turn_id, task_id, error = %error, "failed to append task-bound turn log");
                     }
                 }
             }
@@ -621,6 +731,9 @@ impl AgentSession {
         turn_id: u64,
         tx: SharedRuntimeMessageBridge,
     ) -> anyhow::Result<()> {
+        if self.try_dispatch_plan_send(&input, turn_id, tx.clone())? {
+            return Ok(());
+        }
         self.active_turn_tx.send_replace(turn_id);
         let project_state = self.project_state.clone();
         let session_id = self.current_session_id();
@@ -630,6 +743,7 @@ impl AgentSession {
         let agent_slot = self.agent_slot.clone();
         let turn_checkpoint = self.turn_checkpoint.clone();
         let session_runtime = self.session_runtime.clone();
+        let plan_store = self.plan_store.clone();
         let client = self.client.clone();
         let base_system = self.base_system.clone();
         let todo_manager = self.todo_manager.clone();
@@ -671,6 +785,7 @@ impl AgentSession {
                 Ok(invocation) => execute_command(
                     &project_state,
                     &session_runtime,
+                    &plan_store,
                     &session_context,
                     &todo_manager,
                     &turn_checkpoint,
@@ -736,6 +851,7 @@ impl AgentSession {
                     &cwd.lock().unwrap().clone(),
                     &session_context.lock().unwrap().clone(),
                     &todo_manager,
+                    session_runtime.lock().unwrap().selected_task_id.clone(),
                     Some(turn_id),
                     &replay_entries,
                 ) {
@@ -843,6 +959,29 @@ impl AgentSession {
 
         Ok(())
     }
+
+    fn try_dispatch_plan_send(
+        &self,
+        input: &str,
+        turn_id: u64,
+        tx: SharedRuntimeMessageBridge,
+    ) -> anyhow::Result<bool> {
+        let registry = command_registry(&self.active_project_handle());
+        let Ok(invocation) = registry.parse(input) else {
+            return Ok(false);
+        };
+        if invocation.name != "plan" || invocation.subcommand.as_deref() != Some("send") {
+            return Ok(false);
+        }
+
+        let current_selected_task_id = self.current_selected_task_id();
+        let Ok((task_id, prompt)) = parse_plan_send_args(&invocation.args, current_selected_task_id) else {
+            return Ok(false);
+        };
+        self.set_selected_task(Some(task_id))?;
+        self.spawn_turn_with_bridge(prompt, turn_id, tx)?;
+        Ok(true)
+    }
 }
 
 #[cfg(test)]
@@ -893,10 +1032,92 @@ fn command_registry(project_handle: &Arc<OmegaProjectHandle>) -> OmegaCommandReg
                     "List tracked documents",
                     Some("[doc_type] [status]"),
                 ),
+                OmegaCommandSubcommand::new(
+                    "render",
+                    "Render docs-data records into presentation markdown",
+                    Some("[--check|--plan|--apply] [doc-id...]"),
+                ),
+                OmegaCommandSubcommand::new(
+                    "validate",
+                    "Validate docs-data projection against current markdown",
+                    Some("[doc-id...]"),
+                ),
+                OmegaCommandSubcommand::new(
+                    "extract",
+                    "Extract markdown sources into docs-data records",
+                    Some("<source...> [--doc-type <...>] [--check|--plan|--apply]"),
+                ),
             ],
             "Manage workspace document indexing and query operations.",
             OmegaCommandSource::Builtin,
             Arc::new(move || facade.document_backend_enabled),
+        ),
+        OmegaCommandDescriptor::new(
+            "plan",
+            vec![],
+            None,
+            vec![
+                OmegaCommandSubcommand::new(
+                    "list",
+                    "List project plan tasks",
+                    Some("[current|history|all] [--status <...>] [--priority <...>]"),
+                ),
+                OmegaCommandSubcommand::new("show", "Show a task from the project plan", Some("<task-id>")),
+                OmegaCommandSubcommand::new(
+                    "create",
+                    "Create a task in the project plan",
+                    Some("[--priority <p0|p1|p2|p3>] <title...>"),
+                ),
+                OmegaCommandSubcommand::new(
+                    "update",
+                    "Update task fields in the project plan",
+                    Some("<task-id> [--title <...>] [--summary <...>] [--requirement <...>] [--status <...>] [--accept <...>] [--tag <...>]"),
+                ),
+                OmegaCommandSubcommand::new(
+                    "prioritize",
+                    "Change task priority and relative ordering",
+                    Some("<task-id> <p0|p1|p2|p3> [--before <task-id>] [--after <task-id>]"),
+                ),
+                OmegaCommandSubcommand::new(
+                    "depends",
+                    "Add or remove task dependencies",
+                    Some("<add|remove> <task-id> <other-id>"),
+                ),
+                OmegaCommandSubcommand::new(
+                    "log",
+                    "Append a note to a task log",
+                    Some("<task-id> <note...>"),
+                ),
+                OmegaCommandSubcommand::new(
+                    "link",
+                    "Link a design or implementation artifact",
+                    Some("<task-id> <design|implementation> <path> [label...]"),
+                ),
+                OmegaCommandSubcommand::new("select", "Bind or clear the current session task", Some("<task-id|none>")),
+                OmegaCommandSubcommand::new(
+                    "send",
+                    "Dispatch a normal task-bound turn",
+                    Some("[<task-id>] <prompt...>"),
+                ),
+                OmegaCommandSubcommand::new(
+                    "sync-todo",
+                    "Project current open work into docs/TODO.md",
+                    None,
+                ),
+                OmegaCommandSubcommand::new(
+                    "migrate-todo",
+                    "Import open docs/TODO.md tracks into the project plan",
+                    None,
+                ),
+                OmegaCommandSubcommand::new(
+                    "load",
+                    "Preview or import plan tasks from docs files or directories",
+                    Some("<source> [--kind <auto|todo|task-headings>] [--apply]"),
+                ),
+            ],
+            "Manage the project-scoped long-term task board.",
+            OmegaCommandSource::Builtin,
+            Arc::new(|| true),
         ),
         OmegaCommandDescriptor::new(
             "project",
@@ -941,6 +1162,7 @@ fn command_registry(project_handle: &Arc<OmegaProjectHandle>) -> OmegaCommandReg
 fn execute_command(
     project_state: &Arc<Mutex<ProjectRuntimeState>>,
     session_runtime: &Arc<Mutex<SessionRuntimeState>>,
+    plan_store: &Arc<Mutex<Option<Arc<ProjectPlanStore>>>>,
     session_context: &Arc<Mutex<SessionContext>>,
     todo_manager: &CoreSharedTodoManager,
     turn_checkpoint: &Arc<Mutex<Vec<Message>>>,
@@ -969,14 +1191,26 @@ fn execute_command(
         "project" => execute_project_command(
             project_state,
             session_id,
+            session_runtime,
+            plan_store,
             cwd,
             invocation,
             turn_context,
             progress,
         ),
+        "plan" => execute_plan_command(
+            project_state,
+            plan_store,
+            session_runtime,
+            turn_id,
+            tx,
+            invocation,
+            turn_context,
+        ),
         "session" => execute_session_command(
             project_state,
             session_runtime,
+            plan_store,
             session_context,
             todo_manager,
             turn_checkpoint,
@@ -1024,6 +1258,8 @@ fn command_prefers_overlay_only(invocation: &OmegaCommandInvocation) -> bool {
 fn execute_project_command(
     project_state: &Arc<Mutex<ProjectRuntimeState>>,
     session_id: Option<&str>,
+    session_runtime: &Arc<Mutex<SessionRuntimeState>>,
+    plan_store: &Arc<Mutex<Option<Arc<ProjectPlanStore>>>>,
     cwd: &Arc<Mutex<std::path::PathBuf>>,
     invocation: OmegaCommandInvocation,
     turn_context: &mut SessionContext,
@@ -1130,6 +1366,11 @@ fn execute_project_command(
                 let mut state = project_state.lock().unwrap();
                 state.active_handle = Arc::clone(&next_handle);
             }
+            *plan_store.lock().unwrap() = Some(Arc::new(ProjectPlanStore::open_or_scaffold(
+                next_handle.root(),
+            )?));
+            session_runtime.lock().unwrap().selected_task_id = None;
+            turn_context.selected_task = None;
             *cwd.lock().unwrap() = next_handle.root();
             progress("Phase: switched active project handle");
             let snapshot = next_handle.detail_snapshot()?;
@@ -1182,6 +1423,271 @@ fn execute_project_command(
     }
 }
 
+fn execute_plan_command(
+    project_state: &Arc<Mutex<ProjectRuntimeState>>,
+    plan_store: &Arc<Mutex<Option<Arc<ProjectPlanStore>>>>,
+    session_runtime: &Arc<Mutex<SessionRuntimeState>>,
+    turn_id: u64,
+    tx: &dyn RuntimeMessageBridge,
+    invocation: OmegaCommandInvocation,
+    turn_context: &mut SessionContext,
+) -> anyhow::Result<CommandExecutionOutput> {
+    let Some(subcommand) = invocation.subcommand.as_deref() else {
+        return Err(anyhow::anyhow!(
+            "missing subcommand for '/plan'; expected list, show, create, update, prioritize, depends, log, link, select, send, sync-todo, migrate-todo, or load"
+        ));
+    };
+
+    let store = current_plan_store(plan_store)?;
+    match subcommand {
+        "list" => {
+            let (view, filter) = parse_plan_list_args(&invocation.args)?;
+            let mut tasks = store.list_tasks(filter)?;
+            tasks.retain(|task| match view.as_str() {
+                "all" => true,
+                "history" => matches!(task.status, PlannedTaskStatus::Done | PlannedTaskStatus::Archived),
+                _ => !matches!(task.status, PlannedTaskStatus::Done | PlannedTaskStatus::Archived),
+            });
+            let selected_task_id = session_runtime.lock().unwrap().selected_task_id.clone();
+            let request = build_plan_list_picker_request(
+                &store,
+                &tasks,
+                selected_task_id.as_deref(),
+                &view,
+            )?;
+            tx.send(RuntimeMessageEnvelope::state(
+                turn_id,
+                StateMessage::ShowOverlay {
+                    request: OverlayRequest {
+                        target: OverlayTarget::Picker,
+                        content: UiContent::OperatorPicker(request),
+                    },
+                },
+            ));
+
+            Ok(CommandExecutionOutput {
+                body: render_plan_list(
+                    &tasks,
+                    selected_task_id.as_deref(),
+                    &view,
+                ),
+                state: ResponseSectionState::Complete,
+                activity: format!("/plan list returned {} tasks", tasks.len()),
+                knowledge_summary: None,
+                agent_messages: None,
+            })
+        }
+        "show" => {
+            let task_id = invocation
+                .args
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("usage: /plan show <task-id>"))?;
+            let task = store
+                .get_task(task_id)?
+                .ok_or_else(|| anyhow::anyhow!("unknown task '{task_id}'"))?;
+            Ok(CommandExecutionOutput {
+                body: render_plan_task_detail(&store, &task)?,
+                state: ResponseSectionState::Complete,
+                activity: format!("/plan show loaded {}", task.id),
+                knowledge_summary: None,
+                agent_messages: None,
+            })
+        }
+        "create" => {
+            let task = store.create_task(parse_plan_create_args(&invocation.args)?)?;
+            Ok(CommandExecutionOutput {
+                body: render_plan_task_detail(&store, &task)?,
+                state: ResponseSectionState::Complete,
+                activity: format!("/plan create wrote {}", task.id),
+                knowledge_summary: None,
+                agent_messages: None,
+            })
+        }
+        "update" => {
+            let (task_id, update) = parse_plan_update_args(&invocation.args)?;
+            let task = store.update_task(&task_id, update)?;
+            Ok(CommandExecutionOutput {
+                body: render_plan_task_detail(&store, &task)?,
+                state: ResponseSectionState::Complete,
+                activity: format!("/plan update wrote {}", task.id),
+                knowledge_summary: None,
+                agent_messages: None,
+            })
+        }
+        "prioritize" => {
+            let (task_id, priority, placement) = parse_plan_prioritize_args(&invocation.args)?;
+            let task = store.reprioritize_task(&task_id, priority, placement)?;
+            Ok(CommandExecutionOutput {
+                body: render_plan_task_detail(&store, &task)?,
+                state: ResponseSectionState::Complete,
+                activity: format!("/plan prioritize reordered {}", task.id),
+                knowledge_summary: None,
+                agent_messages: None,
+            })
+        }
+        "depends" => {
+            let (operation, task_id, other_id) = parse_plan_dependency_args(&invocation.args)?;
+            let task = store.mutate_dependency(&task_id, &other_id, operation)?;
+            Ok(CommandExecutionOutput {
+                body: render_plan_task_detail(&store, &task)?,
+                state: ResponseSectionState::Complete,
+                activity: format!("/plan depends updated {}", task.id),
+                knowledge_summary: None,
+                agent_messages: None,
+            })
+        }
+        "log" => {
+            let (task_id, note) = parse_plan_log_args(&invocation.args)?;
+            store.append_note(
+                &task_id,
+                TaskActor::User,
+                note,
+                session_runtime.lock().unwrap().session_id.clone(),
+                None,
+            )?;
+            let task = store
+                .get_task(&task_id)?
+                .ok_or_else(|| anyhow::anyhow!("unknown task '{task_id}'"))?;
+            Ok(CommandExecutionOutput {
+                body: render_plan_task_detail(&store, &task)?,
+                state: ResponseSectionState::Complete,
+                activity: format!("/plan log appended note to {}", task.id),
+                knowledge_summary: None,
+                agent_messages: None,
+            })
+        }
+        "link" => {
+            let (task_id, surface, path, label) = parse_plan_link_args(&invocation.args)?;
+            let task = store.add_artifact_link(
+                &task_id,
+                surface,
+                TaskArtifactLink {
+                    kind: infer_task_artifact_kind(&path, surface),
+                    path,
+                    label,
+                },
+            )?;
+            Ok(CommandExecutionOutput {
+                body: render_plan_task_detail(&store, &task)?,
+                state: ResponseSectionState::Complete,
+                activity: format!("/plan link updated {}", task.id),
+                knowledge_summary: None,
+                agent_messages: None,
+            })
+        }
+        "select" => {
+            let raw = invocation
+                .args
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("usage: /plan select <task-id|none>"))?;
+            if raw.eq_ignore_ascii_case("none") {
+                set_selected_task_state(plan_store, session_runtime, turn_context, None)?;
+                return Ok(CommandExecutionOutput {
+                    body: "Cleared selected project task for this session.".to_string(),
+                    state: ResponseSectionState::Complete,
+                    activity: "/plan select cleared task binding".to_string(),
+                    knowledge_summary: None,
+                    agent_messages: None,
+                });
+            }
+            let selected = set_selected_task_state(
+                plan_store,
+                session_runtime,
+                turn_context,
+                Some(raw.to_string()),
+            )?
+            .ok_or_else(|| anyhow::anyhow!("unknown task '{raw}'"))?;
+            Ok(CommandExecutionOutput {
+                body: format!(
+                    "Selected task {}\nTitle: {}\nRequirement: {}",
+                    selected.task_id, selected.title, selected.requirement
+                ),
+                state: ResponseSectionState::Complete,
+                activity: format!("/plan select bound {}", selected.task_id),
+                knowledge_summary: None,
+                agent_messages: None,
+            })
+        }
+        "send" => {
+            let current_selected_task_id = session_runtime.lock().unwrap().selected_task_id.clone();
+            let (task_id, prompt) = parse_plan_send_args(&invocation.args, current_selected_task_id)?;
+            Ok(CommandExecutionOutput {
+                body: format!(
+                    "Dispatching task-bound turn for {}\nPrompt: {}",
+                    task_id, prompt
+                ),
+                state: ResponseSectionState::Complete,
+                activity: format!("/plan send prepared {}", task_id),
+                knowledge_summary: None,
+                agent_messages: None,
+            })
+        }
+        "sync-todo" => {
+            let project_root = active_project_handle(project_state).root();
+            let mut tasks = store.list_tasks(TaskListFilter::default())?;
+            tasks.retain(|task| {
+                !matches!(task.status, PlannedTaskStatus::Done | PlannedTaskStatus::Archived)
+            });
+            sync_plan_todo_projection(&project_root, &tasks)?;
+            Ok(CommandExecutionOutput {
+                body: format!(
+                    "Synced {} open project-plan tasks into docs/TODO.md",
+                    tasks.len()
+                ),
+                state: ResponseSectionState::Complete,
+                activity: format!("/plan sync-todo projected {} tasks", tasks.len()),
+                knowledge_summary: None,
+                agent_messages: None,
+            })
+        }
+        "migrate-todo" => {
+            let project_root = active_project_handle(project_state).root();
+            let result = migrate_todo_into_plan(&store, &project_root)?;
+            Ok(CommandExecutionOutput {
+                body: render_plan_todo_migration_result(&result),
+                state: ResponseSectionState::Complete,
+                activity: format!(
+                    "/plan migrate-todo created {} tasks and skipped {} existing imports",
+                    result.created_task_ids.len(),
+                    result.skipped_source_keys.len(),
+                ),
+                knowledge_summary: None,
+                agent_messages: None,
+            })
+        }
+        "load" => {
+            let project_root = active_project_handle(project_state).root();
+            let (source, kind, apply) = parse_plan_load_args(&invocation.args)?;
+            let result = load_plan_documents(&store, &project_root, &source, kind, apply)?;
+            if !apply && !result.candidates.is_empty() {
+                let request = build_plan_load_picker_request(&result);
+                tx.send(RuntimeMessageEnvelope::state(
+                    turn_id,
+                    StateMessage::ShowOverlay {
+                        request: OverlayRequest {
+                            target: OverlayTarget::Picker,
+                            content: UiContent::OperatorPicker(request),
+                        },
+                    },
+                ));
+            }
+            Ok(CommandExecutionOutput {
+                body: render_plan_load_result(&result),
+                state: ResponseSectionState::Complete,
+                activity: format!(
+                    "/plan load source={} matched {} files apply={}",
+                    source,
+                    result.matched_files.len(),
+                    apply,
+                ),
+                knowledge_summary: None,
+                agent_messages: None,
+            })
+        }
+        other => Err(anyhow::anyhow!("unsupported '/plan' subcommand '{other}'")),
+    }
+}
+
 fn execute_document_command(
     context_facade: &Arc<OmegaContextFacade>,
     invocation: OmegaCommandInvocation,
@@ -1196,7 +1702,7 @@ fn execute_document_command(
 
     let Some(subcommand) = invocation.subcommand.as_deref() else {
         return Err(anyhow::anyhow!(
-            "missing subcommand for '/document'; expected init, sync, health, query, create, archive, or list"
+            "missing subcommand for '/document'; expected init, sync, health, query, create, archive, list, render, validate, or extract"
         ));
     };
 
@@ -1422,6 +1928,75 @@ fn execute_document_command(
                 agent_messages: None,
             })
         }
+        "render" => {
+            context_facade.diagnostics.record_document_usage(
+                "/document",
+                "builtin_command",
+                "subcommand=render",
+            );
+            let (mode, doc_ids) = split_document_mode_args(&invocation.args, DocumentMutationMode::Apply);
+            let result = context_facade
+                .governance
+                .manage_document(DocumentOp::RenderProjection {
+                    mode,
+                    doc_ids: doc_ids.clone(),
+                })?;
+            Ok(CommandExecutionOutput {
+                body: render_document_operation_result(&result),
+                state: state_from_document_result(&result),
+                activity: format!(
+                    "/document render prepared {} document(s)",
+                    result
+                        .render_state
+                        .as_ref()
+                        .map(|state| state.rendered_doc_ids.len())
+                        .unwrap_or_else(|| result.records.len())
+                ),
+                knowledge_summary: None,
+                agent_messages: None,
+            })
+        }
+        "validate" => {
+            context_facade.diagnostics.record_document_usage(
+                "/document",
+                "builtin_command",
+                "subcommand=validate",
+            );
+            let result = context_facade
+                .governance
+                .manage_document(DocumentOp::ValidateProjection {
+                    doc_ids: invocation.args.clone(),
+                })?;
+            Ok(CommandExecutionOutput {
+                body: render_document_operation_result(&result),
+                state: state_from_document_result(&result),
+                activity: "/document validate completed".to_string(),
+                knowledge_summary: None,
+                agent_messages: None,
+            })
+        }
+        "extract" => {
+            context_facade.diagnostics.record_document_usage(
+                "/document",
+                "builtin_command",
+                "subcommand=extract",
+            );
+            let (mode, doc_type, sources) = parse_document_extract_args(&invocation.args)?;
+            let result = context_facade
+                .governance
+                .manage_document(DocumentOp::ExtractSource {
+                    mode,
+                    sources: sources.clone(),
+                    doc_type,
+                })?;
+            Ok(CommandExecutionOutput {
+                body: render_document_operation_result(&result),
+                state: state_from_document_result(&result),
+                activity: format!("/document extract processed {} source(s)", sources.len()),
+                knowledge_summary: None,
+                agent_messages: None,
+            })
+        }
         other => Err(anyhow::anyhow!(
             "unsupported '/document' subcommand '{other}'"
         )),
@@ -1432,6 +2007,7 @@ fn execute_document_command(
 fn execute_session_command(
     project_state: &Arc<Mutex<ProjectRuntimeState>>,
     session_runtime: &Arc<Mutex<SessionRuntimeState>>,
+    plan_store: &Arc<Mutex<Option<Arc<ProjectPlanStore>>>>,
     _session_context: &Arc<Mutex<SessionContext>>,
     todo_manager: &CoreSharedTodoManager,
     turn_checkpoint: &Arc<Mutex<Vec<Message>>>,
@@ -1554,6 +2130,7 @@ fn execute_session_command(
                     &current_cwd,
                     previous_session_context,
                     todo_manager,
+                    session_runtime.lock().unwrap().selected_task_id.clone(),
                     None,
                     &[],
                 )?;
@@ -1576,7 +2153,11 @@ fn execute_session_command(
             } else {
                 invocation.args.join(" ")
             };
-            session_runtime.lock().unwrap().session_id = Some(new_session_id.clone());
+            {
+                let mut runtime = session_runtime.lock().unwrap();
+                runtime.session_id = Some(new_session_id.clone());
+                runtime.selected_task_id = None;
+            }
             *turn_context = SessionContext::new(root_workflow_id.to_string());
             reset_todo_manager(todo_manager)?;
             *cwd.lock().unwrap() = project_handle.root();
@@ -1691,6 +2272,7 @@ fn execute_session_command(
                     &current_cwd,
                     previous_session_context,
                     todo_manager,
+                    session_runtime.lock().unwrap().selected_task_id.clone(),
                     None,
                     &[],
                 )?;
@@ -1713,6 +2295,15 @@ fn execute_session_command(
             *turn_context = session_context_from_snapshot(&snapshot);
             restore_todo_manager(todo_manager, &snapshot.todo_items)?;
             *cwd.lock().unwrap() = normalized_restored_cwd(project_handle.root(), snapshot.last_known_cwd.clone());
+            let restore_outcome = restore_selected_task_state(
+                session_runtime,
+                turn_context,
+                snapshot.selected_task_id.clone(),
+                &plan_store.lock().unwrap().clone(),
+            )?;
+            if let SelectedTaskRestoreOutcome::ClearedDangling(task_id) = restore_outcome {
+                ui_emit::send_warning_text(tx, turn_id, &dangling_selected_task_warning(&task_id));
+            }
             session_runtime.lock().unwrap().session_id = Some(target_session_id.clone());
             rebind_agent_to_current_project_with_messages(
                 agent_slot,
@@ -1906,6 +2497,72 @@ fn render_document_operation_result(result: &omega_context::DocumentOpResult) ->
         }
     }
 
+    if let Some(manifest) = result.manifest.as_ref() {
+        body.push_str(&format!(
+            "\nStructured manifest: schema v{} | record sets {} | generated root {}",
+            manifest.schema_version,
+            manifest.record_sets.len(),
+            manifest.generated_root,
+        ));
+    }
+
+    if !result.records.is_empty() {
+        body.push_str(&format!("\nStructured records: {}", result.records.len()));
+        for record in result.records.iter().take(5) {
+            body.push_str(&format!(
+                "\n- {} -> {}",
+                record.doc_id,
+                record.render.presentation_path,
+            ));
+        }
+    }
+
+    if !result.doc_tasks.is_empty() {
+        body.push_str(&format!("\nStructured doc tasks: {}", result.doc_tasks.len()));
+        for task in result.doc_tasks.iter().take(5) {
+            let plan_id = task.plan_task_id.as_deref().unwrap_or("pending-sync");
+            body.push_str(&format!("\n- {} -> {}", task.task_id, plan_id));
+        }
+    }
+
+    if !result.relations.is_empty() {
+        body.push_str(&format!("\nStructured relations: {}", result.relations.len()));
+        for relation in result.relations.iter().take(5) {
+            body.push_str(&format!(
+                "\n- {} [{}] {}",
+                relation.source,
+                relation.kind,
+                relation.target,
+            ));
+        }
+    }
+
+    if let Some(render_state) = result.render_state.as_ref() {
+        body.push_str(&format!(
+            "\nRender state: {} doc(s), {} path(s)",
+            render_state.rendered_doc_ids.len(),
+            render_state.generated_paths.len(),
+        ));
+    }
+
+    if let Some(validation) = result.validation.as_ref() {
+        body.push_str(&format!(
+            "\nValidation: {} | missing {} | mismatched {} | broken relations {}",
+            if validation.ok { "ok" } else { "failed" },
+            validation.missing_files.len(),
+            validation.mismatched_files.len(),
+            validation.broken_relations.len(),
+        ));
+    }
+
+    if let Some(extraction) = result.extraction.as_ref() {
+        body.push_str(&format!(
+            "\nExtraction: {} doc(s) from {} source(s)",
+            extraction.extracted_doc_ids.len(),
+            extraction.extracted_paths.len(),
+        ));
+    }
+
     if !result.warnings.is_empty() {
         body.push_str("\nWarnings:");
         for warning in &result.warnings {
@@ -2037,6 +2694,7 @@ fn parse_doc_type(value: &str) -> Option<DocType> {
         "prd" | "prds" => Some(DocType::Prd),
         "guide" | "guides" => Some(DocType::Guide),
         "adr" | "adrs" | "decision" | "decisions" => Some(DocType::Adr),
+        "whitepaper" | "whitepapers" | "paper" => Some(DocType::Whitepaper),
         "todo" => Some(DocType::Todo),
         "archive" | "archived" => Some(DocType::Archive),
         "readme" => Some(DocType::Readme),
@@ -2088,6 +2746,7 @@ fn doc_type_label(doc_type: Option<DocType>) -> &'static str {
         Some(DocType::Prd) => "prd",
         Some(DocType::Guide) => "guide",
         Some(DocType::Adr) => "adr",
+        Some(DocType::Whitepaper) => "whitepaper",
         Some(DocType::Todo) => "todo",
         Some(DocType::Archive) => "archive",
         Some(DocType::Readme) => "readme",
@@ -2104,6 +2763,78 @@ fn status_label(status: Option<&FileStatus>) -> &'static str {
         Some(FileStatus::Moved { .. }) => "moved",
         None => "any",
     }
+}
+
+fn parse_document_mode_flag(value: &str) -> Option<DocumentMutationMode> {
+    match value.to_ascii_lowercase().as_str() {
+        "--check" | "check" => Some(DocumentMutationMode::Check),
+        "--plan" | "plan" => Some(DocumentMutationMode::Plan),
+        "--apply" | "apply" => Some(DocumentMutationMode::Apply),
+        _ => None,
+    }
+}
+
+fn split_document_mode_args(
+    args: &[String],
+    default_mode: DocumentMutationMode,
+) -> (DocumentMutationMode, Vec<String>) {
+    let mut mode = default_mode;
+    let mut values = Vec::new();
+    for arg in args {
+        if let Some(parsed_mode) = parse_document_mode_flag(arg) {
+            mode = parsed_mode;
+        } else {
+            values.push(arg.clone());
+        }
+    }
+    (mode, values)
+}
+
+fn parse_document_extract_args(
+    args: &[String],
+) -> anyhow::Result<(DocumentMutationMode, Option<DocType>, Vec<String>)> {
+    let mut mode = DocumentMutationMode::Apply;
+    let mut doc_type = None;
+    let mut sources = Vec::new();
+    let mut index = 0usize;
+
+    while index < args.len() {
+        let arg = &args[index];
+        if let Some(parsed_mode) = parse_document_mode_flag(arg) {
+            mode = parsed_mode;
+            index += 1;
+            continue;
+        }
+        if arg == "--doc-type" {
+            let value = args
+                .get(index + 1)
+                .ok_or_else(|| anyhow::anyhow!("missing value after '--doc-type'"))?;
+            doc_type = parse_doc_type(value);
+            if doc_type.is_none() {
+                return Err(anyhow::anyhow!("unknown doc_type '{}' for '/document extract'", value));
+            }
+            index += 2;
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--doc-type=") {
+            doc_type = parse_doc_type(value);
+            if doc_type.is_none() {
+                return Err(anyhow::anyhow!("unknown doc_type '{}' for '/document extract'", value));
+            }
+            index += 1;
+            continue;
+        }
+        sources.push(arg.clone());
+        index += 1;
+    }
+
+    if sources.is_empty() {
+        return Err(anyhow::anyhow!(
+            "usage: /document extract <source...> [--doc-type <...>] [--check|--plan|--apply]"
+        ));
+    }
+
+    Ok((mode, doc_type, sources))
 }
 
 fn file_status_label(status: &FileStatus) -> &'static str {
@@ -2480,6 +3211,7 @@ fn persist_session_artifacts(
     cwd: &std::path::Path,
     session_context: &SessionContext,
     todo_manager: &CoreSharedTodoManager,
+    selected_task_id: Option<String>,
     last_completed_turn_id: Option<u64>,
     replay_entries: &[SessionReplayEntry],
 ) -> anyhow::Result<u64> {
@@ -2559,6 +3291,7 @@ fn persist_session_artifacts(
             })
             .collect(),
         structured_input: None,
+        selected_task_id,
         last_known_cwd: Some(cwd.to_path_buf()),
     };
     project_handle.save_session_snapshot(&snapshot)?;
@@ -2645,7 +3378,1673 @@ fn session_context_from_snapshot(snapshot: &ProjectSessionSnapshot) -> SessionCo
             .collect(),
         step_outputs: snapshot.step_outputs.clone(),
         governance_events: snapshot.governance_events.clone(),
+        selected_task: None,
     }
+}
+
+fn current_plan_store(
+    plan_store: &Arc<Mutex<Option<Arc<ProjectPlanStore>>>>,
+) -> anyhow::Result<Arc<ProjectPlanStore>> {
+    plan_store
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("project plan store unavailable"))
+}
+
+fn set_selected_task_state(
+    plan_store: &Arc<Mutex<Option<Arc<ProjectPlanStore>>>>,
+    session_runtime: &Arc<Mutex<SessionRuntimeState>>,
+    turn_context: &mut SessionContext,
+    task_id: Option<String>,
+) -> anyhow::Result<Option<SelectedProjectTaskContext>> {
+    let selected = if let Some(task_id) = task_id {
+        let context = current_plan_store(plan_store)?
+            .resolve_task_context(&task_id)?
+            .ok_or_else(|| anyhow::anyhow!("unknown task '{task_id}'"))?;
+        session_runtime.lock().unwrap().selected_task_id = Some(task_id);
+        turn_context.selected_task = Some(context.clone());
+        Some(context)
+    } else {
+        session_runtime.lock().unwrap().selected_task_id = None;
+        turn_context.selected_task = None;
+        None
+    };
+    Ok(selected)
+}
+
+fn restore_selected_task_state(
+    session_runtime: &Arc<Mutex<SessionRuntimeState>>,
+    turn_context: &mut SessionContext,
+    selected_task_id: Option<String>,
+    plan_store: &Option<Arc<ProjectPlanStore>>,
+) -> anyhow::Result<SelectedTaskRestoreOutcome> {
+    if let Some(task_id) = selected_task_id {
+        if let Some(store) = plan_store.as_ref() {
+            if let Some(context) = store.resolve_task_context(&task_id)? {
+                session_runtime.lock().unwrap().selected_task_id = Some(task_id);
+                turn_context.selected_task = Some(context);
+                return Ok(SelectedTaskRestoreOutcome::Restored);
+            }
+        }
+
+		session_runtime.lock().unwrap().selected_task_id = None;
+		turn_context.selected_task = None;
+		return Ok(SelectedTaskRestoreOutcome::ClearedDangling(task_id));
+    }
+
+    session_runtime.lock().unwrap().selected_task_id = None;
+    turn_context.selected_task = None;
+    Ok(SelectedTaskRestoreOutcome::NoSelection)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SelectedTaskRestoreOutcome {
+	NoSelection,
+	Restored,
+	ClearedDangling(String),
+}
+
+fn dangling_selected_task_warning(task_id: &str) -> String {
+	format!(
+		"Selected project task {task_id} no longer exists in the active project plan. The session task binding was cleared."
+	)
+}
+
+fn parse_plan_create_args(args: &[String]) -> anyhow::Result<NewPlannedTask> {
+    if args.is_empty() {
+        return Err(anyhow::anyhow!(
+            "usage: /plan create [--priority <p0|p1|p2|p3>] <title...>"
+        ));
+    }
+
+    let mut priority = TaskPriority::P2;
+    let mut title_start = 0usize;
+    if args.first().is_some_and(|arg| arg == "--priority") {
+        let raw = args.get(1).ok_or_else(|| {
+            anyhow::anyhow!("missing value after '--priority'; expected p0, p1, p2, or p3")
+        })?;
+        priority = TaskPriority::parse_cli(raw)
+            .ok_or_else(|| anyhow::anyhow!("unknown priority '{raw}'"))?;
+        title_start = 2;
+    }
+    let title = args[title_start..].join(" ").trim().to_string();
+    if title.is_empty() {
+        return Err(anyhow::anyhow!(
+            "usage: /plan create [--priority <p0|p1|p2|p3>] <title...>"
+        ));
+    }
+    Ok(NewPlannedTask::simple(title, priority))
+}
+
+fn parse_plan_list_args(args: &[String]) -> anyhow::Result<(String, TaskListFilter)> {
+    let mut view = "current".to_string();
+    let mut status = None;
+    let mut priority = None;
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "current" | "history" | "all" if index == 0 => {
+                view = args[index].to_ascii_lowercase();
+                index += 1;
+            }
+            "--status" => {
+                let raw = args.get(index + 1).ok_or_else(|| {
+                    anyhow::anyhow!("missing value after '--status'")
+                })?;
+                status = Some(
+                    PlannedTaskStatus::parse_cli(raw)
+                        .ok_or_else(|| anyhow::anyhow!("unknown status '{raw}'"))?,
+                );
+                index += 2;
+            }
+            "--priority" => {
+                let raw = args.get(index + 1).ok_or_else(|| {
+                    anyhow::anyhow!("missing value after '--priority'")
+                })?;
+                priority = Some(
+                    TaskPriority::parse_cli(raw)
+                        .ok_or_else(|| anyhow::anyhow!("unknown priority '{raw}'"))?,
+                );
+                index += 2;
+            }
+            other => {
+                return Err(anyhow::anyhow!(
+                    "unexpected /plan list argument '{other}'"
+                ));
+            }
+        }
+    }
+    Ok((view, TaskListFilter { status, priority }))
+}
+
+fn parse_plan_update_args(args: &[String]) -> anyhow::Result<(String, PlannedTaskUpdate)> {
+    let task_id = args
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("usage: /plan update <task-id> [--title <...>] [--summary <...>] [--requirement <...>] [--status <...>] [--accept <...>] [--tag <...>]") )?
+        .clone();
+    let mut update = PlannedTaskUpdate::default();
+    let mut acceptance = Vec::new();
+    let mut tags = Vec::new();
+    let mut index = 1usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--title" => {
+                let (value, next_index) = collect_plan_flag_value(args, index + 1, "--title")?;
+                update.title = Some(value);
+                index = next_index;
+            }
+            "--summary" => {
+                let (value, next_index) = collect_plan_flag_value(args, index + 1, "--summary")?;
+                update.summary = Some(value);
+                index = next_index;
+            }
+            "--requirement" => {
+                let (value, next_index) = collect_plan_flag_value(args, index + 1, "--requirement")?;
+                update.requirement = Some(value);
+                index = next_index;
+            }
+            "--status" => {
+                let raw = args.get(index + 1).ok_or_else(|| {
+                    anyhow::anyhow!("missing value after '--status'")
+                })?;
+                update.status = Some(
+                    PlannedTaskStatus::parse_cli(raw)
+                        .ok_or_else(|| anyhow::anyhow!("unknown status '{raw}'"))?,
+                );
+                index += 2;
+            }
+            "--accept" => {
+                let (value, next_index) = collect_plan_flag_value(args, index + 1, "--accept")?;
+                acceptance.push(value);
+                index = next_index;
+            }
+            "--tag" => {
+                let raw = args.get(index + 1).ok_or_else(|| {
+                    anyhow::anyhow!("missing value after '--tag'")
+                })?;
+                tags.push(raw.clone());
+                index += 2;
+            }
+            other => {
+                return Err(anyhow::anyhow!(
+                    "unexpected /plan update argument '{other}'"
+                ));
+            }
+        }
+    }
+    if !acceptance.is_empty() {
+        update.acceptance = Some(acceptance);
+    }
+    if !tags.is_empty() {
+        update.tags = Some(tags);
+    }
+    Ok((task_id, update))
+}
+
+fn parse_plan_prioritize_args(
+    args: &[String],
+) -> anyhow::Result<(String, TaskPriority, TaskOrderPlacement)> {
+    if args.len() < 2 {
+        return Err(anyhow::anyhow!(
+            "usage: /plan prioritize <task-id> <p0|p1|p2|p3> [--before <task-id>] [--after <task-id>]"
+        ));
+    }
+    let task_id = args[0].clone();
+    let priority = TaskPriority::parse_cli(&args[1])
+        .ok_or_else(|| anyhow::anyhow!("unknown priority '{}'", args[1]))?;
+    let mut placement = TaskOrderPlacement::default();
+    let mut index = 2usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--before" => {
+                placement.before_task_id = Some(
+                    args.get(index + 1)
+                        .ok_or_else(|| anyhow::anyhow!("missing value after '--before'"))?
+                        .clone(),
+                );
+                index += 2;
+            }
+            "--after" => {
+                placement.after_task_id = Some(
+                    args.get(index + 1)
+                        .ok_or_else(|| anyhow::anyhow!("missing value after '--after'"))?
+                        .clone(),
+                );
+                index += 2;
+            }
+            other => {
+                return Err(anyhow::anyhow!(
+                    "unexpected /plan prioritize argument '{other}'"
+                ));
+            }
+        }
+    }
+    Ok((task_id, priority, placement))
+}
+
+fn parse_plan_dependency_args(
+    args: &[String],
+) -> anyhow::Result<(TaskDependencyOperation, String, String)> {
+    if args.len() != 3 {
+        return Err(anyhow::anyhow!(
+            "usage: /plan depends <add|remove> <task-id> <other-id>"
+        ));
+    }
+    let operation = match args[0].as_str() {
+        "add" => TaskDependencyOperation::Add,
+        "remove" => TaskDependencyOperation::Remove,
+        other => return Err(anyhow::anyhow!("unknown dependency operation '{other}'")),
+    };
+    Ok((operation, args[1].clone(), args[2].clone()))
+}
+
+fn parse_plan_log_args(args: &[String]) -> anyhow::Result<(String, String)> {
+    if args.len() < 2 {
+        return Err(anyhow::anyhow!("usage: /plan log <task-id> <note...>"));
+    }
+    Ok((args[0].clone(), args[1..].join(" ").trim().to_string()))
+}
+
+fn parse_plan_link_args(
+    args: &[String],
+) -> anyhow::Result<(String, TaskLinkSurface, String, Option<String>)> {
+    if args.len() < 3 {
+        return Err(anyhow::anyhow!(
+            "usage: /plan link <task-id> <design|implementation> <path> [label...]"
+        ));
+    }
+    let surface = TaskLinkSurface::parse_cli(&args[1])
+        .ok_or_else(|| anyhow::anyhow!("unknown link surface '{}'", args[1]))?;
+    let label = if args.len() > 3 {
+        Some(args[3..].join(" ").trim().to_string())
+    } else {
+        None
+    };
+    Ok((args[0].clone(), surface, args[2].clone(), label))
+}
+
+fn parse_plan_send_args(
+    args: &[String],
+    current_selected_task_id: Option<String>,
+) -> anyhow::Result<(String, String)> {
+    if args.is_empty() {
+        return Err(anyhow::anyhow!(
+            "usage: /plan send [<task-id>] <prompt...>"
+        ));
+    }
+    let (task_id, prompt_args) = if args[0].starts_with("TASK-") {
+        (
+            args[0].clone(),
+            args.get(1..)
+                .ok_or_else(|| anyhow::anyhow!("usage: /plan send [<task-id>] <prompt...>"))?,
+        )
+    } else {
+        (
+            current_selected_task_id.ok_or_else(|| {
+                anyhow::anyhow!("No task selected. Use /plan select <id> first.")
+            })?,
+            args,
+        )
+    };
+    let prompt = prompt_args.join(" ").trim().to_string();
+    if prompt.is_empty() {
+        return Err(anyhow::anyhow!(
+            "usage: /plan send [<task-id>] <prompt...>"
+        ));
+    }
+    Ok((task_id, prompt))
+}
+
+fn collect_plan_flag_value(
+    args: &[String],
+    start_index: usize,
+    flag: &str,
+) -> anyhow::Result<(String, usize)> {
+    if start_index >= args.len() {
+        return Err(anyhow::anyhow!("missing value after '{flag}'"));
+    }
+    let mut index = start_index;
+    let mut values = Vec::new();
+    while index < args.len() && !args[index].starts_with("--") {
+        values.push(args[index].clone());
+        index += 1;
+    }
+    if values.is_empty() {
+        return Err(anyhow::anyhow!("missing value after '{flag}'"));
+    }
+    Ok((values.join(" ").trim().to_string(), index))
+}
+
+fn infer_task_artifact_kind(path: &str, surface: TaskLinkSurface) -> TaskArtifactKind {
+    if path.starts_with("docs/prds/") {
+        TaskArtifactKind::Prd
+    } else if path.starts_with("docs/specs/") {
+        TaskArtifactKind::Spec
+    } else if path.starts_with("docs/guide/") {
+        TaskArtifactKind::Guide
+    } else if path.starts_with("docs/decisions/") {
+        TaskArtifactKind::Adr
+    } else if matches!(surface, TaskLinkSurface::Implementation)
+        && (path.contains("/tests/") || path.ends_with("_tests.rs") || path.ends_with(".test.ts"))
+    {
+        TaskArtifactKind::Test
+    } else {
+        TaskArtifactKind::Code
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TodoMigrationDraft {
+    source_key: String,
+    title: String,
+    status: PlannedTaskStatus,
+    priority: TaskPriority,
+    description: String,
+    blocked_by: Vec<String>,
+    related_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct TodoMigrationResult {
+    created_task_ids: Vec<String>,
+    skipped_source_keys: Vec<String>,
+}
+
+fn migrate_todo_into_plan(
+    store: &ProjectPlanStore,
+    project_root: &std::path::Path,
+) -> anyhow::Result<TodoMigrationResult> {
+    let todo_path = project_root.join("docs/TODO.md");
+    let todo = std::fs::read_to_string(&todo_path)
+        .with_context(|| format!("failed to read {}", todo_path.display()))?;
+    let drafts = parse_open_todo_migration_drafts(&todo)?;
+    if drafts.is_empty() {
+        return Ok(TodoMigrationResult::default());
+    }
+
+    let existing_tasks = store.list_tasks(TaskListFilter::default())?;
+    let mut source_key_to_task_id = existing_tasks
+        .iter()
+        .flat_map(|task| {
+            task.tags.iter().filter_map(|tag| {
+                tag.strip_prefix("todo-import:")
+                    .map(|source_key| (source_key.to_string(), task.id.clone()))
+            })
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+
+    let mut result = TodoMigrationResult::default();
+    for draft in &drafts {
+        let source_key = todo_migration_key(&draft.source_key);
+        let source_tag = todo_migration_tag(&draft.source_key);
+        if source_key_to_task_id.contains_key(source_key.as_str()) {
+            result.skipped_source_keys.push(draft.source_key.clone());
+            continue;
+        }
+
+        let task = store.create_task(NewPlannedTask {
+            title: draft.title.clone(),
+            kind: omega_plan::PlannedTaskKind::Task,
+            status: draft.status,
+            priority: draft.priority,
+            summary: draft.description.clone(),
+            requirement: draft.description.clone(),
+            acceptance: Vec::new(),
+            parent_id: None,
+            depends_on: Vec::new(),
+            tags: vec![source_tag.clone()],
+        })?;
+        store.append_note(
+            &task.id,
+            TaskActor::Command,
+            format!("Imported from docs/TODO.md track {}", draft.source_key),
+            None,
+            None,
+        )?;
+        source_key_to_task_id.insert(source_key, task.id.clone());
+        result.created_task_ids.push(task.id);
+    }
+
+    for draft in &drafts {
+		let Some(task_id) = source_key_to_task_id.get(&todo_migration_key(&draft.source_key)).cloned() else {
+            continue;
+        };
+        for blocked_key in &draft.blocked_by {
+			let Some(dependency_id) = source_key_to_task_id.get(&todo_migration_key(blocked_key)).cloned() else {
+                continue;
+            };
+            if dependency_id != task_id {
+                store.mutate_dependency(&task_id, &dependency_id, TaskDependencyOperation::Add)?;
+            }
+        }
+        for path in &draft.related_paths {
+            store.add_artifact_link(
+                &task_id,
+                TaskLinkSurface::Design,
+                TaskArtifactLink {
+                    kind: infer_task_artifact_kind(path, TaskLinkSurface::Design),
+                    path: path.clone(),
+                    label: None,
+                },
+            )?;
+        }
+    }
+
+    Ok(result)
+}
+
+fn parse_open_todo_migration_drafts(todo: &str) -> anyhow::Result<Vec<TodoMigrationDraft>> {
+    let mut drafts = Vec::new();
+    let mut in_active_tasks = false;
+    let mut current_heading = None::<String>;
+    let mut current_lines = Vec::new();
+
+    for line in todo.lines() {
+        if line.trim() == "## Active Tasks" {
+            in_active_tasks = true;
+            continue;
+        }
+        if !in_active_tasks {
+            continue;
+        }
+        if line.starts_with("## ") {
+            break;
+        }
+        if let Some(heading) = line.strip_prefix("### ") {
+            if let Some(previous_heading) = current_heading.replace(heading.trim().to_string()) {
+                if let Some(draft) = build_todo_migration_draft(&previous_heading, &current_lines)? {
+                    drafts.push(draft);
+                }
+                current_lines.clear();
+            }
+            continue;
+        }
+        if current_heading.is_some() {
+            current_lines.push(line.to_string());
+        }
+    }
+
+    if let Some(heading) = current_heading {
+        if let Some(draft) = build_todo_migration_draft(&heading, &current_lines)? {
+            drafts.push(draft);
+        }
+    }
+
+    Ok(drafts)
+}
+
+fn build_todo_migration_draft(
+    heading: &str,
+    lines: &[String],
+) -> anyhow::Result<Option<TodoMigrationDraft>> {
+    let source_key = heading
+        .split(':')
+        .next()
+        .map(str::trim)
+        .unwrap_or(heading)
+        .to_string();
+    let title = heading
+        .split_once(':')
+        .map(|(_, tail)| tail.trim())
+        .filter(|tail| !tail.is_empty())
+        .unwrap_or(heading)
+        .to_string();
+    let status = parse_todo_migration_status(extract_todo_field(lines, "Status").as_deref())?;
+    if matches!(status, PlannedTaskStatus::Done | PlannedTaskStatus::Archived) {
+        return Ok(None);
+    }
+    let priority = parse_todo_migration_priority(extract_todo_field(lines, "Priority").as_deref())?;
+    let description = extract_todo_field(lines, "Description")
+        .or_else(|| extract_todo_field(lines, "Planning Note"))
+        .unwrap_or_else(|| title.clone());
+    let blocked_by = extract_todo_field(lines, "Blocked by")
+        .map(|value| split_todo_reference_list(&value))
+        .unwrap_or_default();
+    let related_paths = extract_todo_field(lines, "Related")
+        .map(|value| extract_backtick_paths(&value))
+        .unwrap_or_default();
+    Ok(Some(TodoMigrationDraft {
+        source_key,
+        title,
+        status,
+        priority,
+        description,
+        blocked_by,
+        related_paths,
+    }))
+}
+
+fn extract_todo_field(lines: &[String], field: &str) -> Option<String> {
+    let prefix = format!("- **{field}**:");
+    lines.iter().find_map(|line| {
+        line.trim()
+            .strip_prefix(&prefix)
+            .map(|value| value.trim().to_string())
+    })
+}
+
+fn parse_todo_migration_status(value: Option<&str>) -> anyhow::Result<PlannedTaskStatus> {
+    match value.unwrap_or("Pending").trim().to_ascii_lowercase().as_str() {
+        "pending" => Ok(PlannedTaskStatus::Backlog),
+        "in progress" => Ok(PlannedTaskStatus::InProgress),
+        "blocked" => Ok(PlannedTaskStatus::Blocked),
+        "review" => Ok(PlannedTaskStatus::Ready),
+        "completed" => Ok(PlannedTaskStatus::Done),
+        "replaced" => Ok(PlannedTaskStatus::Archived),
+        other => Err(anyhow::anyhow!(
+            "unsupported task import status '{other}'; expected Pending, In Progress, Blocked, Review, Completed, or Replaced"
+        )),
+    }
+}
+
+fn parse_todo_migration_priority(value: Option<&str>) -> anyhow::Result<TaskPriority> {
+    match value.unwrap_or("Medium").trim().to_ascii_lowercase().as_str() {
+        "high" => Ok(TaskPriority::P0),
+        "medium" => Ok(TaskPriority::P1),
+        "low" => Ok(TaskPriority::P2),
+        other => Err(anyhow::anyhow!("unsupported docs/TODO priority '{other}'")),
+    }
+}
+
+fn split_todo_reference_list(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(|item| item.trim().trim_matches('`').to_string())
+        .filter(|item| !item.is_empty())
+        .collect()
+}
+
+fn extract_backtick_paths(value: &str) -> Vec<String> {
+    let mut paths = Vec::new();
+    let mut remainder = value;
+    while let Some(start) = remainder.find('`') {
+        let after_start = &remainder[start + 1..];
+        let Some(end) = after_start.find('`') else {
+            break;
+        };
+        let candidate = after_start[..end].trim();
+        if candidate.contains('/') {
+            paths.push(candidate.to_string());
+        }
+        remainder = &after_start[end + 1..];
+    }
+    paths
+}
+
+fn todo_migration_tag(source_key: &str) -> String {
+    format!("todo-import:{}", todo_migration_key(source_key))
+}
+
+fn todo_migration_key(source_key: &str) -> String {
+    source_key
+        .trim()
+        .to_ascii_lowercase()
+        .replace(' ', "-")
+        .replace(':', "")
+}
+
+fn render_plan_todo_migration_result(result: &TodoMigrationResult) -> String {
+    let mut lines = vec![format!(
+        "Imported {} docs/TODO.md open task(s).",
+        result.created_task_ids.len()
+    )];
+    if result.created_task_ids.is_empty() {
+        lines.push("Created task ids: none".to_string());
+    } else {
+        lines.push(format!("Created task ids: {}", result.created_task_ids.join(", ")));
+    }
+    if result.skipped_source_keys.is_empty() {
+        lines.push("Skipped existing imports: none".to_string());
+    } else {
+        lines.push(format!(
+            "Skipped existing imports: {}",
+            result.skipped_source_keys.join(", ")
+        ));
+    }
+    lines.join("\n")
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlanLoadKind {
+    Auto,
+    Todo,
+    TaskHeadings,
+}
+
+impl PlanLoadKind {
+    fn parse_cli(value: &str) -> anyhow::Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "auto" => Ok(Self::Auto),
+            "todo" => Ok(Self::Todo),
+            "task-headings" => Ok(Self::TaskHeadings),
+            other => Err(anyhow::anyhow!(
+                "unsupported /plan load kind '{other}'; expected auto, todo, or task-headings"
+            )),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Todo => "todo",
+            Self::TaskHeadings => "task-headings",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlanLoadAdapter {
+    Todo,
+    TaskHeadings,
+}
+
+impl PlanLoadAdapter {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Todo => "todo",
+            Self::TaskHeadings => "task-headings",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlanLoadDisposition {
+    Create,
+    Update,
+}
+
+impl PlanLoadDisposition {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Create => "create",
+            Self::Update => "update",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PlanLoadDraft {
+    adapter: PlanLoadAdapter,
+    source_path: String,
+    source_key: String,
+    source_tag: String,
+    title: String,
+    status: PlannedTaskStatus,
+    priority: TaskPriority,
+    description: String,
+    blocked_by: Vec<String>,
+    related_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PlanLoadCandidateSummary {
+    disposition: PlanLoadDisposition,
+    adapter: PlanLoadAdapter,
+    source_path: String,
+    source_key: String,
+    title: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PlanLoadResult {
+    source: String,
+    kind: PlanLoadKind,
+    apply: bool,
+    matched_files: Vec<String>,
+    skipped_files: Vec<String>,
+    candidates: Vec<PlanLoadCandidateSummary>,
+    created_task_ids: Vec<String>,
+    updated_task_ids: Vec<String>,
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct PlanLoadParseResult {
+    drafts: Vec<PlanLoadDraft>,
+    warnings: Vec<String>,
+}
+
+fn parse_plan_load_args(args: &[String]) -> anyhow::Result<(String, PlanLoadKind, bool)> {
+    let mut source = None::<String>;
+    let mut kind = PlanLoadKind::Auto;
+    let mut apply = false;
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--kind" => {
+                let value = args.get(index + 1).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "missing value after '--kind'; expected auto, todo, or task-headings"
+                    )
+                })?;
+                kind = PlanLoadKind::parse_cli(value)?;
+                index += 2;
+            }
+            "--apply" => {
+                apply = true;
+                index += 1;
+            }
+            flag if flag.starts_with("--") => {
+                return Err(anyhow::anyhow!("unsupported flag '{flag}' for '/plan load'"));
+            }
+            value => {
+                if source.replace(value.to_string()).is_some() {
+                    return Err(anyhow::anyhow!(
+                        "usage: /plan load <source> [--kind <auto|todo|task-headings>] [--apply]"
+                    ));
+                }
+                index += 1;
+            }
+        }
+    }
+
+    let source = source.ok_or_else(|| {
+        anyhow::anyhow!(
+            "usage: /plan load <source> [--kind <auto|todo|task-headings>] [--apply]"
+        )
+    })?;
+    Ok((source, kind, apply))
+}
+
+fn load_plan_documents(
+    store: &ProjectPlanStore,
+    project_root: &std::path::Path,
+    source: &str,
+    kind: PlanLoadKind,
+    apply: bool,
+) -> anyhow::Result<PlanLoadResult> {
+    let source_files = collect_plan_load_source_files(project_root, source)?;
+    let existing_sources = collect_existing_plan_import_sources(store)?;
+
+    let mut matched_files = Vec::new();
+    let mut skipped_files = Vec::new();
+    let mut candidates = Vec::new();
+    let mut drafts = Vec::new();
+    let mut warnings = Vec::new();
+
+    for source_file in source_files {
+        let relative_path = normalize_plan_load_relative_path(
+            source_file
+                .strip_prefix(project_root)
+                .unwrap_or(source_file.as_path()),
+        );
+        let content = std::fs::read_to_string(&source_file)
+            .with_context(|| format!("failed to read {}", source_file.display()))?;
+        let parse_result = parse_plan_load_drafts_for_file(&relative_path, &content, kind)?;
+        warnings.extend(parse_result.warnings.iter().cloned());
+        if parse_result.drafts.is_empty() {
+            skipped_files.push(relative_path);
+            continue;
+        }
+        matched_files.push(relative_path.clone());
+        for draft in parse_result.drafts {
+            let disposition = if existing_sources.contains_key(draft.source_tag.as_str()) {
+                PlanLoadDisposition::Update
+            } else {
+                PlanLoadDisposition::Create
+            };
+            candidates.push(PlanLoadCandidateSummary {
+                disposition,
+                adapter: draft.adapter,
+                source_path: draft.source_path.clone(),
+                source_key: draft.source_key.clone(),
+                title: draft.title.clone(),
+            });
+            drafts.push(draft);
+        }
+    }
+
+    let mut result = PlanLoadResult {
+        source: source.to_string(),
+        kind,
+        apply,
+        matched_files,
+        skipped_files,
+        candidates,
+        created_task_ids: Vec::new(),
+        updated_task_ids: Vec::new(),
+        warnings,
+    };
+
+    if apply {
+        apply_plan_load_drafts(store, &drafts, &mut result)?;
+    }
+
+    if result.candidates.is_empty() {
+        result.warnings.push(format!(
+            "No importable task blocks were found under source '{}'.",
+            source
+        ));
+    }
+
+    dedupe_plan_load_result(&mut result);
+    Ok(result)
+}
+
+fn collect_plan_load_source_files(
+    project_root: &std::path::Path,
+    source: &str,
+) -> anyhow::Result<Vec<std::path::PathBuf>> {
+    let source_path = std::path::Path::new(source);
+    if source_path.is_absolute() {
+        anyhow::bail!("/plan load source must be project-root relative, not absolute");
+    }
+    let root = std::fs::canonicalize(project_root)
+        .with_context(|| format!("failed to canonicalize {}", project_root.display()))?;
+    let candidate = root.join(source_path);
+    let candidate = std::fs::canonicalize(&candidate)
+        .with_context(|| format!("failed to resolve source {}", candidate.display()))?;
+    if candidate.strip_prefix(&root).is_err() {
+        anyhow::bail!("/plan load source must stay within the active project root");
+    }
+    let relative_candidate =
+        normalize_plan_load_relative_path(candidate.strip_prefix(&root).unwrap());
+    if should_skip_plan_load_path(&relative_candidate) {
+        anyhow::bail!("/plan load source points at an ignored path");
+    }
+
+    let mut files = Vec::new();
+    if candidate.is_file() {
+        if candidate.extension().and_then(|ext| ext.to_str()) == Some("md") {
+            files.push(candidate);
+        }
+        return Ok(files);
+    }
+
+    collect_plan_load_markdown_files(&root, &candidate, &mut files)?;
+    files.sort();
+    Ok(files)
+}
+
+fn collect_plan_load_markdown_files(
+    project_root: &std::path::Path,
+    directory: &std::path::Path,
+    files: &mut Vec<std::path::PathBuf>,
+) -> anyhow::Result<()> {
+    for entry in std::fs::read_dir(directory)
+        .with_context(|| format!("failed to read directory {}", directory.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        let relative = normalize_plan_load_relative_path(path.strip_prefix(project_root).unwrap_or(&path));
+        if should_skip_plan_load_path(&relative) {
+            continue;
+        }
+        if path.is_dir() {
+            collect_plan_load_markdown_files(project_root, &path, files)?;
+        } else if path.extension().and_then(|ext| ext.to_str()) == Some("md") {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn should_skip_plan_load_path(relative_path: &str) -> bool {
+    relative_path == "docs/archive"
+        || relative_path.starts_with("docs/archive/")
+        || relative_path == "target"
+        || relative_path.starts_with("target/")
+        || relative_path == ".omega-state"
+        || relative_path.starts_with(".omega-state/")
+}
+
+fn parse_plan_load_drafts_for_file(
+    relative_path: &str,
+    content: &str,
+    kind: PlanLoadKind,
+) -> anyhow::Result<PlanLoadParseResult> {
+    match kind {
+        PlanLoadKind::Todo => parse_plan_load_todo_drafts(relative_path, content),
+        PlanLoadKind::TaskHeadings => parse_plan_load_task_heading_drafts(relative_path, content),
+        PlanLoadKind::Auto => {
+            if relative_path == "docs/TODO.md" {
+                let todo_drafts = parse_plan_load_todo_drafts(relative_path, content)?;
+                if !todo_drafts.drafts.is_empty() {
+                    return Ok(todo_drafts);
+                }
+            }
+            let heading_drafts = parse_plan_load_task_heading_drafts(relative_path, content)?;
+            if !heading_drafts.drafts.is_empty() {
+                return Ok(heading_drafts);
+            }
+            let mut todo_drafts = parse_plan_load_todo_drafts(relative_path, content)?;
+            todo_drafts.warnings.extend(heading_drafts.warnings);
+            Ok(todo_drafts)
+        }
+    }
+}
+
+fn parse_plan_load_todo_drafts(
+    relative_path: &str,
+    content: &str,
+) -> anyhow::Result<PlanLoadParseResult> {
+    parse_open_todo_migration_drafts(content).map(|drafts| PlanLoadParseResult {
+        drafts: drafts
+            .into_iter()
+            .map(|draft| plan_load_draft_from_todo(relative_path, draft, PlanLoadAdapter::Todo))
+            .collect(),
+        warnings: Vec::new(),
+    })
+}
+
+fn plan_load_draft_from_todo(
+    relative_path: &str,
+    draft: TodoMigrationDraft,
+    adapter: PlanLoadAdapter,
+) -> PlanLoadDraft {
+    PlanLoadDraft {
+        adapter,
+        source_tag: plan_load_source_tag(relative_path, &draft.source_key, adapter),
+        source_path: relative_path.to_string(),
+        source_key: draft.source_key,
+        title: draft.title,
+        status: draft.status,
+        priority: draft.priority,
+        description: draft.description,
+        blocked_by: draft.blocked_by,
+        related_paths: draft.related_paths,
+    }
+}
+
+fn parse_plan_load_task_heading_drafts(
+    relative_path: &str,
+    content: &str,
+) -> anyhow::Result<PlanLoadParseResult> {
+    let mut drafts = Vec::new();
+    let mut warnings = Vec::new();
+    let mut current_heading = None::<String>;
+    let mut current_lines = Vec::new();
+
+    for line in content.lines() {
+        if let Some(heading) = parse_task_heading_line(line) {
+            if let Some(previous_heading) = current_heading.replace(heading) {
+                finish_task_heading_import_block(
+                    relative_path,
+                    &previous_heading,
+                    &current_lines,
+                    &mut drafts,
+                    &mut warnings,
+                );
+                current_lines.clear();
+            }
+            continue;
+        }
+        if line.trim_start().starts_with('#') {
+            if let Some(previous_heading) = current_heading.take() {
+                finish_task_heading_import_block(
+                    relative_path,
+                    &previous_heading,
+                    &current_lines,
+                    &mut drafts,
+                    &mut warnings,
+                );
+                current_lines.clear();
+            }
+            continue;
+        }
+        if current_heading.is_some() {
+            current_lines.push(line.to_string());
+        }
+    }
+
+    if let Some(heading) = current_heading {
+        finish_task_heading_import_block(
+            relative_path,
+            &heading,
+            &current_lines,
+            &mut drafts,
+            &mut warnings,
+        );
+    }
+
+    Ok(PlanLoadParseResult { drafts, warnings })
+}
+
+fn finish_task_heading_import_block(
+    relative_path: &str,
+    heading: &str,
+    lines: &[String],
+    drafts: &mut Vec<PlanLoadDraft>,
+    warnings: &mut Vec<String>,
+) {
+    match build_markdown_task_import_draft(heading, lines, true) {
+        Ok(Some(draft)) => drafts.push(plan_load_draft_from_todo(
+            relative_path,
+            draft,
+            PlanLoadAdapter::TaskHeadings,
+        )),
+        Ok(None) => {}
+        Err(error) => warnings.push(format!(
+            "Skipped {} heading '{}' during /plan load: {}",
+            relative_path, heading, error
+        )),
+    }
+}
+
+fn parse_task_heading_line(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    let heading = trimmed
+        .strip_prefix("### ")
+        .or_else(|| trimmed.strip_prefix("#### "))?;
+    let heading = heading.trim();
+    heading.starts_with("Task ").then(|| heading.to_string())
+}
+
+fn build_markdown_task_import_draft(
+    heading: &str,
+    lines: &[String],
+    require_structured_metadata: bool,
+) -> anyhow::Result<Option<TodoMigrationDraft>> {
+    let has_structured_metadata = ["Status", "Priority", "Description", "Planning Note", "Blocked by", "Related"]
+        .iter()
+        .any(|field| extract_todo_field(lines, field).is_some());
+    if require_structured_metadata && !has_structured_metadata {
+        return Ok(None);
+    }
+    build_todo_migration_draft(heading, lines)
+}
+
+fn collect_existing_plan_import_sources(
+    store: &ProjectPlanStore,
+) -> anyhow::Result<std::collections::BTreeMap<String, String>> {
+    Ok(store
+        .list_tasks(TaskListFilter::default())?
+        .into_iter()
+        .flat_map(|task| {
+            task.tags.into_iter().filter_map(move |tag| {
+                (tag.starts_with("todo-import:") || tag.starts_with("doc-load:"))
+                    .then(|| (tag, task.id.clone()))
+            })
+        })
+        .collect())
+}
+
+fn apply_plan_load_drafts(
+    store: &ProjectPlanStore,
+    drafts: &[PlanLoadDraft],
+    result: &mut PlanLoadResult,
+) -> anyhow::Result<()> {
+    let mut imported_sources = collect_existing_plan_import_sources(store)?;
+    let mut source_keys_to_task_ids = std::collections::BTreeMap::<String, Vec<String>>::new();
+
+    for draft in drafts {
+        let task_id = if let Some(existing_task_id) = imported_sources.get(draft.source_tag.as_str()).cloned() {
+            let existing_task = store
+                .get_task(&existing_task_id)?
+                .ok_or_else(|| anyhow::anyhow!("missing previously imported task '{existing_task_id}'"))?;
+            let mut tags = existing_task.tags;
+            if !tags.iter().any(|tag| tag == &draft.source_tag) {
+                tags.push(draft.source_tag.clone());
+                tags.sort();
+            }
+            let updated = store.update_task(
+                &existing_task_id,
+                PlannedTaskUpdate {
+                    title: Some(draft.title.clone()),
+                    summary: Some(draft.description.clone()),
+                    requirement: Some(draft.description.clone()),
+                    status: Some(draft.status),
+                    acceptance: Some(Vec::new()),
+                    tags: Some(tags),
+                },
+            )?;
+            result.updated_task_ids.push(updated.id.clone());
+            updated.id
+        } else {
+            let created = store.create_task(NewPlannedTask {
+                title: draft.title.clone(),
+                kind: omega_plan::PlannedTaskKind::Task,
+                status: draft.status,
+                priority: draft.priority,
+                summary: draft.description.clone(),
+                requirement: draft.description.clone(),
+                acceptance: Vec::new(),
+                parent_id: None,
+                depends_on: Vec::new(),
+                tags: vec![draft.source_tag.clone()],
+            })?;
+            result.created_task_ids.push(created.id.clone());
+            created.id
+        };
+
+        imported_sources.insert(draft.source_tag.clone(), task_id.clone());
+        source_keys_to_task_ids
+            .entry(todo_migration_key(&draft.source_key))
+            .or_default()
+            .push(task_id.clone());
+
+        store.add_artifact_link(
+            &task_id,
+            TaskLinkSurface::Design,
+            TaskArtifactLink {
+                kind: infer_task_artifact_kind(&draft.source_path, TaskLinkSurface::Design),
+                path: draft.source_path.clone(),
+                label: Some("source".to_string()),
+            },
+        )?;
+        for path in &draft.related_paths {
+            store.add_artifact_link(
+                &task_id,
+                TaskLinkSurface::Design,
+                TaskArtifactLink {
+                    kind: infer_task_artifact_kind(path, TaskLinkSurface::Design),
+                    path: path.clone(),
+                    label: None,
+                },
+            )?;
+        }
+        store.append_note(
+            &task_id,
+            TaskActor::Command,
+            format!(
+                "Loaded from {} via /plan load ({})",
+                draft.source_path,
+                draft.adapter.as_str(),
+            ),
+            None,
+            None,
+        )?;
+    }
+
+    for draft in drafts {
+        let Some(task_id) = imported_sources.get(draft.source_tag.as_str()).cloned() else {
+            continue;
+        };
+        for blocked_key in &draft.blocked_by {
+            let normalized_key = todo_migration_key(blocked_key);
+            let Some(dependency_ids) = source_keys_to_task_ids.get(&normalized_key) else {
+                result.warnings.push(format!(
+                    "{} references unresolved dependency '{}'.",
+                    draft.source_path, blocked_key
+                ));
+                continue;
+            };
+            if dependency_ids.len() > 1 {
+                result.warnings.push(format!(
+                    "{} references ambiguous dependency '{}'.",
+                    draft.source_path, blocked_key
+                ));
+                continue;
+            }
+            let dependency_id = &dependency_ids[0];
+            if dependency_id != &task_id {
+                store.mutate_dependency(&task_id, dependency_id, TaskDependencyOperation::Add)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn plan_load_source_tag(relative_path: &str, source_key: &str, adapter: PlanLoadAdapter) -> String {
+    if matches!(adapter, PlanLoadAdapter::Todo) && relative_path == "docs/TODO.md" {
+        todo_migration_tag(source_key)
+    } else {
+        format!(
+            "doc-load:{}#{}",
+            normalize_plan_load_tag_path(relative_path),
+            todo_migration_key(source_key),
+        )
+    }
+}
+
+fn normalize_plan_load_relative_path(path: &std::path::Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+fn normalize_plan_load_tag_path(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
+fn dedupe_plan_load_result(result: &mut PlanLoadResult) {
+    dedupe_strings(&mut result.matched_files);
+    dedupe_strings(&mut result.skipped_files);
+    dedupe_strings(&mut result.created_task_ids);
+    dedupe_strings(&mut result.updated_task_ids);
+    dedupe_strings(&mut result.warnings);
+}
+
+fn dedupe_strings(values: &mut Vec<String>) {
+    let mut seen = std::collections::BTreeSet::new();
+    values.retain(|value| seen.insert(value.clone()));
+}
+
+fn render_plan_load_result(result: &PlanLoadResult) -> String {
+    let would_create = result
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.disposition == PlanLoadDisposition::Create)
+        .count();
+    let would_update = result.candidates.len().saturating_sub(would_create);
+    let mut lines = vec![format!(
+        "Mode: {}",
+        if result.apply { "apply" } else { "preview" }
+    )];
+    lines.push(format!("Source: {}", result.source));
+    lines.push(format!("Kind: {}", result.kind.as_str()));
+    lines.push(format!("Matched files: {}", join_or_none(&result.matched_files)));
+    lines.push(format!("Skipped files: {}", join_or_none(&result.skipped_files)));
+    lines.push(format!("Candidates: {}", result.candidates.len()));
+    lines.push(format!("Would create: {}", would_create));
+    lines.push(format!("Would update: {}", would_update));
+    if result.apply {
+        lines.push(format!("Created task ids: {}", join_or_none(&result.created_task_ids)));
+        lines.push(format!("Updated task ids: {}", join_or_none(&result.updated_task_ids)));
+    }
+    if !result.candidates.is_empty() {
+        lines.push("Candidate tasks:".to_string());
+        lines.extend(result.candidates.iter().map(|candidate| {
+            format!(
+                "- {} [{}] {} :: {} ({})",
+                candidate.disposition.as_str(),
+                candidate.adapter.as_str(),
+                candidate.source_path,
+                candidate.source_key,
+                candidate.title,
+            )
+        }));
+    }
+    if !result.warnings.is_empty() {
+        lines.push("Warnings:".to_string());
+        lines.extend(result.warnings.iter().map(|warning| format!("- {warning}")));
+    }
+    lines.join("\n")
+}
+
+fn build_plan_load_picker_request(result: &PlanLoadResult) -> OperatorPickerRequest {
+    let item_count = result.candidates.len();
+    let primary_action = OperatorPickerAction {
+        action_id: "plan-load-detail".to_string(),
+        label: "Detail".to_string(),
+        shortcut: OperatorPickerShortcut::Enter,
+        requires_selection: true,
+        overlay_behavior: OperatorPickerOverlayBehavior::KeepOpen,
+        intent: OperatorPickerIntent::OpenDetail,
+    };
+    let mut load_command = format!("/plan load {}", result.source);
+    if result.kind != PlanLoadKind::Auto {
+        load_command.push_str(&format!(" --kind {}", result.kind.as_str()));
+    }
+    load_command.push_str(" --apply");
+
+    let secondary_actions = vec![OperatorPickerAction {
+        action_id: "plan-load-confirm".to_string(),
+        label: "Load".to_string(),
+        shortcut: OperatorPickerShortcut::Ctrl('l'),
+        requires_selection: true,
+        overlay_behavior: OperatorPickerOverlayBehavior::KeepOpen,
+        intent: OperatorPickerIntent::RequestConfirmSlashCommand {
+            title_template: " Confirm plan load ".to_string(),
+            message_template: format!(
+                "Import {item_count} previewed task(s) from {} into the project plan?",
+                result.source
+            ),
+            confirm_label: "Load".to_string(),
+            command_template: load_command,
+        },
+    }];
+
+    OperatorPickerRequest {
+        picker_id: "plan-load-preview".to_string(),
+        title: format!(" Plan Load Preview ({item_count}) "),
+        empty_state: "No importable task blocks found for this source.".to_string(),
+        filter_enabled: true,
+        items: result
+            .candidates
+            .iter()
+            .enumerate()
+            .map(|(index, candidate)| build_plan_load_picker_item(index, candidate))
+            .collect(),
+        primary_action,
+        secondary_actions,
+    }
+}
+
+fn build_plan_list_picker_request(
+    store: &ProjectPlanStore,
+    tasks: &[PlannedTask],
+    selected_task_id: Option<&str>,
+    view: &str,
+) -> anyhow::Result<OperatorPickerRequest> {
+    let title = match view {
+        "all" => format!(" Plan Tasks ({}) ", tasks.len()),
+        "history" => format!(" Plan History ({}) ", tasks.len()),
+        _ => format!(" Current Plan Tasks ({}) ", tasks.len()),
+    };
+    let empty_state = match view {
+        "all" => "No project tasks recorded yet.",
+        "history" => "No completed or archived project tasks are recorded yet.",
+        _ => "No current project tasks are recorded yet.",
+    };
+
+    Ok(OperatorPickerRequest {
+        picker_id: PLAN_LIST_PICKER_ID.to_string(),
+        title,
+        empty_state: empty_state.to_string(),
+        filter_enabled: true,
+        items: tasks
+            .iter()
+            .map(|task| build_plan_list_picker_item(store, task, selected_task_id))
+            .collect::<anyhow::Result<Vec<_>>>()?,
+        primary_action: OperatorPickerAction {
+            action_id: "plan-list-detail".to_string(),
+            label: "Detail".to_string(),
+            shortcut: OperatorPickerShortcut::Enter,
+            requires_selection: true,
+            overlay_behavior: OperatorPickerOverlayBehavior::KeepOpen,
+            intent: OperatorPickerIntent::SubmitSlashCommand {
+                command_template: "/plan show {id}".to_string(),
+            },
+        },
+        secondary_actions: vec![OperatorPickerAction {
+            action_id: "plan-list-select".to_string(),
+            label: "Select".to_string(),
+            shortcut: OperatorPickerShortcut::Ctrl('s'),
+            requires_selection: true,
+            overlay_behavior: OperatorPickerOverlayBehavior::CloseOverlay,
+            intent: OperatorPickerIntent::SubmitSlashCommand {
+                command_template: "/plan select {id}".to_string(),
+            },
+        }],
+    })
+}
+
+fn build_plan_list_picker_item(
+    store: &ProjectPlanStore,
+    task: &PlannedTask,
+    selected_task_id: Option<&str>,
+) -> anyhow::Result<OperatorPickerItem> {
+    let mut badges = vec![task.priority.as_str().to_string(), task.status.as_str().to_string()];
+    if Some(task.id.as_str()) == selected_task_id {
+        badges.insert(0, "selected".to_string());
+    }
+
+    let subtitle = if task.summary.trim().is_empty() {
+        Some(task.id.clone())
+    } else {
+        Some(format!("{} :: {}", task.id, task.summary.trim()))
+    };
+
+    Ok(OperatorPickerItem {
+        id: task.id.clone(),
+        title: task.title.clone(),
+        subtitle,
+        badges,
+        preview: Some(render_plan_task_detail(store, task)?),
+        disabled_reason: None,
+    })
+}
+
+fn build_plan_load_picker_item(
+    index: usize,
+    candidate: &PlanLoadCandidateSummary,
+) -> OperatorPickerItem {
+    OperatorPickerItem {
+        id: format!("{}:{}", candidate.source_path, index),
+        title: candidate.title.clone(),
+        subtitle: Some(format!("{} :: {}", candidate.source_path, candidate.source_key)),
+        badges: vec![
+            candidate.disposition.as_str().to_string(),
+            candidate.adapter.as_str().to_string(),
+        ],
+        preview: Some(format!(
+            "title: {}\nsource: {}\nsource key: {}\nadapter: {}\ndisposition: {}",
+            candidate.title,
+            candidate.source_path,
+            candidate.source_key,
+            candidate.adapter.as_str(),
+            candidate.disposition.as_str(),
+        )),
+        disabled_reason: None,
+    }
+}
+
+fn join_or_none(values: &[String]) -> String {
+    if values.is_empty() {
+        "none".to_string()
+    } else {
+        values.join(", ")
+    }
+}
+
+fn sync_plan_todo_projection(project_root: &std::path::Path, tasks: &[PlannedTask]) -> anyhow::Result<()> {
+    const START: &str = "<!-- omega-plan-sync:start -->";
+    const END: &str = "<!-- omega-plan-sync:end -->";
+    let generated = format!(
+        "{START}\n### Project Plan Projection (generated by /plan sync-todo)\n- Open planned tasks: {}\n{}\n{END}",
+        tasks.len(),
+        if tasks.is_empty() {
+            "- No open planned tasks.".to_string()
+        } else {
+            tasks
+                .iter()
+                .map(|task| format!("- {} [{} {}] {}", task.id, task.priority.as_str(), planned_task_status_label(task.status), task.title))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+    );
+
+    let document = OmegaDocument::new(project_root.to_path_buf());
+    let mut todo_record = match document
+        .structured_docs_snapshot()?
+        .records
+        .into_iter()
+        .find(|record| record.doc_id == "todo:docs-todo")
+    {
+        Some(record) => record,
+        None => {
+            document.manage_document(StructuredDocumentOp::ExtractSource {
+                mode: StructuredDocumentMutationMode::Apply,
+                sources: vec!["docs/TODO.md".to_string()],
+                doc_type: Some(StructuredDocType::Todo),
+            })?;
+            document
+                .structured_docs_snapshot()?
+                .records
+                .into_iter()
+                .find(|record| record.doc_id == "todo:docs-todo")
+                .ok_or_else(|| anyhow::anyhow!("missing structured todo record 'todo:docs-todo'"))?
+        }
+    };
+
+    upsert_plan_projection_notes_block(&mut todo_record.sections, &generated);
+
+    document.manage_document(StructuredDocumentOp::UpsertRecord {
+        mode: StructuredDocumentMutationMode::Apply,
+        record: todo_record,
+    })?;
+    document.manage_document(StructuredDocumentOp::RenderProjection {
+        mode: StructuredDocumentMutationMode::Apply,
+        doc_ids: vec!["todo:docs-todo".to_string()],
+    })?;
+    let validation = document.manage_document(StructuredDocumentOp::ValidateProjection {
+        doc_ids: vec!["todo:docs-todo".to_string()],
+    })?;
+    if let Some(report) = validation.validation {
+        if !report.ok {
+            anyhow::bail!(
+                "failed to validate docs/TODO.md projection after /plan sync-todo: {} mismatch(es), {} missing file(s), {} broken relation(s)",
+                report.mismatched_files.len() + report.version_mismatches.len(),
+                report.missing_files.len(),
+                report.broken_relations.len()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn upsert_plan_projection_notes_block(sections: &mut Vec<StructuredDocumentSection>, generated: &str) {
+    const START: &str = "<!-- omega-plan-sync:start -->";
+    const END: &str = "<!-- omega-plan-sync:end -->";
+
+    let notes = sections.iter_mut().find(|section| section.heading == "Notes");
+    let notes = match notes {
+        Some(section) => section,
+        None => {
+            sections.push(StructuredDocumentSection {
+                section_id: "notes".to_string(),
+                heading: "Notes".to_string(),
+                body_markdown: String::new(),
+            });
+            sections.last_mut().expect("notes section inserted")
+        }
+    };
+
+    let existing = notes.body_markdown.trim();
+    notes.body_markdown = if let (Some(start), Some(end)) = (existing.find(START), existing.find(END)) {
+        let end = end + END.len();
+        format!("{}{}{}", &existing[..start], generated, &existing[end..]).trim().to_string()
+    } else if existing.is_empty() {
+        generated.to_string()
+    } else {
+        format!("{}\n\n{}", generated, existing)
+    };
+}
+
+fn render_plan_list(tasks: &[PlannedTask], selected_task_id: Option<&str>, view: &str) -> String {
+    if tasks.is_empty() {
+        return format!("Plan view: {view}\nNo tasks.");
+    }
+
+    let mut body = format!("Plan view: {view}\nTasks: {}", tasks.len());
+    for task in tasks {
+        let selected = if selected_task_id == Some(task.id.as_str()) {
+            " selected"
+        } else {
+            ""
+        };
+        body.push_str(&format!(
+            "\n- {} [{} {}]{}\n  title: {}",
+            task.id,
+            task.priority.as_str(),
+            planned_task_status_label(task.status),
+            selected,
+            task.title,
+        ));
+    }
+    body
+}
+
+fn render_plan_task_detail(store: &ProjectPlanStore, task: &PlannedTask) -> anyhow::Result<String> {
+    let logs = store.load_logs(&task.id, Some(8))?;
+    let dependencies = if task.depends_on.is_empty() {
+        "none".to_string()
+    } else {
+        task.depends_on.join(", ")
+    };
+    let acceptance = if task.acceptance.is_empty() {
+        "none".to_string()
+    } else {
+        task.acceptance
+            .iter()
+            .map(|item| format!("- {item}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let log_body = if logs.is_empty() {
+        "none".to_string()
+    } else {
+        logs.into_iter()
+            .map(|entry| format!("- #{} {:?}: {}", entry.seq, entry.kind, entry.summary))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let design_links = if task.design_links.is_empty() {
+        "none".to_string()
+    } else {
+        task.design_links
+            .iter()
+            .map(|link| format!("- {}", link.path))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let implementation_links = if task.implementation_links.is_empty() {
+        "none".to_string()
+    } else {
+        task.implementation_links
+            .iter()
+            .map(|link| format!("- {}", link.path))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    Ok(format!(
+        "Task: {}\nTitle: {}\nPriority: {}\nStatus: {}\nRequirement: {}\nDependencies: {}\nAcceptance:\n{}\nDesign links:\n{}\nImplementation links:\n{}\nRecent logs:\n{}",
+        task.id,
+        task.title,
+        task.priority.as_str(),
+        planned_task_status_label(task.status),
+        task.requirement,
+        dependencies,
+        acceptance,
+        design_links,
+        implementation_links,
+        log_body,
+    ))
+}
+
+fn planned_task_status_label(status: PlannedTaskStatus) -> &'static str {
+    match status {
+        PlannedTaskStatus::Backlog => "backlog",
+        PlannedTaskStatus::Ready => "ready",
+        PlannedTaskStatus::InProgress => "in_progress",
+        PlannedTaskStatus::Blocked => "blocked",
+        PlannedTaskStatus::Done => "done",
+        PlannedTaskStatus::Archived => "archived",
+    }
+}
+
+fn build_task_turn_log_summary(
+    input: &str,
+    response_text: Option<&str>,
+    error_text: Option<&str>,
+) -> String {
+    let mut lines = vec![format!("Prompt: {}", preview_text(input, 120))];
+    if let Some(response_text) = response_text {
+        if !response_text.trim().is_empty() {
+            lines.push(format!("Response: {}", preview_text(response_text, 160)));
+        }
+    }
+    if let Some(error_text) = error_text {
+        lines.push(format!("Error: {}", preview_text(error_text, 160)));
+    }
+    lines.join(" | ")
+}
+
+fn build_task_delivery_log_summary(
+    input: &str,
+    response_text: &str,
+    delivery_summary: &runner::TurnDeliverySummary,
+) -> String {
+    let changed_files = if delivery_summary.changed_files.is_empty() {
+        "none".to_string()
+    } else {
+        delivery_summary
+            .changed_files
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let loaded_skills = if delivery_summary.loaded_skill_ids.is_empty() {
+        "none".to_string()
+    } else {
+        delivery_summary.loaded_skill_ids.join(", ")
+    };
+    format!(
+        "Prompt: {} | Response: {} | delivery: model={} llm_requests={} tools={} failed_tools={} tokens={} in/{} out files={} skills={} changed_paths={}",
+        preview_text(input, 120),
+        preview_text(response_text, 160),
+        delivery_summary.primary_model.as_deref().unwrap_or("unknown"),
+        delivery_summary.llm_request_count,
+        delivery_summary.tool_call_count,
+        delivery_summary.failed_tool_count,
+        delivery_summary.input_tokens,
+        delivery_summary.output_tokens,
+        delivery_summary.changed_files.len(),
+        loaded_skills,
+        changed_files,
+    )
 }
 
 fn workflow_role_from_str(value: &str) -> WorkflowRunRole {
@@ -2833,13 +5232,17 @@ fn render_project_list(
 
 fn render_project_info(snapshot: &ProjectDetailSnapshot) -> String {
     format!(
-        "Project: {}\nProject ID: {}\nRoot: {}\nDetection: {}\nActive session: {}\nSessions: {}\nDocument readiness: {}\nMemory readiness: {}",
+        "Project: {}\nProject ID: {}\nRoot: {}\nDetection: {}\nActive session: {}\nSessions: {}\nPlan current/history: {}/{}\nPlan blocked: {}\nSelected task: {}\nDocument readiness: {}\nMemory readiness: {}",
         snapshot.record.display_name,
         snapshot.record.project_id,
         snapshot.record.root.display(),
         detection_kind_label(snapshot.record.detection_kind),
         snapshot.record.active_session_id.as_deref().unwrap_or("none"),
         snapshot.sessions.len(),
+        snapshot.plan.current_task_count,
+        snapshot.plan.history_task_count,
+        snapshot.plan.blocked_task_count,
+        snapshot.plan.selected_task_id.as_deref().unwrap_or("none"),
         command_document_query_readiness(&ContextDiagnostics {
             document: snapshot.knowledge.document.clone(),
             memory: snapshot.knowledge.memory.clone(),

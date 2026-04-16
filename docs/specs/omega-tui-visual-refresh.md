@@ -1,12 +1,15 @@
 ---
-status: draft
+content_revision: 96
+created: 2026-04-08
+generation_id: gen_000013_r000096
 last_verified_commit: N/A
 owner: omega-team
-created: 2026-04-08
-updated: 2026-04-08
-version: 0.1
-supersedes: []
+projection_version: 13
 related_prds: []
+source_doc_id: "spec:docs-specs-omega-tui-visual-refresh"
+status: draft
+supersedes: []
+updated: 2026-04-08
 ---
 
 # Omega TUI Visual Refresh Specification
@@ -153,7 +156,8 @@ related_prds: []
 
 ### Task 15B-61: Monochrome foundation and single accent discipline
 
-- **Status**: Implemented on 2026-04-08.
+- **Status**: Completed
+- **Completed**: 2026-04-08
 - **Priority**: Medium
 - **Complexity**: M
 - **Dependencies**: Task 15B-51
@@ -165,7 +169,8 @@ related_prds: []
 
 ### Task 15B-62: Bento spacing, padding, and border subtraction
 
-- **Status**: Implemented on 2026-04-08.
+- **Status**: Completed
+- **Completed**: 2026-04-08
 - **Priority**: Medium
 - **Complexity**: M
 - **Dependencies**: Task 15B-52, Task 15B-61
@@ -177,7 +182,8 @@ related_prds: []
 
 ### Task 15B-63: Meta/thinking/log de-emphasis and result-first contrast
 
-- **Status**: Implemented on 2026-04-08.
+- **Status**: Completed
+- **Completed**: 2026-04-08
 - **Priority**: Medium
 - **Complexity**: M
 - **Dependencies**: Task 15B-58, Task 15B-61
@@ -189,7 +195,8 @@ related_prds: []
 
 ### Task 15B-64: Focus dimming and overlay depth polish
 
-- **Status**: Implemented on 2026-04-08.
+- **Status**: Completed
+- **Completed**: 2026-04-08
 - **Priority**: Medium
 - **Complexity**: M
 - **Dependencies**: Task 15B-61, Task 15B-62

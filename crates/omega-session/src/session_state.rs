@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use omega_context::GovernanceEventSignal;
+use omega_plan::SelectedProjectTaskContext;
 use serde_json::Value;
 
 use crate::runtime_ui::WorkflowRunRole;
@@ -13,6 +14,7 @@ pub(crate) struct SessionContext {
     pub(crate) step_summaries: Vec<StepSummary>,
     pub(crate) step_outputs: BTreeMap<String, Value>,
     pub(crate) governance_events: Vec<GovernanceEventSignal>,
+    pub(crate) selected_task: Option<SelectedProjectTaskContext>,
 }
 
 impl SessionContext {
@@ -24,6 +26,7 @@ impl SessionContext {
             step_summaries: Vec::new(),
             step_outputs: BTreeMap::new(),
             governance_events: Vec::new(),
+            selected_task: None,
         }
     }
 

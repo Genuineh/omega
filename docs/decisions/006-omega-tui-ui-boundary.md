@@ -1,10 +1,14 @@
 ---
 adr_number: 006
-date: 2026-03-19
-status: accepted
 author: omega-team
-reviewed_by: []
+content_revision: 96
+date: 2026-03-19
+generation_id: gen_000013_r000096
+projection_version: 13
 related_spec: docs/specs/omega-app-package.md
+reviewed_by: []
+source_doc_id: "adr:docs-decisions-006-omega-tui-ui-boundary"
+status: accepted
 ---
 
 # 006: `omega-tui` 只拥有 UI 职责

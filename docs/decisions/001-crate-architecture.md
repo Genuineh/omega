@@ -1,23 +1,30 @@
 ---
 adr_number: 001
-date: 2026-03-18
-status: accepted
 author: omega-team
+content_revision: 96
+date: 2026-03-18
+generation_id: gen_000013_r000096
+projection_version: 13
 reviewed_by: []
+source_doc_id: "adr:docs-decisions-001-crate-architecture"
+status: accepted
 ---
 
 # 001: 采用独立 Crate 架构
 
 ## Status
+
 Accepted
 
 ## Context
+
 Omega 项目需要复刻 learn-claude-code 的 12 阶段教程，每个阶段有独立的功能模块。我们需要决定如何组织代码结构，使得：
 - 每个功能模块可以独立测试
 - 便于理解和复用
 - 依赖关系清晰
 
 ## Decision
+
 采用独立 Crate 架构，将每个功能模块拆分为独立的 crate：
 
 - omega-client: LLM 客户端
@@ -61,6 +68,7 @@ Omega 项目需要复刻 learn-claude-code 的 12 阶段教程，每个阶段有
 **Why Rejected**: 不符合单一职责原则
 
 ## Notes
+
 - 依赖关系：底层 crate 无依赖，上层依赖下层
 - 2026-03-20: 交互层当前真实入口已迁移为 `omega-app`；早期 `omega-repl` 路径已退役，不再计入当前 crate 结构基线
 - 2026-03-20: `omega-app` 已作为应用装配入口落地，并计入当前已实现 crate 基线

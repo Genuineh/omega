@@ -1,20 +1,27 @@
 ---
 adr_number: 004
-date: 2026-03-18
-status: accepted
 author: omega-team
+content_revision: 96
+date: 2026-03-18
+generation_id: gen_000013_r000096
+projection_version: 13
 reviewed_by: []
+source_doc_id: "adr:docs-decisions-004-jsonl-message-store"
+status: accepted
 ---
 
 # 004: 消息系统使用 JSONL 文件存储
 
 ## Status
+
 Accepted
 
 ## Context
+
 Omega Team 功能需要消息队列来协调多个 agent 之间的通信。需要选择合适的持久化方案。
 
 ## Decision
+
 使用 JSONL (JSON Lines) 文件存储消息：
 
 - 每个收件箱一个 .jsonl 文件
@@ -52,5 +59,6 @@ Omega Team 功能需要消息队列来协调多个 agent 之间的通信。需�
 **Why Rejected**: 不符合 learn-claude-code 的持久化设计
 
 ## Notes
+
 - 实现位置: crates/omega-message
 - 参考: learn-claude-code agents/s09_agent_teams.py

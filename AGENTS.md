@@ -78,6 +78,13 @@ Once the dotnet workspace exists, use:
 
 When a task is completed or meaningfully advanced, update `docs/TODO.md` in the same change. Mark progress explicitly so the TODO reflects current status, not just planned work.
 
+## Documentation Mutation Workflow
+
+- Default workflow: query/read may use direct file inspection or stable-id lookup, but documentation mutation must flow through `omega-document-cli`.
+- For docs add/update/archive/delete, doc task mutation, relation mutation, and TODO-input mutation, use `omega-document-cli` instead of direct markdown or direct `docs-data/*.jsonl` edits.
+- After documentation mutation, rerender and validate the docs projection in the same change. When checking projection/version correspondence or repository readiness, also use `omega-document-cli doctor` and `omega-document-cli validate`.
+- Manual docs/docs-data edits are reserved for emergency projection repair only. If a repair requires a direct patch, restore canonical coherence and rerun `omega-document-cli render`, `omega-document-cli validate`, and `omega-document-cli doctor` in the same change.
+
 ## Skills
 
 ### Rule
@@ -91,6 +98,7 @@ When a task is completed or meaningfully advanced, update `docs/TODO.md` in the 
 
 - Documentation:
   - `docs-general`: documentation structure, archive rules, and doc hygiene
+  - `docs-cli-workflow`: CLI-first docs mutation/query workflow and version-aware render/validate guidance
   - `docs-todo`: `docs/TODO.md` updates and task tracking
   - `docs-prds`: PRDs and feature planning docs
   - `docs-specs`: technical specifications and contracts
@@ -130,6 +138,7 @@ When a task is completed or meaningfully advanced, update `docs/TODO.md` in the 
 ### Task Routing
 
 - Documentation tasks should load the matching `docs-*` skill first.
+- Documentation tasks that mutate docs records, tasks, relations, or projections should also load `docs-cli-workflow`.
 - Backend implementation or API changes should load the most specific `backend-*` skill plus `backend-principles` when architectural guidance matters.
 - Frontend work should load the relevant `frontend-*` skill, and visual or UX-heavy tasks should also load `frontend-design`.
 - Frontend testing should load the matching `test-*` skill before writing or changing tests.

@@ -1,15 +1,20 @@
 ---
-status: active
+content_revision: 96
+created: 2026-03-25
+generation_id: gen_000013_r000096
 last_verified_commit: N/A
 owner: omega-team
-created: 2026-03-25
-updated: 2026-03-26
-version: 1.1
-supersedes: []
+projection_version: 13
 related_prds: []
+source_doc_id: "spec:docs-specs-omega-agent-impl-plan-task-15-runtime-visibility"
+status: active
+supersedes: []
+updated: 2026-03-26
 ---
 
 # Omega Agent Plan: Task 15 Runtime And Visibility
+
+## Overview
 
 本文覆盖 `Task 15` 中与 runtime contract、step context、diagnostics 和 TUI 可见性直接相关的后续主线。
 
@@ -84,6 +89,7 @@ runtime message pipeline follow-up 已于 2026-03-26 落地，当前 ownership �
 
 - 已建立 `RuntimeMessageEnvelope -> current-turn filter -> app policy -> TuiEngine` matrix tests，锁住 routing / tool / todo / diagnostics / stale turn drop 的规则。
 - `omega-session` 也补充了 producer-path tests，保证 frontend-neutral envelope 的 section/tool/activity 发射行为稳定。
+
 ## Workflow Context Track
 
 ### Task 15F-8

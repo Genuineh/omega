@@ -1,16 +1,19 @@
 ---
-status: active
+content_revision: 96
+created: 2026-04-09
+generation_id: gen_000013_r000096
 last_verified_commit: N/A
 owner: omega-team
-created: 2026-04-09
-updated: 2026-04-09
-version: 0.1
-supersedes: []
+projection_version: 13
 related_prds:
   - docs/specs/omega-context-management.md
   - docs/specs/omega-command-system.md
   - docs/specs/omega-tui-document-memory-supervision.md
   - docs/specs/omega-app-package.md
+source_doc_id: "spec:docs-specs-omega-project-system"
+status: active
+supersedes: []
+updated: 2026-04-09
 ---
 
 # Omega Project System Specification
@@ -81,7 +84,7 @@ project system 的核心已经收口为 **project-owned 根对象**：repo-owned
 `omega-todo` 明确保留为 runtime / session-scoped working state：
 
 - 当前 `TodoManager` 生命周期跟随 runtime 注入与当前交互过程，不写入 project registry。
-- `/project switch` 不迁移、不持久化当前 todo 列表；如需 project-bound task board，必须另立规格与数据模型。
+- `/project switch` 不迁移、不持久化当前 todo 列表；project-bound long-term planning 由 `docs/specs/omega-project-plan-system.md` 单独定义，不与 runtime todo 复用。
 - project detail overlay、project summary 和 project knowledge snapshot 默认不展示 runtime todo items，避免把 session working set 误报成 project knowledge。
 
 ### Dependency Direction

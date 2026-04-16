@@ -1,16 +1,19 @@
 ---
-status: active
+content_revision: 96
+created: 2026-04-11
+generation_id: gen_000013_r000096
 last_verified_commit: N/A
 owner: omega-team
-created: 2026-04-11
-updated: 2026-04-13
-version: 0.1
-supersedes: []
+projection_version: 13
 related_prds:
   - docs/specs/omega-project-system.md
   - docs/specs/omega-session-resume.md
   - docs/specs/omega-context-management.md
   - docs/specs/omega-app-package.md
+source_doc_id: "spec:docs-specs-omega-project-path-layout"
+status: active
+supersedes: []
+updated: 2026-04-13
 ---
 
 # Omega Project Path Layout Specification

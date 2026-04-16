@@ -1231,6 +1231,10 @@ impl<'a> ToolRunTracker<'a> {
         self.tool_metrics.clone()
     }
 
+	pub(crate) fn tool_runs(&self) -> Vec<ToolRun> {
+		self.tool_runs.values().cloned().collect()
+	}
+
     pub(crate) fn observe_chat_event(&mut self, event: &ChatEvent) {
         let ChatEvent::ToolUse { id, name, input } = event else {
             return;

@@ -1,12 +1,15 @@
 ---
-status: draft
+content_revision: 96
+created: 2026-04-02
+generation_id: gen_000013_r000096
 last_verified_commit: N/A
 owner: omega-team
-created: 2026-04-02
-updated: 2026-04-07
-version: 0.2
-supersedes: []
+projection_version: 13
 related_prds: []
+source_doc_id: "spec:docs-specs-omega-tui-document-memory-supervision"
+status: draft
+supersedes: []
+updated: 2026-04-07
 ---
 
 # Omega TUI Document And Memory Supervision Specification

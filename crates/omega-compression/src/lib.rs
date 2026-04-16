@@ -555,6 +555,7 @@ mod tests {
 					active_form: None,
 				}],
 				structured_input: None,
+				selected_task_id: None,
 				last_known_cwd: Some(root.clone()),
 			})
 			.unwrap();

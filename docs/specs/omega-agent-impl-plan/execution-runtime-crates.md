@@ -1,15 +1,20 @@
 ---
-status: active
+content_revision: 96
+created: 2026-03-25
+generation_id: gen_000013_r000096
 last_verified_commit: N/A
 owner: omega-team
-created: 2026-03-25
-updated: 2026-03-25
-version: 1.0
-supersedes: []
+projection_version: 13
 related_prds: []
+source_doc_id: "spec:docs-specs-omega-agent-impl-plan-execution-runtime-crates"
+status: active
+supersedes: []
+updated: 2026-03-25
 ---
 
 # Omega Agent Plan: Execution And Runtime Crates
+
+## Overview
 
 本文收敛原实现计划中的 Tasks 8-14，覆盖从 builtin tools 到核心 agent loop 的执行运行时能力。
 

@@ -1,15 +1,20 @@
 ---
-status: active
+content_revision: 96
+created: 2026-03-25
+generation_id: gen_000013_r000096
 last_verified_commit: N/A
 owner: omega-team
-created: 2026-03-25
-updated: 2026-03-25
-version: 1.0
-supersedes: []
+projection_version: 13
 related_prds: []
+source_doc_id: "spec:docs-specs-omega-step-session-asset-model-step-assets-and-execution"
+status: active
+supersedes: []
+updated: 2026-03-25
 ---
 
 # Omega Step Assets And Execution
+
+## Overview
 
 本文覆盖 step definition、session asset ownership、dynamic tool visibility 与统一 execution model 的基础合同。
 

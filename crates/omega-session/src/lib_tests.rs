@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use omega_client::{
     test_support::{IdleLlmClient, ScriptedLlmClient},
@@ -536,7 +536,8 @@ pub extern "C" fn omega_hook_free_string(ptr: *mut c_char) {
 
 #[test]
 fn spawn_turn_emits_hook_diagnostics_for_execute_step() {
-    let client: Arc<SequencedClient> = sequenced_client(vec![
+    let client: Arc<SequencedClient> = counting_sequenced_client(
+        vec![
         ChatResponse {
             id: "scene-1".to_string(),
             model: Some("test-model".to_string()),
@@ -586,7 +587,9 @@ fn spawn_turn_emits_hook_diagnostics_for_execute_step() {
             stop_reason: Some(STOP_REASON_END_TURN.to_string()),
             usage: None,
         },
-    ]);
+        ],
+        321,
+    );
     let client_dyn: DynLlmClient = client;
     let root = unique_session_test_root("hook-runtime");
     write_review_skill(&root);
@@ -2096,6 +2099,905 @@ fn spawn_command_session_new_list_info_and_delete_manage_project_sessions() {
     let delete_events = run_command(&session, "/session delete", 573);
     assert!(command_body(&delete_events)
         .contains("Error: refusing to delete the active session; create or resume another session first"));
+}
+
+#[test]
+fn spawn_command_plan_create_list_show_and_select_manage_project_tasks() {
+    let root = unique_session_test_root("plan-command-manage");
+    write_document_fixture(&root);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: Arc::new(IdleClient),
+        system: "system".to_string(),
+        cwd: root,
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+
+    let empty_events = run_command(&session, "/plan list", 5740);
+    assert!(command_body(&empty_events).contains("No tasks."));
+
+    let create_events = run_command(&session, "/plan create --priority p1 Build plan store", 5741);
+    let create_body = command_body(&create_events);
+    assert!(create_body.contains("Task: TASK-0001"));
+    assert!(create_body.contains("Priority: p1"));
+    assert!(create_body.contains("Build plan store"));
+
+    let list_events = run_command(&session, "/plan list all", 5742);
+    assert!(command_body(&list_events).contains("TASK-0001"));
+
+    let show_events = run_command(&session, "/plan show TASK-0001", 5743);
+    assert!(command_body(&show_events).contains("Task: TASK-0001"));
+    assert!(command_body(&show_events).contains("Build plan store"));
+
+    let select_events = run_command(&session, "/plan select TASK-0001", 5744);
+    assert!(command_body(&select_events).contains("Selected task TASK-0001"));
+    assert_eq!(session.current_selected_task_id().as_deref(), Some("TASK-0001"));
+
+    let clear_events = run_command(&session, "/plan select none", 5745);
+    assert!(command_body(&clear_events).contains("Cleared selected project task"));
+    assert_eq!(session.current_selected_task_id(), None);
+}
+
+#[test]
+fn spawn_command_plan_list_bootstraps_doc_tasks_and_shows_picker_overlay() {
+    let root = unique_session_test_root("plan-command-doc-task-bootstrap");
+    write_document_fixture(&root);
+    std::fs::create_dir_all(root.join("docs-data/tasks")).unwrap();
+    std::fs::write(
+        root.join("docs-data/tasks/doc-tasks.jsonl"),
+        r#"{"task_id":"DOC-1000A","title":"Bootstrap plan tasks","plan_task_id":null,"kind":"chore","status":"ready","priority":"p1","summary":"Create project tasks from doc tasks","requirement":"Backfill project tasks from structured doc tasks","acceptance":["project task store exists"],"depends_on":[],"presentation_links":["docs/specs/omega-project-plan-system.md"],"tags":["structured-docs"],"doc_scope":["spec"]}
+{"task_id":"DOC-1000B","title":"Validate bootstrap order","plan_task_id":null,"kind":"chore","status":"blocked","priority":"p2","summary":"Keep dependency mapping stable","requirement":"Preserve doc task dependencies in omega-plan","acceptance":["dependency chain is preserved"],"depends_on":["DOC-1000A"],"presentation_links":["docs/specs/omega-structured-document-system.md"],"tags":["structured-docs"],"doc_scope":["spec"]}
+"#,
+    )
+    .unwrap();
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: Arc::new(IdleClient),
+        system: "system".to_string(),
+        cwd: root.clone(),
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+
+    let snapshot = session.project_detail_snapshot().unwrap();
+    assert_eq!(snapshot.plan.current_task_count, 2);
+
+    let list_events = run_command(&session, "/plan list", 5746);
+    let list_body = command_body(&list_events);
+    assert!(list_body.contains("Plan view: current"));
+    assert!(list_body.contains("Bootstrap plan tasks"));
+    assert!(!list_body.contains("No tasks."));
+
+    let picker = match show_overlay_content(&list_events, OverlayTarget::Picker) {
+        Some(UiContent::OperatorPicker(request)) => request,
+        other => panic!("expected /plan list picker overlay, got {other:?}"),
+    };
+    assert_eq!(picker.items.len(), 2);
+    assert_eq!(picker.primary_action.label, "Detail");
+    assert!(picker.items.iter().any(|item| item.title == "Bootstrap plan tasks"));
+    assert!(picker.secondary_actions.iter().any(|action| {
+        action.label == "Select"
+            && matches!(
+                &action.intent,
+                OperatorPickerIntent::SubmitSlashCommand { command_template }
+                    if command_template == "/plan select {id}"
+            )
+    }));
+}
+
+#[test]
+fn spawn_command_plan_mutations_and_sync_todo_update_task_projection() {
+    let root = unique_session_test_root("plan-command-mutations");
+    write_document_fixture(&root);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: Arc::new(IdleClient),
+        system: "system".to_string(),
+        cwd: root.clone(),
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+
+    let _first_create = run_command(&session, "/plan create First task", 5746);
+    let _second_create = run_command(&session, "/plan create Second task", 5747);
+    let update_events = run_command(
+        &session,
+        "/plan update TASK-0001 --status ready --summary Ready summary --accept passes tests --tag core",
+        5748,
+    );
+    assert!(command_body(&update_events).contains("Status: ready"));
+    assert!(command_body(&update_events).contains("passes tests"));
+
+    let _reprioritize_first = run_command(&session, "/plan prioritize TASK-0001 p0", 5749);
+    let reprioritize_second = run_command(
+        &session,
+        "/plan prioritize TASK-0002 p0 --before TASK-0001",
+        5750,
+    );
+    assert!(command_body(&reprioritize_second).contains("Priority: p0"));
+
+    let list_events = run_command(&session, "/plan list all --priority p0", 5751);
+    let list_body = command_body(&list_events);
+    assert!(list_body.contains("TASK-0002 [p0 backlog]"));
+    assert!(list_body.contains("TASK-0001 [p0 ready]"));
+
+    let depends_events = run_command(&session, "/plan depends add TASK-0001 TASK-0002", 5752);
+    assert!(command_body(&depends_events).contains("Dependencies: TASK-0002"));
+
+    let log_events = run_command(&session, "/plan log TASK-0001 Investigate edge cases", 5753);
+    assert!(command_body(&log_events).contains("Investigate edge cases"));
+
+    let link_events = run_command(
+        &session,
+        "/plan link TASK-0001 implementation crates/omega-plan/src/lib.rs",
+        5754,
+    );
+    assert!(command_body(&link_events).contains("Implementation links:"));
+    assert!(command_body(&link_events).contains("crates/omega-plan/src/lib.rs"));
+
+    let sync_events = run_command(&session, "/plan sync-todo", 5755);
+    assert!(command_body(&sync_events).contains("Synced 2 open project-plan tasks"));
+    let todo = std::fs::read_to_string(root.join("docs/TODO.md")).unwrap();
+    assert!(todo.contains("<!-- omega-plan-sync:start -->"));
+    assert!(todo.contains("TASK-0001 [p0 ready] First task"));
+    assert!(todo.contains("TASK-0002 [p0 backlog] Second task"));
+}
+
+#[test]
+fn spawn_command_plan_migrate_todo_imports_open_tracks_idempotently() {
+    let root = unique_session_test_root("plan-command-migrate-todo");
+    write_document_fixture(&root);
+    std::fs::write(
+        root.join("docs/TODO.md"),
+        r#"---
+status: active
+owner: omega-team
+last_verified_commit: N/A
+updated: 2026-04-14
+---
+
+# TODO
+
+## Active Tasks
+
+### Task 10: omega-subagent — SubAgent
+- **Status**: Pending
+- **Priority**: High
+- **Description**: Wire the parent task tool to real child execution.
+- **Related**: `docs/specs/omega-agent-impl-plan.md`
+
+### Task 4: omega-plan / omega-project — Project Plan Management
+- **Status**: In Progress
+- **Priority**: Medium
+- **Description**: Finish project plan migration and runtime integration.
+- **Blocked by**: `Task 10`
+- **Related**: `docs/specs/omega-project-plan-system.md`, `docs/specs/omega-command-system.md`
+
+## Notes
+
+- test fixture
+"#,
+    )
+    .unwrap();
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: Arc::new(IdleClient),
+        system: "system".to_string(),
+        cwd: root.clone(),
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+
+    let migrate_events = run_command(&session, "/plan migrate-todo", 5756);
+    let migrate_body = command_body(&migrate_events);
+    assert!(migrate_body.contains("Imported 2 docs/TODO.md open task(s)."));
+    assert!(migrate_body.contains("TASK-0001"));
+    assert!(migrate_body.contains("TASK-0002"));
+
+    let show_first = run_command(&session, "/plan show TASK-0001", 5757);
+    let show_first_body = command_body(&show_first);
+    assert!(show_first_body.contains("omega-subagent — SubAgent"));
+    assert!(show_first_body.contains("docs/specs/omega-agent-impl-plan.md"));
+
+    let show_second = run_command(&session, "/plan show TASK-0002", 5758);
+    let show_second_body = command_body(&show_second);
+    assert!(show_second_body.contains("Dependencies: TASK-0001"));
+    assert!(show_second_body.contains("docs/specs/omega-project-plan-system.md"));
+    assert!(show_second_body.contains("docs/specs/omega-command-system.md"));
+
+    let rerun_events = run_command(&session, "/plan migrate-todo", 5759);
+    let rerun_body = command_body(&rerun_events);
+    assert!(
+        rerun_body.contains("Imported 0 docs/TODO.md open task(s)."),
+        "rerun_body: {rerun_body}"
+    );
+    assert!(
+        rerun_body.contains("Skipped existing imports: Task 10, Task 4"),
+        "rerun_body: {rerun_body}"
+    );
+
+    let list_events = run_command(&session, "/plan list all", 5760);
+    let list_body = command_body(&list_events);
+    assert_eq!(list_body.matches("TASK-").count(), 2);
+}
+
+#[test]
+fn plan_load_previews_and_imports_task_heading_docs_idempotently() {
+    let root = unique_session_test_root("plan-load-task-headings");
+    write_document_fixture(&root);
+    std::fs::create_dir_all(root.join("docs/prds")).unwrap();
+    std::fs::write(
+        root.join("docs/prds/roadmap.md"),
+        r#"---
+status: draft
+owner: omega-team
+last_verified_commit: N/A
+updated: 2026-04-14
+---
+
+# Roadmap
+
+### Task 40: Build loader
+- **Status**: Pending
+- **Priority**: High
+- **Description**: Build document-backed plan loading.
+- **Related**: `docs/specs/omega-project-plan-system.md`
+
+#### Task 41: Validate preview
+- **Status**: Blocked
+- **Priority**: Medium
+- **Description**: Validate preview and apply behavior.
+- **Blocked by**: `Task 40`
+"#,
+    )
+    .unwrap();
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: Arc::new(IdleClient),
+        system: "system".to_string(),
+        cwd: root.clone(),
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+
+    let preview_events = run_command(&session, "/plan load docs/prds", 5761);
+    let preview_body = command_body(&preview_events);
+    assert!(preview_body.contains("Mode: preview"));
+    assert!(preview_body.contains("Matched files: docs/prds/roadmap.md"));
+    assert!(preview_body.contains("Candidates: 2"));
+    assert!(preview_body.contains("Would create: 2"));
+    let picker = match show_overlay_content(&preview_events, OverlayTarget::Picker) {
+        Some(UiContent::OperatorPicker(request)) => request,
+        other => panic!("expected /plan load picker overlay, got {other:?}"),
+    };
+    assert_eq!(picker.items.len(), 2);
+    assert_eq!(picker.primary_action.label, "Detail");
+    assert!(picker.secondary_actions.iter().any(|action| {
+        action.label == "Load"
+            && matches!(
+                &action.intent,
+                OperatorPickerIntent::RequestConfirmSlashCommand { command_template, .. }
+                    if command_template == "/plan load docs/prds --apply"
+            )
+    }));
+
+    let empty_list = run_command(&session, "/plan list", 5762);
+    assert!(command_body(&empty_list).contains("No tasks."));
+
+    let apply_events = run_command(&session, "/plan load docs/prds --apply", 5763);
+    let apply_body = command_body(&apply_events);
+    assert!(apply_body.contains("Mode: apply"));
+    assert!(apply_body.contains("Created task ids: TASK-0001, TASK-0002"));
+
+    let show_first = run_command(&session, "/plan show TASK-0001", 5764);
+    let show_first_body = command_body(&show_first);
+    assert!(show_first_body.contains("Build loader"));
+    assert!(show_first_body.contains("docs/prds/roadmap.md"));
+
+    let show_second = run_command(&session, "/plan show TASK-0002", 5765);
+    let show_second_body = command_body(&show_second);
+    assert!(show_second_body.contains("Dependencies: TASK-0001"));
+
+    std::fs::write(
+        root.join("docs/prds/roadmap.md"),
+        r#"---
+status: draft
+owner: omega-team
+last_verified_commit: N/A
+updated: 2026-04-14
+---
+
+# Roadmap
+
+### Task 40: Build loader
+- **Status**: In Progress
+- **Priority**: High
+- **Description**: Build document-backed plan loading and rerun updates.
+- **Related**: `docs/specs/omega-project-plan-system.md`
+
+#### Task 41: Validate preview
+- **Status**: Blocked
+- **Priority**: Medium
+- **Description**: Validate preview and apply behavior.
+- **Blocked by**: `Task 40`
+"#,
+    )
+    .unwrap();
+
+    let reapply_events = run_command(&session, "/plan load docs/prds --apply", 5766);
+    let reapply_body = command_body(&reapply_events);
+    assert!(reapply_body.contains("Created task ids: none"));
+    assert!(reapply_body.contains("Updated task ids: TASK-0001, TASK-0002"));
+
+    let updated_show = run_command(&session, "/plan show TASK-0001", 5767);
+    let updated_body = command_body(&updated_show);
+    assert!(updated_body.contains("Status: in_progress") || updated_body.contains("Status: in progress") || updated_body.contains("Status: in_progress"));
+    assert!(updated_body.contains("Build document-backed plan loading and rerun updates."));
+
+    let list_events = run_command(&session, "/plan list all", 5768);
+    assert_eq!(command_body(&list_events).matches("TASK-").count(), 2);
+}
+
+#[test]
+fn plan_load_todo_kind_reuses_existing_todo_import_identity() {
+    let root = unique_session_test_root("plan-load-todo-compat");
+    write_document_fixture(&root);
+    std::fs::write(
+        root.join("docs/TODO.md"),
+        r#"---
+status: active
+owner: omega-team
+last_verified_commit: N/A
+updated: 2026-04-14
+---
+
+# TODO
+
+## Active Tasks
+
+### Task 10: omega-subagent — SubAgent
+- **Status**: Pending
+- **Priority**: High
+- **Description**: Wire the parent task tool to real child execution.
+- **Related**: `docs/specs/omega-agent-impl-plan.md`
+
+### Task 4: omega-plan / omega-project — Project Plan Management
+- **Status**: In Progress
+- **Priority**: Medium
+- **Description**: Finish project plan migration and runtime integration.
+- **Blocked by**: `Task 10`
+- **Related**: `docs/specs/omega-project-plan-system.md`, `docs/specs/omega-command-system.md`
+"#,
+    )
+    .unwrap();
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: Arc::new(IdleClient),
+        system: "system".to_string(),
+        cwd: root.clone(),
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+
+    let migrate_events = run_command(&session, "/plan migrate-todo", 5769);
+    assert!(command_body(&migrate_events).contains("Imported 2 docs/TODO.md open task(s)."));
+
+    let load_events = run_command(
+        &session,
+        "/plan load docs/TODO.md --kind todo --apply",
+        5770,
+    );
+    let load_body = command_body(&load_events);
+    assert!(load_body.contains("Created task ids: none"));
+    assert!(load_body.contains("Updated task ids: TASK-0001, TASK-0002"));
+
+    let list_events = run_command(&session, "/plan list all", 5771);
+    assert_eq!(command_body(&list_events).matches("TASK-").count(), 2);
+}
+
+#[test]
+fn plan_load_docs_skips_invalid_task_heading_status_with_warning() {
+    let root = unique_session_test_root("plan-load-invalid-status-warning");
+    write_document_fixture(&root);
+    std::fs::create_dir_all(root.join("docs/specs")).unwrap();
+    std::fs::write(
+        root.join("docs/specs/valid-loader.md"),
+        r#"---
+status: draft
+owner: omega-team
+last_verified_commit: N/A
+updated: 2026-04-14
+---
+
+# Loader
+
+### Task 70: Import valid tasks
+- **Status**: Pending
+- **Priority**: Medium
+- **Description**: Import valid tasks from docs.
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("docs/specs/invalid-status.md"),
+        r#"---
+status: draft
+owner: omega-team
+last_verified_commit: N/A
+updated: 2026-04-14
+---
+
+# Invalid
+
+### Task 71: Old completed slice
+- **Status**: Implemented on 2026-04-08.
+- **Priority**: Medium
+- **Description**: Historical visual cleanup slice.
+"#,
+    )
+    .unwrap();
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: Arc::new(IdleClient),
+        system: "system".to_string(),
+        cwd: root.clone(),
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+
+    let preview_events = run_command(&session, "/plan load docs", 5772);
+    let preview_body = command_body(&preview_events);
+    assert!(preview_body.contains("Mode: preview"));
+    assert!(preview_body.contains("docs/specs/valid-loader.md"));
+    assert!(preview_body.contains("Would create: 1"));
+    assert!(preview_body.contains("Warnings:"));
+    assert!(preview_body.contains("docs/specs/invalid-status.md"));
+    assert!(preview_body.contains("unsupported task import status 'implemented on 2026-04-08.'"));
+
+    let apply_events = run_command(&session, "/plan load docs --apply", 5773);
+    let apply_body = command_body(&apply_events);
+    assert!(apply_body.contains("Created task ids: TASK-0001"));
+
+    let show_events = run_command(&session, "/plan show TASK-0001", 5774);
+    let show_body = command_body(&show_events);
+    assert!(show_body.contains("Import valid tasks"));
+}
+
+#[test]
+fn selected_plan_task_is_restored_after_session_resume() {
+    let root = unique_session_test_root("plan-command-resume");
+    write_document_fixture(&root);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: Arc::new(IdleClient),
+        system: "system".to_string(),
+        cwd: root,
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+
+    let new_events = run_command(&session, "/session new Planning", 5750);
+    let original_session_id = new_events
+        .iter()
+        .find_map(|envelope| match &envelope.message {
+            RuntimeMessage::State(StateMessage::SessionRestored { snapshot }) => {
+                Some(snapshot.session_id.clone())
+            }
+            _ => None,
+        })
+        .expect("expected planning session id");
+
+    let _create_events = run_command(&session, "/plan create Implement selected task restore", 5751);
+    let _select_events = run_command(&session, "/plan select TASK-0001", 5752);
+    assert_eq!(session.current_selected_task_id().as_deref(), Some("TASK-0001"));
+
+    let _scratch_events = run_command(&session, "/session new Scratch", 5753);
+    assert_eq!(session.current_selected_task_id(), None);
+
+    let _resume_events = run_command(&session, format!("/session resume {original_session_id}"), 5754);
+    assert_eq!(session.current_selected_task_id().as_deref(), Some("TASK-0001"));
+}
+
+#[test]
+fn missing_selected_plan_task_is_cleared_with_warning_after_session_resume() {
+    let root = unique_session_test_root("plan-command-resume-missing-task");
+    write_document_fixture(&root);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: Arc::new(IdleClient),
+        system: "system".to_string(),
+        cwd: root.clone(),
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+
+    let new_events = run_command(&session, "/session new Planning", 57540);
+    let original_session_id = new_events
+        .iter()
+        .find_map(|envelope| match &envelope.message {
+            RuntimeMessage::State(StateMessage::SessionRestored { snapshot }) => {
+                Some(snapshot.session_id.clone())
+            }
+            _ => None,
+        })
+        .expect("expected planning session id");
+
+    let _create_events = run_command(&session, "/plan create Implement selected task restore", 57541);
+    let _select_events = run_command(&session, "/plan select TASK-0001", 57542);
+    assert_eq!(session.current_selected_task_id().as_deref(), Some("TASK-0001"));
+
+    let tasks_path = root.join("docs-data/tasks/project-tasks.jsonl");
+    let retained = std::fs::read_to_string(&tasks_path)
+        .unwrap()
+        .lines()
+        .filter(|line| !line.contains("\"id\":\"TASK-0001\""))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(
+        &tasks_path,
+        if retained.is_empty() {
+            String::new()
+        } else {
+            format!("{retained}\n")
+        },
+    )
+    .unwrap();
+
+    let resume_events = run_command(&session, format!("/session resume {original_session_id}"), 57543);
+    assert_eq!(session.current_selected_task_id(), None);
+    assert!(resume_events.iter().any(|envelope| {
+        matches!(
+            &envelope.message,
+            RuntimeMessage::State(StateMessage::Activity { kind, text, .. })
+                if *kind == RuntimeContentKind::Warning
+                    && text.contains("Selected project task TASK-0001 no longer exists")
+        )
+    }));
+}
+
+#[test]
+fn selected_plan_task_is_injected_into_system_prompt_for_turns() {
+    let client: Arc<SequencedClient> = sequenced_client(vec![
+        ChatResponse {
+            id: "scene-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"recognized_scene_id\":\"feature\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "select-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("{\"selected_workflow_id\":\"feature\"}")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "explore-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_explore_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "plan-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_plan_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_execute_partial_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "execute-2".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text(feature_execute_complete_json())],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+        ChatResponse {
+            id: "report-1".to_string(),
+            model: Some("test-model".to_string()),
+            content: vec![ContentBlock::text("done")],
+            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+            usage: None,
+        },
+    ]);
+    let root = unique_session_test_root("plan-selected-task-prompt");
+    write_document_fixture(&root);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: client.clone(),
+        system: "system".to_string(),
+        cwd: root,
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+
+    let _session_events = run_command(&session, "/session new Planning", 5755);
+    let _create_events = run_command(&session, "/plan create Implement selected task injection", 5756);
+    let _select_events = run_command(&session, "/plan select TASK-0001", 5757);
+
+    let recorder = RuntimeEnvelopeRecorder::new();
+    session
+        .spawn_turn_with_test_bridge(
+            "implement the requested change".to_string(),
+            5758,
+            recorder.runtime_bridge(),
+        )
+        .unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if client.recorded_systems().iter().flatten().any(|system| {
+            system.contains("<selected_project_task>")
+                && system.contains("task_id: TASK-0001")
+                && system.contains("Implement selected task injection")
+        }) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    let recorded_systems = client.recorded_systems();
+    assert!(
+        recorded_systems.iter().flatten().any(|system| {
+            system.contains("<selected_project_task>")
+                && system.contains("task_id: TASK-0001")
+                && system.contains("Implement selected task injection")
+        }),
+        "recorded systems: {recorded_systems:#?}"
+    );
+}
+
+#[test]
+fn plan_send_dispatches_normal_turn_and_appends_task_turn_log() {
+    let client: Arc<SequencedClient> = counting_sequenced_client(
+        vec![
+            ChatResponse {
+                id: "scene-1".to_string(),
+                model: Some("test-model".to_string()),
+                content: vec![ContentBlock::text("{\"recognized_scene_id\":\"feature\"}")],
+                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                usage: None,
+            },
+            ChatResponse {
+                id: "select-1".to_string(),
+                model: Some("test-model".to_string()),
+                content: vec![ContentBlock::text("{\"selected_workflow_id\":\"feature\"}")],
+                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                usage: None,
+            },
+            ChatResponse {
+                id: "explore-1".to_string(),
+                model: Some("test-model".to_string()),
+                content: vec![ContentBlock::text(feature_explore_json())],
+                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                usage: None,
+            },
+            ChatResponse {
+                id: "plan-1".to_string(),
+                model: Some("test-model".to_string()),
+                content: vec![ContentBlock::text(feature_plan_json())],
+                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                usage: None,
+            },
+            ChatResponse {
+                id: "execute-1".to_string(),
+                model: Some("test-model".to_string()),
+                content: vec![ContentBlock::text(feature_execute_partial_json())],
+                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                usage: None,
+            },
+            ChatResponse {
+                id: "execute-2".to_string(),
+                model: Some("test-model".to_string()),
+                content: vec![ContentBlock::text(feature_execute_complete_json())],
+                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                usage: None,
+            },
+            ChatResponse {
+                id: "report-1".to_string(),
+                model: Some("test-model".to_string()),
+                content: vec![ContentBlock::text("done")],
+                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                usage: None,
+            },
+        ],
+        321,
+    );
+    let root = unique_session_test_root("plan-send-turn-log");
+    write_document_fixture(&root);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: client.clone(),
+        system: "system".to_string(),
+        cwd: root,
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+
+    let _session_events = run_command(&session, "/session new Planning", 5756);
+    let _create_events = run_command(&session, "/plan create Implement plan send", 5757);
+    let send_events = run_command(
+        &session,
+        "/plan send TASK-0001 implement the requested change",
+        5758,
+    );
+    assert!(send_events.iter().any(|envelope| {
+        matches!(
+            &envelope.message,
+            RuntimeMessage::State(StateMessage::TurnFinished)
+        )
+    }));
+    assert_eq!(session.current_selected_task_id().as_deref(), Some("TASK-0001"));
+    assert!(client.recorded_systems().iter().flatten().any(|system| {
+        system.contains("<selected_project_task>")
+            && system.contains("task_id: TASK-0001")
+            && system.contains("Implement plan send")
+    }));
+
+    let show_events = run_command(&session, "/plan show TASK-0001", 5759);
+    let show_body = command_body(&show_events);
+    assert!(show_body.contains("DeliveryAttached"));
+    assert!(show_body.contains("Prompt: implement the requested change"));
+    assert!(show_body.contains("Response: done"));
+    assert!(show_body.contains("delivery: model=test-model"));
+    assert!(show_body.contains("llm_requests=7"));
+}
+
+#[test]
+fn plan_send_failure_appends_partial_delivery_log() {
+    let mut builder = SequencedClient::builder();
+    for _ in 0..16 {
+        builder = builder.push_count_tokens(321);
+    }
+    builder = builder.push_failure(omega_client::ClientError::Stream(
+        "forced task send failure".to_string(),
+    ));
+    let client = Arc::new(builder.build());
+
+    let root = unique_session_test_root("plan-send-failure-log");
+    write_document_fixture(&root);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client,
+        system: "system".to_string(),
+        cwd: root,
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+
+    let _session_events = run_command(&session, "/session new Planning", 5760);
+    let _create_events = run_command(&session, "/plan create Implement failure logging", 5761);
+    let send_events = run_command(
+        &session,
+        "/plan send TASK-0001 trigger failure path",
+        5762,
+    );
+    assert!(send_events.iter().any(|envelope| {
+        matches!(
+            &envelope.message,
+            RuntimeMessage::Conversation(ConversationMessage::Text { kind, text, .. })
+                if *kind == RuntimeContentKind::Error
+                    && text.contains("forced task send failure")
+        )
+    }));
+    assert!(send_events.iter().any(|envelope| {
+        matches!(&envelope.message, RuntimeMessage::State(StateMessage::TurnFinished))
+    }));
+
+    let show_events = run_command(&session, "/plan show TASK-0001", 5763);
+    let show_body = command_body(&show_events);
+    assert!(show_body.contains("PartialDelivery"));
+    assert!(show_body.contains("forced task send failure"));
 }
 
 #[test]
@@ -6835,6 +7737,7 @@ fn persist_session_artifacts_appends_compaction_checkpoint_records() {
         &root,
         &session_context,
         &todo_manager,
+        None,
         Some(1),
         &replay_entries,
     )

@@ -8,10 +8,16 @@ pub(crate) fn project_placeholder_lines() -> Vec<String> {
 
 impl App {
     pub fn open_project_detail(&mut self) -> bool {
-        let Some(summary) = self.project_status.as_ref() else {
+        let Some(summary) = self.project_status.clone() else {
             return false;
         };
-        self.open_detail_overlay(" Project ", build_project_detail_lines(summary));
+        if self.focused_panel == Panel::Project {
+            if let Some(task) = selected_project_task_for_panel(&summary, self.project_state.selected()) {
+                self.open_detail_overlay(" Project Task ", build_project_task_detail_lines(task));
+                return true;
+            }
+        }
+        self.open_detail_overlay(" Project ", build_project_detail_lines(&summary));
         true
     }
 
@@ -54,6 +60,16 @@ pub(super) fn build_project_detail_lines(summary: &ProjectStatusSummary) -> Vec<
         format!("sessions: {}", snapshot.sessions.len()),
         format!("active_session: {}", snapshot.record.active_session_id.as_deref().unwrap_or("none")),
         format!(
+            "plan: current={} history={} blocked={}",
+            snapshot.plan.current_task_count,
+            snapshot.plan.history_task_count,
+            snapshot.plan.blocked_task_count,
+        ),
+        format!(
+            "selected_task: {}",
+            selected_task_label(&snapshot.plan)
+        ),
+        format!(
             "document: readiness={} files={} chunks={} health={}",
             readiness_label(document_readiness(summary)),
             snapshot.knowledge.document.total_files_indexed,
@@ -68,8 +84,38 @@ pub(super) fn build_project_detail_lines(summary: &ProjectStatusSummary) -> Vec<
             snapshot.knowledge.memory.observation_count,
         ),
         "".to_string(),
-        "sessions:".to_string(),
+        "plan queue:".to_string(),
     ];
+
+    if snapshot.plan.next_tasks.is_empty() {
+        lines.push("- none".to_string());
+    } else {
+        for task in &snapshot.plan.next_tasks {
+            lines.push(format!(
+                "- {} [{} {}] {}",
+                task.task_id, task.priority, task.status, task.title
+            ));
+        }
+    }
+
+    lines.extend([
+        "".to_string(),
+        "blocked tasks:".to_string(),
+    ]);
+
+    if snapshot.plan.blocked_tasks.is_empty() {
+        lines.push("- none".to_string());
+    } else {
+        for task in &snapshot.plan.blocked_tasks {
+            lines.push(format!(
+                "- {} [{} {}] {}",
+                task.task_id, task.priority, task.status, task.title
+            ));
+        }
+    }
+
+    lines.push("".to_string());
+    lines.push("sessions:".to_string());
 
     if snapshot.sessions.is_empty() {
         lines.push("- none".to_string());
@@ -107,6 +153,16 @@ fn build_project_panel_lines(summary: &ProjectStatusSummary) -> Vec<String> {
             snapshot.record.active_session_id.as_deref().unwrap_or("none")
         ),
         format!(
+            "plan: current={} history={} blocked={}",
+            snapshot.plan.current_task_count,
+            snapshot.plan.history_task_count,
+            snapshot.plan.blocked_task_count,
+        ),
+        format!(
+            "selected task: {}",
+            selected_task_label(&snapshot.plan)
+        ),
+        format!(
             "document totals: files={} chunks={}",
             snapshot.knowledge.document.total_files_indexed,
             snapshot.knowledge.document.total_chunks,
@@ -130,6 +186,111 @@ fn build_project_panel_lines(summary: &ProjectStatusSummary) -> Vec<String> {
             },
             session.turn_count,
         ));
+    }
+
+    if let Some(task) = snapshot.plan.next_tasks.first() {
+        lines.push(format!(
+            "next task: {} [{} {}] {}",
+            task.task_id, task.priority, task.status, task.title
+        ));
+    }
+
+    if let Some(task) = snapshot.plan.blocked_tasks.first() {
+        lines.push(format!(
+            "blocked task: {} [{} {}] {}",
+            task.task_id, task.priority, task.status, task.title
+        ));
+    }
+
+    lines
+}
+
+fn selected_task_label(plan: &omega_project::ProjectPlanSummary) -> String {
+    plan.selected_task
+        .as_ref()
+        .map(|task| format!("{} {}", task.task_id, task.title))
+        .or_else(|| {
+            plan.selected_task_id
+                .as_deref()
+                .zip(plan.selected_task_title.as_deref())
+                .map(|(task_id, title)| format!("{task_id} {title}"))
+        })
+        .unwrap_or_else(|| "none".to_string())
+}
+
+fn selected_project_task_for_panel<'a>(
+    summary: &'a ProjectStatusSummary,
+    selected_line: Option<usize>,
+) -> Option<&'a omega_project::ProjectPlanTaskSummary> {
+    let selected_line = selected_line?;
+    if selected_line == 4 {
+        return summary.snapshot.plan.selected_task.as_ref();
+    }
+
+    let mut next_task_line = 7usize;
+    if !summary.snapshot.sessions.is_empty() {
+        next_task_line += 1;
+    }
+    if selected_line == next_task_line {
+        return summary.snapshot.plan.next_tasks.first();
+    }
+
+    let blocked_task_line = next_task_line + usize::from(!summary.snapshot.plan.next_tasks.is_empty());
+    if selected_line == blocked_task_line {
+        return summary.snapshot.plan.blocked_tasks.first();
+    }
+
+    None
+}
+
+fn build_project_task_detail_lines(task: &omega_project::ProjectPlanTaskSummary) -> Vec<String> {
+    let mut lines = vec![
+        format!("task: {}", task.task_id),
+        format!("title: {}", task.title),
+        format!("priority: {}", task.priority),
+        format!("status: {}", task.status),
+        format!("summary: {}", task.summary),
+        format!("requirement: {}", task.requirement),
+        "".to_string(),
+        "dependencies:".to_string(),
+    ];
+
+    if task.depends_on.is_empty() {
+        lines.push("- none".to_string());
+    } else {
+        lines.extend(task.depends_on.iter().map(|dependency| format!("- {dependency}")));
+    }
+
+    lines.push("".to_string());
+    lines.push("acceptance:".to_string());
+    if task.acceptance.is_empty() {
+        lines.push("- none".to_string());
+    } else {
+        lines.extend(task.acceptance.iter().map(|item| format!("- {item}")));
+    }
+
+    lines.push("".to_string());
+    lines.push("design links:".to_string());
+    if task.design_links.is_empty() {
+        lines.push("- none".to_string());
+    } else {
+        lines.extend(task.design_links.iter().map(|path| format!("- {path}")));
+    }
+
+    lines.push("".to_string());
+    lines.push("implementation links:".to_string());
+    if task.implementation_links.is_empty() {
+        lines.push("- none".to_string());
+    } else {
+        lines.extend(task.implementation_links.iter().map(|path| format!("- {path}")));
+    }
+
+    lines.push("".to_string());
+    lines.push("recent logs:".to_string());
+    if task.recent_logs.is_empty() {
+        lines.push("- none".to_string());
+    } else {
+        lines.extend(task.recent_logs.iter().map(|entry| format!("- {entry}")));
     }
 
     lines

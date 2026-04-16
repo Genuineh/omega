@@ -1,20 +1,27 @@
 ---
 adr_number: 002
-date: 2026-03-18
-status: accepted
 author: omega-team
+content_revision: 96
+date: 2026-03-18
+generation_id: gen_000013_r000096
+projection_version: 13
 reviewed_by: []
+source_doc_id: "adr:docs-decisions-002-rust-ratatui"
+status: accepted
 ---
 
 # 002: 使用 Rust + Ratatui 实现
 
 ## Status
+
 Accepted
 
 ## Context
+
 Omega 项目需要提供用户交互界面。learn-claude-code 是 Python 实现，我们需要选择合适的技术栈来实现 TUI 界面。
 
 ## Decision
+
 使用 Rust 作为开发语言，ratatui 作为 TUI 框架：
 
 - **语言**: Rust (stable)
@@ -53,4 +60,5 @@ Omega 项目需要提供用户交互界面。learn-claude-code 是 Python 实现
 **Why Rejected**: 用户明确要求 Rust
 
 ## Notes
+
 - 相关技术选型: ADR 003 (工具系统), ADR 004 (消息存储)

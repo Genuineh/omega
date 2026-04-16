@@ -1,5 +1,7 @@
+use omega_plan::{PlannedTaskKind, PlannedTaskStatus, TaskPriority};
 use omega_todo::TodoItem;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -19,6 +21,7 @@ pub enum DocType {
     Prd,
     Guide,
     Adr,
+    Whitepaper,
     Todo,
     Archive,
     Readme,
@@ -290,6 +293,131 @@ pub struct DocumentHealthReport {
     pub overall_health: HealthScore,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StructuredDocsManifest {
+    pub schema_version: u32,
+    pub generated_root: String,
+    pub record_sets: Vec<String>,
+    pub task_store_path: String,
+    pub relation_store_path: String,
+    pub render_state_path: String,
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StructuredDocumentSection {
+    pub section_id: String,
+    pub heading: String,
+    pub body_markdown: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StructuredDocumentRelation {
+    pub kind: String,
+    pub target: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StructuredDocumentRender {
+    pub template: String,
+    pub presentation_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StructuredDocumentRecord {
+    pub doc_id: String,
+    pub doc_type: DocType,
+    pub slug: String,
+    pub title: String,
+    pub status: Option<String>,
+    pub owner: Option<String>,
+    pub created: Option<String>,
+    pub updated: Option<String>,
+    pub version: Option<String>,
+    pub source_path: String,
+    #[serde(default)]
+    pub frontmatter: std::collections::BTreeMap<String, Value>,
+    #[serde(default)]
+    pub sections: Vec<StructuredDocumentSection>,
+    #[serde(default)]
+    pub relations: Vec<StructuredDocumentRelation>,
+    pub render: StructuredDocumentRender,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StructuredDocTaskRecord {
+    pub task_id: String,
+    pub title: String,
+    #[serde(default)]
+    pub plan_task_id: Option<String>,
+    #[serde(default)]
+    pub kind: PlannedTaskKind,
+    #[serde(default)]
+    pub status: PlannedTaskStatus,
+    #[serde(default)]
+    pub priority: TaskPriority,
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
+    pub requirement: String,
+    #[serde(default)]
+    pub acceptance: Vec<String>,
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    #[serde(default)]
+    pub presentation_links: Vec<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub doc_scope: Vec<DocType>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StructuredDocRelationRecord {
+    pub relation_id: String,
+    pub source: String,
+    pub kind: String,
+    pub target: String,
+    #[serde(default)]
+    pub metadata: std::collections::BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StructuredDocsRenderState {
+    pub schema_version: u32,
+    pub generated_root: String,
+    pub last_rendered_at: Option<u64>,
+    pub rendered_doc_ids: Vec<String>,
+    pub generated_paths: Vec<String>,
+    pub last_validation_ok: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StructuredDocsValidationIssue {
+    pub path: String,
+    pub message: String,
+    pub expected_preview: Option<String>,
+    pub actual_preview: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StructuredDocsValidationReport {
+    pub ok: bool,
+    pub checked_doc_ids: Vec<String>,
+    pub compared_paths: Vec<String>,
+    pub missing_files: Vec<String>,
+    pub mismatched_files: Vec<StructuredDocsValidationIssue>,
+    pub broken_relations: Vec<StructuredDocsValidationIssue>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StructuredDocsExtractionReport {
+    pub extracted_doc_ids: Vec<String>,
+    pub extracted_paths: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DocumentOpResult {
     pub mode: Option<DocumentMutationMode>,
@@ -298,6 +426,13 @@ pub struct DocumentOpResult {
     pub plan: Option<DocumentChangePlan>,
     pub health: Option<DocumentHealthReport>,
     pub files: Vec<FileRecord>,
+    pub manifest: Option<StructuredDocsManifest>,
+    pub records: Vec<StructuredDocumentRecord>,
+    pub doc_tasks: Vec<StructuredDocTaskRecord>,
+    pub relations: Vec<StructuredDocRelationRecord>,
+    pub render_state: Option<StructuredDocsRenderState>,
+    pub validation: Option<StructuredDocsValidationReport>,
+    pub extraction: Option<StructuredDocsExtractionReport>,
     pub warnings: Vec<String>,
 }
 
@@ -326,6 +461,30 @@ pub enum DocumentOp {
     List {
         doc_type: Option<DocType>,
         status: Option<FileStatus>,
+    },
+    UpsertRecord {
+        mode: DocumentMutationMode,
+        record: StructuredDocumentRecord,
+    },
+    UpsertTask {
+        mode: DocumentMutationMode,
+        task: StructuredDocTaskRecord,
+    },
+    UpsertRelation {
+        mode: DocumentMutationMode,
+        relation: StructuredDocRelationRecord,
+    },
+    RenderProjection {
+        mode: DocumentMutationMode,
+        doc_ids: Vec<String>,
+    },
+    ValidateProjection {
+        doc_ids: Vec<String>,
+    },
+    ExtractSource {
+        mode: DocumentMutationMode,
+        sources: Vec<String>,
+        doc_type: Option<DocType>,
     },
 }
 

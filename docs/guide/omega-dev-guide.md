@@ -1,11 +1,15 @@
 ---
-status: active
-owner: omega-team
-last_verified_commit: N/A
-created: 2026-03-18
-updated: 2026-04-13
 audience: developers
+content_revision: 96
+created: 2026-03-18
+generation_id: gen_000013_r000096
+last_verified_commit: N/A
 level: intermediate
+owner: omega-team
+projection_version: 13
+source_doc_id: "guide:docs-guide-omega-dev-guide"
+status: active
+updated: 2026-04-13
 ---
 
 # Omega 开发指南

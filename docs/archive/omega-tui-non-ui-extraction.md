@@ -1,22 +1,28 @@
 ---
-status: archived
-owner: omega-team
-created: 2026-03-19
-updated: 2026-04-02
 archived: 2026-04-02
-version: 1.1
-supersedes: []
+content_revision: 96
+created: 2026-03-19
+generation_id: gen_000013_r000096
+owner: omega-team
+projection_version: 13
+related_prds:
+  - docs/archive/observability-logging.md
+source_doc_id: "archive:docs-archive-omega-tui-non-ui-extraction"
+status: archived
 superseded_by:
   - docs/specs/omega-app-package.md
   - docs/specs/omega-runtime-ui-message-contract.md
   - docs/specs/omega-agent-impl-plan/task-15-interaction-foundation.md
-related_prds:
-  - docs/archive/observability-logging.md
+supersedes: []
+updated: 2026-04-02
 ---
+
+# Omega TUI 非 UI 职责剥离规格
+
+## Overview
 
 > **Archived 2026-04-02**: This spec captured the first non-UI extraction pass for `Task 15D`. The design has already been implemented and the active boundary now lives across `docs/specs/omega-app-package.md`, `docs/specs/omega-runtime-ui-message-contract.md`, and `docs/specs/omega-agent-impl-plan/task-15-interaction-foundation.md`. Keep this file only for historical rationale.
 
-# Omega TUI 非 UI 职责剥离规格
 
 > Status note (2026-03-20): `Task 15D` 的首轮目标已完成，`omega-session` 与 `omega-observability` 已落地，应用入口也已迁到 `omega-app`。本文件保留为该次剥离的设计基线；文中涉及 `omega-repl` 的表述仅保留为阶段性历史。后续活跃规划以 `docs/specs/omega-runtime-ui-message-contract.md` 与 `docs/specs/omega-app-package.md` 为主。
 

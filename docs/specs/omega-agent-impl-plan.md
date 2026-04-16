@@ -1,11 +1,14 @@
 ---
-status: active
+content_revision: 96
+created: 2026-03-18
+generation_id: gen_000013_r000096
 last_verified_commit: N/A
 owner: omega-team
-created: 2026-03-18
-updated: 2026-04-13
-version: 1.2
+projection_version: 13
 related_prds: []
+source_doc_id: "spec:docs-specs-omega-agent-impl-plan"
+status: active
+updated: 2026-04-13
 ---
 
 # Omega Agent 实现计划
@@ -59,6 +62,7 @@ Rust, tokio, reqwest, ratatui, serde, uuid
 - `Task 15B-52` 与 `Task 15B-54`: 只保留必要的 TUI 默认密度与主题系统化工作，不再把已完成的视觉刷新历史继续堆回 TODO。
 
 <a id="task-15"></a>
+
 ## Task 15: omega-tui - TUI 界面
 
 `Task 15` 现已不再适合作为单一长章节维护。当前应按两类子文档理解：

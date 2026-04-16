@@ -1,15 +1,18 @@
 ---
-status: draft
+content_revision: 96
+created: 2026-04-02
+generation_id: gen_000013_r000096
 last_verified_commit: N/A
 owner: omega-team
-created: 2026-04-02
-updated: 2026-04-03
-version: 0.4
-supersedes: []
+projection_version: 13
 related_prds:
   - docs/specs/omega-context-management.md
   - docs/specs/omega-tool-prompt-optimization.md
   - docs/specs/omega-tui-document-memory-supervision.md
+source_doc_id: "spec:docs-specs-omega-command-system"
+status: draft
+supersedes: []
+updated: 2026-04-03
 ---
 
 # Omega Command System Specification

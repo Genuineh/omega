@@ -63,6 +63,18 @@ pub const SCHEMA_DIR_NAME: &str = "schema";
 pub const STEP_SCHEMA_DIR: &str = "step";
 pub const STOREIGNORE_FILE: &str = ".storeignore";
 pub const DOC_RULES_FILE: &str = "doc-rules.toml";
+pub const DOCS_DATA_DIR_NAME: &str = "docs-data";
+pub const DOCS_DATA_MANIFEST_FILE: &str = "manifest.json";
+pub const DOCS_DATA_RECORDS_DIR_NAME: &str = "records";
+pub const DOCS_DATA_TASKS_DIR_NAME: &str = "tasks";
+pub const DOCS_DATA_PROJECT_TASKS_FILE: &str = "project-tasks.jsonl";
+pub const DOCS_DATA_PROJECT_PLAN_MANIFEST_FILE: &str = "project-plan.toml";
+pub const DOCS_DATA_PROJECT_TASK_LOGS_DIR_NAME: &str = "logs";
+pub const DOCS_DATA_RELATIONS_DIR_NAME: &str = "relations";
+pub const DOCS_DATA_RENDER_DIR_NAME: &str = "render";
+pub const DOCS_DATA_RENDER_STATE_FILE: &str = "render-state.json";
+pub const DOCS_DATA_DOC_TASKS_FILE: &str = "doc-tasks.jsonl";
+pub const DOCS_DATA_LINKS_FILE: &str = "links.jsonl";
 pub const WORKFLOWS_DIR_PATH: &str = ".omega/workflows";
 pub const PROMPT_DIR_PATH: &str = ".omega/prompt";
 pub const STEP_PROMPT_DIR_PATH: &str = ".omega/prompt/step";
@@ -70,6 +82,18 @@ pub const SCHEMA_DIR_PATH: &str = ".omega/schema";
 pub const STEP_SCHEMA_DIR_PATH: &str = ".omega/schema/step";
 pub const STOREIGNORE_PATH: &str = ".omega/.storeignore";
 pub const DOC_RULES_PATH: &str = ".omega/doc-rules.toml";
+pub const DOCS_DATA_DIR_PATH: &str = "docs-data";
+pub const DOCS_DATA_MANIFEST_PATH: &str = "docs-data/manifest.json";
+pub const DOCS_DATA_RECORDS_DIR_PATH: &str = "docs-data/records";
+pub const DOCS_DATA_TASKS_DIR_PATH: &str = "docs-data/tasks";
+pub const DOCS_DATA_PROJECT_TASKS_PATH: &str = "docs-data/tasks/project-tasks.jsonl";
+pub const DOCS_DATA_PROJECT_PLAN_MANIFEST_PATH: &str = "docs-data/tasks/project-plan.toml";
+pub const DOCS_DATA_PROJECT_TASK_LOGS_DIR_PATH: &str = "docs-data/tasks/logs";
+pub const DOCS_DATA_RELATIONS_DIR_PATH: &str = "docs-data/relations";
+pub const DOCS_DATA_RENDER_DIR_PATH: &str = "docs-data/render";
+pub const DOCS_DATA_RENDER_STATE_PATH: &str = "docs-data/render/render-state.json";
+pub const DOCS_DATA_DOC_TASKS_PATH: &str = "docs-data/tasks/doc-tasks.jsonl";
+pub const DOCS_DATA_LINKS_PATH: &str = "docs-data/relations/links.jsonl";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OmegaProjectLayout {
@@ -247,6 +271,65 @@ impl OmegaProjectLayout {
         self.schema_dir().join(STEP_SCHEMA_DIR)
     }
 
+    pub fn docs_data_dir(&self) -> PathBuf {
+        self.root.join(DOCS_DATA_DIR_NAME)
+    }
+
+    pub fn docs_data_manifest_path(&self) -> PathBuf {
+        self.docs_data_dir().join(DOCS_DATA_MANIFEST_FILE)
+    }
+
+    pub fn docs_data_records_dir(&self) -> PathBuf {
+        self.docs_data_dir().join(DOCS_DATA_RECORDS_DIR_NAME)
+    }
+
+    pub fn docs_data_tasks_dir(&self) -> PathBuf {
+        self.docs_data_dir().join(DOCS_DATA_TASKS_DIR_NAME)
+    }
+
+    pub fn docs_data_relations_dir(&self) -> PathBuf {
+        self.docs_data_dir().join(DOCS_DATA_RELATIONS_DIR_NAME)
+    }
+
+    pub fn docs_data_render_dir(&self) -> PathBuf {
+        self.docs_data_dir().join(DOCS_DATA_RENDER_DIR_NAME)
+    }
+
+    pub fn docs_data_render_state_path(&self) -> PathBuf {
+        self.docs_data_render_dir().join(DOCS_DATA_RENDER_STATE_FILE)
+    }
+
+    pub fn docs_data_record_path(&self, record_set: &str) -> PathBuf {
+        self.docs_data_records_dir().join(format!("{record_set}.jsonl"))
+    }
+
+    pub fn docs_data_doc_tasks_path(&self) -> PathBuf {
+        self.docs_data_tasks_dir().join(DOCS_DATA_DOC_TASKS_FILE)
+    }
+
+    pub fn docs_data_project_tasks_path(&self) -> PathBuf {
+        self.docs_data_tasks_dir().join(DOCS_DATA_PROJECT_TASKS_FILE)
+    }
+
+    pub fn docs_data_project_plan_manifest_path(&self) -> PathBuf {
+        self.docs_data_tasks_dir()
+            .join(DOCS_DATA_PROJECT_PLAN_MANIFEST_FILE)
+    }
+
+    pub fn docs_data_project_task_logs_dir(&self) -> PathBuf {
+        self.docs_data_tasks_dir()
+            .join(DOCS_DATA_PROJECT_TASK_LOGS_DIR_NAME)
+    }
+
+    pub fn docs_data_project_task_log_path(&self, task_id: &str) -> PathBuf {
+        self.docs_data_project_task_logs_dir()
+            .join(format!("{task_id}.jsonl"))
+    }
+
+    pub fn docs_data_links_path(&self) -> PathBuf {
+        self.docs_data_relations_dir().join(DOCS_DATA_LINKS_FILE)
+    }
+
     pub fn storeignore_path(&self) -> PathBuf {
         self.config_root().join(STOREIGNORE_FILE)
     }
@@ -292,5 +375,33 @@ mod tests {
         );
         assert_eq!(layout.store_dir(), root.join(".omega-state/store"));
         assert_eq!(layout.hook_artifacts_dir(), root.join(".omega-state/hooks"));
+    }
+
+    #[test]
+    fn resolves_structured_docs_paths_under_project_root() {
+        let root = PathBuf::from("/tmp/omega-layout-test");
+        let layout = OmegaProjectLayout::new(root.clone());
+
+        assert_eq!(layout.docs_data_dir(), root.join("docs-data"));
+        assert_eq!(
+            layout.docs_data_manifest_path(),
+            root.join("docs-data/manifest.json")
+        );
+        assert_eq!(
+            layout.docs_data_record_path("specs"),
+            root.join("docs-data/records/specs.jsonl")
+        );
+        assert_eq!(
+            layout.docs_data_doc_tasks_path(),
+            root.join("docs-data/tasks/doc-tasks.jsonl")
+        );
+        assert_eq!(
+            layout.docs_data_links_path(),
+            root.join("docs-data/relations/links.jsonl")
+        );
+        assert_eq!(
+            layout.docs_data_render_state_path(),
+            root.join("docs-data/render/render-state.json")
+        );
     }
 }

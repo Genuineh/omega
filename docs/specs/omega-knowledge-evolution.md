@@ -1,12 +1,16 @@
 ---
-status: active
+content_revision: 96
+created: 2026-04-07
+generation_id: gen_000013_r000096
 last_verified_commit: N/A
 owner: omega-team
-created: 2026-04-07
+projection_version: 13
+related_prds: []
+source_doc_id: "spec:docs-specs-omega-knowledge-evolution"
+status: active
+supersedes: []
 updated: 2026-04-07
 version: v0.1
-supersedes: []
-related_prds: []
 ---
 
 # Omega Knowledge Evolution Specification
@@ -104,8 +108,6 @@ Status note (2026-04-07): `Phase 1 ~ Phase 6` 的 retention / memory query / obs
 ### 5. Observability Is Part Of The Contract
 
 保留、整理、修正、召回都要进入 supervision 和 diagnostics。新增能力如果只能被模型内部使用，而 operator 无法看到，就不算完成。
-
-## Architecture
 
 ## Phase 1: Retention Profiles And Noise Gate
 

@@ -30,6 +30,17 @@ use tantivy::schema::{Field, Schema, Value, FAST, INDEXED, STORED, STRING, TEXT}
 use tantivy::{doc, Index};
 use walkdir::WalkDir;
 
+mod structured_docs;
+
+pub use structured_docs::{
+    StructuredDocRelationRecord, StructuredDocTaskRecord, StructuredDocumentRecord,
+    StructuredDocumentRelation, StructuredDocumentRender, StructuredDocumentSection,
+    StructuredDocsExtractionReport, StructuredDocsManifest, StructuredDocsRenderState,
+    StructuredDocsSnapshot,
+    StructuredDocsValidationIssue, StructuredDocsValidationReport,
+};
+use structured_docs::{StructuredDocumentOpOutcome, StructuredDocsManager};
+
 const DEFAULT_MAX_RESULTS: usize = 10;
 const SEARCH_PREVIEW_LIMIT: usize = 200;
 const CHUNK_TARGET_CHARS: usize = 2_000;
@@ -60,6 +71,7 @@ pub enum DocType {
     Prd,
     Guide,
     Adr,
+    Whitepaper,
     Todo,
     Archive,
     Readme,
@@ -365,10 +377,24 @@ pub struct DocumentOpResult {
     pub plan: Option<DocumentChangePlan>,
     pub health: Option<DocumentHealthReport>,
     pub files: Vec<FileRecord>,
+    pub manifest: Option<StructuredDocsManifest>,
+    pub records: Vec<StructuredDocumentRecord>,
+    pub doc_tasks: Vec<StructuredDocTaskRecord>,
+    pub relations: Vec<StructuredDocRelationRecord>,
+    pub render_state: Option<StructuredDocsRenderState>,
+    pub validation: Option<StructuredDocsValidationReport>,
+    pub extraction: Option<StructuredDocsExtractionReport>,
     pub warnings: Vec<String>,
 }
 
 impl DocumentOpResult {}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StructuredDocsCutoverResult {
+    pub extract: DocumentOpResult,
+    pub render: Option<DocumentOpResult>,
+    pub validate: Option<DocumentOpResult>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -395,6 +421,48 @@ pub enum DocumentOp {
     List {
         doc_type: Option<DocType>,
         status: Option<FileStatus>,
+    },
+    UpsertRecord {
+        mode: DocumentMutationMode,
+        record: StructuredDocumentRecord,
+    },
+    UpsertTask {
+        mode: DocumentMutationMode,
+        task: StructuredDocTaskRecord,
+    },
+    UpsertRelation {
+        mode: DocumentMutationMode,
+        relation: StructuredDocRelationRecord,
+    },
+    DeleteRecord {
+        mode: DocumentMutationMode,
+        doc_id: String,
+    },
+    ArchiveRecord {
+        mode: DocumentMutationMode,
+        doc_id: String,
+        reason: ArchiveTrigger,
+        replaced_by: Option<String>,
+    },
+    DeleteTask {
+        mode: DocumentMutationMode,
+        task_id: String,
+    },
+    DeleteRelation {
+        mode: DocumentMutationMode,
+        relation_id: String,
+    },
+    RenderProjection {
+        mode: DocumentMutationMode,
+        doc_ids: Vec<String>,
+    },
+    ValidateProjection {
+        doc_ids: Vec<String>,
+    },
+    ExtractSource {
+        mode: DocumentMutationMode,
+        sources: Vec<String>,
+        doc_type: Option<DocType>,
     },
 }
 
@@ -734,6 +802,13 @@ impl OmegaDocument {
                 plan: None,
                 health: Some(self.check_document_health()?),
                 files: Vec::new(),
+                manifest: None,
+                records: Vec::new(),
+                doc_tasks: Vec::new(),
+                relations: Vec::new(),
+                render_state: None,
+                validation: None,
+                extraction: None,
                 warnings: Vec::new(),
             }),
             DocumentOp::List { doc_type, status } => {
@@ -758,10 +833,142 @@ impl OmegaDocument {
                     plan: None,
                     health: None,
                     files,
+                    manifest: None,
+                    records: Vec::new(),
+                    doc_tasks: Vec::new(),
+                    relations: Vec::new(),
+                    render_state: None,
+                    validation: None,
+                    extraction: None,
                     warnings: Vec::new(),
                 })
             }
+            DocumentOp::UpsertRecord { mode, record } => {
+                self.structured_result(Some(mode), self.structured_docs().upsert_record(mode, record)?)
+            }
+            DocumentOp::UpsertTask { mode, task } => {
+                self.structured_result(Some(mode), self.structured_docs().upsert_task(mode, task)?)
+            }
+            DocumentOp::UpsertRelation { mode, relation } => self.structured_result(
+                Some(mode),
+                self.structured_docs().upsert_relation(mode, relation)?,
+            ),
+            DocumentOp::DeleteRecord { mode, doc_id } => self.structured_result(
+                Some(mode),
+                self.structured_docs().delete_record(mode, &doc_id)?,
+            ),
+            DocumentOp::ArchiveRecord {
+                mode,
+                doc_id,
+                reason,
+                replaced_by,
+            } => self.structured_result(
+                Some(mode),
+                self.structured_docs()
+                    .archive_record(mode, &doc_id, reason, replaced_by.as_deref())?,
+            ),
+            DocumentOp::DeleteTask { mode, task_id } => self.structured_result(
+                Some(mode),
+                self.structured_docs().delete_task(mode, &task_id)?,
+            ),
+            DocumentOp::DeleteRelation {
+                mode,
+                relation_id,
+            } => self.structured_result(
+                Some(mode),
+                self.structured_docs().delete_relation(mode, &relation_id)?,
+            ),
+            DocumentOp::RenderProjection { mode, doc_ids } => self.structured_result(
+                Some(mode),
+                self.structured_docs().render_projection(mode, doc_ids)?,
+            ),
+            DocumentOp::ValidateProjection { doc_ids } => self
+                .structured_result(None, self.structured_docs().validate_projection(doc_ids)?),
+            DocumentOp::ExtractSource {
+                mode,
+                sources,
+                doc_type,
+            } => self.structured_result(
+                Some(mode),
+                self.structured_docs().extract_sources(mode, sources, doc_type)?,
+            ),
         }
+    }
+
+    pub fn structured_docs_snapshot(&self) -> Result<StructuredDocsSnapshot> {
+        self.structured_docs().snapshot()
+    }
+
+    pub fn run_structured_docs_cutover(
+        &self,
+        mode: DocumentMutationMode,
+        sources: Vec<String>,
+        doc_type: Option<DocType>,
+    ) -> Result<StructuredDocsCutoverResult> {
+        let extract = self.manage_document(DocumentOp::ExtractSource {
+            mode,
+            sources,
+            doc_type,
+        })?;
+        if !extract.ok {
+            return Ok(StructuredDocsCutoverResult {
+                extract,
+                render: None,
+                validate: None,
+            });
+        }
+
+        let render = self.manage_document(DocumentOp::RenderProjection {
+            mode,
+            doc_ids: Vec::new(),
+        })?;
+        if !render.ok {
+            return Ok(StructuredDocsCutoverResult {
+                extract,
+                render: Some(render),
+                validate: None,
+            });
+        }
+
+        let validate = self.manage_document(DocumentOp::ValidateProjection {
+            doc_ids: Vec::new(),
+        })?;
+        Ok(StructuredDocsCutoverResult {
+            extract,
+            render: Some(render),
+            validate: Some(validate),
+        })
+    }
+
+    fn structured_docs(&self) -> StructuredDocsManager {
+        StructuredDocsManager::new(self.root.clone())
+    }
+
+    fn structured_result(
+        &self,
+        mode: Option<DocumentMutationMode>,
+        outcome: StructuredDocumentOpOutcome,
+    ) -> Result<DocumentOpResult> {
+        let ok = outcome
+            .validation
+            .as_ref()
+            .is_none_or(|report| report.ok);
+        Ok(DocumentOpResult {
+            mode,
+            ok,
+            message: outcome.message,
+            plan: None,
+            health: None,
+            files: Vec::new(),
+            manifest: outcome.manifest,
+            records: outcome.records,
+            doc_tasks: outcome.doc_tasks,
+            relations: outcome.relations,
+            render_state: outcome.render_state,
+            validation: outcome.validation,
+            extraction: outcome.extraction,
+            warnings: outcome.warnings,
+        })
     }
 
     pub fn manage_todo(&self, op: TodoOp) -> Result<TodoOpResult> {
@@ -986,6 +1193,13 @@ impl OmegaDocument {
                 plan: Some(plan),
                 health: None,
                 files: Vec::new(),
+                manifest: None,
+                records: Vec::new(),
+                doc_tasks: Vec::new(),
+                relations: Vec::new(),
+                render_state: None,
+                validation: None,
+                extraction: None,
                 warnings: Vec::new(),
             }),
             DocumentMutationMode::Apply => {
@@ -997,6 +1211,13 @@ impl OmegaDocument {
                         plan: Some(plan),
                         health: None,
                         files: Vec::new(),
+                        manifest: None,
+                        records: Vec::new(),
+                        doc_tasks: Vec::new(),
+                        relations: Vec::new(),
+                        render_state: None,
+                        validation: None,
+                        extraction: None,
                         warnings: Vec::new(),
                     });
                 }
@@ -1038,6 +1259,13 @@ impl OmegaDocument {
                             vector_index_eligible: true,
                             last_indexed_at: unix_timestamp_now(),
                         })],
+                    manifest: None,
+                    records: Vec::new(),
+                    doc_tasks: Vec::new(),
+                    relations: Vec::new(),
+                    render_state: None,
+                    validation: None,
+                    extraction: None,
                     warnings: Vec::new(),
                 })
             }
@@ -1092,6 +1320,13 @@ impl OmegaDocument {
                 plan: Some(plan),
                 health: None,
                 files: Vec::new(),
+                manifest: None,
+                records: Vec::new(),
+                doc_tasks: Vec::new(),
+                relations: Vec::new(),
+                render_state: None,
+                validation: None,
+                extraction: None,
                 warnings: Vec::new(),
             }),
             DocumentMutationMode::Apply => {
@@ -1103,6 +1338,13 @@ impl OmegaDocument {
                         plan: Some(plan),
                         health: None,
                         files: Vec::new(),
+                        manifest: None,
+                        records: Vec::new(),
+                        doc_tasks: Vec::new(),
+                        relations: Vec::new(),
+                        render_state: None,
+                        validation: None,
+                        extraction: None,
                         warnings: Vec::new(),
                     });
                 }
@@ -1135,6 +1377,13 @@ impl OmegaDocument {
                         .into_iter()
                         .filter(|record| record.path == target_path)
                         .collect(),
+                    manifest: None,
+                    records: Vec::new(),
+                    doc_tasks: Vec::new(),
+                    relations: Vec::new(),
+                    render_state: None,
+                    validation: None,
+                    extraction: None,
                     warnings: vec![
                         "README.md and docs/TODO.md may require follow-up link updates".to_string(),
                     ],
@@ -1159,6 +1408,13 @@ impl OmegaDocument {
                 plan: None,
                 health: None,
                 files: Vec::new(),
+                manifest: None,
+                records: Vec::new(),
+                doc_tasks: Vec::new(),
+                relations: Vec::new(),
+                render_state: None,
+                validation: None,
+                extraction: None,
                 warnings: Vec::new(),
             });
         };
@@ -1194,6 +1450,13 @@ impl OmegaDocument {
                 plan: Some(plan),
                 health: None,
                 files: vec![next],
+                manifest: None,
+                records: Vec::new(),
+                doc_tasks: Vec::new(),
+                relations: Vec::new(),
+                render_state: None,
+                validation: None,
+                extraction: None,
                 warnings: Vec::new(),
             });
         }
@@ -1206,6 +1469,13 @@ impl OmegaDocument {
             plan: Some(plan),
             health: None,
             files: vec![next],
+            manifest: None,
+            records: Vec::new(),
+            doc_tasks: Vec::new(),
+            relations: Vec::new(),
+            render_state: None,
+            validation: None,
+            extraction: None,
             warnings: Vec::new(),
         })
     }
@@ -2570,6 +2840,8 @@ fn classify_doc_type(path: &str) -> Option<DocType> {
         Some(DocType::Guide)
     } else if path.starts_with("docs/decisions/") {
         Some(DocType::Adr)
+    } else if path.starts_with("docs/whitepapers/") {
+        Some(DocType::Whitepaper)
     } else if path.starts_with("docs/archive/") {
         Some(DocType::Archive)
     } else {
@@ -2583,6 +2855,7 @@ fn classify_expected_doc_type(path: &str) -> DocType {
         "docs/prds" => DocType::Prd,
         "docs/guide" => DocType::Guide,
         "docs/decisions" => DocType::Adr,
+        "docs/whitepapers" => DocType::Whitepaper,
         "docs/archive" => DocType::Archive,
         _ => DocType::Guide,
     }
@@ -2616,6 +2889,7 @@ fn path_matches_doc_type(path: &str, doc_type: DocType) -> bool {
         DocType::Prd => path.starts_with("docs/prds/"),
         DocType::Guide => path.starts_with("docs/guide/"),
         DocType::Adr => path.starts_with("docs/decisions/"),
+        DocType::Whitepaper => path.starts_with("docs/whitepapers/"),
         DocType::Todo => path == "docs/TODO.md",
         DocType::Archive => path.starts_with("docs/archive/"),
         DocType::Readme => path == "README.md",
@@ -2641,6 +2915,7 @@ fn format_doc_type(doc_type: DocType) -> String {
         DocType::Prd => "prd",
         DocType::Guide => "guide",
         DocType::Adr => "adr",
+        DocType::Whitepaper => "whitepaper",
         DocType::Todo => "todo",
         DocType::Archive => "archive",
         DocType::Readme => "readme",
@@ -3141,9 +3416,12 @@ mod tests {
 
     use super::{
         ArchiveTrigger, DocType, DocumentMutationMode, DocumentOp, FileStatus, OmegaDocument,
-        SearchMode, SearchQuery, TodoOp,
+        SearchMode, SearchQuery, StructuredDocTaskRecord, StructuredDocumentRecord,
+        StructuredDocumentRelation, StructuredDocumentRender, StructuredDocumentSection, TodoOp,
     };
+    use omega_plan::ProjectPlanAccess;
     use omega_project_layout::{STORE_DIR_PATH, STORE_MANIFEST_PATH, STORE_VERSION_PATH};
+    use omega_plan::{PlannedTaskKind, PlannedTaskStatus, TaskPriority};
     use omega_todo::{TodoItem, TodoStatus};
 
     static TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -3163,6 +3441,7 @@ mod tests {
     fn seed_repo(root: &std::path::Path) {
         std::fs::create_dir_all(root.join("docs/specs")).unwrap();
         std::fs::create_dir_all(root.join("docs/archive")).unwrap();
+        std::fs::create_dir_all(root.join("docs/guide")).unwrap();
         std::fs::create_dir_all(root.join("crates/demo/src")).unwrap();
         std::fs::write(root.join("README.md"), "See docs/specs/example.md\n").unwrap();
         std::fs::write(root.join("LICENSE"), "MIT\n").unwrap();
@@ -3584,5 +3863,546 @@ mod tests {
             .files
             .iter()
             .any(|record| record.path == "docs/specs/example.md"));
+    }
+
+    #[test]
+    fn structured_record_render_validate_and_extract_round_trip() {
+        let root = temp_root("structured-roundtrip");
+        seed_repo(&root);
+        let documents = OmegaDocument::new(root.clone());
+
+        let record = StructuredDocumentRecord {
+            doc_id: "spec:structured-docs".to_string(),
+            doc_type: DocType::Spec,
+            slug: "structured-docs".to_string(),
+            title: "Structured Docs".to_string(),
+            status: Some("draft".to_string()),
+            owner: Some("omega-team".to_string()),
+            created: Some("2026-04-14".to_string()),
+            updated: Some("2026-04-14".to_string()),
+            version: Some("0.1".to_string()),
+            source_path: "docs/specs/structured-docs.md".to_string(),
+            frontmatter: std::collections::BTreeMap::from([(
+                "last_verified_commit".to_string(),
+                serde_json::Value::String("N/A".to_string()),
+            )]),
+            sections: vec![StructuredDocumentSection {
+                section_id: "overview".to_string(),
+                heading: "Overview".to_string(),
+                body_markdown: "Structured docs content".to_string(),
+            }],
+            relations: vec![StructuredDocumentRelation {
+                kind: "references".to_string(),
+                target: "docs/specs/example.md".to_string(),
+            }],
+            render: StructuredDocumentRender {
+                template: "spec-v1".to_string(),
+                presentation_path: "docs/specs/structured-docs.md".to_string(),
+            },
+        };
+
+        let upsert = documents
+            .manage_document(DocumentOp::UpsertRecord {
+                mode: DocumentMutationMode::Apply,
+                record,
+            })
+            .unwrap();
+        assert!(upsert.ok);
+        assert_eq!(upsert.records.len(), 1);
+        assert!(root.join("docs-data/records/specs.jsonl").exists());
+
+        let render = documents
+            .manage_document(DocumentOp::RenderProjection {
+                mode: DocumentMutationMode::Apply,
+                doc_ids: vec!["spec:structured-docs".to_string()],
+            })
+            .unwrap();
+        assert!(render.ok);
+        assert!(root.join("docs/specs/structured-docs.md").exists());
+        let rendered = std::fs::read_to_string(root.join("docs/specs/structured-docs.md")).unwrap();
+        assert!(rendered.contains("source_doc_id:"));
+        assert!(rendered.contains("content_revision:"));
+        assert!(rendered.contains("projection_version:"));
+        assert!(rendered.contains("generation_id:"));
+
+        let validate = documents
+            .manage_document(DocumentOp::ValidateProjection {
+                doc_ids: vec!["spec:structured-docs".to_string()],
+            })
+            .unwrap();
+        assert!(validate.ok);
+        assert!(validate.validation.unwrap().ok);
+
+        let extract = documents
+            .manage_document(DocumentOp::ExtractSource {
+                mode: DocumentMutationMode::Apply,
+                sources: vec!["docs/specs/structured-docs.md".to_string()],
+                doc_type: Some(DocType::Spec),
+            })
+            .unwrap();
+        assert!(extract.ok);
+        assert!(extract
+            .extraction
+            .unwrap()
+            .extracted_doc_ids
+            .contains(&"spec:docs-specs-structured-docs".to_string()));
+    }
+
+    #[test]
+    fn validate_projection_reports_version_drift_separately_from_content_drift() {
+        let root = temp_root("structured-version-drift");
+        seed_repo(&root);
+        let documents = OmegaDocument::new(root.clone());
+
+        let record = StructuredDocumentRecord {
+            doc_id: "spec:drifted-doc".to_string(),
+            doc_type: DocType::Spec,
+            slug: "drifted-doc".to_string(),
+            title: "Drifted Doc".to_string(),
+            status: Some("draft".to_string()),
+            owner: Some("omega-team".to_string()),
+            created: Some("2026-04-15".to_string()),
+            updated: Some("2026-04-15".to_string()),
+            version: None,
+            source_path: "docs/specs/drifted-doc.md".to_string(),
+            frontmatter: std::collections::BTreeMap::new(),
+            sections: vec![StructuredDocumentSection {
+                section_id: "overview".to_string(),
+                heading: "Overview".to_string(),
+                body_markdown: "Body".to_string(),
+            }],
+            relations: Vec::new(),
+            render: StructuredDocumentRender {
+                template: "spec-v1".to_string(),
+                presentation_path: "docs/specs/drifted-doc.md".to_string(),
+            },
+        };
+
+        documents
+            .manage_document(DocumentOp::UpsertRecord {
+                mode: DocumentMutationMode::Apply,
+                record: record.clone(),
+            })
+            .unwrap();
+        documents
+            .manage_document(DocumentOp::RenderProjection {
+                mode: DocumentMutationMode::Apply,
+                doc_ids: vec!["spec:drifted-doc".to_string()],
+            })
+            .unwrap();
+
+        documents
+            .manage_document(DocumentOp::UpsertRecord {
+                mode: DocumentMutationMode::Apply,
+                record,
+            })
+            .unwrap();
+
+        let validate = documents
+            .manage_document(DocumentOp::ValidateProjection {
+                doc_ids: vec!["spec:drifted-doc".to_string()],
+            })
+            .unwrap();
+
+        assert!(!validate.ok);
+        let report = validate.validation.unwrap();
+        assert_eq!(report.mismatched_files.len(), 0);
+        assert!(!report.version_mismatches.is_empty());
+    }
+
+    #[test]
+    fn archive_record_moves_record_into_archive_projection() {
+        let root = temp_root("structured-archive-record");
+        seed_repo(&root);
+        let documents = OmegaDocument::new(root.clone());
+
+        documents
+            .manage_document(DocumentOp::UpsertRecord {
+                mode: DocumentMutationMode::Apply,
+                record: StructuredDocumentRecord {
+                    doc_id: "spec:archive-me".to_string(),
+                    doc_type: DocType::Spec,
+                    slug: "archive-me".to_string(),
+                    title: "Archive Me".to_string(),
+                    status: Some("draft".to_string()),
+                    owner: Some("omega-team".to_string()),
+                    created: Some("2026-04-15".to_string()),
+                    updated: Some("2026-04-15".to_string()),
+                    version: None,
+                    source_path: "docs/specs/archive-me.md".to_string(),
+                    frontmatter: std::collections::BTreeMap::new(),
+                    sections: vec![StructuredDocumentSection {
+                        section_id: "overview".to_string(),
+                        heading: "Overview".to_string(),
+                        body_markdown: "Body".to_string(),
+                    }],
+                    relations: Vec::new(),
+                    render: StructuredDocumentRender {
+                        template: "spec-v1".to_string(),
+                        presentation_path: "docs/specs/archive-me.md".to_string(),
+                    },
+                },
+            })
+            .unwrap();
+
+        documents
+            .manage_document(DocumentOp::RenderProjection {
+                mode: DocumentMutationMode::Apply,
+                doc_ids: vec!["spec:archive-me".to_string()],
+            })
+            .unwrap();
+        assert!(root.join("docs/specs/archive-me.md").exists());
+
+        let archive = documents
+            .manage_document(DocumentOp::ArchiveRecord {
+                mode: DocumentMutationMode::Apply,
+                doc_id: "spec:archive-me".to_string(),
+                reason: ArchiveTrigger::HistoryOnly,
+                replaced_by: None,
+            })
+            .unwrap();
+        assert!(archive.ok);
+        assert_eq!(archive.records[0].doc_type, DocType::Archive);
+        assert_eq!(archive.records[0].render.presentation_path, "docs/archive/archive-me.md");
+        assert!(!root.join("docs/specs/archive-me.md").exists());
+
+        let render = documents
+            .manage_document(DocumentOp::RenderProjection {
+                mode: DocumentMutationMode::Apply,
+                doc_ids: vec!["spec:archive-me".to_string()],
+            })
+            .unwrap();
+        assert!(render.ok);
+        assert!(root.join("docs/archive/archive-me.md").exists());
+    }
+
+    #[test]
+    fn structured_doc_task_syncs_to_project_plan() {
+        let root = temp_root("structured-task");
+        seed_repo(&root);
+        let documents = OmegaDocument::new(root.clone());
+
+        documents
+            .manage_document(DocumentOp::UpsertTask {
+                mode: DocumentMutationMode::Apply,
+                task: StructuredDocTaskRecord {
+                    task_id: "DOC-0019A".to_string(),
+                    title: "Define structured docs contract".to_string(),
+                    plan_task_id: None,
+                    kind: PlannedTaskKind::Chore,
+                    status: PlannedTaskStatus::Ready,
+                    priority: TaskPriority::P1,
+                    summary: "Freeze docs-data schema".to_string(),
+                    requirement: "Define docs-data schema and render contract".to_string(),
+                    acceptance: vec!["manifest exists".to_string()],
+                    depends_on: Vec::new(),
+                    presentation_links: vec!["docs/specs/omega-structured-document-system.md".to_string()],
+                    tags: vec!["structured-docs".to_string()],
+                    doc_scope: vec![DocType::Spec],
+                },
+            })
+            .unwrap();
+
+        let plan_store = omega_plan::ProjectPlanStore::open_or_scaffold(&root).unwrap();
+        let tasks = plan_store
+            .list_tasks(omega_plan::TaskListFilter::default())
+            .unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].title, "Define structured docs contract");
+        assert_eq!(tasks[0].priority, TaskPriority::P1);
+        assert!(tasks[0]
+            .design_links
+            .iter()
+            .any(|link| link.path == "docs/specs/omega-structured-document-system.md"));
+        assert!(root.join("docs-data/tasks/doc-tasks.jsonl").exists());
+    }
+
+    #[test]
+    fn structured_doc_task_reuses_bootstrapped_plan_tasks_without_duplicates() {
+        let root = temp_root("structured-task-bootstrap-reuse");
+        seed_repo(&root);
+        std::fs::create_dir_all(root.join("docs-data/tasks")).unwrap();
+        std::fs::write(
+            root.join("docs-data/tasks/doc-tasks.jsonl"),
+            r#"{"task_id":"DOC-0019A","title":"Define structured docs contract","plan_task_id":null,"kind":"chore","status":"ready","priority":"p1","summary":"Freeze docs-data schema","requirement":"Define docs-data schema and render contract","acceptance":["manifest exists"],"depends_on":[],"presentation_links":["docs/specs/omega-structured-document-system.md"],"tags":["structured-docs"],"doc_scope":["spec"]}
+{"task_id":"DOC-0019B","title":"Sync plan graph from structured tasks","plan_task_id":null,"kind":"chore","status":"blocked","priority":"p2","summary":"Bridge structured tasks into omega-plan","requirement":"Reuse bootstrapped plan tasks during structured task upserts","acceptance":["no duplicate plan tasks are created"],"depends_on":["DOC-0019A"],"presentation_links":["docs/specs/omega-project-plan-system.md"],"tags":["structured-docs"],"doc_scope":["spec"]}
+"#,
+        )
+        .unwrap();
+
+        let documents = OmegaDocument::new(root.clone());
+        documents
+            .manage_document(DocumentOp::UpsertTask {
+                mode: DocumentMutationMode::Apply,
+                task: StructuredDocTaskRecord {
+                    task_id: "DOC-0019B".to_string(),
+                    title: "Sync plan graph from structured tasks".to_string(),
+                    plan_task_id: None,
+                    kind: PlannedTaskKind::Chore,
+                    status: PlannedTaskStatus::Blocked,
+                    priority: TaskPriority::P2,
+                    summary: "Bridge structured tasks into omega-plan".to_string(),
+                    requirement: "Reuse bootstrapped plan tasks during structured task upserts"
+                        .to_string(),
+                    acceptance: vec!["no duplicate plan tasks are created".to_string()],
+                    depends_on: vec!["DOC-0019A".to_string()],
+                    presentation_links: vec![
+                        "docs/specs/omega-project-plan-system.md".to_string(),
+                    ],
+                    tags: vec!["structured-docs".to_string()],
+                    doc_scope: vec![DocType::Spec],
+                },
+            })
+            .unwrap();
+
+        let plan_store = omega_plan::ProjectPlanStore::open_or_scaffold(&root).unwrap();
+        let tasks = plan_store
+            .list_tasks(omega_plan::TaskListFilter::default())
+            .unwrap();
+
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[1].depends_on, vec![tasks[0].id.clone()]);
+
+        let doc_tasks = std::fs::read_to_string(root.join("docs-data/tasks/doc-tasks.jsonl")).unwrap();
+        let plan_task_ids = doc_tasks
+            .lines()
+            .map(|line| serde_json::from_str::<StructuredDocTaskRecord>(line).unwrap())
+            .map(|task| task.plan_task_id.expect("bootstrap should assign plan task ids"))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(plan_task_ids.len(), 2);
+        assert_eq!(plan_task_ids, tasks.iter().map(|task| task.id.clone()).collect());
+    }
+
+    #[test]
+    fn validate_projection_reports_missing_generated_file() {
+        let root = temp_root("structured-validate-missing");
+        seed_repo(&root);
+        let documents = OmegaDocument::new(root);
+
+        documents
+            .manage_document(DocumentOp::UpsertRecord {
+                mode: DocumentMutationMode::Apply,
+                record: StructuredDocumentRecord {
+                    doc_id: "guide:missing-generated".to_string(),
+                    doc_type: DocType::Guide,
+                    slug: "missing-generated".to_string(),
+                    title: "Missing Generated".to_string(),
+                    status: Some("draft".to_string()),
+                    owner: None,
+                    created: None,
+                    updated: None,
+                    version: None,
+                    source_path: "docs/guide/missing-generated.md".to_string(),
+                    frontmatter: std::collections::BTreeMap::new(),
+                    sections: vec![StructuredDocumentSection {
+                        section_id: "body".to_string(),
+                        heading: "Body".to_string(),
+                        body_markdown: "Expected body".to_string(),
+                    }],
+                    relations: Vec::new(),
+                    render: StructuredDocumentRender {
+                        template: "guide-v1".to_string(),
+                        presentation_path: "docs/guide/missing-generated.md".to_string(),
+                    },
+                },
+            })
+            .unwrap();
+
+        let validate = documents
+            .manage_document(DocumentOp::ValidateProjection {
+                doc_ids: vec!["guide:missing-generated".to_string()],
+            })
+            .unwrap();
+
+        assert!(!validate.ok);
+        let report = validate.validation.unwrap();
+        assert_eq!(report.missing_files, vec!["docs/guide/missing-generated.md".to_string()]);
+    }
+
+    #[test]
+    fn validate_projection_reports_unregistered_files() {
+        let root = temp_root("structured-validate-unregistered");
+        seed_repo(&root);
+        let documents = OmegaDocument::new(root.clone());
+
+        // Register and render one doc.
+        documents
+            .manage_document(DocumentOp::UpsertRecord {
+                mode: DocumentMutationMode::Apply,
+                record: StructuredDocumentRecord {
+                    doc_id: "guide:registered-doc".to_string(),
+                    doc_type: DocType::Guide,
+                    slug: "registered-doc".to_string(),
+                    title: "Registered Doc".to_string(),
+                    status: Some("draft".to_string()),
+                    owner: None,
+                    created: None,
+                    updated: None,
+                    version: None,
+                    source_path: "docs/guide/registered-doc.md".to_string(),
+                    frontmatter: std::collections::BTreeMap::new(),
+                    sections: vec![StructuredDocumentSection {
+                        section_id: "body".to_string(),
+                        heading: "Body".to_string(),
+                        body_markdown: "Registered body text.".to_string(),
+                    }],
+                    relations: Vec::new(),
+                    render: StructuredDocumentRender {
+                        template: "guide-v1".to_string(),
+                        presentation_path: "docs/guide/registered-doc.md".to_string(),
+                    },
+                },
+            })
+            .unwrap();
+        documents
+            .manage_document(DocumentOp::RenderProjection {
+                mode: DocumentMutationMode::Apply,
+                doc_ids: Vec::new(),
+            })
+            .unwrap();
+
+        // Drop an extra .md file into docs/ that is NOT registered.
+        std::fs::create_dir_all(root.join("docs/guide")).unwrap();
+        std::fs::write(
+            root.join("docs/guide/orphan.md"),
+            "# Orphan\n\nThis file has no record.\n",
+        )
+        .unwrap();
+
+        let validate = documents
+            .manage_document(DocumentOp::ValidateProjection { doc_ids: Vec::new() })
+            .unwrap();
+
+        assert!(validate.ok, "ok should still be true for warnings-only");
+        let report = validate.validation.unwrap();
+        assert!(
+            report.unregistered_files.contains(&"docs/guide/orphan.md".to_string()),
+            "expected orphan.md in unregistered_files, got: {:?}",
+            report.unregistered_files
+        );
+        assert!(
+            report.warnings.iter().any(|w| w.contains("orphan.md")),
+            "expected warning mentioning orphan.md"
+        );
+    }
+
+    #[test]
+    fn extract_source_uses_path_stable_doc_ids_for_readme_family_docs() {
+        let root = temp_root("structured-readme-ids");
+        seed_repo(&root);
+        std::fs::create_dir_all(root.join("docs/prds")).unwrap();
+        std::fs::write(
+            root.join("docs/README.md"),
+            "---\nstatus: active\nowner: omega-team\n---\n\n# Docs Index\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("docs/prds/README.md"),
+            "---\nstatus: draft\nowner: omega-team\n---\n\n# PRD Index\n",
+        )
+        .unwrap();
+        let documents = OmegaDocument::new(root);
+
+        let result = documents
+            .manage_document(DocumentOp::ExtractSource {
+                mode: DocumentMutationMode::Apply,
+                sources: vec![
+                    "README.md".to_string(),
+                    "docs/README.md".to_string(),
+                    "docs/prds/README.md".to_string(),
+                ],
+                doc_type: None,
+            })
+            .unwrap();
+
+        assert!(result.ok);
+        let doc_ids = result
+            .records
+            .iter()
+            .map(|record| record.doc_id.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(doc_ids.len(), 3);
+        assert!(doc_ids.contains("readme:readme"));
+        assert!(doc_ids.contains("readme:docs-readme"));
+        assert!(doc_ids.contains("prd:docs-prds-readme"));
+    }
+
+    #[test]
+    fn validate_projection_accepts_relative_relation_targets() {
+        let root = temp_root("structured-relative-links");
+        seed_repo(&root);
+        std::fs::write(
+            root.join("docs/README.md"),
+            "---\nstatus: active\nowner: omega-team\n---\n\n# Docs Index\n\nSee [Guide](guide/omega-dev-guide.md).\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("docs/guide/omega-dev-guide.md"),
+            "---\nstatus: active\nowner: omega-team\n---\n\n# Dev Guide\n",
+        )
+        .unwrap();
+        let documents = OmegaDocument::new(root);
+
+        let extract = documents
+            .manage_document(DocumentOp::ExtractSource {
+                mode: DocumentMutationMode::Apply,
+                sources: vec!["docs/README.md".to_string(), "docs/guide/omega-dev-guide.md".to_string()],
+                doc_type: None,
+            })
+            .unwrap();
+        assert!(extract.ok);
+
+        let render = documents
+            .manage_document(DocumentOp::RenderProjection {
+                mode: DocumentMutationMode::Apply,
+                doc_ids: Vec::new(),
+            })
+            .unwrap();
+        assert!(render.ok);
+
+        let validate = documents
+            .manage_document(DocumentOp::ValidateProjection {
+                doc_ids: vec!["readme:docs-readme".to_string()],
+            })
+            .unwrap();
+        assert!(validate.ok);
+        assert!(validate.validation.unwrap().broken_relations.is_empty());
+    }
+
+    #[test]
+    fn validate_projection_accepts_repo_relative_targets_from_nested_docs() {
+        let root = temp_root("structured-repo-relative-links");
+        seed_repo(&root);
+        std::fs::write(
+            root.join("docs/specs/parent.md"),
+            "---\nstatus: draft\nowner: omega-team\n---\n\n# Parent\n\nSee [Child](docs/specs/example.md) and [Code](crates/demo/src/lib.rs).\n",
+        )
+        .unwrap();
+        let documents = OmegaDocument::new(root);
+
+        let extract = documents
+            .manage_document(DocumentOp::ExtractSource {
+                mode: DocumentMutationMode::Apply,
+                sources: vec!["docs/specs/parent.md".to_string(), "docs/specs/example.md".to_string()],
+                doc_type: None,
+            })
+            .unwrap();
+        assert!(extract.ok);
+
+        let render = documents
+            .manage_document(DocumentOp::RenderProjection {
+                mode: DocumentMutationMode::Apply,
+                doc_ids: Vec::new(),
+            })
+            .unwrap();
+        assert!(render.ok);
+
+        let validate = documents
+            .manage_document(DocumentOp::ValidateProjection {
+                doc_ids: vec!["spec:docs-specs-parent".to_string()],
+            })
+            .unwrap();
+        assert!(validate.ok);
+        assert!(validate.validation.unwrap().broken_relations.is_empty());
     }
 }

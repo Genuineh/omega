@@ -1,8 +1,12 @@
 ---
-status: active
-owner: omega-team
+content_revision: 96
+generation_id: gen_000013_r000096
 last_verified_commit: N/A
-updated: 2026-04-13
+owner: omega-team
+projection_version: 13
+source_doc_id: "todo:docs-todo"
+status: active
+updated: 2026-04-15
 ---
 
 # TODO
@@ -23,7 +27,7 @@ updated: 2026-04-13
 ### Medium
 
 - **Task 15B-52**: 继续收紧 `Sidebar` 的默认密度、摘要卡片和首屏信息优先级，让 quiet dashboard 方向真正稳定下来。
-- **Task 4 / 12 / 3 / 13**: 持久化任务、后台执行、消息总线与 team orchestration 仍保留，但都排在 `Task 10` 和 delivery-summary contract 之后。
+- **Task 12 / 3 / 13**: 后台执行、消息总线与 team orchestration 仍保留，但都排在 `Task 10` 和 delivery-summary contract 之后。
 
 ### Low
 
@@ -41,6 +45,8 @@ updated: 2026-04-13
 - **Root skill routing is complete**: `Task 5A ~ 5E` 已完成；root 已具备 `select-workflow -> select-skills -> load-skills` 路径与 loaded/ignored routed skill state。
 - **Deterministic test seam baseline is complete**: `Task 15F-30 ~ 15F-35` 已完成；shared scripted LLM harness、runtime recorder、temp-root helper 与 replay harness 已就位。
 - **Delivery UI baseline is complete**: `Task 15B-49 ~ 15B-50` 已完成；当前剩余工作是把 summary contract 和 evidence source 从 TUI 侧 provisional aggregation 提升为 session/app-owned contract。
+- **Project plan management baseline is complete**: `Task 4A ~ 4K` 已完成；`omega-plan` store、`/plan` command family、`docs/TODO.md` projection + 首轮迁移、`/plan load` file/dir preview+apply 导入、selected-task restore warning、`ProjectDetailSnapshot.plan` 驱动的 TUI `Project` surface、task-bound `delivery_attached` / `partial_delivery` log 回写，以及 docs-data-backed `ProjectPlanStore` / `/plan` runtime / TODO projection convergence 都已成为基线。旧的 `.omega/plans/` compatibility/import layer 已移除，project plan 现在只通过 `docs-data/tasks/*` canonical persistence 工作。 当 docs-data cutover 导致 `project-tasks.jsonl` 缺失时，project planning 现在会从 `docs-data/tasks/doc-tasks.jsonl` 回填自愈，且 `/plan list` 会通过 picker overlay 展示当前任务。相关规格：`docs/specs/omega-project-plan-system.md`、`docs/specs/omega-project-plan-docs-data-convergence.md`。
+- **Structured docs system is complete**: `Task 19A ~ 19K` 已完成；`docs-data/` canonical layout、structured doc/task/relation schema、文档技能迁移、`manage_document` mandatory structured actions、`/document render|validate|extract`、deterministic renderer、projection validator、`docs-data/tasks/doc-tasks.jsonl`、`omega-doc-cli` foundation/query/mutation surface、CLI-first guidance enforcement、docs/docs-data version contract，以及最终 CLI-only workflow cutover 都已成为基线。正常文档 mutation 现在默认走 `omega-doc`，直接 markdown/docs-data edits 仅保留给 emergency projection repair。
 - **TUI visual refresh baseline is complete**: `Task 15B-51` 与 `Task 15B-61 ~ 15B-64` 已完成；当前仅保留 `Task 15B-52` 与 `Task 15B-54` 两个 open follow-up。
 
 ## Active Tasks
@@ -119,48 +125,6 @@ updated: 2026-04-13
 - **Status**: Pending
 - **Priority**: Low
 - **Description**: 保留可调 panel ratio / layout 能力；原“会话统计”范围已被 `Task 15F-36 ~ 15F-38` 和 `Task 15B-49 ~ 15B-50` 取代，不再在这里重复跟踪。
-
-### Task 4: omega-tasks — TaskManager
-
-- **Status**: Pending
-- **Priority**: Medium
-- **Description**: 实现持久化任务系统，支持 CRUD，并以正式 tool surface 暴露。
-- **Related**: `docs/specs/omega-agent-impl-plan.md`, `docs/specs/omega-tui-runtime-experience.md`
-
-### Task 12: omega-background — BackgroundManager
-
-- **Status**: Pending
-- **Priority**: Medium
-- **Description**: 实现后台任务管理，支持 spawn / check / collect，并保持主 loop 不被长任务阻塞。
-- **Related**: `docs/specs/omega-agent-impl-plan.md`, `docs/specs/omega-tui-runtime-experience.md`
-
-### Task 3: omega-message — 消息系统
-
-- **Status**: Pending
-- **Priority**: Medium
-- **Description**: 实现 message bus，支持 send / read_inbox / broadcast，为多 agent 协作提供正式总线。
-- **Related**: `docs/specs/omega-agent-impl-plan.md`, `docs/specs/omega-tui-runtime-experience.md`
-
-### Task 13: omega-team — 团队管理
-
-- **Status**: Pending
-- **Priority**: Medium
-- **Description**: 实现 teammate manager 与自治协作能力，建立多 agent 编排入口。
-- **Related**: `docs/specs/omega-agent-impl-plan.md`, `docs/specs/omega-tui-runtime-experience.md`
-
-### Task 6: omega-worktree — WorktreeManager
-
-- **Status**: Pending
-- **Priority**: Low
-- **Description**: 实现 git worktree 管理，为后期隔离执行和自治并行提供基础设施。
-- **Related**: `docs/specs/omega-agent-impl-plan.md`, `docs/specs/omega-tui-runtime-experience.md`
-
-### Task 16: 最终整合测试
-
-- **Status**: Pending
-- **Priority**: Low
-- **Description**: 在主线任务完成后执行完整 build / test / 联调验证，确认 workspace 能作为完整系统协同工作。
-- **Related**: `docs/specs/omega-agent-impl-plan.md`
 
 ## Notes
 

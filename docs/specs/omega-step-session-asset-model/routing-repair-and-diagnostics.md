@@ -1,15 +1,20 @@
 ---
-status: active
+content_revision: 96
+created: 2026-03-25
+generation_id: gen_000013_r000096
 last_verified_commit: N/A
 owner: omega-team
-created: 2026-03-25
-updated: 2026-03-25
-version: 1.0
-supersedes: []
+projection_version: 13
 related_prds: []
+source_doc_id: "spec:docs-specs-omega-step-session-asset-model-routing-repair-and-diagnostics"
+status: active
+supersedes: []
+updated: 2026-03-25
 ---
 
 # Omega Routing, Repair, And Diagnostics
+
+## Overview
 
 本文覆盖 routing convergence、structured output repair、context observability 以及后续迁移与验证要求。
 

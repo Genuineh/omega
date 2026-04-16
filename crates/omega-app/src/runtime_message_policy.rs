@@ -672,6 +672,7 @@ mod tests {
                                 session_count: 0,
                                 active_session_id: Some("session-restored".to_string()),
                             },
+                            plan: omega_project::ProjectPlanSummary::default(),
                         }),
                     }),
                 },

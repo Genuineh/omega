@@ -1,12 +1,15 @@
 ---
-status: active
+content_revision: 96
+created: 2026-03-20
+generation_id: gen_000013_r000096
 last_verified_commit: N/A
 owner: omega-team
-created: 2026-03-20
-updated: 2026-03-26
-version: 0.1
-supersedes: []
+projection_version: 13
 related_prds: []
+source_doc_id: "spec:docs-specs-omega-app-package"
+status: active
+supersedes: []
+updated: 2026-03-26
 ---
 
 # Omega App Package Specification

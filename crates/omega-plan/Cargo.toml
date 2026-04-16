@@ -1,0 +1,15 @@
+[package]
+name = "omega-plan"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+omega-project-layout = { path = "../omega-project-layout" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util"] }
+toml = "0.8"
+
+[dev-dependencies]
+omega-test-support = { path = "../omega-test-support" }

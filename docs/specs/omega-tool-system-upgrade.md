@@ -1,12 +1,15 @@
 ---
-status: draft
+content_revision: 96
+created: 2026-03-23
+generation_id: gen_000013_r000096
 last_verified_commit: N/A
 owner: omega-team
-created: 2026-03-23
-updated: 2026-03-23
-version: 0.1
-supersedes: []
+projection_version: 13
 related_prds: []
+source_doc_id: "spec:docs-specs-omega-tool-system-upgrade"
+status: draft
+supersedes: []
+updated: 2026-03-23
 ---
 
 # Omega Tool System Upgrade Specification

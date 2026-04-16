@@ -1549,8 +1549,8 @@ impl App {
                 .map(|summary| {
                     format!(
                         "P {}/{}",
-                        summary.snapshot.sessions.len(),
-                        summary.snapshot.knowledge.memory.total_turns_archived
+                        summary.snapshot.plan.current_task_count,
+                        summary.snapshot.plan.history_task_count
                     )
                 })
                 .unwrap_or_else(|| "P --".to_string()),

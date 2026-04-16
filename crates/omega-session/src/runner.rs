@@ -95,6 +95,124 @@ struct StepRunOutput {
     stage_text: String,
     usage: Option<omega_core::Usage>,
     tool_capabilities: Option<ToolCapabilityDiagnostics>,
+    tool_runs: Vec<crate::ToolRun>,
+    model_name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TurnDeliveryChangedFile {
+    pub(crate) path: String,
+    pub(crate) kind: TurnDeliveryFileChangeKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TurnDeliveryFileChangeKind {
+    Create,
+    Update,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct TurnDeliverySummary {
+    pub(crate) primary_model: Option<String>,
+    pub(crate) llm_request_count: u32,
+    pub(crate) input_tokens: u32,
+    pub(crate) output_tokens: u32,
+    pub(crate) cache_creation_input_tokens: u32,
+    pub(crate) cache_read_input_tokens: u32,
+    pub(crate) tool_call_count: usize,
+    pub(crate) failed_tool_count: usize,
+    pub(crate) tool_counts: BTreeMap<String, u32>,
+    pub(crate) recognized_skill_ids: Vec<String>,
+    pub(crate) loaded_skill_ids: Vec<String>,
+    pub(crate) ignored_skill_ids: Vec<String>,
+    pub(crate) changed_files: Vec<TurnDeliveryChangedFile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TurnRunOutput {
+    pub(crate) final_text: String,
+    pub(crate) delivery_summary: TurnDeliverySummary,
+}
+
+#[derive(Debug, Default)]
+struct TurnDeliveryAccumulator {
+    primary_model: Option<String>,
+    llm_request_count: u32,
+    input_tokens: u32,
+    output_tokens: u32,
+    cache_creation_input_tokens: u32,
+    cache_read_input_tokens: u32,
+    tool_counts: BTreeMap<String, u32>,
+    failed_tool_count: usize,
+    changed_files: BTreeMap<String, TurnDeliveryFileChangeKind>,
+}
+
+impl TurnDeliveryAccumulator {
+    fn observe_step_run(&mut self, step_run: &StepRunOutput) {
+        self.llm_request_count += 1;
+        if self.primary_model.is_none() {
+            self.primary_model = step_run.model_name.clone();
+        }
+        if let Some(usage) = step_run.usage.as_ref() {
+            self.input_tokens = self.input_tokens.saturating_add(usage.input_tokens);
+            self.output_tokens = self.output_tokens.saturating_add(usage.output_tokens);
+            self.cache_creation_input_tokens = self
+                .cache_creation_input_tokens
+                .saturating_add(usage.cache_creation_input_tokens.unwrap_or(0));
+            self.cache_read_input_tokens = self
+                .cache_read_input_tokens
+                .saturating_add(usage.cache_read_input_tokens.unwrap_or(0));
+        }
+        for tool_run in &step_run.tool_runs {
+            *self.tool_counts.entry(tool_run.tool_name.clone()).or_insert(0) += 1;
+            if tool_run.status == crate::ToolRunStatus::Failed {
+                self.failed_tool_count += 1;
+            }
+            if let Some(kind) = delivery_change_kind(&tool_run.tool_name) {
+                let path = tool_run.invocation_preview.trim();
+                if !path.is_empty() {
+                    self.changed_files
+                        .entry(path.to_string())
+                        .and_modify(|existing| {
+                            if kind == TurnDeliveryFileChangeKind::Create {
+                                *existing = kind;
+                            }
+                        })
+                        .or_insert(kind);
+                }
+            }
+        }
+    }
+
+    fn finish(self, session_context: &SessionContext) -> TurnDeliverySummary {
+        TurnDeliverySummary {
+            primary_model: self.primary_model,
+            llm_request_count: self.llm_request_count,
+            input_tokens: self.input_tokens,
+            output_tokens: self.output_tokens,
+            cache_creation_input_tokens: self.cache_creation_input_tokens,
+            cache_read_input_tokens: self.cache_read_input_tokens,
+            tool_call_count: self.tool_counts.values().copied().map(|count| count as usize).sum(),
+            failed_tool_count: self.failed_tool_count,
+            tool_counts: self.tool_counts,
+            recognized_skill_ids: session_context.skill_routing.selected_skill_ids.clone(),
+            loaded_skill_ids: session_context.skill_routing.loaded_skill_ids.clone(),
+            ignored_skill_ids: session_context.skill_routing.ignored_skill_ids.clone(),
+            changed_files: self
+                .changed_files
+                .into_iter()
+                .map(|(path, kind)| TurnDeliveryChangedFile { path, kind })
+                .collect(),
+        }
+    }
+}
+
+fn delivery_change_kind(tool_name: &str) -> Option<TurnDeliveryFileChangeKind> {
+    match tool_name {
+        "create_file" => Some(TurnDeliveryFileChangeKind::Create),
+        "apply_patch" | "edit_file" | "write_file" => Some(TurnDeliveryFileChangeKind::Update),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -294,9 +412,10 @@ impl<'a> WorkflowTurnRunner<'a> {
         &self,
         agent: &mut Agent,
         session_context: &mut SessionContext,
-    ) -> anyhow::Result<String> {
+    ) -> anyhow::Result<TurnRunOutput> {
         self.ensure_turn_active()?;
         let hook_session = Arc::new(Mutex::new(self.hook_host.start_session()));
+        let mut delivery_accumulator = TurnDeliveryAccumulator::default();
         self.update_active_workflow(
             session_context,
             self.scene_catalog.root_workflow_id.clone(),
@@ -313,6 +432,7 @@ impl<'a> WorkflowTurnRunner<'a> {
             WorkflowRunRole::Root,
             session_context,
             hook_session.clone(),
+            &mut delivery_accumulator,
         )?;
 
         self.ensure_turn_active()?;
@@ -325,13 +445,19 @@ impl<'a> WorkflowTurnRunner<'a> {
             selected_workflow_id
         ));
 
-        self.run_workflow(
+        let final_text = self.run_workflow(
             agent,
             &selected_workflow_id,
             WorkflowRunRole::Child,
             session_context,
             hook_session,
-        )
+            &mut delivery_accumulator,
+        )?;
+
+		Ok(TurnRunOutput {
+			final_text,
+			delivery_summary: delivery_accumulator.finish(session_context),
+		})
     }
 
     fn run_workflow(
@@ -341,6 +467,7 @@ impl<'a> WorkflowTurnRunner<'a> {
         role: WorkflowRunRole,
         session_context: &mut SessionContext,
         hook_session: Arc<Mutex<omega_hooks::HookSession>>,
+        delivery_accumulator: &mut TurnDeliveryAccumulator,
     ) -> anyhow::Result<String> {
         self.update_active_workflow(session_context, workflow_id.to_string(), role);
         let (definition, prompts) = self.resolve_workflow_bundle(workflow_id)?;
@@ -501,6 +628,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                 };
                 last_usage = step_run.usage.clone();
                 last_tool_capabilities = step_run.tool_capabilities.clone();
+                delivery_accumulator.observe_step_run(&step_run);
                 let stage_text = step_run.stage_text;
 
                 match self.validate_step_output(
@@ -967,6 +1095,7 @@ impl<'a> WorkflowTurnRunner<'a> {
         )));
         let hook_error = Arc::new(Mutex::new(None::<String>));
         let usage = Arc::new(Mutex::new(None::<omega_core::Usage>));
+        let model_name = Arc::new(Mutex::new(None::<String>));
         let mut cancel_turn_rx = self.cancel_turn_rx.clone();
         let context_facade = Arc::clone(self.context_facade);
         let supervision_state = Arc::clone(&self.supervision_state);
@@ -1053,8 +1182,16 @@ impl<'a> WorkflowTurnRunner<'a> {
                 {
                     let tool_runs = tool_runs.clone();
                     let usage = usage.clone();
+                    let model_name = model_name.clone();
                     move |event| {
                         tool_runs.lock().unwrap().observe_chat_event(event);
+                        if let omega_core::ChatEvent::MessageStart {
+                            model: Some(step_model_name),
+                            ..
+                        } = event
+                        {
+                            *model_name.lock().unwrap() = Some(step_model_name.clone());
+                        }
                         if let omega_core::ChatEvent::MessageComplete {
                             usage: Some(usage_update),
                             ..
@@ -1074,11 +1211,16 @@ impl<'a> WorkflowTurnRunner<'a> {
         }
 
         let usage = usage.lock().unwrap().clone();
-        let tool_capabilities = Some(tool_runs.lock().unwrap().tool_metrics());
+        let model_name = model_name.lock().unwrap().clone();
+        let tracker = tool_runs.lock().unwrap();
+        let tool_capabilities = Some(tracker.tool_metrics());
+        let tool_runs = tracker.tool_runs();
         Ok(StepRunOutput {
             stage_text,
             usage,
             tool_capabilities,
+            tool_runs,
+            model_name,
         })
     }
 
@@ -1189,6 +1331,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                     .collect(),
                 step_outputs: session_context.step_outputs.clone(),
                 governance_events: session_context.governance_events.clone(),
+                selected_task: session_context.selected_task.clone(),
             },
             structured_input,
             todo_snapshot,
@@ -1278,6 +1421,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                     .cloned()
                     .map(step_summary_to_context)
                     .collect(),
+                selected_task: session_context.selected_task.clone(),
             },
             step: ContextStep {
                 id: step.id.clone(),
@@ -1338,6 +1482,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                         .cloned()
                         .map(step_summary_to_context)
                         .collect(),
+                    selected_task: step_input.session_context.selected_task.clone(),
                 },
                 step: ContextStep {
                     id: step_input.step.id.clone(),

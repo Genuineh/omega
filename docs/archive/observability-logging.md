@@ -1,20 +1,25 @@
 ---
-status: archived
-owner: omega-team
-created: 2026-03-18
-updated: 2026-04-02
 archived: 2026-04-02
-version: 1.0
-supersedes: []
+content_revision: 96
+created: 2026-03-18
+generation_id: gen_000013_r000096
+owner: omega-team
+projection_version: 13
+related_prds: []
+source_doc_id: "archive:docs-archive-observability-logging"
+status: archived
 superseded_by:
   - docs/decisions/005-tracing-observability.md
   - docs/guide/omega-dev-guide.md
-related_prds: []
+supersedes: []
+updated: 2026-04-02
 ---
 
-> **Archived 2026-04-02**: This PRD was completed and no longer drives active work. Keep it for the original rollout rationale and task breakdown. Use `docs/decisions/005-tracing-observability.md` for the durable decision and `docs/guide/omega-dev-guide.md` for the current operator-facing logging workflow.
-
 # 可观察性与日志系统
+
+## Overview
+
+> **Archived 2026-04-02**: This PRD was completed and no longer drives active work. Keep it for the original rollout rationale and task breakdown. Use `docs/decisions/005-tracing-observability.md` for the durable decision and `docs/guide/omega-dev-guide.md` for the current operator-facing logging workflow.
 
 ## Summary
 
