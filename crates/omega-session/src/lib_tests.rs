@@ -33,7 +33,7 @@ use super::{
     ConversationMessage, ProviderMarkupSanitizer, ResponseSectionDelta, ResponseSectionKind,
     ResponseSectionState, RuntimeContentKind, RuntimeEnvelopeRecorder, RuntimeMessage,
     RuntimeMessageEnvelope, RuntimeSource, RuntimeUiEffect, RuntimeUiEnvelope, SectionOrigin,
-    SessionContext, OverlayTarget, OperatorPickerIntent, UiContent,
+    DocumentNavigatorGroup, OverlayTarget, OperatorPickerIntent, SessionContext, UiContent,
     SessionSkillCatalog, SessionToolCatalog, StateMessage, StatusSlot, StatusValue,
     StepContextWriteKind, StepOutputAttemptKind, StepOutputStatus, StepSkillRequest,
     StepToolRequest, ToolRunStatus, UiMessageKind, UiSource, UiTarget, WorkflowRunRole,
@@ -1841,6 +1841,51 @@ fn spawn_command_document_query_emits_step_knowledge_summary() {
     assert_eq!(document.mode, "hybrid");
 }
 
+#[cfg(feature = "document-backend")]
+#[test]
+fn spawn_command_document_query_opens_document_navigator_overlay() {
+    let _embedding_backend_guard = force_mock_document_embedding_backend();
+    let root = unique_session_test_root("document-command-query-navigator");
+    write_document_fixture(&root);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: Arc::new(IdleClient),
+        system: "system".to_string(),
+        cwd: root,
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+
+    let recorded = run_command(&session, "/document query roadmap", 503);
+    let overlay = match show_overlay_content(&recorded, OverlayTarget::Detail) {
+        Some(UiContent::DocumentNavigator(request)) => request,
+        other => panic!("expected /document query navigator overlay, got {other:?}"),
+    };
+
+    assert!(overlay.navigator_id.starts_with("document-query:roadmap"));
+    assert_eq!(overlay.origin_label, "query: roadmap");
+    assert!(!overlay.entries.is_empty());
+    assert_eq!(overlay.active_entry_id, overlay.entries[0].id);
+    assert!(overlay
+        .entries
+        .iter()
+        .any(|entry| entry.group == DocumentNavigatorGroup::Context));
+    let active_entry = overlay
+        .entries
+        .iter()
+        .find(|entry| entry.id == overlay.active_entry_id)
+        .expect("active entry present");
+    assert!(!active_entry.body.lines.is_empty());
+}
+
 #[test]
 fn command_hint_renders_ready_state_for_document_query() {
     let root = unique_session_test_root("command-hint");
@@ -2317,7 +2362,7 @@ fn spawn_command_plan_links_emits_picker_overlay() {
 }
 
 #[test]
-fn spawn_command_plan_view_file_emits_detail_overlay() {
+fn spawn_command_plan_view_file_emits_document_navigator_overlay() {
     let root = unique_session_test_root("plan-command-view-file");
     write_document_fixture(&root);
     std::fs::create_dir_all(root.join("docs/specs")).unwrap();
@@ -2351,11 +2396,91 @@ fn spawn_command_plan_view_file_emits_detail_overlay() {
         "unexpected view-file command body: {view_body}"
     );
     let overlay = match show_overlay_content(&view_events, OverlayTarget::Detail) {
-        Some(UiContent::Text(text)) => text,
-        other => panic!("expected /plan view-file detail overlay, got {other:?}"),
+        Some(UiContent::DocumentNavigator(request)) => request,
+        other => panic!("expected /plan view-file navigator overlay, got {other:?}"),
     };
-    assert!(overlay.contains("Navigator"));
-    assert!(overlay.contains("Useful content."));
+    assert_eq!(overlay.navigator_id, "plan-view-file:docs/specs/navigator.md");
+    assert_eq!(overlay.active_entry_id, "docs/specs/navigator.md");
+    assert_eq!(overlay.entries.len(), 1);
+    let active_entry = overlay
+        .entries
+        .iter()
+        .find(|entry| entry.id == "docs/specs/navigator.md")
+        .expect("active entry");
+    assert_eq!(active_entry.group, DocumentNavigatorGroup::Context);
+    assert!(active_entry.body.lines.iter().any(|line| line.contains("Navigator")));
+    assert!(active_entry
+        .body
+        .lines
+        .iter()
+        .any(|line| line.contains("Useful content.")));
+}
+
+#[test]
+fn spawn_command_plan_open_link_emits_document_navigator_overlay() {
+    let root = unique_session_test_root("plan-command-open-link-navigator");
+    write_document_fixture(&root);
+    std::fs::create_dir_all(root.join("docs/specs")).unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("docs/specs/navigator.md"),
+        "---\nstatus: draft\n---\n\n# Navigator\n\nUseful content.\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("src/navigator.rs"), "pub fn navigator_overlay() {}\n").unwrap();
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: Arc::new(IdleClient),
+        system: "system".to_string(),
+        cwd: root.clone(),
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+
+    let _create = run_command(&session, "/plan create Build navigator", 5847);
+    let _design = run_command(
+        &session,
+        "/plan link TASK-0001 design docs/specs/navigator.md",
+        5848,
+    );
+    let _implementation = run_command(
+        &session,
+        "/plan link TASK-0001 implementation src/navigator.rs",
+        5849,
+    );
+    let _log = run_command(&session, "/plan log TASK-0001 Investigate navigator flow", 5850);
+
+    let recorded = run_command(&session, "/plan open-link TASK-0001 docs/specs/navigator.md", 5851);
+    let overlay = match show_overlay_content(&recorded, OverlayTarget::Detail) {
+        Some(UiContent::DocumentNavigator(request)) => request,
+        other => panic!("expected /plan open-link navigator overlay, got {other:?}"),
+    };
+
+    assert_eq!(overlay.navigator_id, "plan-links:TASK-0001");
+    assert_eq!(overlay.active_entry_id, "docs/specs/navigator.md");
+    assert!(overlay.entries.iter().any(|entry| {
+        entry.group == DocumentNavigatorGroup::Context && entry.id == "docs/specs/navigator.md"
+    }));
+    assert!(overlay.entries.iter().any(|entry| entry.id == "src/navigator.rs"));
+    assert!(overlay
+        .entries
+        .iter()
+        .any(|entry| entry.id.starts_with("log-entry:")));
+    let active_entry = overlay
+        .entries
+        .iter()
+        .find(|entry| entry.id == overlay.active_entry_id)
+        .expect("active entry present");
+    assert!(active_entry.body.lines.iter().any(|line| line.contains("Navigator")));
 }
 
 #[test]

@@ -1,7 +1,9 @@
 use ratatui::layout::Rect;
 
 use omega_session::{
-    OperatorPickerAction, OperatorPickerItem, OperatorPickerRequest, OperatorPickerShortcut,
+    DocumentNavigatorEntry, DocumentNavigatorEntryKind, DocumentNavigatorGroup,
+    DocumentNavigatorRequest, OperatorPickerAction, OperatorPickerItem, OperatorPickerRequest,
+    OperatorPickerShortcut,
 };
 
 use crate::app::Panel;
@@ -74,6 +76,224 @@ pub struct PickerOverlay {
     pub filter_mode: bool,
     pub selected: usize,
     pub dismiss_on_backdrop: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DocumentNavigatorFocus {
+    Rail,
+    Content,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentNavigatorRailItem {
+    pub id: String,
+    pub group: DocumentNavigatorGroup,
+    pub label: String,
+    pub subtitle: Option<String>,
+    pub kind: DocumentNavigatorEntryKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentNavigatorOverlay {
+    pub origin_panel: Panel,
+    pub request: DocumentNavigatorRequest,
+    pub selected: usize,
+    pub focus: DocumentNavigatorFocus,
+    pub content_scroll: usize,
+    pub history_entry_ids: Vec<String>,
+    pub dismiss_on_backdrop: bool,
+}
+
+impl DocumentNavigatorOverlay {
+    pub fn new(origin_panel: Panel, request: DocumentNavigatorRequest) -> Self {
+        let mut overlay = Self {
+            origin_panel,
+            request,
+            selected: 0,
+            focus: DocumentNavigatorFocus::Rail,
+            content_scroll: 0,
+            history_entry_ids: Vec::new(),
+            dismiss_on_backdrop: true,
+        };
+        overlay.sync_selection_to_active();
+        overlay
+    }
+
+    pub fn replace_request(&mut self, mut request: DocumentNavigatorRequest) {
+        let previous_active = self.request.active_entry_id.clone();
+        self.history_entry_ids
+            .retain(|id| request.entries.iter().any(|entry| entry.id == *id));
+        if !request
+            .entries
+            .iter()
+            .any(|entry| entry.id == request.active_entry_id)
+        {
+            if request.entries.iter().any(|entry| entry.id == previous_active) {
+                request.active_entry_id = previous_active.clone();
+            } else {
+                request.active_entry_id = request
+                    .entries
+                    .first()
+                    .map(|entry| entry.id.clone())
+                    .unwrap_or_default();
+            }
+        }
+        if previous_active != request.active_entry_id && !previous_active.is_empty() {
+            self.history_entry_ids.retain(|id| id != &previous_active);
+            self.history_entry_ids.push(previous_active);
+            if self.history_entry_ids.len() > 5 {
+                let overflow = self.history_entry_ids.len() - 5;
+                self.history_entry_ids.drain(0..overflow);
+            }
+        }
+        self.request = request;
+        self.content_scroll = 0;
+        self.sync_selection_to_active();
+    }
+
+    pub fn visible_items(&self) -> Vec<DocumentNavigatorRailItem> {
+        let mut items = self
+            .request
+            .entries
+            .iter()
+            .filter(|entry| entry.group != DocumentNavigatorGroup::History)
+            .map(rail_item_from_entry)
+            .collect::<Vec<_>>();
+
+        for entry_id in self.history_entry_ids.iter().rev() {
+            if let Some(entry) = self.entry_by_id(entry_id) {
+                items.push(DocumentNavigatorRailItem {
+                    id: entry.id.clone(),
+                    group: DocumentNavigatorGroup::History,
+                    label: entry.label.clone(),
+                    subtitle: entry.subtitle.clone(),
+                    kind: entry.kind,
+                });
+            }
+        }
+
+        items
+    }
+
+    pub fn active_entry(&self) -> Option<&DocumentNavigatorEntry> {
+        self.entry_by_id(&self.request.active_entry_id)
+    }
+
+    pub fn visible_items_len(&self) -> usize {
+        self.visible_items().len()
+    }
+
+    pub fn move_selection_up(&mut self) {
+        self.selected = self.selected.saturating_sub(1);
+    }
+
+    pub fn move_selection_down(&mut self) {
+        let len = self.visible_items_len();
+        if len > 0 {
+            self.selected = (self.selected + 1).min(len - 1);
+        }
+    }
+
+    pub fn move_selection_to_start(&mut self) {
+        self.selected = 0;
+    }
+
+    pub fn move_selection_to_end(&mut self) {
+        let len = self.visible_items_len();
+        if len > 0 {
+            self.selected = len - 1;
+        }
+    }
+
+    pub fn move_selection_by(&mut self, amount: usize, forward: bool) {
+        if forward {
+            let len = self.visible_items_len();
+            if len > 0 {
+                self.selected = self.selected.saturating_add(amount).min(len - 1);
+            }
+        } else {
+            self.selected = self.selected.saturating_sub(amount);
+        }
+    }
+
+    pub fn activate_selected(&mut self) {
+        let Some(selected_id) = self
+            .visible_items()
+            .get(self.selected)
+            .map(|item| item.id.clone())
+        else {
+            return;
+        };
+
+        if self.request.active_entry_id != selected_id {
+            let previous_active = self.request.active_entry_id.clone();
+            if !previous_active.is_empty() {
+                self.history_entry_ids.retain(|id| id != &previous_active);
+                self.history_entry_ids.push(previous_active);
+                if self.history_entry_ids.len() > 5 {
+                    let overflow = self.history_entry_ids.len() - 5;
+                    self.history_entry_ids.drain(0..overflow);
+                }
+            }
+            self.request.active_entry_id = selected_id;
+            self.content_scroll = 0;
+        }
+
+        self.sync_selection_to_active();
+    }
+
+    pub fn set_focus(&mut self, focus: DocumentNavigatorFocus) {
+        self.focus = focus;
+    }
+
+    pub fn toggle_focus(&mut self) {
+        self.focus = match self.focus {
+            DocumentNavigatorFocus::Rail => DocumentNavigatorFocus::Content,
+            DocumentNavigatorFocus::Content => DocumentNavigatorFocus::Rail,
+        };
+    }
+
+    pub fn scroll_content_up(&mut self, amount: usize) {
+        self.content_scroll = self.content_scroll.saturating_sub(amount);
+    }
+
+    pub fn scroll_content_down(&mut self, amount: usize) {
+        self.content_scroll = self.content_scroll.saturating_add(amount);
+    }
+
+    pub fn scroll_content_to_start(&mut self) {
+        self.content_scroll = 0;
+    }
+
+    pub fn scroll_content_to_end(&mut self, viewport_lines: usize) {
+        self.content_scroll = self
+            .active_entry()
+            .map(|entry| entry.body.lines.len().saturating_sub(viewport_lines.max(1)))
+            .unwrap_or(0);
+    }
+
+    fn sync_selection_to_active(&mut self) {
+        let active_id = self.request.active_entry_id.clone();
+        self.selected = self
+            .visible_items()
+            .iter()
+            .position(|item| item.id == active_id)
+            .unwrap_or(0);
+    }
+
+    fn entry_by_id(&self, id: &str) -> Option<&DocumentNavigatorEntry> {
+        self.request.entries.iter().find(|entry| entry.id == id)
+    }
+}
+
+fn rail_item_from_entry(entry: &DocumentNavigatorEntry) -> DocumentNavigatorRailItem {
+    DocumentNavigatorRailItem {
+        id: entry.id.clone(),
+        group: entry.group,
+        label: entry.label.clone(),
+        subtitle: entry.subtitle.clone(),
+        kind: entry.kind,
+    }
 }
 
 impl PickerOverlay {
@@ -230,6 +450,7 @@ pub enum OverlayState {
     SearchResults(SearchResultsOverlay),
     Confirm(ConfirmOverlay),
     Detail(DetailOverlay),
+    DocumentNavigator(DocumentNavigatorOverlay),
     Picker(PickerOverlay),
     InputPrompt(InputPromptOverlay),
 }
@@ -241,6 +462,7 @@ impl OverlayState {
             Self::SearchResults(overlay) => overlay.origin_panel,
             Self::Confirm(overlay) => overlay.origin_panel,
             Self::Detail(overlay) => overlay.origin_panel,
+            Self::DocumentNavigator(overlay) => overlay.origin_panel,
             Self::Picker(overlay) => overlay.origin_panel,
             Self::InputPrompt(overlay) => overlay.origin_panel,
         }
@@ -252,6 +474,7 @@ impl OverlayState {
             Self::SearchResults(_) => OverlaySize::Large,
             Self::Confirm(_) => OverlaySize::Small,
             Self::Detail(_) => OverlaySize::Large,
+            Self::DocumentNavigator(_) => OverlaySize::Large,
             Self::Picker(_) => OverlaySize::Medium,
             Self::InputPrompt(_) => OverlaySize::Small,
         }
@@ -263,6 +486,7 @@ impl OverlayState {
             Self::SearchResults(overlay) => overlay.dismiss_on_backdrop,
             Self::Confirm(overlay) => overlay.dismiss_on_backdrop,
             Self::Detail(overlay) => overlay.dismiss_on_backdrop,
+            Self::DocumentNavigator(overlay) => overlay.dismiss_on_backdrop,
             Self::Picker(overlay) => overlay.dismiss_on_backdrop,
             Self::InputPrompt(overlay) => overlay.dismiss_on_backdrop,
         }

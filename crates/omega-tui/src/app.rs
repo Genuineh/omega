@@ -7,16 +7,16 @@ use ratatui::{layout::Rect, widgets::ListState};
 
 use omega_observability::strip_ansi;
 use omega_session::{
-    ContextSupervisionSnapshot, OperatorPickerRequest, OverlayTarget, ResponseSectionState,
-    RuntimeUiEnvelope, SkillLoadSummary, StatusSlot, StatusValue, StepDiagnostics,
-    StepKnowledgeSummary, StepOutputStatus, StepSubflowRef, StepSubflowStatus, ToolRun,
-    ToolRunStatus, WorkflowRunRole,
+    ContextSupervisionSnapshot, DocumentNavigatorRequest, OperatorPickerRequest,
+    OverlayTarget, ResponseSectionState, RuntimeUiEnvelope, SkillLoadSummary, StatusSlot,
+    StatusValue, StepDiagnostics, StepKnowledgeSummary, StepOutputStatus, StepSubflowRef,
+    StepSubflowStatus, ToolRun, ToolRunStatus, WorkflowRunRole,
 };
 use omega_theme::RenderPalette;
 
 use crate::overlay::{
-    ConfirmChoice, ConfirmIntent, ConfirmOverlay, DetailOverlay, InputPromptOverlay, OverlayState,
-    PickerOverlay, SearchOverlay, SearchResultsOverlay,
+    ConfirmChoice, ConfirmIntent, ConfirmOverlay, DetailOverlay, DocumentNavigatorOverlay,
+    InputPromptOverlay, OverlayState, PickerOverlay, SearchOverlay, SearchResultsOverlay,
 };
 use crate::reducer::{session_status_from_status, workflow_summary_from_status, TuiUpdateReducer};
 use crate::sidebar::{SidebarSection, SidebarState};
@@ -565,6 +565,7 @@ impl App {
             | (OverlayTarget::Search, Some(OverlayState::SearchResults(_)))
             | (OverlayTarget::Confirm, Some(OverlayState::Confirm(_)))
             | (OverlayTarget::Detail, Some(OverlayState::Detail(_)))
+            | (OverlayTarget::Detail, Some(OverlayState::DocumentNavigator(_)))
             | (OverlayTarget::Picker, Some(OverlayState::Picker(_)))
             | (OverlayTarget::InputPrompt, Some(OverlayState::InputPrompt(_))) => {
                 self.close_overlay();
@@ -1655,6 +1656,22 @@ impl App {
         self.clear_leader_pending();
     }
 
+    pub fn open_document_navigator_overlay(&mut self, request: DocumentNavigatorRequest) {
+        match self.overlay.as_mut() {
+            Some(OverlayState::DocumentNavigator(overlay))
+                if overlay.request.navigator_id == request.navigator_id =>
+            {
+                overlay.replace_request(request);
+            }
+            _ => {
+                self.overlay = Some(OverlayState::DocumentNavigator(
+                    DocumentNavigatorOverlay::new(self.focused_panel, request),
+                ));
+            }
+        }
+        self.clear_leader_pending();
+    }
+
     fn open_tool_run_detail(&mut self, id: &str) -> Option<String> {
         let tool_run = self.tool_runs.iter().find(|tool_run| tool_run.id == id)?;
         let title = tool_run.detail.title.clone();
@@ -1716,6 +1733,10 @@ impl App {
                 overlay.scroll = overlay.scroll.saturating_sub(amount);
                 true
             }
+            Some(OverlayState::DocumentNavigator(overlay)) => {
+                overlay.scroll_content_up(amount);
+                true
+            }
             _ => false,
         }
     }
@@ -1728,6 +1749,10 @@ impl App {
             }
             Some(OverlayState::Detail(overlay)) => {
                 overlay.scroll = overlay.scroll.saturating_add(amount);
+                true
+            }
+            Some(OverlayState::DocumentNavigator(overlay)) => {
+                overlay.scroll_content_down(amount);
                 true
             }
             _ => false,
@@ -1744,6 +1769,10 @@ impl App {
                 overlay.scroll = 0;
                 true
             }
+            Some(OverlayState::DocumentNavigator(overlay)) => {
+                overlay.scroll_content_to_start();
+                true
+            }
             _ => false,
         }
     }
@@ -1757,6 +1786,10 @@ impl App {
             }
             Some(OverlayState::Detail(overlay)) => {
                 overlay.scroll = overlay.lines.len().saturating_sub(viewport_lines);
+                true
+            }
+            Some(OverlayState::DocumentNavigator(overlay)) => {
+                overlay.scroll_content_to_end(viewport_lines);
                 true
             }
             _ => false,

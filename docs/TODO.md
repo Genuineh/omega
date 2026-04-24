@@ -1,9 +1,9 @@
 ---
-content_revision: 118
-generation_id: gen_000037_r000118
+content_revision: 120
+generation_id: gen_000046_r000120
 last_verified_commit: N/A
 owner: omega-team
-projection_version: 37
+projection_version: 46
 source_doc_id: "todo:docs-todo"
 status: active
 updated: 2026-04-15
@@ -130,46 +130,3 @@ updated: 2026-04-15
 
 - `docs/README.md` 是阅读入口索引；`docs/TODO.md` 只负责 open work 与当前基线，不再充当历史总账。
 - 若需要某个已完成任务的完整背景，请进入对应 spec 或使用 git history，而不是继续把完成记录回填到本文件。
-
-## Project Tasks
-
-### TASK-0019: Create benchmark manifest and CLI
-
-- **Status**: Ready
-- **Priority**: p1
-- **Summary**: 建立 `omega-benchmark` 的 suite manifest、case loader、run config 和 batch CLI 主入口。
-
-### TASK-0020: Add Omega benchmark target
-
-- **Status**: Ready
-- **Priority**: p1
-- **Summary**: 建立 frontend-neutral 的 Omega benchmark target，统一收集 response、tool trace 和 delivery summary。
-- **Depends on**: `TASK-0019`
-
-### TASK-0021: Implement BFCL-style tool suite
-
-- **Status**: Backlog
-- **Priority**: p1
-- **Summary**: 实现 BFCL 风格工具调用评估，包括 simple、multiple、parallel 和 irrelevance case。
-- **Depends on**: `TASK-0019`, `TASK-0020`
-
-### TASK-0022: Implement GAIA-style task suite
-
-- **Status**: Backlog
-- **Priority**: p1
-- **Summary**: 实现 GAIA 风格综合任务评估，覆盖多步推理、工具协作和 evidence-aware completion。
-- **Depends on**: `TASK-0019`, `TASK-0020`
-
-### TASK-0023: Implement data quality evaluation
-
-- **Status**: Backlog
-- **Priority**: p1
-- **Summary**: 实现数据生成质量评估，统一 judge、win rate、schema validity 和人工抽样接口。
-- **Depends on**: `TASK-0019`, `TASK-0020`
-
-### TASK-0024: Add reports and regression baselines
-
-- **Status**: Backlog
-- **Priority**: p2
-- **Summary**: 沉淀 run summary、baseline compare 和回归报告，形成可持续比较的 benchmark 输出面。
-- **Depends on**: `TASK-0021`, `TASK-0022`, `TASK-0023`

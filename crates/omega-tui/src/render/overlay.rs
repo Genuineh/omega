@@ -9,7 +9,10 @@ use ratatui::{
 use omega_theme::RenderPalette as ColorScheme;
 
 use crate::app::{App, Panel};
-use crate::overlay::{overlay_area, ConfirmChoice, OverlayState};
+use crate::overlay::{
+    overlay_area, ConfirmChoice, DocumentNavigatorFocus, DocumentNavigatorOverlay,
+    DocumentNavigatorRailItem, OverlayState,
+};
 
 pub(super) fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorScheme) {
     let Some(overlay) = app.overlay.as_ref() else {
@@ -189,6 +192,121 @@ pub(super) fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorSch
                 footer_rect,
                 colors,
                 overlay_scroll_footer_text(scroll, content_rect.height as usize, detail.lines.len()),
+            );
+        }
+        OverlayState::DocumentNavigator(navigator) => {
+            let block = Block::default()
+                .border_type(colors.overlay_border_type)
+                .title(navigator.request.title.as_str())
+                .borders(Borders::ALL)
+                .border_style(overlay_border_style(colors))
+                .style(Style::default().bg(colors.overlay_bg));
+            let inner = padded_rect(block.inner(overlay_rect), 1, 1);
+            frame.render_widget(block, overlay_rect);
+
+            let sections = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(1), Constraint::Min(1), Constraint::Length(1)])
+                .split(inner);
+            frame.render_widget(
+                Paragraph::new(navigator.request.origin_label.as_str()).style(
+                    Style::default()
+                        .fg(colors.context_hint)
+                        .bg(colors.overlay_bg),
+                ),
+                sections[0],
+            );
+
+            let panes = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(34), Constraint::Min(1)])
+                .split(sections[1]);
+
+            let rail_block = Block::default()
+                .border_type(colors.overlay_border_type)
+                .title(if navigator.focus == DocumentNavigatorFocus::Rail {
+                    " Links * "
+                } else {
+                    " Links "
+                })
+                .borders(Borders::ALL)
+                .border_style(overlay_border_style(colors))
+                .style(Style::default().bg(colors.overlay_bg));
+            let active_title = navigator
+                .active_entry()
+                .map(|entry| format!(" {} [{}] ", entry.label, entry.kind.label()))
+                .unwrap_or_else(|| " Entry ".to_string());
+            let content_block = Block::default()
+                .border_type(colors.overlay_border_type)
+                .title(active_title)
+                .borders(Borders::ALL)
+                .border_style(overlay_border_style(colors))
+                .style(Style::default().bg(colors.overlay_bg));
+            let rail_inner = padded_rect(rail_block.inner(panes[0]), 1, 0);
+            let content_inner = padded_rect(content_block.inner(panes[1]), 1, 0);
+            frame.render_widget(rail_block, panes[0]);
+            frame.render_widget(content_block, panes[1]);
+
+            let rail_rows = build_document_navigator_rows(navigator, colors);
+            if rail_rows.is_empty() {
+                frame.render_widget(
+                    Paragraph::new("No linked entries.")
+                        .style(Style::default().fg(colors.context_hint).bg(colors.overlay_bg)),
+                    rail_inner,
+                );
+            } else {
+                let selected_row = rail_rows
+                    .iter()
+                    .position(|(entry_index, _)| *entry_index == Some(navigator.selected))
+                    .unwrap_or(0);
+                let viewport = rail_inner.height as usize;
+                let scroll = selected_row
+                    .saturating_sub(viewport.saturating_sub(1))
+                    .min(rail_rows.len().saturating_sub(viewport));
+                let items = rail_rows
+                    .into_iter()
+                    .skip(scroll)
+                    .take(viewport)
+                    .map(|(_, item)| item)
+                    .collect::<Vec<_>>();
+                frame.render_widget(
+                    List::new(items).style(Style::default().bg(colors.overlay_bg)),
+                    rail_inner,
+                );
+            }
+
+            let content_lines = navigator
+                .active_entry()
+                .map(document_navigator_content_lines)
+                .unwrap_or_else(|| vec!["No entry selected.".to_string()]);
+            let scroll = clamp_overlay_scroll(
+                navigator.content_scroll,
+                content_lines.len(),
+                content_inner.height as usize,
+            );
+            let items = content_lines
+                .iter()
+                .skip(scroll)
+                .take(content_inner.height as usize)
+                .map(|line| ListItem::new(line.clone()))
+                .collect::<Vec<_>>();
+            frame.render_widget(
+                List::new(items).style(Style::default().fg(colors.text).bg(colors.overlay_bg)),
+                content_inner,
+            );
+            frame.render_widget(
+                Paragraph::new(document_navigator_footer_text(
+                    navigator,
+                    scroll,
+                    content_inner.height as usize,
+                    content_lines.len(),
+                ))
+                .style(
+                    Style::default()
+                        .fg(colors.context_hint)
+                        .bg(colors.overlay_bg),
+                ),
+                sections[2],
             );
         }
         OverlayState::Picker(picker) => {
@@ -378,6 +496,9 @@ pub(super) fn overlay_hint_text(app: &App) -> &'static str {
         Some(OverlayState::Detail(_)) => {
             " Detail dialog: ↑/↓ PgUp/PgDn scroll  Home/End jump  Esc=Close"
         }
+        Some(OverlayState::DocumentNavigator(_)) => {
+            " Navigator: Tab switches focus  ↑/↓ move or scroll  Enter opens rail item  Esc=Close"
+        }
         Some(OverlayState::Picker(_)) => {
             " Picker popup: ↑/↓/j/k move  Enter=Primary action  Ctrl-*=Actions  /=Filter  Esc=Close"
         }
@@ -457,6 +578,108 @@ fn render_picker_item(
     }
 
     ListItem::new(Line::from(spans))
+}
+
+fn build_document_navigator_rows(
+    navigator: &DocumentNavigatorOverlay,
+    colors: &ColorScheme,
+) -> Vec<(Option<usize>, ListItem<'static>)> {
+    let items = navigator.visible_items();
+    let mut rows = Vec::new();
+    let mut last_group = None;
+    for (index, item) in items.iter().enumerate() {
+        if last_group != Some(item.group) {
+            rows.push((
+                None,
+                ListItem::new(Line::from(Span::styled(
+                    item.group.label().to_string(),
+                    Style::default()
+                        .fg(colors.context_label)
+                        .add_modifier(Modifier::BOLD),
+                ))),
+            ));
+            last_group = Some(item.group);
+        }
+        rows.push((
+            Some(index),
+            render_document_navigator_rail_item(
+                index == navigator.selected,
+                navigator.request.active_entry_id == item.id,
+                item,
+                colors,
+            ),
+        ));
+    }
+    rows
+}
+
+fn render_document_navigator_rail_item(
+    selected: bool,
+    active: bool,
+    item: &DocumentNavigatorRailItem,
+    colors: &ColorScheme,
+) -> ListItem<'static> {
+    let base_style = if selected {
+        Style::default()
+            .fg(colors.focus_border)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(colors.text)
+    };
+    let mut spans = vec![Span::styled(
+        if selected { "> " } else { "  " },
+        base_style,
+    )];
+    spans.push(Span::styled(item.label.clone(), base_style));
+    spans.push(Span::styled(
+        format!(" [{}]", item.kind.label()),
+        Style::default().fg(colors.context_hint),
+    ));
+    if active {
+        spans.push(Span::styled(
+            " [open]".to_string(),
+            Style::default().fg(colors.context_label),
+        ));
+    }
+    if let Some(subtitle) = item.subtitle.as_deref() {
+        spans.push(Span::styled(
+            format!(" - {subtitle}"),
+            Style::default().fg(colors.context_hint),
+        ));
+    }
+
+    ListItem::new(Line::from(spans))
+}
+
+fn document_navigator_content_lines(entry: &omega_session::DocumentNavigatorEntry) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(subtitle) = entry.body.subtitle.as_deref() {
+        lines.push(subtitle.to_string());
+    }
+    if !entry.body.breadcrumbs.is_empty() {
+        lines.push(format!("Path: {}", entry.body.breadcrumbs.join(" > ")));
+    }
+    lines.push(format!("Format: {}", entry.body.kind.label()));
+    if !entry.body.lines.is_empty() {
+        lines.push(String::new());
+        lines.extend(entry.body.lines.iter().cloned());
+    }
+    lines
+}
+
+fn document_navigator_footer_text(
+    navigator: &DocumentNavigatorOverlay,
+    scroll: usize,
+    viewport_height: usize,
+    total_lines: usize,
+) -> String {
+    let focus = match navigator.focus {
+        DocumentNavigatorFocus::Rail => "rail",
+        DocumentNavigatorFocus::Content => "content",
+    };
+    let position = overlay_scroll_footer_text(scroll, viewport_height, total_lines)
+        .unwrap_or_else(|| format!("lines 1-{}/{}", total_lines.min(viewport_height), total_lines));
+    format!("Tab=Focus ({focus})  Enter=Open  Esc=Close  {position}")
 }
 
 fn button_span(selected: bool, label: &str, colors: &ColorScheme) -> Span<'static> {

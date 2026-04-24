@@ -1,0 +1,57 @@
+{
+  "run_id": "run-20260417-040256",
+  "model": "default",
+  "timestamp": "2026-04-17T04:02:56.346618110+00:00",
+  "suites": [
+    {
+      "suite_id": "assistant-basic",
+      "track": "assistant",
+      "case_count": 4,
+      "passed": 2,
+      "failed": 2,
+      "aggregate_score": 0.6916666666666667,
+      "metrics": {
+        "evidence_completeness": 0.5,
+        "exact_match": 0.0,
+        "quasi_exact_match": 0.8,
+        "task_completion": 1.0
+      }
+    },
+    {
+      "suite_id": "data-quality-basic",
+      "track": "data-quality",
+      "case_count": 3,
+      "passed": 0,
+      "failed": 3,
+      "aggregate_score": 0.0,
+      "metrics": {
+        "judge_score": 0.0,
+        "schema_validity": 0.0,
+        "win_rate": 0.0
+      }
+    },
+    {
+      "suite_id": "tool-basic",
+      "track": "tool-calling",
+      "case_count": 5,
+      "passed": 2,
+      "failed": 3,
+      "aggregate_score": 0.5111111111111111,
+      "metrics": {
+        "argument_exact_match": 0.0,
+        "irrelevance_rejection_rate": 1.0,
+        "parallel_call_validity": 0.0,
+        "tool_selection_accuracy": 0.5555555555555555
+      }
+    }
+  ],
+  "total_cases": 12,
+  "passed": 4,
+  "failed": 8,
+  "errors": 0,
+  "timeouts": 0,
+  "skipped": 0,
+  "aggregate_score": 0.4435185185185186,
+  "total_latency_ms": 645793,
+  "total_tokens": 0
+}

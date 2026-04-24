@@ -1,0 +1,36 @@
+{
+  "id": "assistant-basic",
+  "track": "assistant",
+  "description": "Basic general assistant evaluation: exact match, quasi-exact match, and task completion.",
+  "cases": [
+    {
+      "id": "ga-capital",
+      "prompt": "What is the capital of France? Answer with just the city name.",
+      "expected": { "kind": "exact_match", "value": "Paris" },
+      "tags": ["factual", "simple"]
+    },
+    {
+      "id": "ga-arithmetic",
+      "prompt": "What is 7 * 8? Answer with just the number.",
+      "expected": { "kind": "exact_match", "value": "56" },
+      "tags": ["reasoning", "simple"]
+    },
+    {
+      "id": "ga-approximate",
+      "prompt": "What is pi to two decimal places? Answer with just the number.",
+      "expected": {
+        "kind": "quasi_exact_match",
+        "value": "3.14",
+        "tolerance": "0.005"
+      },
+      "tags": ["reasoning"]
+    },
+    {
+      "id": "ga-multi-step",
+      "prompt": "Find the file sizes of README.md and Cargo.toml, then tell me which one is larger. Answer with just the filename.",
+      "expected": null,
+      "allowed_tools": ["read_file", "list_dir"],
+      "tags": ["multi-step", "tool-use"]
+    }
+  ]
+}

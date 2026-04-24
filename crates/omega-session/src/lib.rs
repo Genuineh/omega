@@ -33,7 +33,8 @@ use omega_core::{
 use omega_document::{
     DocType as StructuredDocType,
     DocumentMutationMode as StructuredDocumentMutationMode,
-    DocumentOp as StructuredDocumentOp, OmegaDocument, StructuredDocumentSection,
+    DocumentOp as StructuredDocumentOp, OmegaDocument, StructuredDocumentRecord,
+    StructuredDocumentSection, StructuredDocsSnapshot,
 };
 use omega_hooks::HookHost;
 use omega_plan::{
@@ -93,18 +94,21 @@ pub use runtime_message::{
     SessionRoutingStatus, SharedRuntimeMessageBridge, StateMessage, WorkflowStepStatus,
 };
 pub use runtime_ui::{
-    ActivityTarget, CacheDiagnostics, ExecuteProgressDiagnostics, OperatorPickerAction,
+    ActivityTarget, CacheDiagnostics, DocumentNavigatorBody, DocumentNavigatorBodyKind,
+    DocumentNavigatorEntry, DocumentNavigatorEntryKind, DocumentNavigatorGroup,
+    DocumentNavigatorRequest, ExecuteProgressDiagnostics, OperatorPickerAction,
     OperatorPickerIntent, OperatorPickerItem, OperatorPickerOverlayBehavior,
     OperatorPickerRequest, OperatorPickerShortcut, OverlayRequest, OverlayTarget,
     ResponseSection, ResponseSectionDelta, ResponseSectionKind, ResponseSectionMetadata,
-    ResponseSectionState, RuntimeUiBridge, RuntimeUiEffect, RuntimeUiEnvelope, RuntimeUiMessage,
-    RuntimeUiSink, SectionOrigin, SessionRuntimeContext, SkillLoadSummary, StatusSlot,
-    StatusValue, StepContextWrite, StepContextWriteKind, StepDiagnostics,
-    StepInputDiagnostics, StepInputStatus, StepOutputAttemptKind, StepOutputContractMode,
-    StepOutputDiagnostics, StepOutputRecoveryDecision, StepOutputStatus, StepSubflowRef,
-    StepSubflowState, StepSubflowStatus, StepSummarySource, TokenCountSource,
-    ToolCapabilityDiagnostics, ToolRun, ToolRunDetail, ToolRunStatus, SessionRestoreSnapshot,
-    UiContent, UiMessageKind, UiPriority, UiSource, UiTarget, WorkflowRunRole,
+    ResponseSectionState, RuntimeUiBridge, RuntimeUiEffect, RuntimeUiEnvelope,
+    RuntimeUiMessage, RuntimeUiSink, SectionOrigin, SessionRuntimeContext,
+    SessionRestoreSnapshot, SkillLoadSummary, StatusSlot, StatusValue, StepContextWrite,
+    StepContextWriteKind, StepDiagnostics, StepInputDiagnostics, StepInputStatus,
+    StepOutputAttemptKind, StepOutputContractMode, StepOutputDiagnostics,
+    StepOutputRecoveryDecision, StepOutputStatus, StepSubflowRef, StepSubflowState,
+    StepSubflowStatus, StepSummarySource, TokenCountSource, ToolCapabilityDiagnostics,
+    ToolRun, ToolRunDetail, ToolRunStatus, UiContent, UiMessageKind, UiPriority,
+    UiSource, UiTarget, WorkflowRunRole,
 };
 pub use skill_catalog::{ResolvedSkillSet, SessionSkillCatalog};
 #[cfg(any(test, feature = "test-support"))]
@@ -1202,7 +1206,16 @@ fn execute_command(
     match invocation.name.as_str() {
         "document" => {
             let handle = active_project_handle(project_state);
-            execute_document_command(&handle.context_facade(), invocation, turn_context, progress)
+            let project_root = handle.root();
+            execute_document_command(
+                &project_root,
+                &handle.context_facade(),
+                turn_id,
+                tx,
+                invocation,
+                turn_context,
+                progress,
+            )
         }
         "project" => execute_project_command(
             project_state,
@@ -1540,13 +1553,13 @@ fn execute_plan_command(
         "view-file" => {
             let relative_path = parse_plan_view_file_args(&invocation.args)?;
             let project_root = active_project_handle(project_state).root();
-            let content = render_plan_view_file_content(&project_root, &relative_path)?;
+            let request = build_plan_view_file_navigator_request(&project_root, &relative_path)?;
             tx.send(RuntimeMessageEnvelope::state(
                 turn_id,
                 StateMessage::ShowOverlay {
                     request: OverlayRequest {
                         target: OverlayTarget::Detail,
-                        content: UiContent::Text(content),
+                        content: UiContent::DocumentNavigator(request),
                     },
                 },
             ));
@@ -1643,26 +1656,22 @@ fn execute_plan_command(
         }
         "open-link" => {
             let (task_id, target_id) = parse_plan_open_link_args(&invocation.args)?;
-            let overlay_content = if let Some(seq) = target_id.strip_prefix("log-entry:") {
-                let sequence = seq
-                    .parse::<u64>()
-                    .with_context(|| format!("invalid plan log entry id '{target_id}'"))?;
-                let entry = store
-                    .load_logs(&task_id, None)?
-                    .into_iter()
-                    .find(|entry| entry.seq == sequence)
-                    .ok_or_else(|| anyhow::anyhow!("unknown log entry '{}' for task '{}'", target_id, task_id))?;
-                render_plan_log_entry_detail(&task_id, &entry)
-            } else {
-                let project_root = active_project_handle(project_state).root();
-                render_plan_view_file_content(&project_root, &target_id)?
-            };
+            let task = store
+                .get_task(&task_id)?
+                .ok_or_else(|| anyhow::anyhow!("unknown task '{task_id}'"))?;
+            let project_root = active_project_handle(project_state).root();
+            let request = build_plan_links_navigator_request(
+                &project_root,
+                &store,
+                &task,
+                &target_id,
+            )?;
             tx.send(RuntimeMessageEnvelope::state(
                 turn_id,
                 StateMessage::ShowOverlay {
                     request: OverlayRequest {
                         target: OverlayTarget::Detail,
-                        content: UiContent::Text(overlay_content),
+                        content: UiContent::DocumentNavigator(request),
                     },
                 },
             ));
@@ -1789,7 +1798,10 @@ fn execute_plan_command(
 }
 
 fn execute_document_command(
+    project_root: &std::path::Path,
     context_facade: &Arc<OmegaContextFacade>,
+    turn_id: u64,
+    tx: &dyn RuntimeMessageBridge,
     invocation: OmegaCommandInvocation,
     turn_context: &mut SessionContext,
     progress: &mut dyn FnMut(&str),
@@ -1920,6 +1932,18 @@ fn execute_document_command(
                 sort: None,
                 max_results: 10,
             })?;
+            if !results.is_empty() {
+                let request = build_document_query_navigator_request(project_root, &query_text, &results);
+                tx.send(RuntimeMessageEnvelope::state(
+                    turn_id,
+                    StateMessage::ShowOverlay {
+                        request: OverlayRequest {
+                            target: OverlayTarget::Detail,
+                            content: UiContent::DocumentNavigator(request),
+                        },
+                    },
+                ));
+            }
             Ok(CommandExecutionOutput {
                 body: render_document_query_results(&query_text, &results),
                 state: ResponseSectionState::Complete,
@@ -5064,6 +5088,387 @@ fn build_plan_links_picker_request(
             },
         }],
     })
+}
+
+fn build_plan_links_navigator_request(
+    project_root: &std::path::Path,
+    store: &ProjectPlanStore,
+    task: &PlannedTask,
+    active_target_id: &str,
+) -> anyhow::Result<DocumentNavigatorRequest> {
+    let context = store
+        .resolve_task_context(&task.id)?
+        .ok_or_else(|| anyhow::anyhow!("unknown task '{}'", task.id))?;
+    let mut entries = Vec::new();
+    for link in &context.design_links {
+        entries.push(build_plan_link_navigator_entry(
+            project_root,
+            &task.id,
+            link,
+            TaskLinkSurface::Design,
+            DocumentNavigatorGroup::Context,
+        ));
+    }
+    for link in &context.implementation_links {
+        entries.push(build_plan_link_navigator_entry(
+            project_root,
+            &task.id,
+            link,
+            TaskLinkSurface::Implementation,
+            DocumentNavigatorGroup::Context,
+        ));
+    }
+    for entry in &context.recent_logs {
+        entries.push(build_plan_log_navigator_entry(
+            &task.id,
+            entry,
+            DocumentNavigatorGroup::Context,
+        ));
+    }
+
+    if !entries.iter().any(|entry| entry.id == active_target_id) {
+        anyhow::bail!("unknown linked artifact '{}' for task '{}'", active_target_id, task.id);
+    }
+
+    let snapshot = load_structured_docs_snapshot(project_root);
+    let mut known_ids = entries
+        .iter()
+        .map(|entry| entry.id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    entries.extend(build_related_doc_entries(
+        project_root,
+        snapshot.as_ref(),
+        active_target_id,
+        &mut known_ids,
+    ));
+
+    Ok(DocumentNavigatorRequest {
+        navigator_id: format!("plan-links:{}", task.id),
+        title: format!(" {}: {} ", task.id, task.title),
+        origin_label: format!("Task {} linked artifacts", task.id),
+        active_entry_id: active_target_id.to_string(),
+        entries,
+    })
+}
+
+fn build_plan_view_file_navigator_request(
+    project_root: &std::path::Path,
+    relative_path: &str,
+) -> anyhow::Result<DocumentNavigatorRequest> {
+    resolve_project_relative_file(project_root, relative_path)?;
+    let label = plan_link_display_name(relative_path);
+    let subtitle = Some(relative_path.to_string());
+    let is_doc = relative_path.ends_with(".md");
+    let mut entries = vec![DocumentNavigatorEntry {
+        id: relative_path.to_string(),
+        label: label.clone(),
+        subtitle: subtitle.clone(),
+        preview: preview_plan_link_file(project_root, relative_path),
+        group: DocumentNavigatorGroup::Context,
+        kind: if is_doc {
+            DocumentNavigatorEntryKind::Document
+        } else {
+            DocumentNavigatorEntryKind::File
+        },
+        disabled_reason: None,
+        body: build_file_navigator_body(
+            project_root,
+            relative_path,
+            label.clone(),
+            subtitle.clone(),
+            vec!["Project File".to_string()],
+            if is_doc {
+                DocumentNavigatorBodyKind::Markdown
+            } else {
+                DocumentNavigatorBodyKind::File
+            },
+        ),
+    }];
+
+    let snapshot = load_structured_docs_snapshot(project_root);
+    let mut known_ids = std::collections::BTreeSet::from([relative_path.to_string()]);
+    entries.extend(build_related_doc_entries(
+        project_root,
+        snapshot.as_ref(),
+        relative_path,
+        &mut known_ids,
+    ));
+
+    Ok(DocumentNavigatorRequest {
+        navigator_id: format!("plan-view-file:{}", relative_path),
+        title: format!(" File: {} ", label),
+        origin_label: format!("file: {}", relative_path),
+        active_entry_id: relative_path.to_string(),
+        entries,
+    })
+}
+
+fn build_document_query_navigator_request(
+    project_root: &std::path::Path,
+    query_text: &str,
+    results: &[omega_context::SearchResult],
+) -> DocumentNavigatorRequest {
+    let mut entries = results
+        .iter()
+        .map(|result| build_document_query_navigator_entry(project_root, query_text, result))
+        .collect::<Vec<_>>();
+    let active_entry_id = results
+        .first()
+        .map(|result| result.path.clone())
+        .unwrap_or_default();
+    let snapshot = load_structured_docs_snapshot(project_root);
+    let mut known_ids = entries
+        .iter()
+        .map(|entry| entry.id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    entries.extend(build_related_doc_entries(
+        project_root,
+        snapshot.as_ref(),
+        &active_entry_id,
+        &mut known_ids,
+    ));
+
+    DocumentNavigatorRequest {
+        navigator_id: format!("document-query:{}", query_text.trim()),
+        title: format!(" Document Query ({}) ", results.len()),
+        origin_label: format!("query: {}", query_text.trim()),
+        active_entry_id,
+        entries,
+    }
+}
+
+fn build_plan_link_navigator_entry(
+    project_root: &std::path::Path,
+    task_id: &str,
+    link: &TaskArtifactLink,
+    surface: TaskLinkSurface,
+    group: DocumentNavigatorGroup,
+) -> DocumentNavigatorEntry {
+    let label = link
+        .label
+        .clone()
+        .unwrap_or_else(|| plan_link_display_name(&link.path));
+    let surface_label = match surface {
+        TaskLinkSurface::Design => "Design",
+        TaskLinkSurface::Implementation => "Implementation",
+    };
+    let is_doc = is_doc_artifact_kind(link.kind);
+    let subtitle = Some(format!("{} · {}", surface_label, link.path));
+    let body_kind = if is_doc {
+        DocumentNavigatorBodyKind::Markdown
+    } else {
+        DocumentNavigatorBodyKind::File
+    };
+    DocumentNavigatorEntry {
+        id: link.path.clone(),
+        label: label.clone(),
+        subtitle: subtitle.clone(),
+        preview: preview_plan_link_file(project_root, &link.path),
+        group,
+        kind: if is_doc {
+            DocumentNavigatorEntryKind::Document
+        } else {
+            DocumentNavigatorEntryKind::File
+        },
+        disabled_reason: None,
+        body: build_file_navigator_body(
+            project_root,
+            &link.path,
+            label,
+            subtitle,
+            vec![task_id.to_string(), surface_label.to_string()],
+            body_kind,
+        ),
+    }
+}
+
+fn build_plan_log_navigator_entry(
+    task_id: &str,
+    entry: &TaskLogEntry,
+    group: DocumentNavigatorGroup,
+) -> DocumentNavigatorEntry {
+    let label = preview_text(&entry.summary, 80);
+    let subtitle = Some(format!("#{} {}", entry.seq, task_log_kind_label(entry.kind)));
+    let preview = render_plan_log_entry_detail(task_id, entry);
+    DocumentNavigatorEntry {
+        id: format!("log-entry:{}", entry.seq),
+        label: label.clone(),
+        subtitle: subtitle.clone(),
+        preview: Some(preview.clone()),
+        group,
+        kind: DocumentNavigatorEntryKind::Log,
+        disabled_reason: None,
+        body: DocumentNavigatorBody {
+            title: format!("{} · log #{}", task_id, entry.seq),
+            subtitle,
+            breadcrumbs: vec![task_id.to_string(), "Recent Log".to_string()],
+            kind: DocumentNavigatorBodyKind::Log,
+            lines: preview.lines().map(str::to_string).collect(),
+        },
+    }
+}
+
+fn build_document_query_navigator_entry(
+    project_root: &std::path::Path,
+    query_text: &str,
+    result: &omega_context::SearchResult,
+) -> DocumentNavigatorEntry {
+    let is_doc = result.doc_type.is_some() || result.path.ends_with(".md");
+    let label = plan_link_display_name(&result.path);
+    let subtitle = Some(format!(
+        "{} · {} · score {:.2}",
+        result.path,
+        search_mode_label(result.mode_used),
+        result.score,
+    ));
+    let preview = Some(preview_text(&result.preview, 160));
+    DocumentNavigatorEntry {
+        id: result.path.clone(),
+        label: label.clone(),
+        subtitle: subtitle.clone(),
+        preview,
+        group: DocumentNavigatorGroup::Context,
+        kind: if is_doc {
+            DocumentNavigatorEntryKind::Document
+        } else {
+            DocumentNavigatorEntryKind::SearchResult
+        },
+        disabled_reason: None,
+        body: build_search_result_navigator_body(
+            project_root,
+            query_text,
+            result,
+            label,
+            subtitle,
+            if is_doc {
+                DocumentNavigatorBodyKind::Markdown
+            } else {
+                DocumentNavigatorBodyKind::SearchPreview
+            },
+        ),
+    }
+}
+
+fn build_file_navigator_body(
+    project_root: &std::path::Path,
+    relative_path: &str,
+    title: String,
+    subtitle: Option<String>,
+    breadcrumbs: Vec<String>,
+    kind: DocumentNavigatorBodyKind,
+) -> DocumentNavigatorBody {
+    let lines = match render_plan_view_file_content(project_root, relative_path) {
+        Ok(content) => content.lines().map(str::to_string).collect(),
+        Err(error) => vec![
+            format!("File: {}", relative_path),
+            String::new(),
+            format!("Unable to load file: {}", error),
+        ],
+    };
+
+    DocumentNavigatorBody {
+        title,
+        subtitle,
+        breadcrumbs,
+        kind,
+        lines,
+    }
+}
+
+fn build_search_result_navigator_body(
+    project_root: &std::path::Path,
+    query_text: &str,
+    result: &omega_context::SearchResult,
+    title: String,
+    subtitle: Option<String>,
+    kind: DocumentNavigatorBodyKind,
+) -> DocumentNavigatorBody {
+    match render_plan_view_file_content(project_root, &result.path) {
+        Ok(content) => DocumentNavigatorBody {
+            title,
+            subtitle,
+            breadcrumbs: vec![
+                format!("query: {}", query_text.trim()),
+                search_mode_label(result.mode_used).to_string(),
+            ],
+            kind,
+            lines: content.lines().map(str::to_string).collect(),
+        },
+        Err(_) => DocumentNavigatorBody {
+            title,
+            subtitle,
+            breadcrumbs: vec![
+                format!("query: {}", query_text.trim()),
+                search_mode_label(result.mode_used).to_string(),
+            ],
+            kind: DocumentNavigatorBodyKind::SearchPreview,
+            lines: vec![
+                format!("Path: {}", result.path),
+                format!("Score: {:.2}", result.score),
+                format!("Mode: {}", search_mode_label(result.mode_used)),
+                String::new(),
+                preview_text(&result.preview, 400),
+            ],
+        },
+    }
+}
+
+fn load_structured_docs_snapshot(project_root: &std::path::Path) -> Option<StructuredDocsSnapshot> {
+    OmegaDocument::new(project_root.to_path_buf())
+        .structured_docs_snapshot()
+        .ok()
+}
+
+fn build_related_doc_entries(
+    project_root: &std::path::Path,
+    snapshot: Option<&StructuredDocsSnapshot>,
+    active_path: &str,
+    known_ids: &mut std::collections::BTreeSet<String>,
+) -> Vec<DocumentNavigatorEntry> {
+    let Some(snapshot) = snapshot else {
+        return Vec::new();
+    };
+    let Some(source_record) = find_structured_doc_record(snapshot, active_path) else {
+        return Vec::new();
+    };
+
+    let mut entries = Vec::new();
+    for relation in &source_record.relations {
+        let Some(target_record) = find_structured_doc_record(snapshot, &relation.target) else {
+            continue;
+        };
+        if !known_ids.insert(target_record.source_path.clone()) {
+            continue;
+        }
+        entries.push(DocumentNavigatorEntry {
+            id: target_record.source_path.clone(),
+            label: target_record.title.clone(),
+            subtitle: Some(format!("{} · {}", relation.kind, target_record.source_path)),
+            preview: preview_plan_link_file(project_root, &target_record.source_path),
+            group: DocumentNavigatorGroup::Related,
+            kind: DocumentNavigatorEntryKind::Document,
+            disabled_reason: None,
+            body: build_file_navigator_body(
+                project_root,
+                &target_record.source_path,
+                target_record.title.clone(),
+                Some(target_record.source_path.clone()),
+                vec![source_record.title.clone(), format!("Related via {}", relation.kind)],
+                DocumentNavigatorBodyKind::Markdown,
+            ),
+        });
+    }
+    entries
+}
+
+fn find_structured_doc_record<'a>(
+    snapshot: &'a StructuredDocsSnapshot,
+    target: &str,
+) -> Option<&'a StructuredDocumentRecord> {
+    snapshot
+        .records
+        .iter()
+        .find(|record| record.source_path == target || record.doc_id == target)
 }
 
 fn build_plan_link_picker_item(

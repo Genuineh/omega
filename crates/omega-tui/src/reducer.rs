@@ -190,6 +190,10 @@ impl TuiUpdateReducer {
                 text.lines().map(str::to_string).collect(),
             ),
             OverlayRequest {
+                target: OverlayTarget::Detail,
+                content: UiContent::DocumentNavigator(request),
+            } => app.open_document_navigator_overlay(request),
+            OverlayRequest {
                 target: OverlayTarget::Picker,
                 content: UiContent::OperatorPicker(request),
             } => app.open_picker_overlay(request),

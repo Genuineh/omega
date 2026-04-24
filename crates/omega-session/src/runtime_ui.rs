@@ -574,6 +574,91 @@ pub enum OperatorPickerIntent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentNavigatorRequest {
+    pub navigator_id: String,
+    pub title: String,
+    pub origin_label: String,
+    pub active_entry_id: String,
+    pub entries: Vec<DocumentNavigatorEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentNavigatorEntry {
+    pub id: String,
+    pub label: String,
+    pub subtitle: Option<String>,
+    pub preview: Option<String>,
+    pub group: DocumentNavigatorGroup,
+    pub kind: DocumentNavigatorEntryKind,
+    pub disabled_reason: Option<String>,
+    pub body: DocumentNavigatorBody,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentNavigatorBody {
+    pub title: String,
+    pub subtitle: Option<String>,
+    pub breadcrumbs: Vec<String>,
+    pub kind: DocumentNavigatorBodyKind,
+    pub lines: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DocumentNavigatorGroup {
+    Context,
+    Related,
+    History,
+}
+
+impl DocumentNavigatorGroup {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Context => "Context",
+            Self::Related => "Related",
+            Self::History => "History",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DocumentNavigatorEntryKind {
+    Document,
+    File,
+    Log,
+    SearchResult,
+}
+
+impl DocumentNavigatorEntryKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Document => "doc",
+            Self::File => "file",
+            Self::Log => "log",
+            Self::SearchResult => "result",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DocumentNavigatorBodyKind {
+    Markdown,
+    File,
+    Log,
+    SearchPreview,
+}
+
+impl DocumentNavigatorBodyKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Markdown => "markdown",
+            Self::File => "file",
+            Self::Log => "log",
+            Self::SearchPreview => "preview",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OverlayRequest {
     pub target: OverlayTarget,
     pub content: UiContent,
@@ -622,13 +707,16 @@ pub enum UiMessageKind {
 pub enum UiContent {
     Text(String),
     OperatorPicker(OperatorPickerRequest),
+    DocumentNavigator(DocumentNavigatorRequest),
 }
 
 impl UiContent {
     pub fn as_text(&self) -> &str {
         match self {
             Self::Text(text) => text,
-            Self::OperatorPicker(_) => panic!("ui content is not plain text"),
+            Self::OperatorPicker(_) | Self::DocumentNavigator(_) => {
+                panic!("ui content is not plain text")
+            }
         }
     }
 
@@ -638,6 +726,12 @@ impl UiContent {
             Self::OperatorPicker(request) => {
                 format!("picker:{} items={}", request.title, request.items.len())
             }
+            Self::DocumentNavigator(request) => format!(
+                "navigator:{} entries={} active={}",
+                request.title,
+                request.entries.len(),
+                request.active_entry_id,
+            ),
         }
     }
 }

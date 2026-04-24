@@ -1,6 +1,8 @@
 use omega_session::{
     ActivityTarget, CacheDiagnostics, ContextBudgetDiagnostics, ContextDiagnostics,
     ContextDocumentDiagnostics, ContextMemoryDiagnostics, ContextStoreDiagnostics,
+    DocumentNavigatorBody, DocumentNavigatorBodyKind, DocumentNavigatorEntry,
+    DocumentNavigatorEntryKind, DocumentNavigatorGroup, DocumentNavigatorRequest,
     ExecuteProgressDiagnostics, HealthScore, OperatorPickerAction, OperatorPickerIntent,
     OperatorPickerItem, OperatorPickerOverlayBehavior, OperatorPickerRequest,
     OperatorPickerShortcut, OverlayRequest, ResponseSection, ResponseSectionDelta,
@@ -216,6 +218,81 @@ fn sample_step_diagnostics() -> StepDiagnostics {
             tool_switch_after_failure: 1,
             same_intent_retry_count: 0,
         }),
+    }
+}
+
+fn sample_document_navigator_request() -> DocumentNavigatorRequest {
+    DocumentNavigatorRequest {
+        navigator_id: "plan-links:TASK-0001".to_string(),
+        title: " TASK-0001: Build navigator ".to_string(),
+        origin_label: "Task TASK-0001 linked artifacts".to_string(),
+        active_entry_id: "docs/specs/navigator.md".to_string(),
+        entries: vec![
+            DocumentNavigatorEntry {
+                id: "docs/specs/navigator.md".to_string(),
+                label: "Navigator Spec".to_string(),
+                subtitle: Some("Design · docs/specs/navigator.md".to_string()),
+                preview: Some("Shared overlay structure".to_string()),
+                group: DocumentNavigatorGroup::Context,
+                kind: DocumentNavigatorEntryKind::Document,
+                disabled_reason: None,
+                body: DocumentNavigatorBody {
+                    title: "Navigator Spec".to_string(),
+                    subtitle: Some("docs/specs/navigator.md".to_string()),
+                    breadcrumbs: vec!["TASK-0001".to_string(), "Design".to_string()],
+                    kind: DocumentNavigatorBodyKind::Markdown,
+                    lines: vec![
+                        "File: docs/specs/navigator.md".to_string(),
+                        String::new(),
+                        "Navigator body line 1".to_string(),
+                        "Navigator body line 2".to_string(),
+                    ],
+                },
+            },
+            DocumentNavigatorEntry {
+                id: "src/navigator.rs".to_string(),
+                label: "navigator.rs".to_string(),
+                subtitle: Some("Implementation · src/navigator.rs".to_string()),
+                preview: Some("pub fn navigator_overlay()".to_string()),
+                group: DocumentNavigatorGroup::Context,
+                kind: DocumentNavigatorEntryKind::File,
+                disabled_reason: None,
+                body: DocumentNavigatorBody {
+                    title: "navigator.rs".to_string(),
+                    subtitle: Some("src/navigator.rs".to_string()),
+                    breadcrumbs: vec!["TASK-0001".to_string(), "Implementation".to_string()],
+                    kind: DocumentNavigatorBodyKind::File,
+                    lines: vec![
+                        "File: src/navigator.rs".to_string(),
+                        String::new(),
+                        "pub fn navigator_overlay() {}".to_string(),
+                    ],
+                },
+            },
+            DocumentNavigatorEntry {
+                id: "docs/guide/linked-navigation.md".to_string(),
+                label: "Linked Navigation Guide".to_string(),
+                subtitle: Some("references · docs/guide/linked-navigation.md".to_string()),
+                preview: Some("Related navigation guidance".to_string()),
+                group: DocumentNavigatorGroup::Related,
+                kind: DocumentNavigatorEntryKind::Document,
+                disabled_reason: None,
+                body: DocumentNavigatorBody {
+                    title: "Linked Navigation Guide".to_string(),
+                    subtitle: Some("docs/guide/linked-navigation.md".to_string()),
+                    breadcrumbs: vec![
+                        "Navigator Spec".to_string(),
+                        "Related via references".to_string(),
+                    ],
+                    kind: DocumentNavigatorBodyKind::Markdown,
+                    lines: vec![
+                        "File: docs/guide/linked-navigation.md".to_string(),
+                        String::new(),
+                        "Guide line 1".to_string(),
+                    ],
+                },
+            },
+        ],
     }
 }
 
@@ -2740,6 +2817,71 @@ fn detail_overlay_target_can_be_shown_and_hidden() {
     ));
 
     assert!(app.overlay.is_none());
+}
+
+#[test]
+fn document_navigator_overlay_target_can_be_shown_and_hidden() {
+    let mut app = App::new();
+    let turn_id = app.begin_turn();
+
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::ShowOverlay(OverlayRequest {
+            target: OverlayTarget::Detail,
+            content: UiContent::DocumentNavigator(sample_document_navigator_request()),
+        }),
+    ));
+
+    match app.overlay.as_ref() {
+        Some(OverlayState::DocumentNavigator(overlay)) => {
+            assert_eq!(overlay.request.navigator_id, "plan-links:TASK-0001");
+            assert_eq!(overlay.request.active_entry_id, "docs/specs/navigator.md");
+            assert_eq!(overlay.visible_items_len(), 3);
+        }
+        other => panic!("expected document navigator overlay, got {other:?}"),
+    }
+
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::HideOverlay {
+            target: OverlayTarget::Detail,
+        },
+    ));
+
+    assert!(app.overlay.is_none());
+}
+
+#[test]
+fn document_navigator_overlay_updates_in_place_for_same_request_id() {
+    let mut app = App::new();
+    let turn_id = app.begin_turn();
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::ShowOverlay(OverlayRequest {
+            target: OverlayTarget::Detail,
+            content: UiContent::DocumentNavigator(sample_document_navigator_request()),
+        }),
+    ));
+
+    let mut updated = sample_document_navigator_request();
+    updated.active_entry_id = "src/navigator.rs".to_string();
+    updated.origin_label = "Task TASK-0001 linked artifacts (updated)".to_string();
+
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::ShowOverlay(OverlayRequest {
+            target: OverlayTarget::Detail,
+            content: UiContent::DocumentNavigator(updated),
+        }),
+    ));
+
+    match app.overlay.as_ref() {
+        Some(OverlayState::DocumentNavigator(overlay)) => {
+            assert_eq!(overlay.request.active_entry_id, "src/navigator.rs");
+            assert_eq!(overlay.request.origin_label, "Task TASK-0001 linked artifacts (updated)");
+        }
+        other => panic!("expected document navigator overlay, got {other:?}"),
+    }
 }
 
 #[test]

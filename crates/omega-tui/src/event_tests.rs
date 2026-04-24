@@ -4,9 +4,12 @@ use omega_core::DynLlmClient;
 use omega_keymap::{InteractionMode, KeymapManager};
 use omega_project::ProjectDetectionKind;
 use omega_session::{
-    ConversationMessage, OperatorPickerAction, OperatorPickerIntent, OperatorPickerItem,
+    ConversationMessage, DocumentNavigatorBody, DocumentNavigatorBodyKind,
+    DocumentNavigatorEntry, DocumentNavigatorEntryKind, DocumentNavigatorGroup,
+    DocumentNavigatorRequest, OperatorPickerAction, OperatorPickerIntent, OperatorPickerItem,
     OperatorPickerOverlayBehavior, OperatorPickerRequest, OperatorPickerShortcut,
-    ResponseSectionKind, ResponseSectionState, RuntimeMessage, StateMessage, WorkflowRunRole,
+    ResponseSectionKind, ResponseSectionState, RuntimeMessage, RuntimeUiEffect,
+    RuntimeUiEnvelope, StateMessage, WorkflowRunRole,
 };
 use omega_theme::OmegaTheme;
 use omega_test_support::persistent_test_root;
@@ -15,6 +18,7 @@ use ratatui::{backend::TestBackend, Terminal};
 use std::time::Duration;
 
 use crate::app::{Msg, Panel};
+use crate::reducer::TuiUpdateReducer;
 use crate::render::render;
 
 use super::*;
@@ -95,6 +99,27 @@ impl EventReplayHarness {
 
 fn event_test_root(name: &str) -> std::path::PathBuf {
     persistent_test_root(&format!("tui-{name}"))
+}
+
+fn apply_runtime_overlays_until_turn_finished(
+    app: &Arc<Mutex<App>>,
+    rx: &mpsc::Receiver<omega_session::RuntimeMessageEnvelope>,
+) {
+    loop {
+        let envelope = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let turn_id = envelope.turn_id;
+        match envelope.message {
+            RuntimeMessage::State(StateMessage::ShowOverlay { request }) => {
+                let mut app_guard = app.lock().unwrap();
+                TuiUpdateReducer::apply(
+                    &mut app_guard,
+                    RuntimeUiEnvelope::effect(turn_id, RuntimeUiEffect::ShowOverlay(request)),
+                );
+            }
+            RuntimeMessage::State(StateMessage::TurnFinished) => break,
+            _ => {}
+        }
+    }
 }
 
 fn write_document_fixture(root: &std::path::Path) {
@@ -1648,6 +1673,36 @@ fn picker_filter_reduces_visible_items() {
 }
 
 #[test]
+fn document_navigator_keys_switch_active_entry_and_scroll_content() {
+    let harness = EventReplayHarness::new();
+    {
+        let mut app_guard = harness.app.lock().unwrap();
+        app_guard.open_document_navigator_overlay(sample_document_navigator_request());
+    }
+
+    harness.replay_keys(&[
+        (KeyCode::Down, KeyModifiers::NONE),
+        (KeyCode::Enter, KeyModifiers::NONE),
+        (KeyCode::Tab, KeyModifiers::NONE),
+        (KeyCode::Down, KeyModifiers::NONE),
+    ]);
+
+    let app_guard = harness.app.lock().unwrap();
+    match app_guard.overlay.as_ref() {
+        Some(OverlayState::DocumentNavigator(overlay)) => {
+            assert_eq!(overlay.request.active_entry_id, "src/navigator.rs");
+            assert_eq!(overlay.focus, crate::overlay::DocumentNavigatorFocus::Content);
+            assert_eq!(overlay.content_scroll, 1);
+            assert_eq!(
+                overlay.history_entry_ids,
+                vec!["docs/specs/navigator.md".to_string()]
+            );
+        }
+        other => panic!("expected document navigator overlay, got {other:?}"),
+    }
+}
+
+#[test]
 fn picker_ctrl_shortcut_submits_slash_command_template() {
     let client: DynLlmClient = Arc::new(IdleClient);
     let root = event_test_root("picker-ctrl-shortcut");
@@ -1696,6 +1751,53 @@ fn picker_ctrl_shortcut_submits_slash_command_template() {
         .output_msgs
         .iter()
         .any(|message| message.text.contains("> /document health")));
+}
+
+#[test]
+fn picker_enter_submits_plan_view_file_and_opens_document_navigator_overlay() {
+    let client: DynLlmClient = Arc::new(IdleClient);
+    let root = event_test_root("picker-plan-view-file");
+    write_document_fixture(&root);
+    std::fs::write(
+        root.join("docs/specs/navigator.md"),
+        "---\nstatus: draft\n---\n\n# Navigator\n\nUseful content.\n",
+    )
+    .unwrap();
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let session = test_session(client, root, &runtime);
+    let app = Arc::new(Mutex::new(App::new()));
+    let (tx, rx) = mpsc::channel();
+    let keymap = KeymapManager::default();
+    {
+        let mut app_guard = app.lock().unwrap();
+        app_guard.open_picker_overlay(sample_plan_view_file_picker_request());
+    }
+
+    handle_key_event(
+        press_key(KeyCode::Enter, KeyModifiers::NONE),
+        &app,
+        &session,
+        &tx,
+        &keymap,
+    )
+    .unwrap();
+
+    apply_runtime_overlays_until_turn_finished(&app, &rx);
+
+    let app_guard = app.lock().unwrap();
+    match app_guard.overlay.as_ref() {
+        Some(OverlayState::DocumentNavigator(overlay)) => {
+            assert_eq!(overlay.request.navigator_id, "plan-view-file:docs/specs/navigator.md");
+            assert_eq!(overlay.request.active_entry_id, "docs/specs/navigator.md");
+            assert!(overlay
+                .request
+                .entries
+                .iter()
+                .any(|entry| entry.id == "docs/specs/navigator.md"));
+        }
+        other => panic!("expected document navigator overlay, got {other:?}"),
+    }
 }
 
 #[test]
@@ -1807,6 +1909,107 @@ fn sample_operator_picker_request() -> OperatorPickerRequest {
                 command_template: "/document health".to_string(),
             },
         }],
+    }
+}
+
+fn sample_plan_view_file_picker_request() -> OperatorPickerRequest {
+    OperatorPickerRequest {
+        picker_id: "plan-view-file".to_string(),
+        title: " Plan Files ".to_string(),
+        empty_state: "No files found.".to_string(),
+        filter_enabled: true,
+        items: vec![OperatorPickerItem {
+            id: "docs/specs/navigator.md".to_string(),
+            title: "navigator.md".to_string(),
+            subtitle: Some("docs/specs/navigator.md".to_string()),
+            badges: vec!["spec".to_string()],
+            preview: Some("Navigator".to_string()),
+            disabled_reason: None,
+        }],
+        primary_action: OperatorPickerAction {
+            action_id: "view-file".to_string(),
+            label: "Open".to_string(),
+            shortcut: OperatorPickerShortcut::Enter,
+            requires_selection: true,
+            overlay_behavior: OperatorPickerOverlayBehavior::CloseOverlay,
+            intent: OperatorPickerIntent::SubmitSlashCommand {
+                command_template: "/plan view-file {id}".to_string(),
+            },
+        },
+        secondary_actions: vec![],
+    }
+}
+
+fn sample_document_navigator_request() -> DocumentNavigatorRequest {
+    DocumentNavigatorRequest {
+        navigator_id: "plan-links:TASK-0001".to_string(),
+        title: " TASK-0001: Build navigator ".to_string(),
+        origin_label: "Task TASK-0001 linked artifacts".to_string(),
+        active_entry_id: "docs/specs/navigator.md".to_string(),
+        entries: vec![
+            DocumentNavigatorEntry {
+                id: "docs/specs/navigator.md".to_string(),
+                label: "Navigator Spec".to_string(),
+                subtitle: Some("Design · docs/specs/navigator.md".to_string()),
+                preview: Some("Shared overlay structure".to_string()),
+                group: DocumentNavigatorGroup::Context,
+                kind: DocumentNavigatorEntryKind::Document,
+                disabled_reason: None,
+                body: DocumentNavigatorBody {
+                    title: "Navigator Spec".to_string(),
+                    subtitle: Some("docs/specs/navigator.md".to_string()),
+                    breadcrumbs: vec!["TASK-0001".to_string(), "Design".to_string()],
+                    kind: DocumentNavigatorBodyKind::Markdown,
+                    lines: vec![
+                        "File: docs/specs/navigator.md".to_string(),
+                        String::new(),
+                        "Line 1".to_string(),
+                        "Line 2".to_string(),
+                        "Line 3".to_string(),
+                    ],
+                },
+            },
+            DocumentNavigatorEntry {
+                id: "src/navigator.rs".to_string(),
+                label: "navigator.rs".to_string(),
+                subtitle: Some("Implementation · src/navigator.rs".to_string()),
+                preview: Some("pub fn navigator_overlay()".to_string()),
+                group: DocumentNavigatorGroup::Context,
+                kind: DocumentNavigatorEntryKind::File,
+                disabled_reason: None,
+                body: DocumentNavigatorBody {
+                    title: "navigator.rs".to_string(),
+                    subtitle: Some("src/navigator.rs".to_string()),
+                    breadcrumbs: vec!["TASK-0001".to_string(), "Implementation".to_string()],
+                    kind: DocumentNavigatorBodyKind::File,
+                    lines: vec![
+                        "File: src/navigator.rs".to_string(),
+                        String::new(),
+                        "pub fn navigator_overlay() {}".to_string(),
+                        "pub fn open_related() {}".to_string(),
+                    ],
+                },
+            },
+            DocumentNavigatorEntry {
+                id: "docs/guide/linked-navigation.md".to_string(),
+                label: "Linked Navigation Guide".to_string(),
+                subtitle: Some("references · docs/guide/linked-navigation.md".to_string()),
+                preview: Some("Related navigation guidance".to_string()),
+                group: DocumentNavigatorGroup::Related,
+                kind: DocumentNavigatorEntryKind::Document,
+                disabled_reason: None,
+                body: DocumentNavigatorBody {
+                    title: "Linked Navigation Guide".to_string(),
+                    subtitle: Some("docs/guide/linked-navigation.md".to_string()),
+                    breadcrumbs: vec![
+                        "Navigator Spec".to_string(),
+                        "Related via references".to_string(),
+                    ],
+                    kind: DocumentNavigatorBodyKind::Markdown,
+                    lines: vec!["Guide line 1".to_string()],
+                },
+            },
+        ],
     }
 }
 

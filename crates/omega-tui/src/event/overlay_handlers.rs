@@ -124,6 +124,66 @@ pub(super) fn handle_overlay_key_event(
             }
             _ => {}
         },
+        OverlayState::DocumentNavigator(overlay) => match key.code {
+            KeyCode::Esc => {
+                app_guard.close_overlay();
+            }
+            KeyCode::Tab => {
+                overlay.toggle_focus();
+            }
+            KeyCode::Left if overlay.focus != crate::overlay::DocumentNavigatorFocus::Rail => {
+                overlay.set_focus(crate::overlay::DocumentNavigatorFocus::Rail);
+            }
+            KeyCode::Right if overlay.focus != crate::overlay::DocumentNavigatorFocus::Content => {
+                overlay.set_focus(crate::overlay::DocumentNavigatorFocus::Content);
+            }
+            KeyCode::Up | KeyCode::Char('k') if key.modifiers == KeyModifiers::NONE => {
+                if overlay.focus == crate::overlay::DocumentNavigatorFocus::Rail {
+                    overlay.move_selection_up();
+                } else {
+                    overlay.scroll_content_up(1);
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') if key.modifiers == KeyModifiers::NONE => {
+                if overlay.focus == crate::overlay::DocumentNavigatorFocus::Rail {
+                    overlay.move_selection_down();
+                } else {
+                    overlay.scroll_content_down(1);
+                }
+            }
+            KeyCode::PageUp => {
+                if overlay.focus == crate::overlay::DocumentNavigatorFocus::Rail {
+                    overlay.move_selection_by(page_step, false);
+                } else {
+                    overlay.scroll_content_up(page_step);
+                }
+            }
+            KeyCode::PageDown => {
+                if overlay.focus == crate::overlay::DocumentNavigatorFocus::Rail {
+                    overlay.move_selection_by(page_step, true);
+                } else {
+                    overlay.scroll_content_down(page_step);
+                }
+            }
+            KeyCode::Home => {
+                if overlay.focus == crate::overlay::DocumentNavigatorFocus::Rail {
+                    overlay.move_selection_to_start();
+                } else {
+                    overlay.scroll_content_to_start();
+                }
+            }
+            KeyCode::End => {
+                if overlay.focus == crate::overlay::DocumentNavigatorFocus::Rail {
+                    overlay.move_selection_to_end();
+                } else {
+                    overlay.scroll_content_to_end(viewport_lines);
+                }
+            }
+            KeyCode::Enter if overlay.focus == crate::overlay::DocumentNavigatorFocus::Rail => {
+                overlay.activate_selected();
+            }
+            _ => {}
+        },
         OverlayState::Detail(overlay) => match key.code {
             KeyCode::Esc => {
                 app_guard.close_overlay();

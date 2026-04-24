@@ -5,4 +5,19 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[[bin]]
+name = "omega-bench"
+path = "src/main.rs"
+
 [dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+
+omega-core = { path = "../crates/omega-core" }
+omega-client = { path = "../crates/omega-client", features = ["test-support"] }
+omega-session = { path = "../crates/omega-session", features = ["test-support"] }
+omega-workflow = { path = "../crates/omega-workflow" }

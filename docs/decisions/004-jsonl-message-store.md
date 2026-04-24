@@ -1,10 +1,10 @@
 ---
 adr_number: 004
 author: omega-team
-content_revision: 118
+content_revision: 120
 date: 2026-03-18
-generation_id: gen_000037_r000118
-projection_version: 37
+generation_id: gen_000046_r000120
+projection_version: 46
 reviewed_by: []
 source_doc_id: "adr:docs-decisions-004-jsonl-message-store"
 status: accepted

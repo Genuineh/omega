@@ -1,0 +1,39 @@
+{
+  "id": "data-quality-basic",
+  "track": "data_quality",
+  "description": "Basic data generation quality evaluation: schema validity and structured output checks.",
+  "cases": [
+    {
+      "id": "dq-json-person",
+      "prompt": "Generate a JSON object representing a person with fields: name (string), age (integer), email (string). Output only the JSON.",
+      "expected": {
+        "kind": "schema_valid",
+        "schema": {
+          "type": "object",
+          "required": ["name", "age", "email"]
+        }
+      },
+      "tags": ["schema", "simple"]
+    },
+    {
+      "id": "dq-json-list",
+      "prompt": "Generate a JSON array of 3 programming languages, each with fields: name (string) and year (integer). Output only the JSON.",
+      "expected": {
+        "kind": "schema_valid",
+        "schema": {
+          "type": "array"
+        }
+      },
+      "tags": ["schema", "simple"]
+    },
+    {
+      "id": "dq-quality-summary",
+      "prompt": "Write a one-paragraph summary of the Rust programming language. Focus on its memory safety guarantees and zero-cost abstractions.",
+      "expected": {
+        "kind": "judge_pass",
+        "rubric": "The summary should mention memory safety without garbage collection, ownership system, and zero-cost abstractions. It should be factually accurate and well-structured."
+      },
+      "tags": ["judge", "prose"]
+    }
+  ]
+}
