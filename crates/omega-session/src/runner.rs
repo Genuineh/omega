@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use omega_compression::{
-    LedgerSessionContextCompressor, SessionContextCompressor, SessionContextLoadGoal,
-    SessionContextLoadRequest, session_context_budget_tokens,
+    session_context_budget_tokens, LedgerSessionContextCompressor, SessionContextCompressor,
+    SessionContextLoadGoal, SessionContextLoadRequest,
 };
 use omega_context::{
     ContextCacheDiagnostics, ContextDiagnostics, ContextExecuteItem, ContextRouting,
@@ -12,9 +12,9 @@ use omega_context::{
     ContextTokenCountSource, ContextTokenCounter, ContextWorkflowRole, DocumentHitItem,
     DocumentHitSummary, DocumentSupervisionSnapshot, DocumentSupervisionTotals, HealthScore,
     MemoryHitItem, MemoryHitSummary, MemorySupervisionSnapshot, MemorySupervisionTotals,
-    ObservationRecallHitItem, OmegaContextFacade, OutputRepairContextRequest,
-    OutputRepairFailure, ResponseDocumentKnowledge, ResponseMemoryKnowledge, SearchMode,
-    SearchResult, StepContextRequest, StepKnowledgeSummary, SupervisionReadiness,
+    ObservationRecallHitItem, OmegaContextFacade, OutputRepairContextRequest, OutputRepairFailure,
+    ResponseDocumentKnowledge, ResponseMemoryKnowledge, SearchMode, SearchResult,
+    StepContextRequest, StepKnowledgeSummary, SupervisionReadiness,
 };
 use omega_core::{
     Agent, ChatRequest, CoreSharedTodoManager, CoreToolExecutionContext, CoreToolResult,
@@ -26,9 +26,8 @@ use omega_workflow::{
     DataFormat, OutputRecoveryMode, SceneCatalog, StepInputContract, StepLoopContract,
     StepOutputContract, WorkflowCatalog, WorkflowPromptCatalog, WorkflowPrompts, WorkflowStep,
     DEEP_RESEARCH_SCENE_ID, DEEP_RESEARCH_WORKFLOW_ID, EXECUTE_STEP_ID, FEATURE_SCENE_ID,
-    FEATURE_WORKFLOW_ID, PLAN_STEP_ID, RESEARCH_SCENE_ID, RESEARCH_WORKFLOW_ID,
-    ROOT_WORKFLOW_ID, SCENE_RECOGNITION_STEP_ID, SELECT_SKILLS_STEP_ID,
-    SELECT_WORKFLOW_STEP_ID,
+    FEATURE_WORKFLOW_ID, PLAN_STEP_ID, RESEARCH_SCENE_ID, RESEARCH_WORKFLOW_ID, ROOT_WORKFLOW_ID,
+    SCENE_RECOGNITION_STEP_ID, SELECT_SKILLS_STEP_ID, SELECT_WORKFLOW_STEP_ID,
 };
 use serde_json::Value;
 use tokio::runtime::Handle;
@@ -42,8 +41,8 @@ use crate::output::{
 };
 use crate::routing::{
     find_catalog_match, latest_user_turn_prefers_deep_research_scene,
-    latest_user_turn_prefers_research_scene,
-    latest_user_turn_requires_feature_scene, parse_structured_id, parse_structured_id_from_value,
+    latest_user_turn_prefers_research_scene, latest_user_turn_requires_feature_scene,
+    parse_structured_id, parse_structured_id_from_value,
 };
 use crate::session_state::{SessionContext, SkillRoutingContext, StepSummary};
 use crate::skill_catalog::normalize_skill_ids;
@@ -59,8 +58,8 @@ use crate::{
     StepOutputAttemptKind, StepOutputContractMode, StepOutputDiagnostics,
     StepOutputRecoveryDecision, StepOutputStatus, StepSubflowState, StepSubflowStatus,
     StepSummarySource, TokenCountSource, ToolCapabilityDiagnostics, WorkflowRunRole,
-    CONTEXT_SAFETY_MARGIN_TOKENS,
-    REPAIR_PASS_MAX_ITERATIONS, SUMMARY_CHAR_LIMIT, TOKEN_ESTIMATE_DIVISOR,
+    CONTEXT_SAFETY_MARGIN_TOKENS, REPAIR_PASS_MAX_ITERATIONS, SUMMARY_CHAR_LIMIT,
+    TOKEN_ESTIMATE_DIVISOR,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -164,7 +163,10 @@ impl TurnDeliveryAccumulator {
                 .saturating_add(usage.cache_read_input_tokens.unwrap_or(0));
         }
         for tool_run in &step_run.tool_runs {
-            *self.tool_counts.entry(tool_run.tool_name.clone()).or_insert(0) += 1;
+            *self
+                .tool_counts
+                .entry(tool_run.tool_name.clone())
+                .or_insert(0) += 1;
             if tool_run.status == crate::ToolRunStatus::Failed {
                 self.failed_tool_count += 1;
             }
@@ -192,7 +194,12 @@ impl TurnDeliveryAccumulator {
             output_tokens: self.output_tokens,
             cache_creation_input_tokens: self.cache_creation_input_tokens,
             cache_read_input_tokens: self.cache_read_input_tokens,
-            tool_call_count: self.tool_counts.values().copied().map(|count| count as usize).sum(),
+            tool_call_count: self
+                .tool_counts
+                .values()
+                .copied()
+                .map(|count| count as usize)
+                .sum(),
             failed_tool_count: self.failed_tool_count,
             tool_counts: self.tool_counts,
             recognized_skill_ids: session_context.skill_routing.selected_skill_ids.clone(),
@@ -454,10 +461,10 @@ impl<'a> WorkflowTurnRunner<'a> {
             &mut delivery_accumulator,
         )?;
 
-		Ok(TurnRunOutput {
-			final_text,
-			delivery_summary: delivery_accumulator.finish(session_context),
-		})
+        Ok(TurnRunOutput {
+            final_text,
+            delivery_summary: delivery_accumulator.finish(session_context),
+        })
     }
 
     fn run_workflow(
@@ -1147,11 +1154,7 @@ impl<'a> WorkflowTurnRunner<'a> {
                         }
 
                         let context_diagnostics = context_facade.diagnostics.context_diagnostics();
-                        update_document_supervision_hits(
-                            &supervision_state,
-                            name,
-                            tool_result,
-                        );
+                        update_document_supervision_hits(&supervision_state, name, tool_result);
                         send_context_supervision_snapshot(
                             &tx_callback,
                             turn_id,
@@ -1256,13 +1259,11 @@ impl<'a> WorkflowTurnRunner<'a> {
         current_execute_item: Option<ExecuteLoopItemContext>,
     ) -> anyhow::Result<StepExecutionInput> {
         let resolved_tools = self.tool_catalog.resolve_for_step(&step.tool_request);
-        let resolved_skills = self
-            .skill_catalog
-            .resolve_for_step(
-                self.input,
-                &session_context.skill_routing.loaded_skill_ids,
-                &step.skill_request,
-            );
+        let resolved_skills = self.skill_catalog.resolve_for_step(
+            self.input,
+            &session_context.skill_routing.loaded_skill_ids,
+            &step.skill_request,
+        );
         let structured_input = resolve_structured_input(session_context, step)?;
         let todo_snapshot = self.todo_snapshot_for_step(session_context, step);
         let mut step_request = self.build_step_context_request(
@@ -1284,12 +1285,9 @@ impl<'a> WorkflowTurnRunner<'a> {
             .context_facade
             .assemble_step_context(step_request.clone(), &token_counter)?;
         let initial_context = self.context_facade.diagnostics.context_diagnostics();
-        if let Some(rewrite) = self.maybe_rewrite_recall_queries(
-            step,
-            &step_request,
-            &assembled,
-            &initial_context,
-        )? {
+        if let Some(rewrite) =
+            self.maybe_rewrite_recall_queries(step, &step_request, &assembled, &initial_context)?
+        {
             step_request.recall_rewrite_reason = Some(rewrite.reason);
             step_request.recall_rewrite_queries = rewrite.queries;
             step_request.recall_recovery_path = Some(rewrite.recovery_path);
@@ -1653,16 +1651,19 @@ impl<'a> WorkflowTurnRunner<'a> {
                 session_writes: Vec::new(),
             },
         );
-        self.send_step_diagnostics_effect(None, build_step_diagnostics(
-            context,
-            Some(step_input.context_diagnostics.clone()),
-            Some(step_input.cache_diagnostics.clone()),
-            self.build_execute_progress_diagnostics(context.step, &progress_state),
-            build_step_input_diagnostics(step_input),
-            output,
-            Vec::new(),
+        self.send_step_diagnostics_effect(
             None,
-        ));
+            build_step_diagnostics(
+                context,
+                Some(step_input.context_diagnostics.clone()),
+                Some(step_input.cache_diagnostics.clone()),
+                self.build_execute_progress_diagnostics(context.step, &progress_state),
+                build_step_input_diagnostics(step_input),
+                output,
+                Vec::new(),
+                None,
+            ),
+        );
     }
 
     fn send_step_input_error_diagnostics(
@@ -1687,23 +1688,26 @@ impl<'a> WorkflowTurnRunner<'a> {
                 session_writes: Vec::new(),
             },
         );
-        self.send_step_diagnostics_effect(None, build_step_diagnostics(
-            context,
-            Some(self.context_facade.diagnostics.context_diagnostics()),
+        self.send_step_diagnostics_effect(
             None,
-            self.build_execute_progress_diagnostics(
-                context.step,
-                &ExecuteLoopProgressState {
-                    current_item: None,
-                    repeat_count: 0,
-                    completion_source: None,
-                },
+            build_step_diagnostics(
+                context,
+                Some(self.context_facade.diagnostics.context_diagnostics()),
+                None,
+                self.build_execute_progress_diagnostics(
+                    context.step,
+                    &ExecuteLoopProgressState {
+                        current_item: None,
+                        repeat_count: 0,
+                        completion_source: None,
+                    },
+                ),
+                build_failed_step_input_diagnostics(session_context, context.step, error),
+                output,
+                Vec::new(),
+                None,
             ),
-            build_failed_step_input_diagnostics(session_context, context.step, error),
-            output,
-            Vec::new(),
-            None,
-        ));
+        );
         error!(
             workflow_id = %context.workflow_id,
             workflow_role = %context.workflow_role.as_str(),
@@ -2013,10 +2017,11 @@ impl<'a> WorkflowTurnRunner<'a> {
                 format!("Recognized scene: {scene_id}. Selected workflow: {selected_workflow_id}.")
             }
             (WorkflowRunRole::Root, SELECT_SKILLS_STEP_ID) => {
-                let recognized_skill_ids = normalize_skill_ids(&self.resolve_selected_skill_ids_from_output(
-                    structured_output.as_ref(),
-                    &final_text,
-                ));
+                let recognized_skill_ids =
+                    normalize_skill_ids(&self.resolve_selected_skill_ids_from_output(
+                        structured_output.as_ref(),
+                        &final_text,
+                    ));
                 let selection_reason = selection_reason_from_output(structured_output.as_ref());
                 session_context.skill_routing = SkillRoutingContext {
                     selected_skill_ids: recognized_skill_ids.clone(),
@@ -2045,7 +2050,10 @@ impl<'a> WorkflowTurnRunner<'a> {
                 if recognized_skill_ids.is_empty() {
                     "Recognized routed skills: none.".to_string()
                 } else {
-                    format!("Recognized routed skills: {}.", recognized_skill_ids.join(", "))
+                    format!(
+                        "Recognized routed skills: {}.",
+                        recognized_skill_ids.join(", ")
+                    )
                 }
             }
             _ => canonical_step_summary_text(step, &final_text, structured_output.as_ref()),
@@ -2173,7 +2181,8 @@ impl<'a> WorkflowTurnRunner<'a> {
     ) -> anyhow::Result<Vec<StepContextWrite>> {
         match step.id.as_str() {
             PLAN_STEP_ID
-                if matches!(workflow_id, FEATURE_WORKFLOW_ID | DEEP_RESEARCH_WORKFLOW_ID) => {
+                if matches!(workflow_id, FEATURE_WORKFLOW_ID | DEEP_RESEARCH_WORKFLOW_ID) =>
+            {
                 self.sync_todo_manager_from_plan_output(structured_output)
             }
             EXECUTE_STEP_ID
@@ -2382,7 +2391,9 @@ impl<'a> WorkflowTurnRunner<'a> {
                         }
                     }
 
-                    if let Err(error) = validate_workflow_step_output(self.cwd, workflow_id, step, &value) {
+                    if let Err(error) =
+                        validate_workflow_step_output(self.cwd, workflow_id, step, &value)
+                    {
                         if first_failure.is_none() {
                             first_failure = Some(OutputValidationFailure::new(
                                 OutputValidationErrorKind::SemanticInvalid,
@@ -2466,7 +2477,9 @@ impl<'a> WorkflowTurnRunner<'a> {
                         }
                     }
 
-                    if let Err(error) = validate_workflow_step_output(self.cwd, workflow_id, step, &value) {
+                    if let Err(error) =
+                        validate_workflow_step_output(self.cwd, workflow_id, step, &value)
+                    {
                         if first_failure.is_none() {
                             first_failure = Some(OutputValidationFailure::new(
                                 OutputValidationErrorKind::SemanticInvalid,
@@ -2584,8 +2597,7 @@ impl<'a> WorkflowTurnRunner<'a> {
         if !matches!(
             workflow_id,
             FEATURE_WORKFLOW_ID | RESEARCH_WORKFLOW_ID | DEEP_RESEARCH_WORKFLOW_ID
-        )
-            || step.id != EXECUTE_STEP_ID
+        ) || step.id != EXECUTE_STEP_ID
             || !matches!(step.loop_contract, Some(StepLoopContract::TodoItems { .. }))
         {
             return Ok(());
@@ -2686,8 +2698,7 @@ impl<'a> WorkflowTurnRunner<'a> {
         if !matches!(
             workflow_id,
             FEATURE_WORKFLOW_ID | RESEARCH_WORKFLOW_ID | DEEP_RESEARCH_WORKFLOW_ID
-        )
-            || step.id != EXECUTE_STEP_ID
+        ) || step.id != EXECUTE_STEP_ID
             || !matches!(step.loop_contract, Some(StepLoopContract::TodoItems { .. }))
         {
             return None;
@@ -2947,11 +2958,7 @@ impl<'a> WorkflowTurnRunner<'a> {
         }
     }
 
-    fn emit_skill_load_response_section(
-        &self,
-        section_id: &str,
-        session_context: &SessionContext,
-    ) {
+    fn emit_skill_load_response_section(&self, section_id: &str, session_context: &SessionContext) {
         let section = crate::ResponseSection {
             id: section_id.to_string(),
             parent_id: None,
@@ -3609,9 +3616,7 @@ fn validate_report_step_output(final_text: &str) -> anyhow::Result<()> {
         .ok()
         .is_some_and(|value| matches!(value, Value::Object(_) | Value::Array(_)))
     {
-        anyhow::bail!(
-            "report step must produce user-facing prose, not a raw JSON object or array"
-        );
+        anyhow::bail!("report step must produce user-facing prose, not a raw JSON object or array");
     }
 
     Ok(())
@@ -4126,7 +4131,8 @@ fn build_step_knowledge_summary(
     context: &ContextDiagnostics,
     supervision_state: &ContextSupervisionState,
 ) -> Option<StepKnowledgeSummary> {
-    let document = build_response_document_knowledge(context, supervision_state.document_hits.clone());
+    let document =
+        build_response_document_knowledge(context, supervision_state.document_hits.clone());
     let memory = build_response_memory_knowledge(context, supervision_state.memory_hits.clone());
     if document.is_none() && memory.is_none() {
         None
@@ -4144,7 +4150,10 @@ fn build_response_document_knowledge(
         .operator_usage
         .iter()
         .any(|usage| usage.operator == "search_codebase");
-    let readiness = document_supervision_readiness_with_backend_enabled(context, cfg!(feature = "document-backend"));
+    let readiness = document_supervision_readiness_with_backend_enabled(
+        context,
+        cfg!(feature = "document-backend"),
+    );
     let hits = document_hits.as_ref();
 
     if hits.is_none() && !query_attempted {
@@ -4164,7 +4173,9 @@ fn build_response_document_knowledge(
     };
 
     Some(ResponseDocumentKnowledge {
-        raw_query: hits.map(|summary| summary.raw_query.clone()).unwrap_or_default(),
+        raw_query: hits
+            .map(|summary| summary.raw_query.clone())
+            .unwrap_or_default(),
         planned_queries: hits
             .map(|summary| summary.planned_queries.clone())
             .unwrap_or_default(),
@@ -4174,7 +4185,9 @@ fn build_response_document_knowledge(
             .unwrap_or_default(),
         recovery_path: hits.and_then(|summary| summary.recovery_path.clone()),
         readiness,
-        query: hits.map(|summary| summary.query.clone()).unwrap_or_default(),
+        query: hits
+            .map(|summary| summary.query.clone())
+            .unwrap_or_default(),
         mode: hits
             .map(|summary| summary.mode.clone())
             .unwrap_or_else(|| "unknown".to_string()),
@@ -4219,11 +4232,15 @@ fn build_response_memory_knowledge(
             .or_else(|| current_observations.and_then(|query| query.recovery_path.clone())),
         memory_query: current_query.map(|query| query.query.clone()),
         observation_query: current_observations.map(|query| query.query.clone()),
-        selected_summary_count: hits.map(|summary| summary.selected_count).unwrap_or_default(),
+        selected_summary_count: hits
+            .map(|summary| summary.selected_count)
+            .unwrap_or_default(),
         top_selected_summaries: hits
             .map(|summary| summary.top_hits.iter().take(3).cloned().collect())
             .unwrap_or_default(),
-        memory_hit_count: current_query.map(|query| query.result_count).unwrap_or_default(),
+        memory_hit_count: current_query
+            .map(|query| query.result_count)
+            .unwrap_or_default(),
         observation_hit_count: current_observations
             .map(|query| query.result_count)
             .unwrap_or_default(),
@@ -4321,7 +4338,10 @@ fn document_supervision_readiness_with_backend_enabled(
         }
         return SupervisionReadiness::Degraded;
     }
-    if matches!(context.document.governance_health, Some(HealthScore::Critical)) {
+    if matches!(
+        context.document.governance_health,
+        Some(HealthScore::Critical)
+    ) {
         return SupervisionReadiness::Degraded;
     }
     SupervisionReadiness::Ready
@@ -4343,7 +4363,8 @@ fn build_document_hit_summary(tool_result: &CoreToolResult) -> DocumentHitSummar
         .unwrap_or_default()
         .trim()
         .to_string();
-    let results = serde_json::from_str::<Vec<SearchResult>>(&tool_result.output).unwrap_or_default();
+    let results =
+        serde_json::from_str::<Vec<SearchResult>>(&tool_result.output).unwrap_or_default();
     let mode = results
         .first()
         .map(|result| search_mode_label(result.mode_used).to_string())
@@ -4367,7 +4388,9 @@ fn build_document_hit_summary(tool_result: &CoreToolResult) -> DocumentHitSummar
 
     DocumentHitSummary {
         raw_query: query.clone(),
-        planned_queries: (!query.is_empty()).then_some(vec![query.clone()]).unwrap_or_default(),
+        planned_queries: (!query.is_empty())
+            .then_some(vec![query.clone()])
+            .unwrap_or_default(),
         rewrite_reason: None,
         rewrite_queries: Vec::new(),
         recovery_path: None,
@@ -4701,8 +4724,7 @@ fn step_requires_structured_execute_output(
     matches!(
         workflow_id,
         FEATURE_WORKFLOW_ID | RESEARCH_WORKFLOW_ID | DEEP_RESEARCH_WORKFLOW_ID
-    )
-        && step.id == EXECUTE_STEP_ID
+    ) && step.id == EXECUTE_STEP_ID
         && current_item.is_some()
         && matches!(step.loop_contract, Some(StepLoopContract::TodoItems { .. }))
         && step
@@ -4785,9 +4807,9 @@ mod tests {
     use omega_hooks::HookHost;
     use omega_test_support::persistent_test_root;
     use omega_workflow::{
-        DataFormat, OutputRecoveryMode, StepInputContract, StepLoopMode, StepOutputContract,
-        StepSkillRequest, StepToolRequest, WorkflowStep, LoadedWorkflowCatalog,
-        RESEARCH_WORKFLOW_ID, ROOT_WORKFLOW_ID,
+        DataFormat, LoadedWorkflowCatalog, OutputRecoveryMode, StepInputContract, StepLoopMode,
+        StepOutputContract, StepSkillRequest, StepToolRequest, WorkflowStep, RESEARCH_WORKFLOW_ID,
+        ROOT_WORKFLOW_ID,
     };
     use tokio::sync::watch;
 
@@ -4799,9 +4821,9 @@ mod tests {
     };
     use crate::{
         output::parse_structured_output_candidates,
-        session_state::{SessionContext, StepSummary}, RuntimeContentKind,
-        RuntimeEnvelopeRecorder, RuntimeMessage, RuntimeSource, SessionSkillCatalog,
-        SessionToolCatalog, StateMessage, EXECUTE_STEP_ID, PLAN_STEP_ID,
+        session_state::{SessionContext, StepSummary},
+        RuntimeContentKind, RuntimeEnvelopeRecorder, RuntimeMessage, RuntimeSource,
+        SessionSkillCatalog, SessionToolCatalog, StateMessage, EXECUTE_STEP_ID, PLAN_STEP_ID,
     };
     use omega_context::{
         ContextDiagnostics, ContextDocumentDiagnostics, ContextMemoryDiagnostics,
@@ -4915,7 +4937,6 @@ mod tests {
         let preserved = maybe_compact_summary(&medium, SlotPriority::Medium, false, 0, 8);
         assert_eq!(preserved.summary, medium.summary);
     }
-
 
     #[test]
     fn validate_execute_step_output_accepts_single_execute_object_wrapped_in_prose() {
@@ -5297,12 +5318,7 @@ mod tests {
         let statuses = manager
             .items()
             .iter()
-            .map(|item| {
-                (
-                    item.id.clone().unwrap_or_default(),
-                    item.status.clone(),
-                )
-            })
+            .map(|item| (item.id.clone().unwrap_or_default(), item.status.clone()))
             .collect::<Vec<_>>();
         assert_eq!(
             statuses,
@@ -5316,20 +5332,23 @@ mod tests {
 
     #[test]
     fn document_supervision_marks_missing_active_store_as_uninitialized() {
-        let readiness = document_supervision_readiness_with_backend_enabled(&ContextDiagnostics {
-            document: ContextDocumentDiagnostics {
-                total_files_indexed: 0,
-                total_chunks: 0,
-                total_embeddings: 0,
-                active_version: None,
-                pending_version: None,
-                last_promotion_error: None,
-                ..ContextDocumentDiagnostics::default()
+        let readiness = document_supervision_readiness_with_backend_enabled(
+            &ContextDiagnostics {
+                document: ContextDocumentDiagnostics {
+                    total_files_indexed: 0,
+                    total_chunks: 0,
+                    total_embeddings: 0,
+                    active_version: None,
+                    pending_version: None,
+                    last_promotion_error: None,
+                    ..ContextDocumentDiagnostics::default()
+                },
+                memory: ContextMemoryDiagnostics::default(),
+                store: ContextStoreDiagnostics::default(),
+                ..ContextDiagnostics::default()
             },
-            memory: ContextMemoryDiagnostics::default(),
-            store: ContextStoreDiagnostics::default(),
-            ..ContextDiagnostics::default()
-        }, true);
+            true,
+        );
 
         assert_eq!(readiness, SupervisionReadiness::Uninitialized);
     }

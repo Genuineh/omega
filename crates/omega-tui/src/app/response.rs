@@ -1,11 +1,10 @@
 use omega_observability::strip_ansi;
-use omega_session::{
-    ResponseDocumentKnowledge, ResponseMemoryKnowledge, ResponseSection,
-    ResponseSectionKind, ResponseSectionMetadata, ResponseSectionState, SectionOrigin,
-    SessionRestoreSnapshot, StatusSlot, StatusValue, StepSubflowRef, StepSubflowState, ToolRun,
-    ToolRunStatus,
-};
 use omega_project::{SessionContextRecordKind, SessionReplayEntryKind};
+use omega_session::{
+    ResponseDocumentKnowledge, ResponseMemoryKnowledge, ResponseSection, ResponseSectionKind,
+    ResponseSectionMetadata, ResponseSectionState, SectionOrigin, SessionRestoreSnapshot,
+    StatusSlot, StatusValue, StepSubflowRef, StepSubflowState, ToolRun, ToolRunStatus,
+};
 
 use crate::render::markdown::{parse_markdown_lines, MdLineKind, StyledSpan};
 
@@ -157,8 +156,12 @@ impl App {
 
             match entry.kind {
                 SessionReplayEntryKind::UserTurn => self.push_msg(MsgKind::User, &entry.body),
-                SessionReplayEntryKind::AssistantResponse => self.push_msg(MsgKind::Agent, &entry.body),
-                SessionReplayEntryKind::SystemNotice => self.push_msg(MsgKind::Separator, &entry.body),
+                SessionReplayEntryKind::AssistantResponse => {
+                    self.push_msg(MsgKind::Agent, &entry.body)
+                }
+                SessionReplayEntryKind::SystemNotice => {
+                    self.push_msg(MsgKind::Separator, &entry.body)
+                }
                 SessionReplayEntryKind::ToolSummary => {
                     self.add_log(format!("[tool] {}", entry.body));
                 }
@@ -212,7 +215,10 @@ impl App {
             restore_notice.push_str(" Full visible ledger history restored.");
         }
         if snapshot.archived_turn_count > 0 {
-            restore_notice.push_str(&format!(" Archived turns: {}.", snapshot.archived_turn_count));
+            restore_notice.push_str(&format!(
+                " Archived turns: {}.",
+                snapshot.archived_turn_count
+            ));
         }
         self.push_msg(MsgKind::Separator, &restore_notice);
 
@@ -251,7 +257,10 @@ impl App {
         self.activate_response_action(action)
     }
 
-    fn activate_response_action(&mut self, action: ResponseLineAction) -> Option<ResponseActivation> {
+    fn activate_response_action(
+        &mut self,
+        action: ResponseLineAction,
+    ) -> Option<ResponseActivation> {
         match action {
             ResponseLineAction::ToggleThinkingSection(id) => {
                 let collapsed = self.toggle_thinking_section(&id)?;
@@ -712,8 +721,10 @@ impl App {
                                 spans: Vec::new(),
                             }]
                         } else {
-                            let body_lines = visible_thinking_body_lines(&message.text, message_state);
-                            let thinking_prefix = thinking_body_prefix(message_state, self.spinner_tick);
+                            let body_lines =
+                                visible_thinking_body_lines(&message.text, message_state);
+                            let thinking_prefix =
+                                thinking_body_prefix(message_state, self.spinner_tick);
                             if body_lines.len() == 1 && body_lines[0].is_empty() {
                                 vec![ResponseDisplayLine {
                                     kind: message.kind,
@@ -953,10 +964,7 @@ impl App {
         {
             return vec![ResponseDisplayLine {
                 kind: MsgKind::Step,
-                text: format!(
-                    "  subflow  {}-{}  ◦",
-                    group_ref.parent_step_id, item_index
-                ),
+                text: format!("  subflow  {}-{}  ◦", group_ref.parent_step_id, item_index),
                 is_header: false,
                 message_id: None,
                 action: None,
@@ -995,8 +1003,7 @@ impl App {
             .map(|status| status.status)
             .or_else(|| todo_fallback.as_ref().map(|fallback| fallback.status))
             .unwrap_or(StepSubflowState::Queued);
-        let status = if active_blocking_status
-            .is_some_and(|active| active.item_index < item_index)
+        let status = if active_blocking_status.is_some_and(|active| active.item_index < item_index)
         {
             StepSubflowState::Queued
         } else {
@@ -1043,10 +1050,7 @@ impl App {
                 .as_deref()
                 .and_then(|section_id| self.knowledge_summary_for_section(section_id));
             let body_lines = split_or_empty(&primary.text);
-            if body_lines.len() == 1
-                && body_lines[0].is_empty()
-                && knowledge_summary.is_none()
-            {
+            if body_lines.len() == 1 && body_lines[0].is_empty() && knowledge_summary.is_none() {
                 lines.push(ResponseDisplayLine {
                     kind: MsgKind::Step,
                     text: "    …".to_string(),
@@ -1135,10 +1139,7 @@ impl App {
                     let name_width = tool_name_width(&tool_runs);
                     lines.extend(tool_runs.into_iter().map(|tool_run| ResponseDisplayLine {
                         kind: MsgKind::Step,
-                        text: format!(
-                            "      {}",
-                            format_tool_summary(tool_run, name_width).trim()
-                        ),
+                        text: format!("      {}", format_tool_summary(tool_run, name_width).trim()),
                         is_header: false,
                         message_id: primary.id.clone(),
                         action: Some(ResponseLineAction::OpenToolRunDetail(tool_run.id.clone())),
@@ -1223,7 +1224,10 @@ impl App {
         self.step_subflows.iter().find(|status| {
             status.workflow_id == subflow_ref.parent_workflow_id
                 && status.step_id == subflow_ref.parent_step_id
-                && matches!(status.status, StepSubflowState::Running | StepSubflowState::Failed)
+                && matches!(
+                    status.status,
+                    StepSubflowState::Running | StepSubflowState::Failed
+                )
         })
     }
 
@@ -1288,7 +1292,9 @@ impl App {
                 ),
                 is_header: false,
                 message_id: Some(section_id.to_string()),
-                action: Some(ResponseLineAction::OpenSkillLoadDetail(section_id.to_string())),
+                action: Some(ResponseLineAction::OpenSkillLoadDetail(
+                    section_id.to_string(),
+                )),
                 is_tool_line: true,
                 tool_status: None,
                 response_state: None,
@@ -1303,7 +1309,9 @@ impl App {
                 ),
                 is_header: false,
                 message_id: Some(section_id.to_string()),
-                action: Some(ResponseLineAction::OpenSkillLoadDetail(section_id.to_string())),
+                action: Some(ResponseLineAction::OpenSkillLoadDetail(
+                    section_id.to_string(),
+                )),
                 is_tool_line: true,
                 tool_status: None,
                 response_state: None,
@@ -1332,10 +1340,7 @@ impl App {
         vec![
             ResponseDisplayLine {
                 kind,
-                text: format!(
-                    "{indent}delivery  {}",
-                    summary.summary_line()
-                ),
+                text: format!("{indent}delivery  {}", summary.summary_line()),
                 is_header: false,
                 message_id: Some(section_id.to_string()),
                 action: Some(ResponseLineAction::OpenDeliveryDetail(turn_id)),
@@ -1393,10 +1398,7 @@ impl App {
         if let Some(document) = summary.document.as_ref() {
             lines.push(ResponseDisplayLine {
                 kind,
-                text: format!(
-                    "{indent}  {}",
-                    format_document_knowledge_summary(document)
-                ),
+                text: format!("{indent}  {}", format_document_knowledge_summary(document)),
                 is_header: false,
                 message_id: Some(section_id.to_string()),
                 action: Some(ResponseLineAction::OpenDocumentKnowledgeDetail(
@@ -1431,7 +1433,11 @@ impl App {
     }
 
     fn open_document_knowledge_detail(&mut self, section_id: &str) -> Option<()> {
-        let summary = self.step_knowledge_summaries.get(section_id)?.document.as_ref()?;
+        let summary = self
+            .step_knowledge_summaries
+            .get(section_id)?
+            .document
+            .as_ref()?;
         self.open_detail_overlay(
             " Document Knowledge ",
             build_document_knowledge_detail_lines(summary),
@@ -1440,7 +1446,11 @@ impl App {
     }
 
     fn open_memory_knowledge_detail(&mut self, section_id: &str) -> Option<()> {
-        let summary = self.step_knowledge_summaries.get(section_id)?.memory.as_ref()?;
+        let summary = self
+            .step_knowledge_summaries
+            .get(section_id)?
+            .memory
+            .as_ref()?;
         self.open_detail_overlay(
             " Memory Knowledge ",
             build_memory_knowledge_detail_lines(summary),
@@ -1688,7 +1698,10 @@ fn render_markdown_body_lines(
                 markdown_buffer.clear();
             }
 
-            let mut table_block = vec![raw_lines[index].to_string(), raw_lines[index + 1].to_string()];
+            let mut table_block = vec![
+                raw_lines[index].to_string(),
+                raw_lines[index + 1].to_string(),
+            ];
             index += 2;
             while index < raw_lines.len() && is_markdown_table_row(raw_lines[index]) {
                 table_block.push(raw_lines[index].to_string());
@@ -1779,9 +1792,7 @@ fn parse_section_heading(line: &str) -> Option<String> {
 fn classify_report_section(title: &str) -> ResponseCardSectionKind {
     let normalized = normalize_section_title(title);
     match normalized.as_str() {
-        "results summary" | "result summary" | "summary" => {
-            ResponseCardSectionKind::ResultsSummary
-        }
+        "results summary" | "result summary" | "summary" => ResponseCardSectionKind::ResultsSummary,
         "changes made" | "changes" | "change summary" => ResponseCardSectionKind::ChangesMade,
         "verification" | "validation" | "tests" | "test results" => {
             ResponseCardSectionKind::Verification
@@ -1874,7 +1885,11 @@ fn render_markdown_buffer(
     parse_markdown_lines(text, base_style, colors)
         .into_iter()
         .map(|md_line| {
-            let plain: String = md_line.spans.iter().map(|span| span.text.as_str()).collect();
+            let plain: String = md_line
+                .spans
+                .iter()
+                .map(|span| span.text.as_str())
+                .collect();
             let prefixed_spans = {
                 let mut spans = vec![StyledSpan {
                     text: body_indent.to_string(),
@@ -1910,7 +1925,9 @@ fn is_markdown_table_header(lines: &[&str], index: usize) -> bool {
 
 fn is_markdown_table_row(line: &str) -> bool {
     let trimmed = line.trim();
-    trimmed.starts_with('|') && trimmed.ends_with('|') && trimmed[1..trimmed.len() - 1].contains('|')
+    trimmed.starts_with('|')
+        && trimmed.ends_with('|')
+        && trimmed[1..trimmed.len() - 1].contains('|')
 }
 
 fn is_markdown_table_separator(line: &str) -> bool {
@@ -1936,7 +1953,10 @@ fn render_markdown_table_lines(
         return Vec::new();
     }
 
-    let rows: Vec<Vec<String>> = block.iter().map(|line| parse_markdown_table_row(line)).collect();
+    let rows: Vec<Vec<String>> = block
+        .iter()
+        .map(|line| parse_markdown_table_row(line))
+        .collect();
     let Some(header) = rows.first() else {
         return Vec::new();
     };
@@ -2128,7 +2148,10 @@ fn table_cell_style(
 }
 
 fn summarize_report_section(kind: ResponseCardSectionKind, body: &str) -> Option<String> {
-    let non_empty_lines: Vec<&str> = body.lines().filter(|line| !line.trim().is_empty()).collect();
+    let non_empty_lines: Vec<&str> = body
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
     if non_empty_lines.is_empty() {
         return None;
     }
@@ -2197,7 +2220,10 @@ fn looks_like_metric(text: &str) -> bool {
     let trimmed = text.trim();
     trimmed.contains('%')
         || trimmed.chars().any(|ch| ch.is_ascii_digit())
-        || matches!(trimmed, "pass" | "passed" | "failed" | "complete" | "eliminated")
+        || matches!(
+            trimmed,
+            "pass" | "passed" | "failed" | "complete" | "eliminated"
+        )
 }
 
 fn looks_like_code_token(text: &str) -> bool {
@@ -2299,9 +2325,7 @@ fn format_document_knowledge_summary(summary: &ResponseDocumentKnowledge) -> Str
 fn format_memory_knowledge_summary(summary: &ResponseMemoryKnowledge) -> String {
     let mut text = format!(
         "memory  {} selected  ·  {} archived  ·  {} observations",
-        summary.selected_summary_count,
-        summary.memory_hit_count,
-        summary.observation_hit_count,
+        summary.selected_summary_count, summary.memory_hit_count, summary.observation_hit_count,
     );
     if let Some(query) = summary.planned_queries.first() {
         text.push_str(&format!("  ·  {}", truncate_preview(query, 28)));
@@ -2321,13 +2345,19 @@ fn build_document_knowledge_detail_lines(summary: &ResponseDocumentKnowledge) ->
         lines.push(format!("raw query: {}", summary.raw_query));
     }
     if !summary.planned_queries.is_empty() {
-        lines.push(format!("planned queries: {}", summary.planned_queries.join(" | ")));
+        lines.push(format!(
+            "planned queries: {}",
+            summary.planned_queries.join(" | ")
+        ));
     }
     if let Some(reason) = summary.rewrite_reason.as_deref() {
         lines.push(format!("rewrite reason: {reason}"));
     }
     if !summary.rewrite_queries.is_empty() {
-        lines.push(format!("rewrite queries: {}", summary.rewrite_queries.join(" | ")));
+        lines.push(format!(
+            "rewrite queries: {}",
+            summary.rewrite_queries.join(" | ")
+        ));
     }
     if let Some(path) = summary.recovery_path.as_deref() {
         lines.push(format!("recovery path: {path}"));
@@ -2359,20 +2389,29 @@ fn build_document_knowledge_detail_lines(summary: &ResponseDocumentKnowledge) ->
 }
 
 fn build_memory_knowledge_detail_lines(summary: &ResponseMemoryKnowledge) -> Vec<String> {
-    let mut lines = vec![format!("selected summaries: {}", summary.selected_summary_count)];
+    let mut lines = vec![format!(
+        "selected summaries: {}",
+        summary.selected_summary_count
+    )];
     if let Some(raw_query) = summary.raw_query.as_deref() {
         if !raw_query.trim().is_empty() {
             lines.push(format!("raw query: {raw_query}"));
         }
     }
     if !summary.planned_queries.is_empty() {
-        lines.push(format!("planned queries: {}", summary.planned_queries.join(" | ")));
+        lines.push(format!(
+            "planned queries: {}",
+            summary.planned_queries.join(" | ")
+        ));
     }
     if let Some(reason) = summary.rewrite_reason.as_deref() {
         lines.push(format!("rewrite reason: {reason}"));
     }
     if !summary.rewrite_queries.is_empty() {
-        lines.push(format!("rewrite queries: {}", summary.rewrite_queries.join(" | ")));
+        lines.push(format!(
+            "rewrite queries: {}",
+            summary.rewrite_queries.join(" | ")
+        ));
     }
     if let Some(path) = summary.recovery_path.as_deref() {
         lines.push(format!("recovery path: {path}"));
@@ -2393,7 +2432,10 @@ fn build_memory_knowledge_detail_lines(summary: &ResponseMemoryKnowledge) -> Vec
         lines.push(String::new());
         lines.push("selected summaries:".to_string());
         for item in &summary.top_selected_summaries {
-            lines.push(format!("- {}:{}  {}", item.workflow_id, item.step_id, item.title));
+            lines.push(format!(
+                "- {}:{}  {}",
+                item.workflow_id, item.step_id, item.title
+            ));
             if !item.preview.trim().is_empty() {
                 lines.push(format!("  {}", item.preview));
             }
@@ -2467,7 +2509,11 @@ fn format_response_header(message: &Msg) -> String {
 
     if message.kind == MsgKind::Command {
         let source = message.workflow_id.as_deref().unwrap_or("builtin");
-        let toggle = if message.collapsed { "  expand" } else { "  collapse" };
+        let toggle = if message.collapsed {
+            "  expand"
+        } else {
+            "  collapse"
+        };
         format!("{badge}  {source}  {title}  {state}{toggle}")
     } else {
         let workflow_role = message

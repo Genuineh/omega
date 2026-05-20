@@ -676,12 +676,7 @@ fn document_health_label(context: &ContextDiagnostics) -> &'static str {
 
 fn format_store_version(version: Option<&omega_session::DocumentStoreVersion>) -> String {
     version
-        .map(|version| {
-            format!(
-                "{}@{}",
-                version.version_id, version.manifest_revision
-            )
-        })
+        .map(|version| format!("{}@{}", version.version_id, version.manifest_revision))
         .unwrap_or_else(|| "none".to_string())
 }
 

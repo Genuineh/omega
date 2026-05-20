@@ -28,15 +28,15 @@ use serde_json::Value;
 use super::output::validate_workflow_step_output;
 use super::{
     build_turn_retention_signals, parse_json_values, preview_text, render_output_contract,
-    resolve_structured_input,
-    validate_schema_file, validate_structured_output, AgentSession, AgentSessionConfig,
-    ConversationMessage, ProviderMarkupSanitizer, ResponseSectionDelta, ResponseSectionKind,
-    ResponseSectionState, RuntimeContentKind, RuntimeEnvelopeRecorder, RuntimeMessage,
-    RuntimeMessageEnvelope, RuntimeSource, RuntimeUiEffect, RuntimeUiEnvelope, SectionOrigin,
-    DocumentNavigatorGroup, OverlayTarget, OperatorPickerIntent, SessionContext, UiContent,
-    SessionSkillCatalog, SessionToolCatalog, StateMessage, StatusSlot, StatusValue,
-    StepContextWriteKind, StepOutputAttemptKind, StepOutputStatus, StepSkillRequest,
-    StepToolRequest, ToolRunStatus, UiMessageKind, UiSource, UiTarget, WorkflowRunRole,
+    resolve_structured_input, validate_schema_file, validate_structured_output, AgentSession,
+    AgentSessionConfig, ConversationMessage, DocumentNavigatorGroup, OperatorPickerIntent,
+    OperatorPickerOverlayBehavior, OverlayTarget, ProviderMarkupSanitizer, ResponseSectionDelta,
+    ResponseSectionKind, ResponseSectionState, RuntimeContentKind, RuntimeEnvelopeRecorder,
+    RuntimeMessage, RuntimeMessageEnvelope, RuntimeSource, RuntimeUiEffect, RuntimeUiEnvelope,
+    SectionOrigin, SessionContext, SessionSkillCatalog, SessionToolCatalog, StateMessage,
+    StatusSlot, StatusValue, StepContextWriteKind, StepOutputAttemptKind, StepOutputStatus,
+    StepSkillRequest, StepToolRequest, ToolRunStatus, UiContent, UiMessageKind, UiSource, UiTarget,
+    WorkflowRunRole,
 };
 
 type SequencedClient = ScriptedLlmClient;
@@ -46,9 +46,9 @@ const IdleClient: IdleLlmClient =
     IdleLlmClient::new("chat should not be called in AgentSession unit tests");
 
 fn sequenced_client(responses: Vec<ChatResponse>) -> Arc<SequencedClient> {
-    Arc::new(SequencedClient::from_responses(normalize_root_routing_responses(
-        responses,
-    )))
+    Arc::new(SequencedClient::from_responses(
+        normalize_root_routing_responses(responses),
+    ))
 }
 
 fn counting_sequenced_client(
@@ -104,18 +104,18 @@ fn normalize_root_routing_responses(mut responses: Vec<ChatResponse>) -> Vec<Cha
                 })
     });
 
-    let normalized_scene = if scene_value == RESEARCH_WORKFLOW_ID && uses_legacy_full_research_flow {
+    let normalized_scene = if scene_value == RESEARCH_WORKFLOW_ID && uses_legacy_full_research_flow
+    {
         DEEP_RESEARCH_SCENE_ID
     } else {
         scene_value.as_str()
     };
-    let normalized_workflow = if workflow_value == RESEARCH_WORKFLOW_ID
-        && uses_legacy_full_research_flow
-    {
-        DEEP_RESEARCH_WORKFLOW_ID
-    } else {
-        workflow_value.as_str()
-    };
+    let normalized_workflow =
+        if workflow_value == RESEARCH_WORKFLOW_ID && uses_legacy_full_research_flow {
+            DEEP_RESEARCH_WORKFLOW_ID
+        } else {
+            workflow_value.as_str()
+        };
 
     responses[0].content = vec![ContentBlock::text(format!(
         "{{\"recognized_scene_id\":\"{}\",\"selected_workflow_id\":\"{}\"}}",
@@ -289,13 +289,20 @@ fn command_body(recorded: &[RuntimeMessageEnvelope]) -> String {
         .join("\n")
 }
 
-fn show_overlay_content(recorded: &[RuntimeMessageEnvelope], target: OverlayTarget) -> Option<&UiContent> {
-    recorded.iter().find_map(|envelope| match &envelope.message {
-        RuntimeMessage::State(StateMessage::ShowOverlay { request }) if request.target == target => {
-            Some(&request.content)
-        }
-        _ => None,
-    })
+fn show_overlay_content(
+    recorded: &[RuntimeMessageEnvelope],
+    target: OverlayTarget,
+) -> Option<&UiContent> {
+    recorded
+        .iter()
+        .find_map(|envelope| match &envelope.message {
+            RuntimeMessage::State(StateMessage::ShowOverlay { request })
+                if request.target == target =>
+            {
+                Some(&request.content)
+            }
+            _ => None,
+        })
 }
 
 fn write_builtin_hook_manifest(root: &Path, hook_id: &str) {
@@ -314,9 +321,7 @@ fn write_named_skill(root: &Path, name: &str, description: &str, body: &str) {
     let _ = std::fs::create_dir_all(&skills_dir);
     let _ = std::fs::write(
         skills_dir.join("SKILL.md"),
-        format!(
-            "---\nname: {name}\ndescription: {description}\n---\n{body}",
-        ),
+        format!("---\nname: {name}\ndescription: {description}\n---\n{body}",),
     );
 }
 
@@ -538,55 +543,55 @@ pub extern "C" fn omega_hook_free_string(ptr: *mut c_char) {
 fn spawn_turn_emits_hook_diagnostics_for_execute_step() {
     let client: Arc<SequencedClient> = counting_sequenced_client(
         vec![
-        ChatResponse {
-            id: "scene-1".to_string(),
-            model: Some("test-model".to_string()),
-            content: vec![ContentBlock::text("{\"recognized_scene_id\":\"feature\"}")],
-            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-            usage: None,
-        },
-        ChatResponse {
-            id: "select-1".to_string(),
-            model: Some("test-model".to_string()),
-            content: vec![ContentBlock::text("{\"selected_workflow_id\":\"feature\"}")],
-            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-            usage: None,
-        },
-        ChatResponse {
-            id: "explore-1".to_string(),
-            model: Some("test-model".to_string()),
-            content: vec![ContentBlock::text(feature_explore_json())],
-            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-            usage: None,
-        },
-        ChatResponse {
-            id: "plan-1".to_string(),
-            model: Some("test-model".to_string()),
-            content: vec![ContentBlock::text(feature_plan_json())],
-            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-            usage: None,
-        },
-        ChatResponse {
-            id: "execute-1".to_string(),
-            model: Some("test-model".to_string()),
-            content: vec![ContentBlock::text(feature_execute_partial_json())],
-            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-            usage: None,
-        },
-        ChatResponse {
-            id: "execute-2".to_string(),
-            model: Some("test-model".to_string()),
-            content: vec![ContentBlock::text(feature_execute_complete_json())],
-            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-            usage: None,
-        },
-        ChatResponse {
-            id: "report-1".to_string(),
-            model: Some("test-model".to_string()),
-            content: vec![ContentBlock::text("done")],
-            stop_reason: Some(STOP_REASON_END_TURN.to_string()),
-            usage: None,
-        },
+            ChatResponse {
+                id: "scene-1".to_string(),
+                model: Some("test-model".to_string()),
+                content: vec![ContentBlock::text("{\"recognized_scene_id\":\"feature\"}")],
+                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                usage: None,
+            },
+            ChatResponse {
+                id: "select-1".to_string(),
+                model: Some("test-model".to_string()),
+                content: vec![ContentBlock::text("{\"selected_workflow_id\":\"feature\"}")],
+                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                usage: None,
+            },
+            ChatResponse {
+                id: "explore-1".to_string(),
+                model: Some("test-model".to_string()),
+                content: vec![ContentBlock::text(feature_explore_json())],
+                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                usage: None,
+            },
+            ChatResponse {
+                id: "plan-1".to_string(),
+                model: Some("test-model".to_string()),
+                content: vec![ContentBlock::text(feature_plan_json())],
+                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                usage: None,
+            },
+            ChatResponse {
+                id: "execute-1".to_string(),
+                model: Some("test-model".to_string()),
+                content: vec![ContentBlock::text(feature_execute_partial_json())],
+                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                usage: None,
+            },
+            ChatResponse {
+                id: "execute-2".to_string(),
+                model: Some("test-model".to_string()),
+                content: vec![ContentBlock::text(feature_execute_complete_json())],
+                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                usage: None,
+            },
+            ChatResponse {
+                id: "report-1".to_string(),
+                model: Some("test-model".to_string()),
+                content: vec![ContentBlock::text("done")],
+                stop_reason: Some(STOP_REASON_END_TURN.to_string()),
+                usage: None,
+            },
         ],
         321,
     );
@@ -789,7 +794,10 @@ fn retention_signals_collect_plan_and_execute_outputs() {
 
     let signals = build_turn_retention_signals(&session_context);
 
-    assert_eq!(signals.changed_paths, vec!["crates/omega-context/src/lib.rs"]);
+    assert_eq!(
+        signals.changed_paths,
+        vec!["crates/omega-context/src/lib.rs"]
+    );
     assert_eq!(signals.completed_tasks, vec!["task-1"]);
     assert_eq!(signals.open_tasks, vec!["task-2"]);
     assert_eq!(
@@ -809,10 +817,12 @@ fn retention_signals_collect_plan_and_execute_outputs() {
 #[test]
 fn retention_signals_include_governance_events() {
     let mut session_context = SessionContext::new(ROOT_WORKFLOW_ID);
-    session_context.governance_events.push(GovernanceEventSignal {
-        label: "document.archive docs/specs/command-spec.md".to_string(),
-        at: 99,
-    });
+    session_context
+        .governance_events
+        .push(GovernanceEventSignal {
+            label: "document.archive docs/specs/command-spec.md".to_string(),
+            at: 99,
+        });
 
     let signals = build_turn_retention_signals(&session_context);
 
@@ -1030,8 +1040,9 @@ fn research_plan_validation_allows_analytical_tasks_mentioning_optimization_conc
         ]
     });
 
-    validate_workflow_step_output(&root, DEEP_RESEARCH_WORKFLOW_ID, &plan_step, &value)
-        .expect("analytical tasks mentioning optimization concepts should pass read-only validation");
+    validate_workflow_step_output(&root, DEEP_RESEARCH_WORKFLOW_ID, &plan_step, &value).expect(
+        "analytical tasks mentioning optimization concepts should pass read-only validation",
+    );
 }
 
 #[test]
@@ -1505,9 +1516,7 @@ fn spawn_turn_accepts_plan_when_response_contains_explore_echo_plus_plan_json() 
         ChatResponse {
             id: "plan-1".to_string(),
             model: Some("test-model".to_string()),
-            content: vec![ContentBlock::text(
-                research_plan_with_explore_echo_json(),
-            )],
+            content: vec![ContentBlock::text(research_plan_with_explore_echo_json())],
             stop_reason: Some(STOP_REASON_END_TURN.to_string()),
             usage: None,
         },
@@ -1792,6 +1801,21 @@ fn spawn_command_document_health_emits_command_section() {
     assert!(body.contains("Running /document health..."));
     assert!(body.contains("Overall health:"));
     assert!(body.contains("Total docs:"));
+
+    let overlay = match show_overlay_content(&recorded, OverlayTarget::Detail) {
+        Some(UiContent::DocumentNavigator(request)) => request,
+        other => panic!("expected /document health navigator overlay, got {other:?}"),
+    };
+    assert_eq!(overlay.navigator_id, "doc-health");
+    assert_eq!(overlay.active_entry_id, "health-summary");
+    assert!(overlay
+        .entries
+        .iter()
+        .any(|entry| entry.group == DocumentNavigatorGroup::Design));
+    assert!(overlay
+        .entries
+        .iter()
+        .any(|entry| entry.group == DocumentNavigatorGroup::Context));
 }
 
 #[cfg(feature = "document-backend")]
@@ -1827,26 +1851,36 @@ fn spawn_command_document_query_emits_step_knowledge_summary() {
         .unwrap();
 
     let recorded = recorder.wait_for_turn_finished_messages(502, Duration::from_secs(30));
-    let summary = recorded.iter().find_map(|envelope| match &envelope.message {
-        RuntimeMessage::State(StateMessage::StepKnowledgeSummary {
-            section_id,
-            summary,
-        }) if section_id == "turn-502:command" => Some(summary.as_ref()),
-        _ => None,
-    });
+    let summary = recorded
+        .iter()
+        .find_map(|envelope| match &envelope.message {
+            RuntimeMessage::State(StateMessage::StepKnowledgeSummary {
+                section_id,
+                summary,
+            }) if section_id == "turn-502:command" => Some(summary.as_ref()),
+            _ => None,
+        });
 
     let summary = summary.expect("expected step knowledge summary for command section");
-    let document = summary.document.as_ref().expect("expected document knowledge summary");
+    let document = summary
+        .document
+        .as_ref()
+        .expect("expected document knowledge summary");
     assert_eq!(document.query, "roadmap");
     assert_eq!(document.mode, "hybrid");
 }
 
 #[cfg(feature = "document-backend")]
 #[test]
-fn spawn_command_document_query_opens_document_navigator_overlay() {
+fn spawn_command_document_query_opens_picker_then_view_result_navigator_overlay() {
     let _embedding_backend_guard = force_mock_document_embedding_backend();
     let root = unique_session_test_root("document-command-query-navigator");
     write_document_fixture(&root);
+    std::fs::write(
+        root.join("docs/specs/roadmap.md"),
+        "# Roadmap\n\nroadmap query target\n",
+    )
+    .unwrap();
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let loaded_catalog = LoadedWorkflowCatalog::load(&root);
     let session = AgentSession::new(AgentSessionConfig {
@@ -1865,30 +1899,241 @@ fn spawn_command_document_query_opens_document_navigator_overlay() {
     .unwrap();
 
     let recorded = run_command(&session, "/document query roadmap", 503);
-    let overlay = match show_overlay_content(&recorded, OverlayTarget::Detail) {
-        Some(UiContent::DocumentNavigator(request)) => request,
-        other => panic!("expected /document query navigator overlay, got {other:?}"),
+    assert!(show_overlay_content(&recorded, OverlayTarget::Detail).is_none());
+    let picker = match show_overlay_content(&recorded, OverlayTarget::Picker) {
+        Some(UiContent::OperatorPicker(request)) => request,
+        other => panic!("expected /document query picker overlay, got {other:?}"),
     };
 
-    assert!(overlay.navigator_id.starts_with("document-query:roadmap"));
+    assert_eq!(picker.picker_id, "doc-query:roadmap");
+    assert_eq!(picker.primary_action.label, "View");
+    assert_eq!(
+        picker.primary_action.overlay_behavior,
+        OperatorPickerOverlayBehavior::PushOverlay
+    );
+    assert!(matches!(
+        &picker.primary_action.intent,
+        OperatorPickerIntent::SubmitSlashCommand { command_template }
+            if command_template == "/document view-result roadmap {id}"
+    ));
+    assert!(picker.items.iter().any(|item| {
+        item.id == "docs/specs/roadmap.md" && item.badges.iter().any(|badge| badge == "result")
+    }));
+
+    let view_events = run_command(
+        &session,
+        "/document view-result roadmap docs/specs/roadmap.md",
+        504,
+    );
+    let overlay = match show_overlay_content(&view_events, OverlayTarget::Detail) {
+        Some(UiContent::DocumentNavigator(request)) => request,
+        other => panic!("expected /document view-result navigator overlay, got {other:?}"),
+    };
+    assert_eq!(overlay.navigator_id, "doc-query:roadmap");
     assert_eq!(overlay.origin_label, "query: roadmap");
-    assert!(!overlay.entries.is_empty());
-    assert_eq!(overlay.active_entry_id, overlay.entries[0].id);
-    assert!(overlay
-        .entries
-        .iter()
-        .any(|entry| entry.group == DocumentNavigatorGroup::Context));
+    assert_eq!(overlay.active_entry_id, "docs/specs/roadmap.md");
+    assert!(overlay.entries.iter().any(|entry| {
+        entry.group == DocumentNavigatorGroup::Design && entry.id == "docs/specs/roadmap.md"
+    }));
     let active_entry = overlay
         .entries
         .iter()
         .find(|entry| entry.id == overlay.active_entry_id)
         .expect("active entry present");
-    assert!(!active_entry.body.lines.is_empty());
+    assert!(active_entry
+        .body
+        .lines
+        .iter()
+        .any(|line| line.contains("Roadmap")));
+}
+
+#[cfg(feature = "document-backend")]
+#[test]
+fn spawn_command_document_list_emits_picker_overlay() {
+    let _embedding_backend_guard = force_mock_document_embedding_backend();
+    let root = unique_session_test_root("document-command-list-picker");
+    write_document_fixture(&root);
+    std::fs::write(
+        root.join("docs/specs/list-spec.md"),
+        "# List Spec\n\nList picker document body.\n",
+    )
+    .unwrap();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: Arc::new(IdleClient),
+        system: "system".to_string(),
+        cwd: root,
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+
+    let _init_events = run_command(&session, "/document init docs/specs", 505);
+    let list_events = run_command(&session, "/document list", 506);
+    let list_picker = match show_overlay_content(&list_events, OverlayTarget::Picker) {
+        Some(UiContent::OperatorPicker(request)) => request,
+        other => panic!("expected /document list picker overlay, got {other:?}"),
+    };
+
+    assert_eq!(list_picker.picker_id, "doc-list");
+    assert!(list_picker
+        .items
+        .iter()
+        .any(|item| item.id == "docs/specs/list-spec.md"));
+    assert_eq!(
+        list_picker.primary_action.overlay_behavior,
+        OperatorPickerOverlayBehavior::PushOverlay
+    );
+    assert!(matches!(
+        &list_picker.primary_action.intent,
+        OperatorPickerIntent::SubmitSlashCommand { command_template }
+            if command_template == "/document open {id}"
+    ));
+    assert!(list_picker.secondary_actions.iter().any(|action| {
+        action.overlay_behavior == OperatorPickerOverlayBehavior::CloseOverlay
+            && matches!(
+                &action.intent,
+                OperatorPickerIntent::SubmitSlashCommand { command_template }
+                    if command_template == "/document health"
+            )
+    }));
+}
+
+#[cfg(feature = "document-backend")]
+#[test]
+fn spawn_command_document_open_and_get_emit_detail_navigator_overlay() {
+    let _embedding_backend_guard = force_mock_document_embedding_backend();
+    let root = unique_session_test_root("document-command-open-detail-navigator");
+    write_document_fixture(&root);
+    std::fs::write(
+        root.join("docs/specs/navigator.md"),
+        concat!(
+            "---\n",
+            "status: active\n",
+            "owner: omega-team\n",
+            "created: 2026-04-24\n",
+            "updated: 2026-04-24\n",
+            "---\n\n",
+            "# Navigator\n\n",
+            "Use [Related](related.md).\n\n",
+            "## Goals\n\n",
+            "Build a document navigator overlay.\n",
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("docs/specs/related.md"),
+        "# Related\n\nRelated document body.\n",
+    )
+    .unwrap();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: Arc::new(IdleClient),
+        system: "system".to_string(),
+        cwd: root,
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+
+    let _extract = run_command(&session, "/document extract docs/specs --apply", 505);
+    let open_events = run_command(&session, "/document open spec:docs-specs-navigator", 506);
+    let overlay = match show_overlay_content(&open_events, OverlayTarget::Detail) {
+        Some(UiContent::DocumentNavigator(request)) => request,
+        other => panic!("expected /document open detail navigator overlay, got {other:?}"),
+    };
+
+    assert_eq!(overlay.navigator_id, "doc-detail:spec:docs-specs-navigator");
+    assert_eq!(
+        overlay.active_entry_id,
+        "overview:spec:docs-specs-navigator"
+    );
+    assert!(overlay
+        .entries
+        .iter()
+        .any(|entry| entry.group == DocumentNavigatorGroup::Design && entry.label == "Goals"));
+    assert!(overlay
+        .entries
+        .iter()
+        .any(|entry| entry.group == DocumentNavigatorGroup::Related));
+    let metadata_entry = overlay
+        .entries
+        .iter()
+        .find(|entry| entry.group == DocumentNavigatorGroup::Context)
+        .expect("metadata entry");
+    assert!(metadata_entry
+        .body
+        .lines
+        .iter()
+        .any(|line| line.contains("content_hash:")));
+    let related_entry = overlay
+        .entries
+        .iter()
+        .find(|entry| entry.group == DocumentNavigatorGroup::Related)
+        .expect("related entry");
+    assert!(related_entry
+        .body
+        .lines
+        .iter()
+        .any(|line| line.contains("Related document body")));
+
+    let get_events = run_command(&session, "/document get docs/specs/navigator.md", 507);
+    let get_overlay = match show_overlay_content(&get_events, OverlayTarget::Detail) {
+        Some(UiContent::DocumentNavigator(request)) => request,
+        other => panic!("expected /document get detail navigator overlay, got {other:?}"),
+    };
+    assert_eq!(
+        get_overlay.navigator_id,
+        "doc-detail:spec:docs-specs-navigator"
+    );
+}
+
+#[cfg(feature = "document-backend")]
+#[test]
+fn spawn_command_document_open_unknown_doc_reports_error_without_overlay() {
+    let _embedding_backend_guard = force_mock_document_embedding_backend();
+    let root = unique_session_test_root("document-command-open-unknown");
+    write_document_fixture(&root);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let loaded_catalog = LoadedWorkflowCatalog::load(&root);
+    let session = AgentSession::new(AgentSessionConfig {
+        client: Arc::new(IdleClient),
+        system: "system".to_string(),
+        cwd: root,
+        runtime_handle: runtime.handle().clone(),
+        scene_catalog: loaded_catalog.scene_catalog,
+        workflow_catalog: loaded_catalog.workflow_catalog,
+        prompt_catalog: loaded_catalog.prompt_catalog,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        bash_allowed_commands: omega_core::default_bash_allowed_commands(),
+        batch_max_requests: omega_core::default_batch_max_requests(),
+    })
+    .unwrap();
+
+    let recorded = run_command(&session, "/document open unknown-doc-id", 508);
+    assert!(show_overlay_content(&recorded, OverlayTarget::Detail).is_none());
+    let body = command_body(&recorded);
+    assert!(body.contains("Error: unknown document 'unknown-doc-id'"));
 }
 
 #[test]
 fn command_hint_renders_ready_state_for_document_query() {
-    let root = unique_session_test_root("command-hint");
+    let root = unique_session_test_root("command-hint-document-query");
     write_document_fixture(&root);
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let loaded_catalog = LoadedWorkflowCatalog::load(&root);
@@ -1934,24 +2179,25 @@ fn spawn_command_project_info_emits_project_status_snapshot() {
     let recorder = RuntimeEnvelopeRecorder::new();
 
     session
-        .spawn_command_with_test_bridge(
-            "/project info".to_string(),
-            560,
-            recorder.runtime_bridge(),
-        )
+        .spawn_command_with_test_bridge("/project info".to_string(), 560, recorder.runtime_bridge())
         .unwrap();
 
     let recorded = recorder.wait_for_turn_finished_messages(560, Duration::from_secs(30));
-    let snapshot = recorded.iter().find_map(|envelope| match &envelope.message {
-        RuntimeMessage::State(StateMessage::ProjectStatus { snapshot }) => Some(snapshot.as_ref()),
-        _ => None,
-    });
+    let snapshot = recorded
+        .iter()
+        .find_map(|envelope| match &envelope.message {
+            RuntimeMessage::State(StateMessage::ProjectStatus { snapshot }) => {
+                Some(snapshot.as_ref())
+            }
+            _ => None,
+        });
 
     let snapshot = snapshot.expect("expected project status snapshot");
     assert_eq!(snapshot.record.root, root.canonicalize().unwrap());
     assert!(matches!(
         snapshot.record.detection_kind,
-        omega_project::ProjectDetectionKind::Cwd | omega_project::ProjectDetectionKind::LooseDirectory
+        omega_project::ProjectDetectionKind::Cwd
+            | omega_project::ProjectDetectionKind::LooseDirectory
     ));
     assert!(snapshot.sessions.is_empty());
     assert!(snapshot.record.active_session_id.is_none());
@@ -2005,10 +2251,14 @@ fn spawn_command_project_switch_rebinds_active_project() {
         .unwrap();
 
     let recorded = recorder.wait_for_turn_finished_messages(561, Duration::from_secs(30));
-    let snapshot = recorded.iter().find_map(|envelope| match &envelope.message {
-        RuntimeMessage::State(StateMessage::ProjectStatus { snapshot }) => Some(snapshot.as_ref()),
-        _ => None,
-    });
+    let snapshot = recorded
+        .iter()
+        .find_map(|envelope| match &envelope.message {
+            RuntimeMessage::State(StateMessage::ProjectStatus { snapshot }) => {
+                Some(snapshot.as_ref())
+            }
+            _ => None,
+        });
 
     let snapshot = snapshot.expect("expected project status snapshot after switch");
     assert_eq!(snapshot.record.root, other_root.canonicalize().unwrap());
@@ -2047,9 +2297,18 @@ fn spawn_command_project_switch_rebinds_runtime_skill_hook_and_tool_surfaces() {
     .unwrap();
 
     let before = session.debug_runtime_bindings_snapshot();
-    assert!(before.skill_descriptions.iter().any(|line| line.contains("review")));
-    assert!(!before.skill_descriptions.iter().any(|line| line.contains("docs-specs")));
-    assert!(before.available_tool_ids.iter().any(|id| id == "load_skill"));
+    assert!(before
+        .skill_descriptions
+        .iter()
+        .any(|line| line.contains("review")));
+    assert!(!before
+        .skill_descriptions
+        .iter()
+        .any(|line| line.contains("docs-specs")));
+    assert!(before
+        .available_tool_ids
+        .iter()
+        .any(|id| id == "load_skill"));
     assert_eq!(before.hook_ids, vec!["hook-a".to_string()]);
 
     let recorder = RuntimeEnvelopeRecorder::new();
@@ -2064,8 +2323,14 @@ fn spawn_command_project_switch_rebinds_runtime_skill_hook_and_tool_surfaces() {
     let _recorded = recorder.wait_for_turn_finished_messages(562, Duration::from_secs(30));
     let after = session.debug_runtime_bindings_snapshot();
     assert_eq!(after.cwd, other_root.canonicalize().unwrap());
-    assert!(after.skill_descriptions.iter().any(|line| line.contains("docs-specs")));
-    assert!(!after.skill_descriptions.iter().any(|line| line.contains("review: Review code")));
+    assert!(after
+        .skill_descriptions
+        .iter()
+        .any(|line| line.contains("docs-specs")));
+    assert!(!after
+        .skill_descriptions
+        .iter()
+        .any(|line| line.contains("review: Review code")));
     assert!(after.available_tool_ids.iter().any(|id| id == "load_skill"));
     assert_eq!(after.hook_ids, vec!["hook-b".to_string()]);
 }
@@ -2096,10 +2361,14 @@ fn spawn_command_session_new_list_info_and_delete_manage_project_sessions() {
     assert!(initial_snapshot.sessions.is_empty());
 
     let new_events = run_command(&session, "/session new Follow up", 570);
-    let restored = new_events.iter().find_map(|envelope| match &envelope.message {
-        RuntimeMessage::State(StateMessage::SessionRestored { snapshot }) => Some(snapshot.as_ref()),
-        _ => None,
-    });
+    let restored = new_events
+        .iter()
+        .find_map(|envelope| match &envelope.message {
+            RuntimeMessage::State(StateMessage::SessionRestored { snapshot }) => {
+                Some(snapshot.as_ref())
+            }
+            _ => None,
+        });
     let restored = restored.expect("expected session restored state after /session new");
     let new_session_id = restored.session_id.clone();
     assert_eq!(restored.title, "Follow up");
@@ -2108,7 +2377,10 @@ fn spawn_command_session_new_list_info_and_delete_manage_project_sessions() {
     assert!(command_body(&new_events).contains("Started new session"));
 
     let after_new = session.project_detail_snapshot().unwrap();
-    assert_eq!(after_new.record.active_session_id.as_deref(), Some(new_session_id.as_str()));
+    assert_eq!(
+        after_new.record.active_session_id.as_deref(),
+        Some(new_session_id.as_str())
+    );
     assert_eq!(after_new.sessions.len(), 1);
 
     let session_events = run_command(&session, "/session", 5701);
@@ -2130,7 +2402,10 @@ fn spawn_command_session_new_list_info_and_delete_manage_project_sessions() {
         Some(UiContent::OperatorPicker(request)) => request,
         other => panic!("expected session list picker overlay, got {other:?}"),
     };
-    assert!(list_picker.items.iter().any(|item| item.id == new_session_id));
+    assert!(list_picker
+        .items
+        .iter()
+        .any(|item| item.id == new_session_id));
 
     let info_events = run_command(&session, format!("/session info {new_session_id}"), 572);
     assert!(command_body(&info_events).trim().is_empty());
@@ -2142,8 +2417,9 @@ fn spawn_command_session_new_list_info_and_delete_manage_project_sessions() {
     assert!(info_overlay.contains("Resume ready: true"));
 
     let delete_events = run_command(&session, "/session delete", 573);
-    assert!(command_body(&delete_events)
-        .contains("Error: refusing to delete the active session; create or resume another session first"));
+    assert!(command_body(&delete_events).contains(
+        "Error: refusing to delete the active session; create or resume another session first"
+    ));
 }
 
 #[test]
@@ -2170,7 +2446,11 @@ fn spawn_command_plan_create_list_show_and_select_manage_project_tasks() {
     let empty_events = run_command(&session, "/plan list", 5740);
     assert!(command_body(&empty_events).contains("No tasks."));
 
-    let create_events = run_command(&session, "/plan create --priority p1 Build plan store", 5741);
+    let create_events = run_command(
+        &session,
+        "/plan create --priority p1 Build plan store",
+        5741,
+    );
     let create_body = command_body(&create_events);
     assert!(create_body.contains("Task: TASK-0001"));
     assert!(create_body.contains("Priority: p1"));
@@ -2185,7 +2465,10 @@ fn spawn_command_plan_create_list_show_and_select_manage_project_tasks() {
 
     let select_events = run_command(&session, "/plan select TASK-0001", 5744);
     assert!(command_body(&select_events).contains("Selected task TASK-0001"));
-    assert_eq!(session.current_selected_task_id().as_deref(), Some("TASK-0001"));
+    assert_eq!(
+        session.current_selected_task_id().as_deref(),
+        Some("TASK-0001")
+    );
 
     let clear_events = run_command(&session, "/plan select none", 5745);
     assert!(command_body(&clear_events).contains("Cleared selected project task"));
@@ -2236,13 +2519,16 @@ fn spawn_command_plan_list_enter_uses_links_navigator() {
         other => panic!("expected /plan list picker overlay, got {other:?}"),
     };
     assert_eq!(picker.items.len(), 2);
-    assert_eq!(picker.primary_action.label, "Links");
+    assert_eq!(picker.primary_action.label, "Open");
     assert!(matches!(
         &picker.primary_action.intent,
         OperatorPickerIntent::SubmitSlashCommand { command_template }
-            if command_template == "/plan links {id}"
+            if command_template == "/plan open {id}"
     ));
-    assert!(picker.items.iter().any(|item| item.title == "Bootstrap plan tasks"));
+    assert!(picker
+        .items
+        .iter()
+        .any(|item| item.title == "Bootstrap plan tasks"));
     assert!(picker.secondary_actions.iter().any(|action| {
         action.label == "Select"
             && matches!(
@@ -2325,7 +2611,11 @@ fn spawn_command_plan_links_emits_picker_overlay() {
         "/plan link TASK-0001 implementation src/navigator.rs",
         5842,
     );
-    let _log = run_command(&session, "/plan log TASK-0001 Investigate navigator flow", 5843);
+    let _log = run_command(
+        &session,
+        "/plan log TASK-0001 Investigate navigator flow",
+        5843,
+    );
 
     let links_events = run_command(&session, "/plan links TASK-0001", 5844);
     let links_body = command_body(&links_events);
@@ -2346,7 +2636,10 @@ fn spawn_command_plan_links_emits_picker_overlay() {
     assert!(picker.items.iter().any(|item| {
         item.id == "docs/specs/navigator.md" && item.badges.iter().any(|badge| badge == "doc")
     }));
-    assert!(picker.items.iter().any(|item| item.id == "src/navigator.rs"));
+    assert!(picker
+        .items
+        .iter()
+        .any(|item| item.id == "src/navigator.rs"));
     assert!(picker
         .items
         .iter()
@@ -2399,7 +2692,10 @@ fn spawn_command_plan_view_file_emits_document_navigator_overlay() {
         Some(UiContent::DocumentNavigator(request)) => request,
         other => panic!("expected /plan view-file navigator overlay, got {other:?}"),
     };
-    assert_eq!(overlay.navigator_id, "plan-view-file:docs/specs/navigator.md");
+    assert_eq!(
+        overlay.navigator_id,
+        "plan-view-file:docs/specs/navigator.md"
+    );
     assert_eq!(overlay.active_entry_id, "docs/specs/navigator.md");
     assert_eq!(overlay.entries.len(), 1);
     let active_entry = overlay
@@ -2408,7 +2704,11 @@ fn spawn_command_plan_view_file_emits_document_navigator_overlay() {
         .find(|entry| entry.id == "docs/specs/navigator.md")
         .expect("active entry");
     assert_eq!(active_entry.group, DocumentNavigatorGroup::Context);
-    assert!(active_entry.body.lines.iter().any(|line| line.contains("Navigator")));
+    assert!(active_entry
+        .body
+        .lines
+        .iter()
+        .any(|line| line.contains("Navigator")));
     assert!(active_entry
         .body
         .lines
@@ -2427,7 +2727,11 @@ fn spawn_command_plan_open_link_emits_document_navigator_overlay() {
         "---\nstatus: draft\n---\n\n# Navigator\n\nUseful content.\n",
     )
     .unwrap();
-    std::fs::write(root.join("src/navigator.rs"), "pub fn navigator_overlay() {}\n").unwrap();
+    std::fs::write(
+        root.join("src/navigator.rs"),
+        "pub fn navigator_overlay() {}\n",
+    )
+    .unwrap();
 
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let loaded_catalog = LoadedWorkflowCatalog::load(&root);
@@ -2457,9 +2761,17 @@ fn spawn_command_plan_open_link_emits_document_navigator_overlay() {
         "/plan link TASK-0001 implementation src/navigator.rs",
         5849,
     );
-    let _log = run_command(&session, "/plan log TASK-0001 Investigate navigator flow", 5850);
+    let _log = run_command(
+        &session,
+        "/plan log TASK-0001 Investigate navigator flow",
+        5850,
+    );
 
-    let recorded = run_command(&session, "/plan open-link TASK-0001 docs/specs/navigator.md", 5851);
+    let recorded = run_command(
+        &session,
+        "/plan open-link TASK-0001 docs/specs/navigator.md",
+        5851,
+    );
     let overlay = match show_overlay_content(&recorded, OverlayTarget::Detail) {
         Some(UiContent::DocumentNavigator(request)) => request,
         other => panic!("expected /plan open-link navigator overlay, got {other:?}"),
@@ -2468,9 +2780,12 @@ fn spawn_command_plan_open_link_emits_document_navigator_overlay() {
     assert_eq!(overlay.navigator_id, "plan-links:TASK-0001");
     assert_eq!(overlay.active_entry_id, "docs/specs/navigator.md");
     assert!(overlay.entries.iter().any(|entry| {
-        entry.group == DocumentNavigatorGroup::Context && entry.id == "docs/specs/navigator.md"
+        entry.group == DocumentNavigatorGroup::Design && entry.id == "docs/specs/navigator.md"
     }));
-    assert!(overlay.entries.iter().any(|entry| entry.id == "src/navigator.rs"));
+    assert!(overlay
+        .entries
+        .iter()
+        .any(|entry| entry.id == "src/navigator.rs"));
     assert!(overlay
         .entries
         .iter()
@@ -2480,7 +2795,11 @@ fn spawn_command_plan_open_link_emits_document_navigator_overlay() {
         .iter()
         .find(|entry| entry.id == overlay.active_entry_id)
         .expect("active entry present");
-    assert!(active_entry.body.lines.iter().any(|line| line.contains("Navigator")));
+    assert!(active_entry
+        .body
+        .lines
+        .iter()
+        .any(|line| line.contains("Navigator")));
 }
 
 #[test]
@@ -2782,7 +3101,11 @@ updated: 2026-04-14
 
     let updated_show = run_command(&session, "/plan show TASK-0001", 5767);
     let updated_body = command_body(&updated_show);
-    assert!(updated_body.contains("Status: in_progress") || updated_body.contains("Status: in progress") || updated_body.contains("Status: in_progress"));
+    assert!(
+        updated_body.contains("Status: in_progress")
+            || updated_body.contains("Status: in progress")
+            || updated_body.contains("Status: in_progress")
+    );
     assert!(updated_body.contains("Build document-backed plan loading and rerun updates."));
 
     let list_events = run_command(&session, "/plan list all", 5768);
@@ -2964,15 +3287,29 @@ fn selected_plan_task_is_restored_after_session_resume() {
         })
         .expect("expected planning session id");
 
-    let _create_events = run_command(&session, "/plan create Implement selected task restore", 5751);
+    let _create_events = run_command(
+        &session,
+        "/plan create Implement selected task restore",
+        5751,
+    );
     let _select_events = run_command(&session, "/plan select TASK-0001", 5752);
-    assert_eq!(session.current_selected_task_id().as_deref(), Some("TASK-0001"));
+    assert_eq!(
+        session.current_selected_task_id().as_deref(),
+        Some("TASK-0001")
+    );
 
     let _scratch_events = run_command(&session, "/session new Scratch", 5753);
     assert_eq!(session.current_selected_task_id(), None);
 
-    let _resume_events = run_command(&session, format!("/session resume {original_session_id}"), 5754);
-    assert_eq!(session.current_selected_task_id().as_deref(), Some("TASK-0001"));
+    let _resume_events = run_command(
+        &session,
+        format!("/session resume {original_session_id}"),
+        5754,
+    );
+    assert_eq!(
+        session.current_selected_task_id().as_deref(),
+        Some("TASK-0001")
+    );
 }
 
 #[test]
@@ -3007,9 +3344,16 @@ fn missing_selected_plan_task_is_cleared_with_warning_after_session_resume() {
         })
         .expect("expected planning session id");
 
-    let _create_events = run_command(&session, "/plan create Implement selected task restore", 57541);
+    let _create_events = run_command(
+        &session,
+        "/plan create Implement selected task restore",
+        57541,
+    );
     let _select_events = run_command(&session, "/plan select TASK-0001", 57542);
-    assert_eq!(session.current_selected_task_id().as_deref(), Some("TASK-0001"));
+    assert_eq!(
+        session.current_selected_task_id().as_deref(),
+        Some("TASK-0001")
+    );
 
     let tasks_path = root.join("docs-data/tasks/project-tasks.jsonl");
     let retained = std::fs::read_to_string(&tasks_path)
@@ -3028,7 +3372,11 @@ fn missing_selected_plan_task_is_cleared_with_warning_after_session_resume() {
     )
     .unwrap();
 
-    let resume_events = run_command(&session, format!("/session resume {original_session_id}"), 57543);
+    let resume_events = run_command(
+        &session,
+        format!("/session resume {original_session_id}"),
+        57543,
+    );
     assert_eq!(session.current_selected_task_id(), None);
     assert!(resume_events.iter().any(|envelope| {
         matches!(
@@ -3113,7 +3461,11 @@ fn selected_plan_task_is_injected_into_system_prompt_for_turns() {
     .unwrap();
 
     let _session_events = run_command(&session, "/session new Planning", 5755);
-    let _create_events = run_command(&session, "/plan create Implement selected task injection", 5756);
+    let _create_events = run_command(
+        &session,
+        "/plan create Implement selected task injection",
+        5756,
+    );
     let _select_events = run_command(&session, "/plan select TASK-0001", 5757);
 
     let recorder = RuntimeEnvelopeRecorder::new();
@@ -3236,7 +3588,10 @@ fn plan_send_dispatches_normal_turn_and_appends_task_turn_log() {
             RuntimeMessage::State(StateMessage::TurnFinished)
         )
     }));
-    assert_eq!(session.current_selected_task_id().as_deref(), Some("TASK-0001"));
+    assert_eq!(
+        session.current_selected_task_id().as_deref(),
+        Some("TASK-0001")
+    );
     assert!(client.recorded_systems().iter().flatten().any(|system| {
         system.contains("<selected_project_task>")
             && system.contains("task_id: TASK-0001")
@@ -3284,11 +3639,7 @@ fn plan_send_failure_appends_partial_delivery_log() {
 
     let _session_events = run_command(&session, "/session new Planning", 5760);
     let _create_events = run_command(&session, "/plan create Implement failure logging", 5761);
-    let send_events = run_command(
-        &session,
-        "/plan send TASK-0001 trigger failure path",
-        5762,
-    );
+    let send_events = run_command(&session, "/plan send TASK-0001 trigger failure path", 5762);
     assert!(send_events.iter().any(|envelope| {
         matches!(
             &envelope.message,
@@ -3298,7 +3649,10 @@ fn plan_send_failure_appends_partial_delivery_log() {
         )
     }));
     assert!(send_events.iter().any(|envelope| {
-        matches!(&envelope.message, RuntimeMessage::State(StateMessage::TurnFinished))
+        matches!(
+            &envelope.message,
+            RuntimeMessage::State(StateMessage::TurnFinished)
+        )
     }));
 
     let show_events = run_command(&session, "/plan show TASK-0001", 5763);
@@ -3382,7 +3736,11 @@ fn spawn_command_session_resume_restores_saved_routing_context() {
 
     let turn_recorder = RuntimeEnvelopeRecorder::new();
     session
-        .spawn_turn_with_test_bridge("fix this bug".to_string(), 580, turn_recorder.runtime_bridge())
+        .spawn_turn_with_test_bridge(
+            "fix this bug".to_string(),
+            580,
+            turn_recorder.runtime_bridge(),
+        )
         .unwrap();
     let _turn_events = turn_recorder.wait_for_turn_finished_messages(580, Duration::from_secs(30));
     let original_session_id = session
@@ -3396,7 +3754,10 @@ fn spawn_command_session_resume_restores_saved_routing_context() {
         Some(UiContent::OperatorPicker(request)) => request,
         other => panic!("expected resume picker overlay, got {other:?}"),
     };
-    assert!(resume_picker.items.iter().any(|item| item.id == original_session_id));
+    assert!(resume_picker
+        .items
+        .iter()
+        .any(|item| item.id == original_session_id));
     assert_eq!(resume_picker.primary_action.label, "Resume");
     assert!(matches!(
         &resume_picker.primary_action.intent,
@@ -3409,21 +3770,37 @@ fn spawn_command_session_resume_restores_saved_routing_context() {
             if command_template == "/session info {id} --picker"
     ));
 
-    let resume_events = run_command(&session, format!("/session resume {original_session_id}"), 582);
+    let resume_events = run_command(
+        &session,
+        format!("/session resume {original_session_id}"),
+        582,
+    );
 
-    let restored = resume_events.iter().find_map(|envelope| match &envelope.message {
-        RuntimeMessage::State(StateMessage::SessionRestored { snapshot }) => Some(snapshot.as_ref()),
-        _ => None,
-    });
+    let restored = resume_events
+        .iter()
+        .find_map(|envelope| match &envelope.message {
+            RuntimeMessage::State(StateMessage::SessionRestored { snapshot }) => {
+                Some(snapshot.as_ref())
+            }
+            _ => None,
+        });
     let restored = restored.expect("expected session restored state after /session resume");
     assert_eq!(restored.session_id, original_session_id);
     assert_eq!(restored.root_workflow_id, ROOT_WORKFLOW_ID);
     assert_eq!(restored.active_workflow_id, FEATURE_WORKFLOW_ID);
     assert_eq!(restored.recognized_scene_id.as_deref(), Some("feature"));
-    assert_eq!(restored.selected_workflow_id.as_deref(), Some(FEATURE_WORKFLOW_ID));
+    assert_eq!(
+        restored.selected_workflow_id.as_deref(),
+        Some(FEATURE_WORKFLOW_ID)
+    );
     assert!(command_body(&resume_events).contains("Resumed session"));
     assert_eq!(
-        session.project_detail_snapshot().unwrap().record.active_session_id.as_deref(),
+        session
+            .project_detail_snapshot()
+            .unwrap()
+            .record
+            .active_session_id
+            .as_deref(),
         Some(original_session_id.as_str())
     );
 }
@@ -3477,7 +3854,10 @@ fn unbound_session_resume_picker_does_not_create_a_new_session() {
     .unwrap();
 
     assert_eq!(restored.current_session_id(), None);
-    assert_eq!(restored.project_detail_snapshot().unwrap().sessions.len(), 1);
+    assert_eq!(
+        restored.project_detail_snapshot().unwrap().sessions.len(),
+        1
+    );
 
     let picker_events = run_command(&restored, "/session resume", 5826);
     assert!(command_body(&picker_events).trim().is_empty());
@@ -3494,7 +3874,11 @@ fn unbound_session_resume_picker_does_not_create_a_new_session() {
         Some(original_session_id.as_str())
     );
 
-    let resume_events = run_command(&restored, format!("/session resume {original_session_id}"), 5827);
+    let resume_events = run_command(
+        &restored,
+        format!("/session resume {original_session_id}"),
+        5827,
+    );
     assert!(command_body(&resume_events).contains("Resumed session"));
     assert_eq!(
         restored.current_session_id().as_deref(),
@@ -3542,7 +3926,11 @@ fn spawn_command_session_resume_reports_non_resume_ready_sessions() {
         .join("session.context.jsonl");
     std::fs::remove_file(&ledger_path).expect("remove ledger to force not resume-ready");
 
-    let resume_events = run_command(&session, format!("/session resume {original_session_id}"), 5831);
+    let resume_events = run_command(
+        &session,
+        format!("/session resume {original_session_id}"),
+        5831,
+    );
 
     assert!(command_body(&resume_events).contains("Error: session exists but is not resume-ready"));
     assert!(resume_events.iter().any(|envelope| {
@@ -3625,9 +4013,17 @@ fn new_starts_unbound_even_with_existing_saved_session() {
     .unwrap();
 
     assert_eq!(restored.current_session_id(), None);
-    assert_eq!(restored.project_detail_snapshot().unwrap().sessions.len(), 1);
     assert_eq!(
-        restored.project_detail_snapshot().unwrap().record.active_session_id.as_deref(),
+        restored.project_detail_snapshot().unwrap().sessions.len(),
+        1
+    );
+    assert_eq!(
+        restored
+            .project_detail_snapshot()
+            .unwrap()
+            .record
+            .active_session_id
+            .as_deref(),
         Some(original_id.as_str())
     );
     assert!(restored.startup_restore_snapshot().is_none());
@@ -3664,7 +4060,8 @@ fn spawn_command_document_create_list_and_archive_emit_complete_sections() {
             create_recorder.runtime_bridge(),
         )
         .unwrap();
-    let create_events = create_recorder.wait_for_turn_finished_messages(601, Duration::from_secs(30));
+    let create_events =
+        create_recorder.wait_for_turn_finished_messages(601, Duration::from_secs(30));
     assert!(create_events.iter().any(|envelope| {
         matches!(
             &envelope.message,
@@ -4784,9 +5181,13 @@ fn research_itemized_execute_retries_when_current_item_output_repeats_previous_c
     assert!(diagnostics.iter().any(|diagnostics| {
         diagnostics.step_id == EXECUTE_STEP_ID
             && diagnostics.output.status == StepOutputStatus::Invalid
-            && diagnostics.output.validation_error.as_deref().is_some_and(|error| {
-                error.contains("current todo item") && error.contains("task-2")
-            })
+            && diagnostics
+                .output
+                .validation_error
+                .as_deref()
+                .is_some_and(|error| {
+                    error.contains("current todo item") && error.contains("task-2")
+                })
     }));
     assert!(diagnostics.iter().any(|diagnostics| {
         diagnostics.step_id == EXECUTE_STEP_ID
@@ -4946,10 +5347,14 @@ fn research_itemized_execute_retries_when_current_item_completes_only_future_tod
     assert!(diagnostics.iter().any(|diagnostics| {
         diagnostics.step_id == EXECUTE_STEP_ID
             && diagnostics.output.status == StepOutputStatus::Invalid
-            && diagnostics.output.validation_error.as_deref().is_some_and(|error| {
-                error.contains("cannot complete future todo item 'task-2'")
-                    && error.contains("current item is 'task-1'")
-            })
+            && diagnostics
+                .output
+                .validation_error
+                .as_deref()
+                .is_some_and(|error| {
+                    error.contains("cannot complete future todo item 'task-2'")
+                        && error.contains("current item is 'task-1'")
+                })
     }));
     assert!(diagnostics.iter().any(|diagnostics| {
         diagnostics.step_id == EXECUTE_STEP_ID
@@ -5104,9 +5509,13 @@ fn research_itemized_execute_retries_when_current_item_is_missing_from_open_task
     assert!(diagnostics.iter().any(|diagnostics| {
         diagnostics.step_id == EXECUTE_STEP_ID
             && diagnostics.output.status == StepOutputStatus::Invalid
-            && diagnostics.output.validation_error.as_deref().is_some_and(|error| {
-                error.contains("must keep current todo item 'task-1' in open_tasks")
-            })
+            && diagnostics
+                .output
+                .validation_error
+                .as_deref()
+                .is_some_and(|error| {
+                    error.contains("must keep current todo item 'task-1' in open_tasks")
+                })
     }));
     assert!(!warnings
         .iter()
@@ -5120,7 +5529,9 @@ fn deep_research_execute_accepts_todo_display_text_aliases() {
         ChatResponse {
             id: "scene-1".to_string(),
             model: Some("test-model".to_string()),
-            content: vec![ContentBlock::text("{\"recognized_scene_id\":\"deep-research\"}")],
+            content: vec![ContentBlock::text(
+                "{\"recognized_scene_id\":\"deep-research\"}",
+            )],
             stop_reason: Some(STOP_REASON_END_TURN.to_string()),
             usage: None,
         },
@@ -5150,7 +5561,9 @@ fn deep_research_execute_accepts_todo_display_text_aliases() {
         ChatResponse {
             id: "execute-1".to_string(),
             model: Some("test-model".to_string()),
-            content: vec![ContentBlock::text(research_execute_complete_with_display_text_json())],
+            content: vec![ContentBlock::text(
+                research_execute_complete_with_display_text_json(),
+            )],
             stop_reason: Some(STOP_REASON_END_TURN.to_string()),
             usage: None,
         },
@@ -5207,7 +5620,11 @@ fn deep_research_execute_accepts_todo_display_text_aliases() {
             }
             RuntimeUiEnvelope::Effect {
                 turn_id,
-                effect: RuntimeUiEffect::ReplacePanel { target: UiTarget::Todo, content },
+                effect:
+                    RuntimeUiEffect::ReplacePanel {
+                        target: UiTarget::Todo,
+                        content,
+                    },
             } if turn_id == 220 => {
                 todo_panels.push(content.as_text().to_string());
             }
@@ -5227,9 +5644,15 @@ fn deep_research_execute_accepts_todo_display_text_aliases() {
         }
     }
 
-    assert!(!warnings.iter().any(|warning| warning.contains("unknown todo item")));
-    assert!(todo_panels.iter().any(|panel| panel.contains("[x] #task-1")));
-    assert!(todo_panels.iter().any(|panel| panel.contains("[>] #task-2")));
+    assert!(!warnings
+        .iter()
+        .any(|warning| warning.contains("unknown todo item")));
+    assert!(todo_panels
+        .iter()
+        .any(|panel| panel.contains("[x] #task-1")));
+    assert!(todo_panels
+        .iter()
+        .any(|panel| panel.contains("[>] #task-2")));
     assert_eq!(client.remaining_steps(), 0);
 }
 
@@ -5322,8 +5745,7 @@ fn research_report_retries_when_final_answer_is_raw_json() {
 
     session
         .spawn_turn_ui_compat(
-            "请你对这个仓库做一次深度复杂的综合分析，并给出结构化的项目优劣报告"
-                .to_string(),
+            "请你对这个仓库做一次深度复杂的综合分析，并给出结构化的项目优劣报告".to_string(),
             197,
             tx,
         )
@@ -5381,9 +5803,11 @@ fn research_report_retries_when_final_answer_is_raw_json() {
     assert!(diagnostics.iter().any(|diagnostics| {
         diagnostics.step_id == REPORT_STEP_ID
             && diagnostics.output.status == StepOutputStatus::Invalid
-            && diagnostics.output.validation_error.as_deref().is_some_and(|error| {
-                error.contains("user-facing prose")
-            })
+            && diagnostics
+                .output
+                .validation_error
+                .as_deref()
+                .is_some_and(|error| error.contains("user-facing prose"))
     }));
     if let Some(last_result) = assistant_results.last() {
         assert_eq!(
@@ -6529,18 +6953,25 @@ fn spawn_turn_emits_root_then_child_workflow_steps_and_uses_phase_prompts() {
     assert!(todo_panels.iter().any(|panel| panel.contains("#task-1")));
     assert!(todo_panels.iter().any(|panel| panel.contains("#task-2")));
     let systems = client.recorded_systems();
-    assert!(systems.iter().filter_map(|system| system.as_deref()).any(|system| {
-        system.contains("Workflow role: root") && system.contains("Visible tools: none")
-    }));
-    assert!(systems.iter().filter_map(|system| system.as_deref()).any(|system| {
-        system.contains("feature") && system.contains("Visible tools: none")
-    }));
-    assert!(systems.iter().filter_map(|system| system.as_deref()).any(|system| {
-        system.contains("Workflow role: child")
-            && system.contains("Active workflow: feature")
-            && system.contains("Selected workflow: feature.")
-            && system.contains("hello")
-    }));
+    assert!(systems
+        .iter()
+        .filter_map(|system| system.as_deref())
+        .any(|system| {
+            system.contains("Workflow role: root") && system.contains("Visible tools: none")
+        }));
+    assert!(systems
+        .iter()
+        .filter_map(|system| system.as_deref())
+        .any(|system| { system.contains("feature") && system.contains("Visible tools: none") }));
+    assert!(systems
+        .iter()
+        .filter_map(|system| system.as_deref())
+        .any(|system| {
+            system.contains("Workflow role: child")
+                && system.contains("Active workflow: feature")
+                && system.contains("Selected workflow: feature.")
+                && system.contains("hello")
+        }));
     assert!(systems
         .iter()
         .filter_map(|system| system.as_deref())
@@ -6720,12 +7151,16 @@ fn chat_scene_routes_to_chat_workflow_without_showing_root_text() {
             )
     }));
     let systems = client.recorded_systems();
-    assert!(systems.iter().filter_map(|system| system.as_deref()).any(|system| {
-        system.contains("Visible tools: none")
-    }));
-    assert!(systems.iter().filter_map(|system| system.as_deref()).any(|system| {
-        system.contains("Active workflow: chat") && system.contains("Selected workflow: chat.")
-    }));
+    assert!(systems
+        .iter()
+        .filter_map(|system| system.as_deref())
+        .any(|system| { system.contains("Visible tools: none") }));
+    assert!(systems
+        .iter()
+        .filter_map(|system| system.as_deref())
+        .any(|system| {
+            system.contains("Active workflow: chat") && system.contains("Selected workflow: chat.")
+        }));
     let max_tokens = client.recorded_max_tokens();
     assert_eq!(max_tokens, vec![24_000, 24_000, 24_000]);
 }
@@ -6825,7 +7260,9 @@ fn text_routing_fallback_still_loads_routed_skills_before_child_workflow() {
 
     assert_eq!(assistant_results, vec!["chat answer".to_string()]);
     assert!(logs.iter().any(|line| {
-        line.contains("Loaded routed skills [review] before child workflow start; ignored [missing-skill].")
+        line.contains(
+            "Loaded routed skills [review] before child workflow start; ignored [missing-skill].",
+        )
     }));
     let child_system = client
         .recorded_systems()
@@ -6860,7 +7297,9 @@ fn select_skills_invalid_json_falls_back_without_aborting_turn() {
         ChatResponse {
             id: "select-skills-1".to_string(),
             model: Some("test-model".to_string()),
-            content: vec![ContentBlock::text("No extra skills are needed for this turn.")],
+            content: vec![ContentBlock::text(
+                "No extra skills are needed for this turn.",
+            )],
             stop_reason: Some(STOP_REASON_END_TURN.to_string()),
             usage: None,
         },
@@ -7740,12 +8179,14 @@ fn session_context_persists_step_summaries_across_turns() {
     }
 
     let systems = client.recorded_systems();
-    assert!(systems.iter().filter_map(|system| system.as_deref()).any(|system| {
-        system.contains("second question") && system.contains("first answer")
-    }));
-    assert!(systems.iter().filter_map(|system| system.as_deref()).any(|system| {
-        system.contains("Selected workflow: chat.")
-    }));
+    assert!(systems
+        .iter()
+        .filter_map(|system| system.as_deref())
+        .any(|system| { system.contains("second question") && system.contains("first answer") }));
+    assert!(systems
+        .iter()
+        .filter_map(|system| system.as_deref())
+        .any(|system| { system.contains("Selected workflow: chat.") }));
 }
 
 #[test]
@@ -7961,7 +8402,11 @@ fn prompt_assembly_includes_session_history_hits_from_ledger_search() {
                     source_sequence_start: 1,
                     source_sequence_end: 4,
                     summary: "Widget cache invalidation history".to_string(),
-                    keywords: vec!["widget".to_string(), "cache".to_string(), "invalidation".to_string()],
+                    keywords: vec![
+                        "widget".to_string(),
+                        "cache".to_string(),
+                        "invalidation".to_string(),
+                    ],
                     retained_facts: vec![
                         "The old widget pipeline required clearing stale cache keys before retries."
                             .to_string(),
@@ -9351,11 +9796,12 @@ fn session_tool_catalog_matches_current_default_tool_set() {
         .filter(|manifest| manifest.id != "ask_user_question")
         .cloned()
         .collect::<Vec<_>>();
-    let catalog = SessionToolCatalog::with_available_manifests(default_manifests, available_manifests);
+    let catalog =
+        SessionToolCatalog::with_available_manifests(default_manifests, available_manifests);
 
     let inherit = catalog.resolve_for_step(&StepToolRequest::Inherit);
     let extended = catalog.resolve_for_step(&StepToolRequest::Extend(vec![
-        "ask_user_question".to_string(),
+        "ask_user_question".to_string()
     ]));
     let blocked = catalog.resolve_for_step(&StepToolRequest::Block(vec![
         "bash".to_string(),
@@ -9385,7 +9831,9 @@ fn session_tool_catalog_matches_current_default_tool_set() {
             "write_file"
         ]
     );
-    assert!(extended.tool_names().contains(&"ask_user_question".to_string()));
+    assert!(extended
+        .tool_names()
+        .contains(&"ask_user_question".to_string()));
     assert_eq!(
         blocked.tool_names(),
         [

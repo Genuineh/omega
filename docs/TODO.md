@@ -1,12 +1,12 @@
 ---
-content_revision: 120
-generation_id: gen_000046_r000120
+content_revision: 121
+generation_id: gen_000047_r000121
 last_verified_commit: N/A
 owner: omega-team
-projection_version: 46
+projection_version: 47
 source_doc_id: "todo:docs-todo"
 status: active
-updated: 2026-04-15
+updated: 2026-04-24
 ---
 
 # TODO
@@ -48,6 +48,8 @@ updated: 2026-04-15
 - **Project plan management baseline is complete**: `Task 4A ~ 4K` 已完成；`omega-plan` store、`/plan` command family、`docs/TODO.md` projection + 首轮迁移、`/plan load` file/dir preview+apply 导入、selected-task restore warning、`ProjectDetailSnapshot.plan` 驱动的 TUI `Project` surface、task-bound `delivery_attached` / `partial_delivery` log 回写，以及 docs-data-backed `ProjectPlanStore` / `/plan` runtime / TODO projection convergence 都已成为基线。旧的 `.omega/plans/` compatibility/import layer 已移除，project plan 现在只通过 `docs-data/tasks/*` canonical persistence 工作。 当 docs-data cutover 导致 `project-tasks.jsonl` 缺失时，project planning 现在会从 `docs-data/tasks/doc-tasks.jsonl` 回填自愈，且 `/plan list` 会通过 picker overlay 展示当前任务。相关规格：`docs/specs/omega-project-plan-system.md`、`docs/specs/omega-project-plan-docs-data-convergence.md`。
 - **Structured docs system is complete**: `Task 19A ~ 19K` 已完成；`docs-data/` canonical layout、structured doc/task/relation schema、文档技能迁移、`manage_document` mandatory structured actions、`/document render|validate|extract`、deterministic renderer、projection validator、`docs-data/tasks/doc-tasks.jsonl`、`omega-doc-cli` foundation/query/mutation surface、CLI-first guidance enforcement、docs/docs-data version contract，以及最终 CLI-only workflow cutover 都已成为基线。正常文档 mutation 现在默认走 `omega-doc`，直接 markdown/docs-data edits 仅保留给 emergency projection repair。
 - **TUI visual refresh baseline is complete**: `Task 15B-51` 与 `Task 15B-61 ~ 15B-64` 已完成；当前仅保留 `Task 15B-52` 与 `Task 15B-54` 两个 open follow-up。
+- **Plan task detail navigator baseline is complete**: `Task 35A ~ 35E` + `Task 36A ~ 36D` 已完成；`presentation_links` schema 字段已补齐，`/plan list` Enter 直接打开双栏 task detail navigator（左侧 Design/Related/Context 分组展示任务概述 + design/impl/presentation links + recent logs，右侧展示选中项内容），overlay routing stack 支持 push/pop 使 Ctrl-L 精确回到上一层 picker 保持完整状态，Esc 关闭整个 stack。`/plan links` picker 保留为内部路由。相关规格：`docs/specs/omega-plan-task-detail-navigator.md`。
+- **Document navigator interaction baseline is complete**: `Task 37A ~ 37E` 已完成；`/document list` 与 `/document query` 现在先打开 picker overlay，Enter 通过 PushOverlay 进入 `/document open` 或 `/document view-result` detail navigator；`/document health`、`/document open`、`/document get` 共享双栏 DocumentNavigator，展示概述、sections、relations、file metadata，并复用 overlay stack 支持 Ctrl-L 返回上一层 picker。相关规格：`docs/specs/omega-document-navigator.md`。
 
 ## Active Tasks
 

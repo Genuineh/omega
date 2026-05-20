@@ -1,9 +1,7 @@
 use std::collections::BTreeMap;
 
 use omega_context::{ContextDiagnostics, DocumentHealthStatus, HealthScore};
-use omega_core::{
-    ChatEvent, CoreToolExecutionContext, CoreToolManifestMetadata, CoreToolResult,
-};
+use omega_core::{ChatEvent, CoreToolExecutionContext, CoreToolManifestMetadata, CoreToolResult};
 use omega_project::ProjectDetailSnapshot;
 use omega_workflow::{WorkflowStep, WorkflowStepState};
 use serde_json::Value;
@@ -14,8 +12,8 @@ use crate::runtime_message::{
 };
 use crate::runtime_ui::{
     OverlayRequest, OverlayTarget, ResponseSection, ResponseSectionDelta, ResponseSectionKind,
-    ResponseSectionMetadata, ResponseSectionState, SectionOrigin, StepSubflowRef, StepSubflowStatus,
-    ToolCapabilityDiagnostics, ToolRun, ToolRunDetail, ToolRunStatus, UiContent,
+    ResponseSectionMetadata, ResponseSectionState, SectionOrigin, StepSubflowRef,
+    StepSubflowStatus, ToolCapabilityDiagnostics, ToolRun, ToolRunDetail, ToolRunStatus, UiContent,
     WorkflowRunRole,
 };
 use crate::session_state::SessionContext;
@@ -158,14 +156,20 @@ fn build_tool_run_detail_lines(
         }
         if let Some(remediation) = tool_result.remediation.as_ref() {
             lines.push(format!("remediation.kind: {}", remediation.kind.as_str()));
-            lines.push(format!("remediation.suggestion: {}", remediation.suggestion));
+            lines.push(format!(
+                "remediation.suggestion: {}",
+                remediation.suggestion
+            ));
             if !remediation.alternative_tools.is_empty() {
                 lines.push(format!(
                     "remediation.alternatives: {}",
                     remediation.alternative_tools.join(", ")
                 ));
             }
-            lines.push(format!("remediation.recoverable: {}", remediation.recoverable));
+            lines.push(format!(
+                "remediation.recoverable: {}",
+                remediation.recoverable
+            ));
         }
         if tool_result.truncated {
             lines.push("truncated: true".to_string());
@@ -285,13 +289,21 @@ fn build_input_prompt(tool_result: &CoreToolResult) -> Option<String> {
     }
 
     let mut lines = vec![format!("question: {question}")];
-    if let Some(context) = tool_result.metadata.get("context").and_then(|value| value.as_str()) {
+    if let Some(context) = tool_result
+        .metadata
+        .get("context")
+        .and_then(|value| value.as_str())
+    {
         let context = context.trim();
         if !context.is_empty() {
             lines.push(format!("context: {context}"));
         }
     }
-    if let Some(options) = tool_result.metadata.get("options").and_then(|value| value.as_array()) {
+    if let Some(options) = tool_result
+        .metadata
+        .get("options")
+        .and_then(|value| value.as_array())
+    {
         let options = options
             .iter()
             .filter_map(|value| value.as_str())
@@ -1231,9 +1243,9 @@ impl<'a> ToolRunTracker<'a> {
         self.tool_metrics.clone()
     }
 
-	pub(crate) fn tool_runs(&self) -> Vec<ToolRun> {
-		self.tool_runs.values().cloned().collect()
-	}
+    pub(crate) fn tool_runs(&self) -> Vec<ToolRun> {
+        self.tool_runs.values().cloned().collect()
+    }
 
     pub(crate) fn observe_chat_event(&mut self, event: &ChatEvent) {
         let ChatEvent::ToolUse { id, name, input } = event else {
@@ -1459,10 +1471,9 @@ mod tests {
     };
     use omega_core::{
         CoreMemoryScopeLevel, CoreToolContextProfile, CoreToolExecutionContext, CoreToolFamily,
-        CoreToolManifestMetadata,
-        CoreToolObservabilityProfile, CoreToolPermissionProfile, CoreToolRemediation,
-        CoreToolRemediationKind, CoreToolResult, CoreToolStorageProfile, CoreToolUiProfile,
-        CoreToolPromptProfile, CoreToolStability,
+        CoreToolManifestMetadata, CoreToolObservabilityProfile, CoreToolPermissionProfile,
+        CoreToolPromptProfile, CoreToolRemediation, CoreToolRemediationKind, CoreToolResult,
+        CoreToolStability, CoreToolStorageProfile, CoreToolUiProfile,
     };
     use serde_json::json;
 
@@ -1501,9 +1512,10 @@ mod tests {
                 compression_ratio_avg_percent: 50,
                 retention_candidates_accepted: 3,
                 retention_candidates_dropped: 1,
-                dropped_candidates_by_profile: std::collections::BTreeMap::from([
-                    ("ephemeral_debug".to_string(), 1),
-                ]),
+                dropped_candidates_by_profile: std::collections::BTreeMap::from([(
+                    "ephemeral_debug".to_string(),
+                    1,
+                )]),
                 memory_query_count: 4,
                 memory_query_hit_mix: std::collections::BTreeMap::from([
                     ("project_facts".to_string(), 3),
@@ -1541,9 +1553,7 @@ mod tests {
                     recovery_path: Some("deterministic_bundle".to_string()),
                     query: "memory query".to_string(),
                     result_count: 1,
-                    freshness_mix: std::collections::BTreeMap::from([
-                        ("fresh".to_string(), 1),
-                    ]),
+                    freshness_mix: std::collections::BTreeMap::from([("fresh".to_string(), 1)]),
                     top_hits: vec![omega_context::ObservationRecallHitItem {
                         id: "obs-1".to_string(),
                         title: "Open thread: task-memory-query".to_string(),
@@ -1765,14 +1775,28 @@ mod tests {
         );
 
         assert!(lines.iter().any(|line| line == "family: editing"));
-        assert!(lines.iter().any(|line| line.contains("permission: workspace_write")));
-        assert!(lines.iter().any(|line| line == "storage: session_journal, artifact"));
-        assert!(lines.iter().any(|line| line.contains("execution: child:feature:execute")));
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("permission: workspace_write")));
+        assert!(lines
+            .iter()
+            .any(|line| line == "storage: session_journal, artifact"));
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("execution: child:feature:execute")));
         assert!(lines.iter().any(|line| line == "error_kind: execution"));
-        assert!(lines.iter().any(|line| line == "remediation.kind: retry_or_fallback"));
-        assert!(lines.iter().any(|line| line.contains("Retry with a narrower command")));
-        assert!(lines.iter().any(|line| line == "remediation.alternatives: read_file"));
-        assert!(lines.iter().any(|line| line == "remediation.recoverable: true"));
+        assert!(lines
+            .iter()
+            .any(|line| line == "remediation.kind: retry_or_fallback"));
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("Retry with a narrower command")));
+        assert!(lines
+            .iter()
+            .any(|line| line == "remediation.alternatives: read_file"));
+        assert!(lines
+            .iter()
+            .any(|line| line == "remediation.recoverable: true"));
     }
 
     #[test]
@@ -1927,7 +1951,10 @@ mod tests {
         let metrics = tracker.tool_metrics();
         assert_eq!(metrics.tool_invocations.get("bash"), Some(&2));
         assert_eq!(metrics.family_invocations.get("escape_hatch"), Some(&2));
-        assert_eq!(metrics.tool_failure_count_by_kind.get("execution"), Some(&1));
+        assert_eq!(
+            metrics.tool_failure_count_by_kind.get("execution"),
+            Some(&1)
+        );
         assert_eq!(metrics.bash_fallback_count, 2);
         assert_eq!(metrics.same_intent_retry_count, 1);
         assert_eq!(metrics.question_block_count, 1);

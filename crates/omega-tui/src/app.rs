@@ -7,10 +7,10 @@ use ratatui::{layout::Rect, widgets::ListState};
 
 use omega_observability::strip_ansi;
 use omega_session::{
-    ContextSupervisionSnapshot, DocumentNavigatorRequest, OperatorPickerRequest,
-    OverlayTarget, ResponseSectionState, RuntimeUiEnvelope, SkillLoadSummary, StatusSlot,
-    StatusValue, StepDiagnostics, StepKnowledgeSummary, StepOutputStatus, StepSubflowRef,
-    StepSubflowStatus, ToolRun, ToolRunStatus, WorkflowRunRole,
+    ContextSupervisionSnapshot, DocumentNavigatorRequest, OperatorPickerRequest, OverlayTarget,
+    ResponseSectionState, RuntimeUiEnvelope, SkillLoadSummary, StatusSlot, StatusValue,
+    StepDiagnostics, StepKnowledgeSummary, StepOutputStatus, StepSubflowRef, StepSubflowStatus,
+    ToolRun, ToolRunStatus, WorkflowRunRole,
 };
 use omega_theme::RenderPalette;
 
@@ -21,8 +21,8 @@ use crate::overlay::{
 use crate::reducer::{session_status_from_status, workflow_summary_from_status, TuiUpdateReducer};
 use crate::sidebar::{SidebarSection, SidebarState};
 
-mod diagnostics;
 mod delivery;
+mod diagnostics;
 mod project;
 mod response;
 mod skills;
@@ -30,13 +30,13 @@ mod supervision;
 mod text;
 mod todo;
 
+use delivery::{delivery_placeholder_lines, DeliverySummary};
 pub(crate) use project::project_badge_text;
+use skills::skill_placeholder_lines;
+use supervision::{knowledge_placeholder_lines, memory_placeholder_lines};
 pub(crate) use text::wrap_text_segments;
 #[cfg(test)]
 pub(crate) use todo::todo_empty_lines;
-use skills::skill_placeholder_lines;
-use delivery::{delivery_placeholder_lines, DeliverySummary};
-use supervision::{knowledge_placeholder_lines, memory_placeholder_lines};
 use todo::todo_unsynced_lines;
 
 const TODO_UNSYNCED_LINES: &[&str] = &[
@@ -362,9 +362,11 @@ pub struct App {
     pub input_cursor_column_goal: Option<usize>,
     pub sidebar: SidebarState,
     pub overlay: Option<OverlayState>,
+    pub overlay_stack: Vec<OverlayState>,
     pub overlay_rect: Rect,
     pub cached_palette: Option<RenderPalette>,
     pub delivery_model_name: Option<String>,
+    pub picker_selection_memory: std::collections::HashMap<String, usize>,
 }
 
 impl App {
@@ -457,9 +459,11 @@ impl App {
             input_cursor_column_goal: None,
             sidebar: SidebarState::default(),
             overlay: None,
+            overlay_stack: Vec::new(),
             overlay_rect: Rect::default(),
             cached_palette: None,
             delivery_model_name: None,
+            picker_selection_memory: std::collections::HashMap::new(),
         }
     }
 
@@ -536,7 +540,9 @@ impl App {
             },
             StatusSlot::Project => match value {
                 StatusValue::ProjectSelection { snapshot } => {
-                    self.project_status = Some(ProjectStatusSummary { snapshot: *snapshot });
+                    self.project_status = Some(ProjectStatusSummary {
+                        snapshot: *snapshot,
+                    });
                     self.rebuild_project_lines();
                 }
                 StatusValue::Hidden => self.clear_project_status(),
@@ -748,7 +754,8 @@ impl App {
                         .max(self.delivery_lines.len())
                         .saturating_sub(1)
                 });
-                self.delivery_state.select(Some(current.saturating_sub(amount)));
+                self.delivery_state
+                    .select(Some(current.saturating_sub(amount)));
             }
             Panel::Skills => {
                 self.skills_pinned = true;
@@ -757,7 +764,8 @@ impl App {
                         .max(self.skill_lines.len())
                         .saturating_sub(1)
                 });
-                self.skills_state.select(Some(current.saturating_sub(amount)));
+                self.skills_state
+                    .select(Some(current.saturating_sub(amount)));
             }
             Panel::Project => {
                 self.project_pinned = true;
@@ -766,7 +774,8 @@ impl App {
                         .max(self.project_lines.len())
                         .saturating_sub(1)
                 });
-                self.project_state.select(Some(current.saturating_sub(amount)));
+                self.project_state
+                    .select(Some(current.saturating_sub(amount)));
             }
             Panel::Document => {
                 self.document_pinned = true;
@@ -957,9 +966,17 @@ impl App {
             Panel::Diagnostics
         } else if self.delivery_rect.width > 0
             && col >= self.delivery_rect.x
-            && col < self.delivery_rect.x.saturating_add(self.delivery_rect.width)
+            && col
+                < self
+                    .delivery_rect
+                    .x
+                    .saturating_add(self.delivery_rect.width)
             && row >= self.delivery_rect.y
-            && row < self.delivery_rect.y.saturating_add(self.delivery_rect.height)
+            && row
+                < self
+                    .delivery_rect
+                    .y
+                    .saturating_add(self.delivery_rect.height)
         {
             Panel::Delivery
         } else if self.skills_rect.width > 0
@@ -978,9 +995,17 @@ impl App {
             Panel::Project
         } else if self.document_rect.width > 0
             && col >= self.document_rect.x
-            && col < self.document_rect.x.saturating_add(self.document_rect.width)
+            && col
+                < self
+                    .document_rect
+                    .x
+                    .saturating_add(self.document_rect.width)
             && row >= self.document_rect.y
-            && row < self.document_rect.y.saturating_add(self.document_rect.height)
+            && row
+                < self
+                    .document_rect
+                    .y
+                    .saturating_add(self.document_rect.height)
         {
             Panel::Document
         } else if self.memory_rect.width > 0
@@ -1011,52 +1036,62 @@ impl App {
 
     pub fn select_sidebar_panel_item(&mut self, panel: Panel, index: usize) -> bool {
         match panel {
-            Panel::Diagnostics if self.diagnostics_visible() && self.diagnostics_displayed_count > 0 => {
+            Panel::Diagnostics
+                if self.diagnostics_visible() && self.diagnostics_displayed_count > 0 =>
+            {
                 self.focused_panel = Panel::Diagnostics;
                 self.diagnostics_pinned = true;
-                self.diagnostics_state.select(Some(index.min(self.diagnostics_displayed_count - 1)));
+                self.diagnostics_state
+                    .select(Some(index.min(self.diagnostics_displayed_count - 1)));
                 true
             }
             Panel::Delivery if self.delivery_visible() && self.delivery_displayed_count > 0 => {
                 self.focused_panel = Panel::Delivery;
                 self.delivery_pinned = true;
-                self.delivery_state.select(Some(index.min(self.delivery_displayed_count - 1)));
+                self.delivery_state
+                    .select(Some(index.min(self.delivery_displayed_count - 1)));
                 true
             }
             Panel::Skills if self.skills_visible() && self.skills_displayed_count > 0 => {
                 self.focused_panel = Panel::Skills;
                 self.skills_pinned = true;
-                self.skills_state.select(Some(index.min(self.skills_displayed_count - 1)));
+                self.skills_state
+                    .select(Some(index.min(self.skills_displayed_count - 1)));
                 true
             }
             Panel::Project if self.project_visible() && self.project_displayed_count > 0 => {
                 self.focused_panel = Panel::Project;
                 self.project_pinned = true;
-                self.project_state.select(Some(index.min(self.project_displayed_count - 1)));
+                self.project_state
+                    .select(Some(index.min(self.project_displayed_count - 1)));
                 true
             }
             Panel::Document if self.document_visible() && self.document_displayed_count > 0 => {
                 self.focused_panel = Panel::Document;
                 self.document_pinned = true;
-                self.document_state.select(Some(index.min(self.document_displayed_count - 1)));
+                self.document_state
+                    .select(Some(index.min(self.document_displayed_count - 1)));
                 true
             }
             Panel::Memory if self.memory_visible() && self.memory_displayed_count > 0 => {
                 self.focused_panel = Panel::Memory;
                 self.memory_pinned = true;
-                self.memory_state.select(Some(index.min(self.memory_displayed_count - 1)));
+                self.memory_state
+                    .select(Some(index.min(self.memory_displayed_count - 1)));
                 true
             }
             Panel::Todo if self.todo_visible() && self.todo_displayed_count > 0 => {
                 self.focused_panel = Panel::Todo;
                 self.todo_pinned = true;
-                self.todo_state.select(Some(index.min(self.todo_displayed_count - 1)));
+                self.todo_state
+                    .select(Some(index.min(self.todo_displayed_count - 1)));
                 true
             }
             Panel::Logs if self.logs_visible() && self.logs_displayed_count > 0 => {
                 self.focused_panel = Panel::Logs;
                 self.logs_pinned = true;
-                self.logs_state.select(Some(index.min(self.logs_displayed_count - 1)));
+                self.logs_state
+                    .select(Some(index.min(self.logs_displayed_count - 1)));
                 true
             }
             _ => false,
@@ -1526,7 +1561,11 @@ impl App {
             }
             SidebarSection::Delivery => match self.delivery_panel_summary() {
                 Some(summary) => {
-                    format!("V {}/{}", summary.llm_request_count, summary.changed_files.len())
+                    format!(
+                        "V {}/{}",
+                        summary.llm_request_count,
+                        summary.changed_files.len()
+                    )
                 }
                 None => "V --".to_string(),
             },
@@ -1641,7 +1680,8 @@ impl App {
             dismiss_on_backdrop: true,
         }));
         self.clear_leader_pending();
-        self.status_notice = Some("Approval overlay opened for the current tool action.".to_string());
+        self.status_notice =
+            Some("Approval overlay opened for the current tool action.".to_string());
     }
 
     #[allow(dead_code)]
@@ -1683,10 +1723,13 @@ impl App {
 
     #[allow(dead_code)]
     pub fn open_picker_overlay(&mut self, request: OperatorPickerRequest) {
-        self.overlay = Some(OverlayState::Picker(PickerOverlay::new(
-            self.focused_panel,
-            request,
-        )));
+        let mut overlay = PickerOverlay::new(self.focused_panel, request);
+        if let Some(&remembered) = self.picker_selection_memory.get(&overlay.request.picker_id) {
+            if remembered < overlay.visible_item_indices.len() {
+                overlay.selected = remembered;
+            }
+        }
+        self.overlay = Some(OverlayState::Picker(overlay));
         self.clear_leader_pending();
     }
 
@@ -1709,8 +1752,46 @@ impl App {
 
     pub fn close_overlay(&mut self) {
         if let Some(overlay) = self.overlay.take() {
+            if let OverlayState::Picker(picker) = &overlay {
+                self.picker_selection_memory
+                    .insert(picker.request.picker_id.clone(), picker.selected);
+            }
             self.focused_panel = overlay.origin_panel();
             self.normalize_focus();
+        }
+        self.overlay_stack.clear();
+    }
+
+    pub fn push_overlay(&mut self, new_state: OverlayState) {
+        if let Some(current) = self.overlay.take() {
+            if let OverlayState::Picker(picker) = &current {
+                self.picker_selection_memory
+                    .insert(picker.request.picker_id.clone(), picker.selected);
+            }
+            self.overlay_stack.push(current);
+        }
+        self.overlay = Some(new_state);
+        self.clear_leader_pending();
+    }
+
+    pub fn pop_overlay(&mut self) -> bool {
+        if let Some(previous) = self.overlay_stack.pop() {
+            if let OverlayState::Picker(picker) = &previous {
+                if picker.selected < picker.visible_item_indices.len() {
+                    let mut restored = picker.clone();
+                    restored.filter_mode = false;
+                    self.overlay = Some(OverlayState::Picker(restored));
+                } else {
+                    self.overlay = Some(previous);
+                }
+            } else {
+                self.overlay = Some(previous);
+            }
+            self.clear_leader_pending();
+            true
+        } else {
+            self.close_overlay();
+            false
         }
     }
 
@@ -1916,9 +1997,8 @@ impl App {
 
     pub fn scroll_input_down(&mut self, amount: usize) {
         let total_lines = self.input_total_visual_lines();
-        self.input_scroll_top = (self.input_scroll_top + amount).min(
-            total_lines.saturating_sub(self.input_visible_height()),
-        );
+        self.input_scroll_top = (self.input_scroll_top + amount)
+            .min(total_lines.saturating_sub(self.input_visible_height()));
     }
 
     pub fn take_input(&mut self) -> String {
@@ -2013,9 +2093,7 @@ impl App {
             1 if current_line < last_line => current_line + 1,
             _ => return,
         };
-        let desired_column = self
-            .input_cursor_column_goal
-            .unwrap_or(current_column);
+        let desired_column = self.input_cursor_column_goal.unwrap_or(current_column);
         let mut fallback_index = None;
 
         for (index, (line, column)) in positions.iter().copied().enumerate() {

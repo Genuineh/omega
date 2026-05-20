@@ -8,8 +8,8 @@ use omega_command::{
     OmegaCommandInvocation, OmegaCommandRegistry, OmegaCommandSource, OmegaCommandSubcommand,
 };
 use omega_compression::{
-    LedgerSessionContextCompressor, SessionCompactionRequest, SessionContextCompressor,
-    SessionContextLoadGoal, SessionContextLoadRequest, session_context_budget_tokens,
+    session_context_budget_tokens, LedgerSessionContextCompressor, SessionCompactionRequest,
+    SessionContextCompressor, SessionContextLoadGoal, SessionContextLoadRequest,
 };
 use omega_context::{
     ArchiveTrigger, DocType, DocumentMutationMode, DocumentOp, FileRecord, FileStatus,
@@ -22,34 +22,32 @@ pub use omega_context::{
     DocumentActivitySummary, DocumentHealthStatus, DocumentHitItem, DocumentHitSummary,
     DocumentOperatorUsage, DocumentStoreVersion, DocumentSupervisionSnapshot,
     DocumentSupervisionTotals, HealthScore, MemoryHitItem, MemoryHitSummary,
-    MemoryQueryDiagnostics, MemoryQueryHitItem, MemorySupervisionSnapshot,
-    MemorySupervisionTotals, ObservationRecallDiagnostics, ObservationRecallHitItem,
-    ObservationFreshness, ResponseDocumentKnowledge, ResponseMemoryKnowledge,
-    StepKnowledgeSummary, SupervisionReadiness,
+    MemoryQueryDiagnostics, MemoryQueryHitItem, MemorySupervisionSnapshot, MemorySupervisionTotals,
+    ObservationFreshness, ObservationRecallDiagnostics, ObservationRecallHitItem,
+    ResponseDocumentKnowledge, ResponseMemoryKnowledge, StepKnowledgeSummary, SupervisionReadiness,
 };
 use omega_core::{
     Agent, CoreSharedTodoManager, DynLlmClient, Message, TodoItem, TodoManager, TodoStatus,
 };
 use omega_document::{
-    DocType as StructuredDocType,
-    DocumentMutationMode as StructuredDocumentMutationMode,
-    DocumentOp as StructuredDocumentOp, OmegaDocument, StructuredDocumentRecord,
-    StructuredDocumentSection, StructuredDocsSnapshot,
+    DocType as StructuredDocType, DocumentMutationMode as StructuredDocumentMutationMode,
+    DocumentOp as StructuredDocumentOp, OmegaDocument, StructuredDocsSnapshot,
+    StructuredDocumentRecord, StructuredDocumentRelation, StructuredDocumentSection,
 };
 use omega_hooks::HookHost;
 use omega_plan::{
     NewPlannedTask, PlannedTask, PlannedTaskStatus, PlannedTaskUpdate, ProjectPlanAccess,
-    ProjectPlanStore, SelectedProjectTaskContext, TaskActor, TaskArtifactKind,
-    TaskArtifactLink, TaskDependencyOperation, TaskLinkSurface, TaskListFilter,
-    TaskLogEntry, TaskLogKind, TaskOrderPlacement, TaskPriority,
+    ProjectPlanStore, SelectedProjectTaskContext, TaskActor, TaskArtifactKind, TaskArtifactLink,
+    TaskDependencyOperation, TaskLinkSurface, TaskListFilter, TaskLogEntry, TaskLogKind,
+    TaskOrderPlacement, TaskPriority,
 };
 use omega_project::{
     OmegaProjectHandle, ProjectDetailSnapshot, ProjectDetectionKind, ProjectRegistry,
-    ProjectResolutionInput, ProjectSessionSnapshot, ProjectSessionStatus,
-    SessionContextRecord, SessionContextRecordKind,
-    ProjectSessionStepSummary, ProjectSessionTodoItem, ProjectSessionTodoStatus,
-    ProjectSessionTurnSummary, ProjectSessionUpdate, ProjectSkillRoutingSnapshot,
-    ProjectSessionRoutingSnapshot, SessionReplayEntry, SessionReplayEntryKind,
+    ProjectResolutionInput, ProjectSessionRoutingSnapshot, ProjectSessionSnapshot,
+    ProjectSessionStatus, ProjectSessionStepSummary, ProjectSessionTodoItem,
+    ProjectSessionTodoStatus, ProjectSessionTurnSummary, ProjectSessionUpdate,
+    ProjectSkillRoutingSnapshot, SessionContextRecord, SessionContextRecordKind,
+    SessionReplayEntry, SessionReplayEntryKind,
 };
 use omega_skills::SkillLoader;
 use omega_workflow::{SceneCatalog, WorkflowCatalog, WorkflowPromptCatalog};
@@ -97,18 +95,17 @@ pub use runtime_ui::{
     ActivityTarget, CacheDiagnostics, DocumentNavigatorBody, DocumentNavigatorBodyKind,
     DocumentNavigatorEntry, DocumentNavigatorEntryKind, DocumentNavigatorGroup,
     DocumentNavigatorRequest, ExecuteProgressDiagnostics, OperatorPickerAction,
-    OperatorPickerIntent, OperatorPickerItem, OperatorPickerOverlayBehavior,
-    OperatorPickerRequest, OperatorPickerShortcut, OverlayRequest, OverlayTarget,
-    ResponseSection, ResponseSectionDelta, ResponseSectionKind, ResponseSectionMetadata,
-    ResponseSectionState, RuntimeUiBridge, RuntimeUiEffect, RuntimeUiEnvelope,
-    RuntimeUiMessage, RuntimeUiSink, SectionOrigin, SessionRuntimeContext,
-    SessionRestoreSnapshot, SkillLoadSummary, StatusSlot, StatusValue, StepContextWrite,
-    StepContextWriteKind, StepDiagnostics, StepInputDiagnostics, StepInputStatus,
+    OperatorPickerIntent, OperatorPickerItem, OperatorPickerOverlayBehavior, OperatorPickerRequest,
+    OperatorPickerShortcut, OverlayRequest, OverlayTarget, ResponseSection, ResponseSectionDelta,
+    ResponseSectionKind, ResponseSectionMetadata, ResponseSectionState, RuntimeUiBridge,
+    RuntimeUiEffect, RuntimeUiEnvelope, RuntimeUiMessage, RuntimeUiSink, SectionOrigin,
+    SessionRestoreSnapshot, SessionRuntimeContext, SkillLoadSummary, StatusSlot, StatusValue,
+    StepContextWrite, StepContextWriteKind, StepDiagnostics, StepInputDiagnostics, StepInputStatus,
     StepOutputAttemptKind, StepOutputContractMode, StepOutputDiagnostics,
     StepOutputRecoveryDecision, StepOutputStatus, StepSubflowRef, StepSubflowState,
-    StepSubflowStatus, StepSummarySource, TokenCountSource, ToolCapabilityDiagnostics,
-    ToolRun, ToolRunDetail, ToolRunStatus, UiContent, UiMessageKind, UiPriority,
-    UiSource, UiTarget, WorkflowRunRole,
+    StepSubflowStatus, StepSummarySource, TokenCountSource, ToolCapabilityDiagnostics, ToolRun,
+    ToolRunDetail, ToolRunStatus, UiContent, UiMessageKind, UiPriority, UiSource, UiTarget,
+    WorkflowRunRole,
 };
 pub use skill_catalog::{ResolvedSkillSet, SessionSkillCatalog};
 #[cfg(any(test, feature = "test-support"))]
@@ -333,7 +330,11 @@ impl AgentSession {
     }
 
     pub fn current_selected_task_id(&self) -> Option<String> {
-        self.session_runtime.lock().unwrap().selected_task_id.clone()
+        self.session_runtime
+            .lock()
+            .unwrap()
+            .selected_task_id
+            .clone()
     }
 
     pub fn set_selected_task(&self, task_id: Option<String>) -> anyhow::Result<()> {
@@ -385,13 +386,14 @@ impl AgentSession {
             &[],
             &StepSkillRequest::MatchTask,
         );
-        let dispatcher = omega_core::create_default_tools_with_context_and_todo_manager_and_tool_limits(
-            self.current_cwd(),
-            project_handle.context_facade(),
-            self.todo_manager.clone(),
-            self.bash_allowed_commands.clone(),
-            self.batch_max_requests,
-        );
+        let dispatcher =
+            omega_core::create_default_tools_with_context_and_todo_manager_and_tool_limits(
+                self.current_cwd(),
+                project_handle.context_facade(),
+                self.todo_manager.clone(),
+                self.bash_allowed_commands.clone(),
+                self.batch_max_requests,
+            );
         let mut replacement = Agent::new(self.client.clone(), system, dispatcher)?;
         replacement.set_max_tokens(self.max_output_tokens);
         replacement.set_messages(checkpoint);
@@ -833,9 +835,9 @@ impl AgentSession {
                 })
                 .unwrap_or_default();
 
-            let archive_data = active_session_id
-                .as_deref()
-                .map(|active_session_id| build_turn_archive(turn_id, active_session_id, &turn_context));
+            let archive_data = active_session_id.as_deref().map(|active_session_id| {
+                build_turn_archive(turn_id, active_session_id, &turn_context)
+            });
             {
                 let mut shared = session_context.lock().unwrap();
                 *shared = turn_context;
@@ -980,7 +982,9 @@ impl AgentSession {
         }
 
         let current_selected_task_id = self.current_selected_task_id();
-        let Ok((task_id, prompt)) = parse_plan_send_args(&invocation.args, current_selected_task_id) else {
+        let Ok((task_id, prompt)) =
+            parse_plan_send_args(&invocation.args, current_selected_task_id)
+        else {
             return Ok(false);
         };
         self.set_selected_task(Some(task_id))?;
@@ -1023,6 +1027,11 @@ fn command_registry(project_handle: &Arc<OmegaProjectHandle>) -> OmegaCommandReg
                     Some("<text>"),
                 ),
                 OmegaCommandSubcommand::new(
+                    "view-result",
+                    "Open a document query result in the navigator",
+                    Some("<query> <path>"),
+                ),
+                OmegaCommandSubcommand::new(
                     "create",
                     "Create a managed document from a template",
                     Some("<path> <doc_type> <title...>"),
@@ -1036,6 +1045,16 @@ fn command_registry(project_handle: &Arc<OmegaProjectHandle>) -> OmegaCommandReg
                     "list",
                     "List tracked documents",
                     Some("[doc_type] [status]"),
+                ),
+                OmegaCommandSubcommand::new(
+                    "open",
+                    "Open a document in the navigator",
+                    Some("<doc-id>"),
+                ),
+                OmegaCommandSubcommand::new(
+                    "get",
+                    "Open a document detail navigator directly",
+                    Some("<doc-id>"),
                 ),
                 OmegaCommandSubcommand::new(
                     "render",
@@ -1260,7 +1279,10 @@ fn execute_command(
             turn_context,
             progress,
         ),
-        _ => Err(anyhow::anyhow!("unsupported command '/{}'", invocation.name)),
+        _ => Err(anyhow::anyhow!(
+            "unsupported command '/{}'",
+            invocation.name
+        )),
     }
 }
 
@@ -1328,7 +1350,10 @@ fn execute_project_command(
             Ok(CommandExecutionOutput {
                 body: render_project_sessions(&snapshot),
                 state: ResponseSectionState::Complete,
-                activity: format!("/project sessions returned {} sessions", snapshot.sessions.len()),
+                activity: format!(
+                    "/project sessions returned {} sessions",
+                    snapshot.sessions.len()
+                ),
                 knowledge_summary: None,
                 agent_messages: None,
             })
@@ -1352,7 +1377,10 @@ fn execute_project_command(
             let explicit_root = std::path::PathBuf::from(target.trim());
             let (registry, current_handle) = {
                 let state = project_state.lock().unwrap();
-                (Arc::clone(&state.registry), Arc::clone(&state.active_handle))
+                (
+                    Arc::clone(&state.registry),
+                    Arc::clone(&state.active_handle),
+                )
             };
             let next_handle = registry.resolve(ProjectResolutionInput {
                 current_file_path: None,
@@ -1424,7 +1452,10 @@ fn execute_project_command(
             }
             let (registry, active_handle) = {
                 let state = project_state.lock().unwrap();
-                (Arc::clone(&state.registry), Arc::clone(&state.active_handle))
+                (
+                    Arc::clone(&state.registry),
+                    Arc::clone(&state.active_handle),
+                )
             };
             let target_handle = resolve_known_project_target(&registry, target.trim())?;
             if target_handle.project_id() == active_handle.project_id() {
@@ -1474,16 +1505,18 @@ fn execute_plan_command(
             let mut tasks = store.list_tasks(filter)?;
             tasks.retain(|task| match view.as_str() {
                 "all" => true,
-                "history" => matches!(task.status, PlannedTaskStatus::Done | PlannedTaskStatus::Archived),
-                _ => !matches!(task.status, PlannedTaskStatus::Done | PlannedTaskStatus::Archived),
+                "history" => matches!(
+                    task.status,
+                    PlannedTaskStatus::Done | PlannedTaskStatus::Archived
+                ),
+                _ => !matches!(
+                    task.status,
+                    PlannedTaskStatus::Done | PlannedTaskStatus::Archived
+                ),
             });
             let selected_task_id = session_runtime.lock().unwrap().selected_task_id.clone();
-            let request = build_plan_list_picker_request(
-                &store,
-                &tasks,
-                selected_task_id.as_deref(),
-                &view,
-            )?;
+            let request =
+                build_plan_list_picker_request(&store, &tasks, selected_task_id.as_deref(), &view)?;
             tx.send(RuntimeMessageEnvelope::state(
                 turn_id,
                 StateMessage::ShowOverlay {
@@ -1495,11 +1528,7 @@ fn execute_plan_command(
             ));
 
             Ok(CommandExecutionOutput {
-                body: render_plan_list(
-                    &tasks,
-                    selected_task_id.as_deref(),
-                    &view,
-                ),
+                body: render_plan_list(&tasks, selected_task_id.as_deref(), &view),
                 state: ResponseSectionState::Complete,
                 activity: format!("/plan list returned {} tasks", tasks.len()),
                 knowledge_summary: None,
@@ -1660,12 +1689,8 @@ fn execute_plan_command(
                 .get_task(&task_id)?
                 .ok_or_else(|| anyhow::anyhow!("unknown task '{task_id}'"))?;
             let project_root = active_project_handle(project_state).root();
-            let request = build_plan_links_navigator_request(
-                &project_root,
-                &store,
-                &task,
-                &target_id,
-            )?;
+            let request =
+                build_plan_links_navigator_request(&project_root, &store, &task, &target_id)?;
             tx.send(RuntimeMessageEnvelope::state(
                 turn_id,
                 StateMessage::ShowOverlay {
@@ -1719,7 +1744,8 @@ fn execute_plan_command(
         }
         "send" => {
             let current_selected_task_id = session_runtime.lock().unwrap().selected_task_id.clone();
-            let (task_id, prompt) = parse_plan_send_args(&invocation.args, current_selected_task_id)?;
+            let (task_id, prompt) =
+                parse_plan_send_args(&invocation.args, current_selected_task_id)?;
             Ok(CommandExecutionOutput {
                 body: format!(
                     "Dispatching task-bound turn for {}\nPrompt: {}",
@@ -1735,7 +1761,10 @@ fn execute_plan_command(
             let project_root = active_project_handle(project_state).root();
             let mut tasks = store.list_tasks(TaskListFilter::default())?;
             tasks.retain(|task| {
-                !matches!(task.status, PlannedTaskStatus::Done | PlannedTaskStatus::Archived)
+                !matches!(
+                    task.status,
+                    PlannedTaskStatus::Done | PlannedTaskStatus::Archived
+                )
             });
             sync_plan_todo_projection(&project_root, &tasks)?;
             Ok(CommandExecutionOutput {
@@ -1814,7 +1843,7 @@ fn execute_document_command(
 
     let Some(subcommand) = invocation.subcommand.as_deref() else {
         return Err(anyhow::anyhow!(
-            "missing subcommand for '/document'; expected init, sync, health, query, create, archive, list, render, validate, or extract"
+            "missing subcommand for '/document'; expected init, sync, health, query, view-result, create, archive, list, open, get, render, validate, or extract"
         ));
     };
 
@@ -1846,10 +1875,7 @@ fn execute_document_command(
             let embedded_summary = if scan.embedded_paths.is_empty() {
                 String::new()
             } else {
-                format!(
-                    "\nEmbedded files:\n- {}",
-                    scan.embedded_paths.join("\n- ")
-                )
+                format!("\nEmbedded files:\n- {}", scan.embedded_paths.join("\n- "))
             };
             Ok(CommandExecutionOutput {
                 body: format!(
@@ -1883,30 +1909,20 @@ fn execute_document_command(
             let health = context_facade.governance.check_document_health()?;
             context_facade.diagnostics.record_document_health(&health);
             let snapshot = context_facade.diagnostics.context_diagnostics();
+            if health.total_docs > 0 {
+                let request = build_doc_health_navigator_request(&health, &snapshot);
+                tx.send(RuntimeMessageEnvelope::state(
+                    turn_id,
+                    StateMessage::ShowOverlay {
+                        request: OverlayRequest {
+                            target: OverlayTarget::Detail,
+                            content: UiContent::DocumentNavigator(request),
+                        },
+                    },
+                ));
+            }
             Ok(CommandExecutionOutput {
-                body: format!(
-                    "Overall health: {}\nHealth status: {}\nTotal docs: {}\nStructure violations: {}\nNaming violations: {}\nBroken crossrefs: {}\nMissing frontmatter: {}\nStale docs: {}\nLast health check: {}\nActive version: {}\nPending version: {}\nPromotion error: {}",
-                    health_score_label(health.overall_health),
-                    snapshot.document.health_status.as_str(),
-                    health.total_docs,
-                    health.structure_violations.len(),
-                    health.naming_violations.len(),
-                    health.broken_crossrefs.len(),
-                    health.missing_frontmatter.len(),
-                    health.stale_docs.len(),
-                    snapshot
-                        .document
-                        .last_health_check
-                        .map(|value| value.to_string())
-                        .unwrap_or_else(|| "never".to_string()),
-                    format_store_version(snapshot.document.active_version.as_ref()),
-                    format_store_version(snapshot.document.pending_version.as_ref()),
-                    snapshot
-                        .document
-                        .last_promotion_error
-                        .as_deref()
-                        .unwrap_or("none"),
-                ),
+                body: render_document_health_result(&health, &snapshot),
                 state: ResponseSectionState::Complete,
                 activity: "/document health completed".to_string(),
                 knowledge_summary: None,
@@ -1933,13 +1949,14 @@ fn execute_document_command(
                 max_results: 10,
             })?;
             if !results.is_empty() {
-                let request = build_document_query_navigator_request(project_root, &query_text, &results);
+                let picker_request =
+                    build_doc_query_picker_request(project_root, &query_text, &results);
                 tx.send(RuntimeMessageEnvelope::state(
                     turn_id,
                     StateMessage::ShowOverlay {
                         request: OverlayRequest {
-                            target: OverlayTarget::Detail,
-                            content: UiContent::DocumentNavigator(request),
+                            target: OverlayTarget::Picker,
+                            content: UiContent::OperatorPicker(picker_request),
                         },
                     },
                 ));
@@ -1953,6 +1970,50 @@ fn execute_document_command(
                     &query_text,
                     &results,
                 )),
+                agent_messages: None,
+            })
+        }
+        "view-result" => {
+            let (query_text, result_path) = parse_document_view_result_args(&invocation.args)?;
+            context_facade.diagnostics.record_document_usage(
+                "/document",
+                "builtin_command",
+                "subcommand=view-result",
+            );
+            let request = if let Some(query_text) = query_text.as_ref() {
+                let results = context_facade.query.search(SearchQuery {
+                    text: Some(query_text.clone()),
+                    mode: SearchMode::Hybrid,
+                    filters: Vec::new(),
+                    sort: None,
+                    max_results: 10,
+                })?;
+                let ordered_results = focus_document_query_result(results, &result_path)?;
+                build_document_query_navigator_request(project_root, query_text, &ordered_results)
+            } else {
+                build_resolved_doc_detail_navigator_request(
+                    project_root,
+                    context_facade,
+                    &result_path,
+                )?
+            };
+            tx.send(RuntimeMessageEnvelope::state(
+                turn_id,
+                StateMessage::ShowOverlay {
+                    request: OverlayRequest {
+                        target: OverlayTarget::Detail,
+                        content: UiContent::DocumentNavigator(request),
+                    },
+                },
+            ));
+            Ok(CommandExecutionOutput {
+                body: match query_text.as_deref() {
+                    Some(query) => format!("Viewing result: {}\nQuery: {}", result_path, query),
+                    None => format!("Viewing result: {}", result_path),
+                },
+                state: ResponseSectionState::Complete,
+                activity: format!("/document view-result opened {}", result_path),
+                knowledge_summary: None,
                 agent_messages: None,
             })
         }
@@ -1973,16 +2034,21 @@ fn execute_document_command(
 
             let path = invocation.args[0].clone();
             let doc_type = parse_doc_type(&invocation.args[1]).ok_or_else(|| {
-                anyhow::anyhow!("unknown doc_type '{}' for '/document create'", invocation.args[1])
+                anyhow::anyhow!(
+                    "unknown doc_type '{}' for '/document create'",
+                    invocation.args[1]
+                )
             })?;
             let title = invocation.args[2..].join(" ");
-            let result = context_facade.governance.manage_document(DocumentOp::Create {
-                mode: DocumentMutationMode::Apply,
-                path: path.clone(),
-                doc_type,
-                title: title.clone(),
-                content: document_template(doc_type, &title),
-            })?;
+            let result = context_facade
+                .governance
+                .manage_document(DocumentOp::Create {
+                    mode: DocumentMutationMode::Apply,
+                    path: path.clone(),
+                    doc_type,
+                    title: title.clone(),
+                    content: document_template(doc_type, &title),
+                })?;
 
             Ok(CommandExecutionOutput {
                 body: render_document_operation_result(&result),
@@ -2014,12 +2080,14 @@ fn execute_document_command(
                 .and_then(|value| parse_archive_trigger(value))
                 .unwrap_or(ArchiveTrigger::HistoryOnly);
             let replaced_by = invocation.args.get(2).cloned();
-            let result = context_facade.governance.manage_document(DocumentOp::Archive {
-                mode: DocumentMutationMode::Apply,
-                path: path.clone(),
-                reason,
-                replaced_by,
-            })?;
+            let result = context_facade
+                .governance
+                .manage_document(DocumentOp::Archive {
+                    mode: DocumentMutationMode::Apply,
+                    path: path.clone(),
+                    reason,
+                    replaced_by,
+                })?;
 
             Ok(CommandExecutionOutput {
                 body: render_document_operation_result(&result),
@@ -2035,14 +2103,38 @@ fn execute_document_command(
                 "builtin_command",
                 "subcommand=list",
             );
-            let doc_type = invocation.args.first().and_then(|value| parse_doc_type(value));
-            let status = invocation.args.get(1).and_then(|value| parse_file_status(value));
+            let doc_type = invocation
+                .args
+                .first()
+                .and_then(|value| parse_doc_type(value));
+            let status = invocation
+                .args
+                .get(1)
+                .and_then(|value| parse_file_status(value));
             let result = context_facade
                 .governance
                 .manage_document(DocumentOp::List {
                     doc_type,
                     status: status.clone(),
                 })?;
+
+            if !result.files.is_empty() {
+                let picker_request = build_doc_list_picker_request(
+                    project_root,
+                    &result.files,
+                    doc_type,
+                    status.clone(),
+                );
+                tx.send(RuntimeMessageEnvelope::state(
+                    turn_id,
+                    StateMessage::ShowOverlay {
+                        request: OverlayRequest {
+                            target: OverlayTarget::Picker,
+                            content: UiContent::OperatorPicker(picker_request),
+                        },
+                    },
+                ));
+            }
 
             Ok(CommandExecutionOutput {
                 body: render_document_list_result(&result.files, doc_type, status),
@@ -2058,13 +2150,15 @@ fn execute_document_command(
                 "builtin_command",
                 "subcommand=render",
             );
-            let (mode, doc_ids) = split_document_mode_args(&invocation.args, DocumentMutationMode::Apply);
-            let result = context_facade
-                .governance
-                .manage_document(DocumentOp::RenderProjection {
-                    mode,
-                    doc_ids: doc_ids.clone(),
-                })?;
+            let (mode, doc_ids) =
+                split_document_mode_args(&invocation.args, DocumentMutationMode::Apply);
+            let result =
+                context_facade
+                    .governance
+                    .manage_document(DocumentOp::RenderProjection {
+                        mode,
+                        doc_ids: doc_ids.clone(),
+                    })?;
             Ok(CommandExecutionOutput {
                 body: render_document_operation_result(&result),
                 state: state_from_document_result(&result),
@@ -2086,11 +2180,12 @@ fn execute_document_command(
                 "builtin_command",
                 "subcommand=validate",
             );
-            let result = context_facade
-                .governance
-                .manage_document(DocumentOp::ValidateProjection {
-                    doc_ids: invocation.args.clone(),
-                })?;
+            let result =
+                context_facade
+                    .governance
+                    .manage_document(DocumentOp::ValidateProjection {
+                        doc_ids: invocation.args.clone(),
+                    })?;
             Ok(CommandExecutionOutput {
                 body: render_document_operation_result(&result),
                 state: state_from_document_result(&result),
@@ -2117,6 +2212,35 @@ fn execute_document_command(
                 body: render_document_operation_result(&result),
                 state: state_from_document_result(&result),
                 activity: format!("/document extract processed {} source(s)", sources.len()),
+                knowledge_summary: None,
+                agent_messages: None,
+            })
+        }
+        "open" | "get" => {
+            let doc_id = invocation
+                .args
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("usage: /document {subcommand} <doc-id>"))?;
+            context_facade.diagnostics.record_document_usage(
+                "/document",
+                "builtin_command",
+                &format!("subcommand={subcommand}"),
+            );
+            let request =
+                build_resolved_doc_detail_navigator_request(project_root, context_facade, doc_id)?;
+            tx.send(RuntimeMessageEnvelope::state(
+                turn_id,
+                StateMessage::ShowOverlay {
+                    request: OverlayRequest {
+                        target: OverlayTarget::Detail,
+                        content: UiContent::DocumentNavigator(request),
+                    },
+                },
+            ));
+            Ok(CommandExecutionOutput {
+                body: format!("Opening document: {}", doc_id),
+                state: ResponseSectionState::Complete,
+                activity: format!("/document {subcommand} opened {}", doc_id),
                 knowledge_summary: None,
                 agent_messages: None,
             })
@@ -2179,7 +2303,10 @@ fn execute_session_command(
 
     match subcommand {
         "list" => {
-            let status_filter = invocation.args.first().map(|value| value.trim().to_lowercase());
+            let status_filter = invocation
+                .args
+                .first()
+                .map(|value| value.trim().to_lowercase());
             let sessions = project_handle.list_sessions()?;
             let filtered = sessions
                 .into_iter()
@@ -2190,10 +2317,14 @@ fn execute_session_command(
                     Some(_) | None => true,
                 })
                 .collect::<Vec<_>>();
-            if matches!(status_filter.as_deref(), Some(value) if value != "active" && value != "idle" && value != "archived") {
-                return Err(anyhow::anyhow!("status filter must be active, idle, or archived"));
+            if matches!(status_filter.as_deref(), Some(value) if value != "active" && value != "idle" && value != "archived")
+            {
+                return Err(anyhow::anyhow!(
+                    "status filter must be active, idle, or archived"
+                ));
             }
-            let request = build_session_picker_request(&filtered, active_session_id.as_deref(), false);
+            let request =
+                build_session_picker_request(&filtered, active_session_id.as_deref(), false);
             tx.send(RuntimeMessageEnvelope::state(
                 turn_id,
                 StateMessage::ShowOverlay {
@@ -2346,7 +2477,8 @@ fn execute_session_command(
         "resume" | "switch" => {
             if invocation.args.is_empty() {
                 let sessions = project_handle.list_sessions()?;
-                let request = build_session_picker_request(&sessions, active_session_id.as_deref(), true);
+                let request =
+                    build_session_picker_request(&sessions, active_session_id.as_deref(), true);
                 tx.send(RuntimeMessageEnvelope::state(
                     turn_id,
                     StateMessage::ShowOverlay {
@@ -2418,7 +2550,8 @@ fn execute_session_command(
             progress("Phase: rebuild session runtime state");
             *turn_context = session_context_from_snapshot(&snapshot);
             restore_todo_manager(todo_manager, &snapshot.todo_items)?;
-            *cwd.lock().unwrap() = normalized_restored_cwd(project_handle.root(), snapshot.last_known_cwd.clone());
+            *cwd.lock().unwrap() =
+                normalized_restored_cwd(project_handle.root(), snapshot.last_known_cwd.clone());
             let restore_outcome = restore_selected_task_state(
                 session_runtime,
                 turn_context,
@@ -2514,7 +2647,8 @@ fn execute_session_command(
             })?;
             if picker_mode {
                 let sessions = project_handle.list_sessions()?;
-                let request = build_session_picker_request(&sessions, active_session_id.as_deref(), false);
+                let request =
+                    build_session_picker_request(&sessions, active_session_id.as_deref(), false);
                 tx.send(RuntimeMessageEnvelope::state(
                     turn_id,
                     StateMessage::ShowOverlay {
@@ -2529,7 +2663,10 @@ fn execute_session_command(
                 body: if picker_mode {
                     String::new()
                 } else {
-                    format!("Archived session {} ({})", session.session_id, session.title)
+                    format!(
+                        "Archived session {} ({})",
+                        session.session_id, session.title
+                    )
                 },
                 state: ResponseSectionState::Complete,
                 activity: format!("/session archive -> {}", session.session_id),
@@ -2554,7 +2691,8 @@ fn execute_session_command(
             project_handle.delete_session_artifacts(&target_session_id)?;
             if picker_mode {
                 let sessions = project_handle.list_sessions()?;
-                let request = build_session_picker_request(&sessions, active_session_id.as_deref(), false);
+                let request =
+                    build_session_picker_request(&sessions, active_session_id.as_deref(), false);
                 tx.send(RuntimeMessageEnvelope::state(
                     turn_id,
                     StateMessage::ShowOverlay {
@@ -2577,7 +2715,9 @@ fn execute_session_command(
                 agent_messages: None,
             })
         }
-        other => Err(anyhow::anyhow!("unsupported '/session' subcommand '{other}'")),
+        other => Err(anyhow::anyhow!(
+            "unsupported '/session' subcommand '{other}'"
+        )),
     }
 }
 
@@ -2635,20 +2775,20 @@ fn render_document_operation_result(result: &omega_context::DocumentOpResult) ->
         for record in result.records.iter().take(5) {
             body.push_str(&format!(
                 "\n- {} -> {}",
-                record.doc_id,
-                record.render.presentation_path,
+                record.doc_id, record.render.presentation_path,
             ));
         }
     }
 
     if !result.relations.is_empty() {
-        body.push_str(&format!("\nStructured relations: {}", result.relations.len()));
+        body.push_str(&format!(
+            "\nStructured relations: {}",
+            result.relations.len()
+        ));
         for relation in result.relations.iter().take(5) {
             body.push_str(&format!(
                 "\n- {} [{}] {}",
-                relation.source,
-                relation.kind,
-                relation.target,
+                relation.source, relation.kind, relation.target,
             ));
         }
     }
@@ -2717,6 +2857,39 @@ fn render_document_list_result(
     body
 }
 
+fn render_document_health_result(
+    health: &omega_context::DocumentHealthReport,
+    snapshot: &ContextDiagnostics,
+) -> String {
+    let mut body = format!(
+        "Overall health: {}\nHealth status: {}\nTotal docs: {}\nStructure violations: {}\nNaming violations: {}\nBroken crossrefs: {}\nMissing frontmatter: {}\nStale docs: {}\nLast health check: {}\nActive version: {}\nPending version: {}\nPromotion error: {}",
+        health_score_label(health.overall_health),
+        snapshot.document.health_status.as_str(),
+        health.total_docs,
+        health.structure_violations.len(),
+        health.naming_violations.len(),
+        health.broken_crossrefs.len(),
+        health.missing_frontmatter.len(),
+        health.stale_docs.len(),
+        snapshot
+            .document
+            .last_health_check
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "never".to_string()),
+        format_store_version(snapshot.document.active_version.as_ref()),
+        format_store_version(snapshot.document.pending_version.as_ref()),
+        snapshot
+            .document
+            .last_promotion_error
+            .as_deref()
+            .unwrap_or("none"),
+    );
+    if health.total_docs == 0 {
+        body.push_str("\nRun /document init first.");
+    }
+    body
+}
+
 fn render_command_hint(resolution: CommandHintResolution) -> String {
     match resolution {
         CommandHintResolution::TopLevel(commands) => {
@@ -2765,7 +2938,10 @@ fn render_command_hint(resolution: CommandHintResolution) -> String {
                     pending,
                 )
             } else {
-                format!(" Ready: {}", format_hint_line(&format!("/{}", command.name), &command))
+                format!(
+                    " Ready: {}",
+                    format_hint_line(&format!("/{}", command.name), &command)
+                )
             }
         }
         CommandHintResolution::Disabled { command, .. } => {
@@ -2927,7 +3103,10 @@ fn parse_document_extract_args(
                 .ok_or_else(|| anyhow::anyhow!("missing value after '--doc-type'"))?;
             doc_type = parse_doc_type(value);
             if doc_type.is_none() {
-                return Err(anyhow::anyhow!("unknown doc_type '{}' for '/document extract'", value));
+                return Err(anyhow::anyhow!(
+                    "unknown doc_type '{}' for '/document extract'",
+                    value
+                ));
             }
             index += 2;
             continue;
@@ -2935,7 +3114,10 @@ fn parse_document_extract_args(
         if let Some(value) = arg.strip_prefix("--doc-type=") {
             doc_type = parse_doc_type(value);
             if doc_type.is_none() {
-                return Err(anyhow::anyhow!("unknown doc_type '{}' for '/document extract'", value));
+                return Err(anyhow::anyhow!(
+                    "unknown doc_type '{}' for '/document extract'",
+                    value
+                ));
             }
             index += 1;
             continue;
@@ -2951,6 +3133,26 @@ fn parse_document_extract_args(
     }
 
     Ok((mode, doc_type, sources))
+}
+
+fn parse_document_view_result_args(args: &[String]) -> anyhow::Result<(Option<String>, String)> {
+    match args.len() {
+        0 => Err(anyhow::anyhow!(
+            "usage: /document view-result <query> <path>"
+        )),
+        1 => Ok((None, args[0].clone())),
+        _ => {
+            let result_path = args.last().cloned().unwrap_or_default();
+            let query_text = args[..args.len() - 1].join(" ").trim().to_string();
+            if query_text.is_empty() || result_path.trim().is_empty() {
+                Err(anyhow::anyhow!(
+                    "usage: /document view-result <query> <path>"
+                ))
+            } else {
+                Ok((Some(query_text), result_path))
+            }
+        }
+    }
 }
 
 fn file_status_label(status: &FileStatus) -> &'static str {
@@ -3161,7 +3363,10 @@ fn command_document_query_readiness(context: &ContextDiagnostics) -> Supervision
         return SupervisionReadiness::Degraded;
     }
 
-    if matches!(context.document.governance_health, Some(HealthScore::Critical)) {
+    if matches!(
+        context.document.governance_health,
+        Some(HealthScore::Critical)
+    ) {
         return SupervisionReadiness::Degraded;
     }
 
@@ -3197,7 +3402,11 @@ fn command_title_from_input(input: &str) -> String {
         .join(" ")
 }
 
-fn build_turn_archive(turn_id: u64, session_id: &str, session_context: &SessionContext) -> TurnData {
+fn build_turn_archive(
+    turn_id: u64,
+    session_id: &str,
+    session_context: &SessionContext,
+) -> TurnData {
     TurnData {
         session_id: session_id.to_string(),
         turn_id,
@@ -3218,7 +3427,9 @@ fn build_turn_archive(turn_id: u64, session_id: &str, session_context: &SessionC
     }
 }
 
-fn active_project_handle(project_state: &Arc<Mutex<ProjectRuntimeState>>) -> Arc<OmegaProjectHandle> {
+fn active_project_handle(
+    project_state: &Arc<Mutex<ProjectRuntimeState>>,
+) -> Arc<OmegaProjectHandle> {
     Arc::clone(&project_state.lock().unwrap().active_handle)
 }
 
@@ -3266,9 +3477,12 @@ fn rebind_agent_to_current_project(
         bash_allowed_commands.to_vec(),
         batch_max_requests,
     )?;
-    let system = next_bindings
-        .skill_catalog
-        .build_system_prompt(base_system, "", &[], &StepSkillRequest::MatchTask);
+    let system = next_bindings.skill_catalog.build_system_prompt(
+        base_system,
+        "",
+        &[],
+        &StepSkillRequest::MatchTask,
+    );
     let messages = {
         let slot = agent_slot.lock().unwrap();
         slot.agent
@@ -3308,9 +3522,12 @@ fn rebind_agent_to_current_project_with_messages(
         bash_allowed_commands.to_vec(),
         batch_max_requests,
     )?;
-    let system = next_bindings
-        .skill_catalog
-        .build_system_prompt(base_system, "", &[], &StepSkillRequest::MatchTask);
+    let system = next_bindings.skill_catalog.build_system_prompt(
+        base_system,
+        "",
+        &[],
+        &StepSkillRequest::MatchTask,
+    );
     let mut replacement = Agent::new(client.clone(), system, dispatcher)?;
     replacement.set_max_tokens(max_output_tokens);
     replacement.set_messages(messages.clone());
@@ -3370,7 +3587,11 @@ fn persist_session_artifacts(
             recognized_scene_id: session_context.routing.recognized_scene_id.clone(),
             selected_workflow_id: session_context.routing.selected_workflow_id.clone(),
             active_workflow_id: session_context.routing.active_workflow_id.clone(),
-            active_workflow_role: session_context.routing.active_workflow_role.as_str().to_string(),
+            active_workflow_role: session_context
+                .routing
+                .active_workflow_role
+                .as_str()
+                .to_string(),
         },
         skill_routing: ProjectSkillRoutingSnapshot {
             selected_skill_ids: session_context.skill_routing.selected_skill_ids.clone(),
@@ -3544,9 +3765,9 @@ fn restore_selected_task_state(
             }
         }
 
-		session_runtime.lock().unwrap().selected_task_id = None;
-		turn_context.selected_task = None;
-		return Ok(SelectedTaskRestoreOutcome::ClearedDangling(task_id));
+        session_runtime.lock().unwrap().selected_task_id = None;
+        turn_context.selected_task = None;
+        return Ok(SelectedTaskRestoreOutcome::ClearedDangling(task_id));
     }
 
     session_runtime.lock().unwrap().selected_task_id = None;
@@ -3556,13 +3777,13 @@ fn restore_selected_task_state(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum SelectedTaskRestoreOutcome {
-	NoSelection,
-	Restored,
-	ClearedDangling(String),
+    NoSelection,
+    Restored,
+    ClearedDangling(String),
 }
 
 fn dangling_selected_task_warning(task_id: &str) -> String {
-	format!(
+    format!(
 		"Selected project task {task_id} no longer exists in the active project plan. The session task binding was cleared."
 	)
 }
@@ -3605,9 +3826,9 @@ fn parse_plan_list_args(args: &[String]) -> anyhow::Result<(String, TaskListFilt
                 index += 1;
             }
             "--status" => {
-                let raw = args.get(index + 1).ok_or_else(|| {
-                    anyhow::anyhow!("missing value after '--status'")
-                })?;
+                let raw = args
+                    .get(index + 1)
+                    .ok_or_else(|| anyhow::anyhow!("missing value after '--status'"))?;
                 status = Some(
                     PlannedTaskStatus::parse_cli(raw)
                         .ok_or_else(|| anyhow::anyhow!("unknown status '{raw}'"))?,
@@ -3615,9 +3836,9 @@ fn parse_plan_list_args(args: &[String]) -> anyhow::Result<(String, TaskListFilt
                 index += 2;
             }
             "--priority" => {
-                let raw = args.get(index + 1).ok_or_else(|| {
-                    anyhow::anyhow!("missing value after '--priority'")
-                })?;
+                let raw = args
+                    .get(index + 1)
+                    .ok_or_else(|| anyhow::anyhow!("missing value after '--priority'"))?;
                 priority = Some(
                     TaskPriority::parse_cli(raw)
                         .ok_or_else(|| anyhow::anyhow!("unknown priority '{raw}'"))?,
@@ -3625,9 +3846,7 @@ fn parse_plan_list_args(args: &[String]) -> anyhow::Result<(String, TaskListFilt
                 index += 2;
             }
             other => {
-                return Err(anyhow::anyhow!(
-                    "unexpected /plan list argument '{other}'"
-                ));
+                return Err(anyhow::anyhow!("unexpected /plan list argument '{other}'"));
             }
         }
     }
@@ -3656,14 +3875,15 @@ fn parse_plan_update_args(args: &[String]) -> anyhow::Result<(String, PlannedTas
                 index = next_index;
             }
             "--requirement" => {
-                let (value, next_index) = collect_plan_flag_value(args, index + 1, "--requirement")?;
+                let (value, next_index) =
+                    collect_plan_flag_value(args, index + 1, "--requirement")?;
                 update.requirement = Some(value);
                 index = next_index;
             }
             "--status" => {
-                let raw = args.get(index + 1).ok_or_else(|| {
-                    anyhow::anyhow!("missing value after '--status'")
-                })?;
+                let raw = args
+                    .get(index + 1)
+                    .ok_or_else(|| anyhow::anyhow!("missing value after '--status'"))?;
                 update.status = Some(
                     PlannedTaskStatus::parse_cli(raw)
                         .ok_or_else(|| anyhow::anyhow!("unknown status '{raw}'"))?,
@@ -3676,9 +3896,9 @@ fn parse_plan_update_args(args: &[String]) -> anyhow::Result<(String, PlannedTas
                 index = next_index;
             }
             "--tag" => {
-                let raw = args.get(index + 1).ok_or_else(|| {
-                    anyhow::anyhow!("missing value after '--tag'")
-                })?;
+                let raw = args
+                    .get(index + 1)
+                    .ok_or_else(|| anyhow::anyhow!("missing value after '--tag'"))?;
                 tags.push(raw.clone());
                 index += 2;
             }
@@ -3805,9 +4025,7 @@ fn parse_plan_send_args(
     current_selected_task_id: Option<String>,
 ) -> anyhow::Result<(String, String)> {
     if args.is_empty() {
-        return Err(anyhow::anyhow!(
-            "usage: /plan send [<task-id>] <prompt...>"
-        ));
+        return Err(anyhow::anyhow!("usage: /plan send [<task-id>] <prompt...>"));
     }
     let (task_id, prompt_args) = if args[0].starts_with("TASK-") {
         (
@@ -3817,17 +4035,14 @@ fn parse_plan_send_args(
         )
     } else {
         (
-            current_selected_task_id.ok_or_else(|| {
-                anyhow::anyhow!("No task selected. Use /plan select <id> first.")
-            })?,
+            current_selected_task_id
+                .ok_or_else(|| anyhow::anyhow!("No task selected. Use /plan select <id> first."))?,
             args,
         )
     };
     let prompt = prompt_args.join(" ").trim().to_string();
     if prompt.is_empty() {
-        return Err(anyhow::anyhow!(
-            "usage: /plan send [<task-id>] <prompt...>"
-        ));
+        return Err(anyhow::anyhow!("usage: /plan send [<task-id>] <prompt...>"));
     }
     Ok((task_id, prompt))
 }
@@ -4011,7 +4226,10 @@ fn strip_basic_markdown(content: &str) -> String {
 }
 
 fn strip_markdown_heading(line: &str) -> Option<&str> {
-    let hashes = line.chars().take_while(|character| *character == '#').count();
+    let hashes = line
+        .chars()
+        .take_while(|character| *character == '#')
+        .count();
     if hashes == 0 {
         return None;
     }
@@ -4079,7 +4297,8 @@ fn migrate_todo_into_plan(
             parent_id: None,
             depends_on: Vec::new(),
             tags: vec![source_tag.clone()],
-			doc_scope: Vec::new(),
+            doc_scope: Vec::new(),
+            presentation_links: Vec::new(),
         })?;
         store.append_note(
             &task.id,
@@ -4093,11 +4312,17 @@ fn migrate_todo_into_plan(
     }
 
     for draft in &drafts {
-		let Some(task_id) = source_key_to_task_id.get(&todo_migration_key(&draft.source_key)).cloned() else {
+        let Some(task_id) = source_key_to_task_id
+            .get(&todo_migration_key(&draft.source_key))
+            .cloned()
+        else {
             continue;
         };
         for blocked_key in &draft.blocked_by {
-			let Some(dependency_id) = source_key_to_task_id.get(&todo_migration_key(blocked_key)).cloned() else {
+            let Some(dependency_id) = source_key_to_task_id
+                .get(&todo_migration_key(blocked_key))
+                .cloned()
+            else {
                 continue;
             };
             if dependency_id != task_id {
@@ -4139,7 +4364,8 @@ fn parse_open_todo_migration_drafts(todo: &str) -> anyhow::Result<Vec<TodoMigrat
         }
         if let Some(heading) = line.strip_prefix("### ") {
             if let Some(previous_heading) = current_heading.replace(heading.trim().to_string()) {
-                if let Some(draft) = build_todo_migration_draft(&previous_heading, &current_lines)? {
+                if let Some(draft) = build_todo_migration_draft(&previous_heading, &current_lines)?
+                {
                     drafts.push(draft);
                 }
                 current_lines.clear();
@@ -4177,7 +4403,10 @@ fn build_todo_migration_draft(
         .unwrap_or(heading)
         .to_string();
     let status = parse_todo_migration_status(extract_todo_field(lines, "Status").as_deref())?;
-    if matches!(status, PlannedTaskStatus::Done | PlannedTaskStatus::Archived) {
+    if matches!(
+        status,
+        PlannedTaskStatus::Done | PlannedTaskStatus::Archived
+    ) {
         return Ok(None);
     }
     let priority = parse_todo_migration_priority(extract_todo_field(lines, "Priority").as_deref())?;
@@ -4225,7 +4454,12 @@ fn parse_todo_migration_status(value: Option<&str>) -> anyhow::Result<PlannedTas
 }
 
 fn parse_todo_migration_priority(value: Option<&str>) -> anyhow::Result<TaskPriority> {
-    match value.unwrap_or("Medium").trim().to_ascii_lowercase().as_str() {
+    match value
+        .unwrap_or("Medium")
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "high" => Ok(TaskPriority::P0),
         "medium" => Ok(TaskPriority::P1),
         "low" => Ok(TaskPriority::P2),
@@ -4278,7 +4512,10 @@ fn render_plan_todo_migration_result(result: &TodoMigrationResult) -> String {
     if result.created_task_ids.is_empty() {
         lines.push("Created task ids: none".to_string());
     } else {
-        lines.push(format!("Created task ids: {}", result.created_task_ids.join(", ")));
+        lines.push(format!(
+            "Created task ids: {}",
+            result.created_task_ids.join(", ")
+        ));
     }
     if result.skipped_source_keys.is_empty() {
         lines.push("Skipped existing imports: none".to_string());
@@ -4412,7 +4649,9 @@ fn parse_plan_load_args(args: &[String]) -> anyhow::Result<(String, PlanLoadKind
                 index += 1;
             }
             flag if flag.starts_with("--") => {
-                return Err(anyhow::anyhow!("unsupported flag '{flag}' for '/plan load'"));
+                return Err(anyhow::anyhow!(
+                    "unsupported flag '{flag}' for '/plan load'"
+                ));
             }
             value => {
                 if source.replace(value.to_string()).is_some() {
@@ -4426,9 +4665,7 @@ fn parse_plan_load_args(args: &[String]) -> anyhow::Result<(String, PlanLoadKind
     }
 
     let source = source.ok_or_else(|| {
-        anyhow::anyhow!(
-            "usage: /plan load <source> [--kind <auto|todo|task-headings>] [--apply]"
-        )
+        anyhow::anyhow!("usage: /plan load <source> [--kind <auto|todo|task-headings>] [--apply]")
     })?;
     Ok((source, kind, apply))
 }
@@ -4553,7 +4790,8 @@ fn collect_plan_load_markdown_files(
     {
         let entry = entry?;
         let path = entry.path();
-        let relative = normalize_plan_load_relative_path(path.strip_prefix(project_root).unwrap_or(&path));
+        let relative =
+            normalize_plan_load_relative_path(path.strip_prefix(project_root).unwrap_or(&path));
         if should_skip_plan_load_path(&relative) {
             continue;
         }
@@ -4722,9 +4960,16 @@ fn build_markdown_task_import_draft(
     lines: &[String],
     require_structured_metadata: bool,
 ) -> anyhow::Result<Option<TodoMigrationDraft>> {
-    let has_structured_metadata = ["Status", "Priority", "Description", "Planning Note", "Blocked by", "Related"]
-        .iter()
-        .any(|field| extract_todo_field(lines, field).is_some());
+    let has_structured_metadata = [
+        "Status",
+        "Priority",
+        "Description",
+        "Planning Note",
+        "Blocked by",
+        "Related",
+    ]
+    .iter()
+    .any(|field| extract_todo_field(lines, field).is_some());
     if require_structured_metadata && !has_structured_metadata {
         return Ok(None);
     }
@@ -4755,10 +5000,12 @@ fn apply_plan_load_drafts(
     let mut source_keys_to_task_ids = std::collections::BTreeMap::<String, Vec<String>>::new();
 
     for draft in drafts {
-        let task_id = if let Some(existing_task_id) = imported_sources.get(draft.source_tag.as_str()).cloned() {
-            let existing_task = store
-                .get_task(&existing_task_id)?
-                .ok_or_else(|| anyhow::anyhow!("missing previously imported task '{existing_task_id}'"))?;
+        let task_id = if let Some(existing_task_id) =
+            imported_sources.get(draft.source_tag.as_str()).cloned()
+        {
+            let existing_task = store.get_task(&existing_task_id)?.ok_or_else(|| {
+                anyhow::anyhow!("missing previously imported task '{existing_task_id}'")
+            })?;
             let mut tags = existing_task.tags;
             if !tags.iter().any(|tag| tag == &draft.source_tag) {
                 tags.push(draft.source_tag.clone());
@@ -4774,6 +5021,7 @@ fn apply_plan_load_drafts(
                     acceptance: Some(Vec::new()),
                     doc_scope: None,
                     tags: Some(tags),
+                    presentation_links: None,
                 },
             )?;
             result.updated_task_ids.push(updated.id.clone());
@@ -4790,7 +5038,8 @@ fn apply_plan_load_drafts(
                 parent_id: None,
                 depends_on: Vec::new(),
                 tags: vec![draft.source_tag.clone()],
-				doc_scope: Vec::new(),
+                doc_scope: Vec::new(),
+                presentation_links: Vec::new(),
             })?;
             result.created_task_ids.push(created.id.clone());
             created.id
@@ -4911,14 +5160,26 @@ fn render_plan_load_result(result: &PlanLoadResult) -> String {
     )];
     lines.push(format!("Source: {}", result.source));
     lines.push(format!("Kind: {}", result.kind.as_str()));
-    lines.push(format!("Matched files: {}", join_or_none(&result.matched_files)));
-    lines.push(format!("Skipped files: {}", join_or_none(&result.skipped_files)));
+    lines.push(format!(
+        "Matched files: {}",
+        join_or_none(&result.matched_files)
+    ));
+    lines.push(format!(
+        "Skipped files: {}",
+        join_or_none(&result.skipped_files)
+    ));
     lines.push(format!("Candidates: {}", result.candidates.len()));
     lines.push(format!("Would create: {}", would_create));
     lines.push(format!("Would update: {}", would_update));
     if result.apply {
-        lines.push(format!("Created task ids: {}", join_or_none(&result.created_task_ids)));
-        lines.push(format!("Updated task ids: {}", join_or_none(&result.updated_task_ids)));
+        lines.push(format!(
+            "Created task ids: {}",
+            join_or_none(&result.created_task_ids)
+        ));
+        lines.push(format!(
+            "Updated task ids: {}",
+            join_or_none(&result.updated_task_ids)
+        ));
     }
     if !result.candidates.is_empty() {
         lines.push("Candidate tasks:".to_string());
@@ -5048,7 +5309,11 @@ fn build_plan_links_picker_request(
         .ok_or_else(|| anyhow::anyhow!("unknown task '{}'", task.id))?;
     let mut items = Vec::new();
     for link in &context.design_links {
-        items.push(build_plan_link_picker_item(project_root, link, TaskLinkSurface::Design));
+        items.push(build_plan_link_picker_item(
+            project_root,
+            link,
+            TaskLinkSurface::Design,
+        ));
     }
     for link in &context.implementation_links {
         items.push(build_plan_link_picker_item(
@@ -5127,7 +5392,11 @@ fn build_plan_links_navigator_request(
     }
 
     if !entries.iter().any(|entry| entry.id == active_target_id) {
-        anyhow::bail!("unknown linked artifact '{}' for task '{}'", active_target_id, task.id);
+        anyhow::bail!(
+            "unknown linked artifact '{}' for task '{}'",
+            active_target_id,
+            task.id
+        );
     }
 
     let snapshot = load_structured_docs_snapshot(project_root);
@@ -5229,7 +5498,7 @@ fn build_document_query_navigator_request(
     ));
 
     DocumentNavigatorRequest {
-        navigator_id: format!("document-query:{}", query_text.trim()),
+        navigator_id: format!("doc-query:{}", query_text.trim()),
         title: format!(" Document Query ({}) ", results.len()),
         origin_label: format!("query: {}", query_text.trim()),
         active_entry_id,
@@ -5288,7 +5557,11 @@ fn build_plan_log_navigator_entry(
     group: DocumentNavigatorGroup,
 ) -> DocumentNavigatorEntry {
     let label = preview_text(&entry.summary, 80);
-    let subtitle = Some(format!("#{} {}", entry.seq, task_log_kind_label(entry.kind)));
+    let subtitle = Some(format!(
+        "#{} {}",
+        entry.seq,
+        task_log_kind_label(entry.kind)
+    ));
     let preview = render_plan_log_entry_detail(task_id, entry);
     DocumentNavigatorEntry {
         id: format!("log-entry:{}", entry.seq),
@@ -5327,7 +5600,7 @@ fn build_document_query_navigator_entry(
         label: label.clone(),
         subtitle: subtitle.clone(),
         preview,
-        group: DocumentNavigatorGroup::Context,
+        group: DocumentNavigatorGroup::Design,
         kind: if is_doc {
             DocumentNavigatorEntryKind::Document
         } else {
@@ -5419,6 +5692,672 @@ fn load_structured_docs_snapshot(project_root: &std::path::Path) -> Option<Struc
         .ok()
 }
 
+fn build_resolved_doc_detail_navigator_request(
+    project_root: &std::path::Path,
+    context_facade: &Arc<OmegaContextFacade>,
+    doc_id: &str,
+) -> anyhow::Result<DocumentNavigatorRequest> {
+    let snapshot = load_structured_docs_snapshot(project_root);
+    let files = context_facade
+        .governance
+        .manage_document(DocumentOp::List {
+            doc_type: None,
+            status: None,
+        })?
+        .files;
+    let record = snapshot
+        .as_ref()
+        .and_then(|snapshot| find_structured_doc_record(snapshot, doc_id))
+        .cloned();
+    let file_record = resolve_doc_file_record(&files, doc_id, record.as_ref()).cloned();
+
+    if record.is_none() && file_record.is_none() {
+        anyhow::bail!("unknown document '{}'", doc_id);
+    }
+
+    let resolved_doc_id = record
+        .as_ref()
+        .map(|record| record.doc_id.as_str())
+        .unwrap_or(doc_id);
+    Ok(build_doc_detail_navigator_request(
+        project_root,
+        snapshot.as_ref(),
+        record.as_ref(),
+        file_record.as_ref(),
+        resolved_doc_id,
+    ))
+}
+
+fn resolve_doc_file_record<'a>(
+    files: &'a [FileRecord],
+    doc_id: &str,
+    record: Option<&StructuredDocumentRecord>,
+) -> Option<&'a FileRecord> {
+    let mut candidates = vec![doc_id.to_string()];
+    if let Some(record) = record {
+        candidates.push(record.source_path.clone());
+        candidates.push(record.render.presentation_path.clone());
+    }
+
+    files
+        .iter()
+        .find(|file| candidates.iter().any(|candidate| file.path == *candidate))
+        .or_else(|| {
+            files.iter().find(|file| {
+                record.is_none()
+                    && (file.path.ends_with(doc_id)
+                        || std::path::Path::new(&file.path)
+                            .file_stem()
+                            .and_then(|stem| stem.to_str())
+                            .is_some_and(|stem| stem == doc_id))
+            })
+        })
+}
+
+fn focus_document_query_result(
+    mut results: Vec<omega_context::SearchResult>,
+    result_path: &str,
+) -> anyhow::Result<Vec<omega_context::SearchResult>> {
+    let index = results
+        .iter()
+        .position(|result| result.path == result_path)
+        .ok_or_else(|| anyhow::anyhow!("query result '{}' was not found", result_path))?;
+    let selected = results.remove(index);
+    let mut ordered = vec![selected];
+    ordered.extend(results);
+    Ok(ordered)
+}
+
+fn build_doc_health_navigator_request(
+    health: &omega_context::DocumentHealthReport,
+    snapshot: &ContextDiagnostics,
+) -> DocumentNavigatorRequest {
+    let summary_id = "health-summary".to_string();
+    let total_violations = document_health_issue_count(health);
+    let mut entries = vec![DocumentNavigatorEntry {
+        id: summary_id.clone(),
+        label: "Health Summary".to_string(),
+        subtitle: Some(health_score_label(health.overall_health).to_string()),
+        preview: Some(format!("{} issue(s)", total_violations)),
+        group: DocumentNavigatorGroup::Design,
+        kind: DocumentNavigatorEntryKind::Summary,
+        disabled_reason: None,
+        body: DocumentNavigatorBody {
+            title: "Document Health".to_string(),
+            subtitle: Some(snapshot.document.health_status.as_str().to_string()),
+            breadcrumbs: vec!["document".to_string(), "health".to_string()],
+            kind: DocumentNavigatorBodyKind::Markdown,
+            lines: render_document_health_result(health, snapshot)
+                .lines()
+                .map(str::to_string)
+                .collect(),
+        },
+    }];
+
+    for violation in &health.structure_violations {
+        push_doc_health_issue_entry(
+            &mut entries,
+            "structure",
+            &violation.path,
+            vec![
+                format!("Path: {}", violation.path),
+                "Kind: structure".to_string(),
+                format!("Message: {}", violation.message),
+            ],
+        );
+    }
+    for violation in &health.naming_violations {
+        push_doc_health_issue_entry(
+            &mut entries,
+            "naming",
+            &violation.path,
+            vec![
+                format!("Path: {}", violation.path),
+                "Kind: naming".to_string(),
+                format!("Message: {}", violation.message),
+            ],
+        );
+    }
+    for path in &health.orphaned_docs {
+        push_doc_health_issue_entry(
+            &mut entries,
+            "orphaned",
+            path,
+            vec![
+                format!("Path: {}", path),
+                "Kind: orphaned".to_string(),
+                "Message: document is not referenced by the repository index".to_string(),
+            ],
+        );
+    }
+    for issue in &health.broken_crossrefs {
+        push_doc_health_issue_entry(
+            &mut entries,
+            "crossref",
+            &issue.path,
+            vec![
+                format!("Path: {}", issue.path),
+                format!("Target: {}", issue.target),
+                "Kind: broken_crossref".to_string(),
+                format!("Message: {}", issue.message),
+            ],
+        );
+    }
+    for missing in &health.missing_frontmatter {
+        push_doc_health_issue_entry(
+            &mut entries,
+            "frontmatter",
+            missing,
+            vec![
+                format!("Document: {}", missing),
+                "Kind: missing_frontmatter".to_string(),
+            ],
+        );
+    }
+    for stale in &health.stale_docs {
+        push_doc_health_issue_entry(
+            &mut entries,
+            "stale",
+            &stale.path,
+            vec![
+                format!("Path: {}", stale.path),
+                "Kind: stale".to_string(),
+                format!("Days since modified: {}", stale.days_since_modified),
+            ],
+        );
+    }
+
+    DocumentNavigatorRequest {
+        navigator_id: "doc-health".to_string(),
+        title: " Document Health ".to_string(),
+        origin_label: "document health".to_string(),
+        active_entry_id: summary_id,
+        entries,
+    }
+}
+
+fn push_doc_health_issue_entry(
+    entries: &mut Vec<DocumentNavigatorEntry>,
+    kind: &str,
+    key: &str,
+    lines: Vec<String>,
+) {
+    let id = format!("health:{}:{}", kind, key);
+    entries.push(DocumentNavigatorEntry {
+        id,
+        label: preview_text(key, 72),
+        subtitle: Some(kind.to_string()),
+        preview: lines.last().cloned(),
+        group: DocumentNavigatorGroup::Context,
+        kind: DocumentNavigatorEntryKind::Log,
+        disabled_reason: None,
+        body: DocumentNavigatorBody {
+            title: format!("{} issue", kind),
+            subtitle: Some(key.to_string()),
+            breadcrumbs: vec![
+                "document".to_string(),
+                "health".to_string(),
+                kind.to_string(),
+            ],
+            kind: DocumentNavigatorBodyKind::Log,
+            lines,
+        },
+    });
+}
+
+fn document_health_issue_count(health: &omega_context::DocumentHealthReport) -> usize {
+    health.structure_violations.len()
+        + health.naming_violations.len()
+        + health.orphaned_docs.len()
+        + health.broken_crossrefs.len()
+        + health.stale_docs.len()
+        + health.missing_frontmatter.len()
+}
+
+const DOC_LIST_PICKER_ID: &str = "doc-list";
+
+fn build_doc_list_picker_request(
+    project_root: &std::path::Path,
+    files: &[FileRecord],
+    _doc_type: Option<DocType>,
+    _status: Option<FileStatus>,
+) -> OperatorPickerRequest {
+    let title = format!(" Documents ({}) ", files.len());
+    let empty_state = if files.is_empty() {
+        "No tracked documents found.".to_string()
+    } else {
+        "No documents available.".to_string()
+    };
+    let items = files
+        .iter()
+        .map(|file| build_doc_list_picker_item(project_root, file))
+        .collect::<Vec<_>>();
+    OperatorPickerRequest {
+        picker_id: DOC_LIST_PICKER_ID.to_string(),
+        title,
+        empty_state,
+        filter_enabled: true,
+        items,
+        primary_action: OperatorPickerAction {
+            action_id: "doc-open".to_string(),
+            label: "Open".to_string(),
+            shortcut: OperatorPickerShortcut::Enter,
+            requires_selection: true,
+            overlay_behavior: OperatorPickerOverlayBehavior::PushOverlay,
+            intent: OperatorPickerIntent::SubmitSlashCommand {
+                command_template: "/document open {id}".to_string(),
+            },
+        },
+        secondary_actions: vec![OperatorPickerAction {
+            action_id: "doc-health".to_string(),
+            label: "Health".to_string(),
+            shortcut: OperatorPickerShortcut::Ctrl('h'),
+            requires_selection: false,
+            overlay_behavior: OperatorPickerOverlayBehavior::CloseOverlay,
+            intent: OperatorPickerIntent::SubmitSlashCommand {
+                command_template: "/document health".to_string(),
+            },
+        }],
+    }
+}
+
+fn build_doc_list_picker_item(
+    project_root: &std::path::Path,
+    file: &FileRecord,
+) -> OperatorPickerItem {
+    let title = std::path::Path::new(&file.path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(&file.path)
+        .to_string();
+    let preview = preview_file_lines(project_root, &file.path, 8);
+    let mut badges = Vec::new();
+    if let Some(dt) = file.doc_type {
+        badges.push(doc_type_label(Some(dt)).to_string());
+    }
+    badges.push(file_status_label(&file.status).to_string());
+    OperatorPickerItem {
+        id: file.path.clone(),
+        title,
+        subtitle: Some(file.path.clone()),
+        badges,
+        preview,
+        disabled_reason: None,
+    }
+}
+
+fn preview_file_lines(
+    project_root: &std::path::Path,
+    relative_path: &str,
+    max_lines: usize,
+) -> Option<String> {
+    let full_path = project_root.join(relative_path);
+    let content = std::fs::read_to_string(&full_path).ok()?;
+    let lines: Vec<&str> = content.lines().take(max_lines).collect();
+    if lines.is_empty() {
+        return None;
+    }
+    Some(lines.join("\n"))
+}
+
+const DOC_QUERY_PICKER_ID_PREFIX: &str = "doc-query:";
+
+fn build_doc_query_picker_request(
+    _project_root: &std::path::Path,
+    query_text: &str,
+    results: &[omega_context::SearchResult],
+) -> OperatorPickerRequest {
+    let picker_id = format!("{}{}", DOC_QUERY_PICKER_ID_PREFIX, query_text.trim());
+    let empty_state = "No results found.".to_string();
+    let items = results
+        .iter()
+        .map(build_doc_query_picker_item)
+        .collect::<Vec<_>>();
+    OperatorPickerRequest {
+        picker_id,
+        title: format!(" Query: {} ({}) ", query_text.trim(), results.len()),
+        empty_state,
+        filter_enabled: true,
+        items,
+        primary_action: OperatorPickerAction {
+            action_id: "doc-view".to_string(),
+            label: "View".to_string(),
+            shortcut: OperatorPickerShortcut::Enter,
+            requires_selection: true,
+            overlay_behavior: OperatorPickerOverlayBehavior::PushOverlay,
+            intent: OperatorPickerIntent::SubmitSlashCommand {
+                command_template: format!("/document view-result {} {{id}}", query_text.trim()),
+            },
+        },
+        secondary_actions: vec![],
+    }
+}
+
+fn build_doc_query_picker_item(result: &omega_context::SearchResult) -> OperatorPickerItem {
+    let label = std::path::Path::new(&result.path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(&result.path)
+        .to_string();
+    let subtitle = Some(format!(
+        "{} · {} · score {:.2}",
+        result.path,
+        search_mode_label(result.mode_used),
+        result.score
+    ));
+    let preview = Some(preview_text(&result.preview, 120));
+    let mut badges = vec!["result".to_string()];
+    if let Some(ref lang) = result.language {
+        badges.push(lang.clone());
+    }
+    OperatorPickerItem {
+        id: result.path.clone(),
+        title: label,
+        subtitle,
+        badges,
+        preview,
+        disabled_reason: None,
+    }
+}
+
+fn structured_doc_type_label(doc_type: StructuredDocType) -> &'static str {
+    match doc_type {
+        StructuredDocType::Spec => "spec",
+        StructuredDocType::Prd => "prd",
+        StructuredDocType::Guide => "guide",
+        StructuredDocType::Adr => "adr",
+        StructuredDocType::Whitepaper => "whitepaper",
+        StructuredDocType::Todo => "todo",
+        StructuredDocType::Archive => "archive",
+        StructuredDocType::Readme => "readme",
+        StructuredDocType::Changelog => "changelog",
+    }
+}
+
+fn build_doc_detail_navigator_request(
+    project_root: &std::path::Path,
+    snapshot: Option<&StructuredDocsSnapshot>,
+    record: Option<&StructuredDocumentRecord>,
+    file_record: Option<&FileRecord>,
+    doc_id: &str,
+) -> DocumentNavigatorRequest {
+    let mut entries = Vec::new();
+    let active_entry_id;
+    if let Some(record) = record {
+        let overview_id = format!("overview:{}", doc_id);
+        let overview_body_lines = build_doc_overview_body(record, file_record);
+        entries.push(DocumentNavigatorEntry {
+            id: overview_id.clone(),
+            label: "Document Overview".to_string(),
+            subtitle: Some(structured_doc_type_label(record.doc_type).to_string()),
+            preview: Some(record.title.clone()),
+            group: DocumentNavigatorGroup::Design,
+            kind: DocumentNavigatorEntryKind::Summary,
+            disabled_reason: None,
+            body: DocumentNavigatorBody {
+                title: record.title.clone(),
+                subtitle: Some(format!(
+                    "{} · {}",
+                    structured_doc_type_label(record.doc_type),
+                    record.slug.clone()
+                )),
+                breadcrumbs: vec![doc_id.to_string(), "Overview".to_string()],
+                kind: DocumentNavigatorBodyKind::Markdown,
+                lines: overview_body_lines,
+            },
+        });
+        for section in &record.sections {
+            entries.push(build_doc_section_navigator_entry(doc_id, section));
+        }
+        for relation in &record.relations {
+            entries.push(build_doc_relation_navigator_entry(
+                project_root,
+                doc_id,
+                record,
+                relation,
+                snapshot,
+            ));
+        }
+        active_entry_id = overview_id;
+    } else if let Some(file_record) = file_record {
+        let overview_id = format!("overview:{}", doc_id);
+        let lines = vec![
+            format!("File: {}", file_record.path),
+            format!("Type: {:?}", file_record.file_type),
+            format!("Size: {} bytes", file_record.size_bytes),
+            format!("Tokens: ~{}", file_record.total_tokens),
+        ];
+        entries.push(DocumentNavigatorEntry {
+            id: overview_id.clone(),
+            label: "File Overview".to_string(),
+            subtitle: Some(file_record.path.clone()),
+            preview: Some(file_record.path.clone()),
+            group: DocumentNavigatorGroup::Design,
+            kind: DocumentNavigatorEntryKind::Summary,
+            disabled_reason: None,
+            body: DocumentNavigatorBody {
+                title: file_record.path.clone(),
+                subtitle: Some(format!("{:?}", file_record.file_type)),
+                breadcrumbs: vec![doc_id.to_string(), "Overview".to_string()],
+                kind: DocumentNavigatorBodyKind::Markdown,
+                lines,
+            },
+        });
+        active_entry_id = overview_id;
+    } else {
+        active_entry_id = format!("overview:{}", doc_id);
+        entries.push(DocumentNavigatorEntry {
+            id: active_entry_id.clone(),
+            label: "Document Not Found".to_string(),
+            subtitle: Some(doc_id.to_string()),
+            preview: None,
+            group: DocumentNavigatorGroup::Design,
+            kind: DocumentNavigatorEntryKind::Summary,
+            disabled_reason: Some("Document not found in snapshot or file store".to_string()),
+            body: DocumentNavigatorBody {
+                title: "Document Not Found".to_string(),
+                subtitle: Some(doc_id.to_string()),
+                breadcrumbs: vec![doc_id.to_string(), "Overview".to_string()],
+                kind: DocumentNavigatorBodyKind::Markdown,
+                lines: vec![
+                    format!("Document ID: {}", doc_id),
+                    String::new(),
+                    "This document was not found in the structured docs snapshot or file store."
+                        .to_string(),
+                ],
+            },
+        });
+    }
+
+    if let Some(fr) = file_record {
+        let stats_id = format!("stats:{}", doc_id);
+        let stats_lines = vec![
+            format!("size: {} bytes", fr.size_bytes),
+            format!("tokens: ~{}", fr.total_tokens),
+            format!("chunks: {}", fr.chunk_count),
+            format!("content_hash: {}", fr.content_hash),
+            if let Some(lang) = &fr.language {
+                format!("language: {}", lang)
+            } else {
+                "language: unknown".to_string()
+            },
+            format!("indexed: {}", fr.last_indexed_at),
+        ];
+        entries.push(DocumentNavigatorEntry {
+            id: stats_id.clone(),
+            label: "File Statistics".to_string(),
+            subtitle: Some(format!("{} bytes", fr.size_bytes)),
+            preview: Some(format!("{} tokens", fr.total_tokens)),
+            group: DocumentNavigatorGroup::Context,
+            kind: DocumentNavigatorEntryKind::File,
+            disabled_reason: None,
+            body: DocumentNavigatorBody {
+                title: "File Statistics".to_string(),
+                subtitle: Some(fr.path.clone()),
+                breadcrumbs: vec![doc_id.to_string(), "Stats".to_string()],
+                kind: DocumentNavigatorBodyKind::Markdown,
+                lines: stats_lines,
+            },
+        });
+    }
+
+    DocumentNavigatorRequest {
+        navigator_id: format!("doc-detail:{}", doc_id),
+        title: format!(" {} ", doc_id),
+        origin_label: format!("doc: {}", doc_id),
+        active_entry_id,
+        entries,
+    }
+}
+
+fn build_doc_overview_body(
+    record: &StructuredDocumentRecord,
+    file_record: Option<&FileRecord>,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    lines.push(format!("# {}", record.title));
+    lines.push(String::new());
+    lines.push(format!("doc_id: {}", record.doc_id));
+    lines.push(format!("type: {}", structured_doc_type_label(record.doc_type)));
+    if let Some(status) = &record.status {
+        lines.push(format!("status: {}", status));
+    }
+    if let Some(owner) = &record.owner {
+        lines.push(format!("owner: {}", owner));
+    }
+    if let Some(created) = &record.created {
+        lines.push(format!("created: {}", created));
+    }
+    if let Some(updated) = &record.updated {
+        lines.push(format!("updated: {}", updated));
+    }
+    lines.push(format!("source: {}", record.source_path));
+    if !record.render.presentation_path.is_empty() {
+        lines.push(format!("render: {}", record.render.presentation_path));
+    }
+    if !record.frontmatter.is_empty() {
+        lines.push(String::new());
+        lines.push("Frontmatter:".to_string());
+        for (key, value) in &record.frontmatter {
+            lines.push(format!("  {}: {}", key, value));
+        }
+    }
+    if !record.sections.is_empty() {
+        lines.push(String::new());
+        lines.push(format!("Sections ({}):", record.sections.len()));
+        for section in &record.sections {
+            lines.push(format!("  - [{}] {}", section.section_id, section.heading));
+        }
+    }
+    if !record.relations.is_empty() {
+        lines.push(String::new());
+        lines.push(format!("Relations ({}):", record.relations.len()));
+        for rel in &record.relations {
+            lines.push(format!("  - {} -> {}", rel.kind, rel.target));
+        }
+    }
+    if let Some(fr) = file_record {
+        lines.push(String::new());
+        lines.push("File Stats:".to_string());
+        lines.push(format!("  size: {} bytes", fr.size_bytes));
+        lines.push(format!("  tokens: ~{}", fr.total_tokens));
+        lines.push(format!("  chunks: {}", fr.chunk_count));
+        if let Some(lang) = &fr.language {
+            lines.push(format!("  language: {}", lang));
+        }
+        lines.push(format!("  indexed: {}", fr.last_indexed_at));
+    }
+    lines
+}
+
+fn build_doc_section_navigator_entry(
+    doc_id: &str,
+    section: &StructuredDocumentSection,
+) -> DocumentNavigatorEntry {
+    let section_id = format!("section:{}:{}", doc_id, section.section_id);
+    DocumentNavigatorEntry {
+        id: section_id.clone(),
+        label: section.heading.clone(),
+        subtitle: Some(section.section_id.clone()),
+        preview: Some(preview_text(&section.body_markdown, 120)),
+        group: DocumentNavigatorGroup::Design,
+        kind: DocumentNavigatorEntryKind::Document,
+        disabled_reason: None,
+        body: DocumentNavigatorBody {
+            title: section.heading.clone(),
+            subtitle: Some(section.section_id.clone()),
+            breadcrumbs: vec![doc_id.to_string(), "Sections".to_string()],
+            kind: DocumentNavigatorBodyKind::Markdown,
+            lines: section.body_markdown.lines().map(str::to_string).collect(),
+        },
+    }
+}
+
+fn build_doc_relation_navigator_entry(
+    project_root: &std::path::Path,
+    doc_id: &str,
+    source_record: &StructuredDocumentRecord,
+    relation: &StructuredDocumentRelation,
+    snapshot: Option<&StructuredDocsSnapshot>,
+) -> DocumentNavigatorEntry {
+    let rel_id = format!("relation:{}:{}", doc_id, relation.target);
+    let normalized_target = resolve_doc_relation_target_path(source_record, &relation.target);
+    let target_record = snapshot.and_then(|snapshot| {
+        find_structured_doc_record(snapshot, &relation.target).or_else(|| {
+            normalized_target
+                .as_deref()
+                .and_then(|target| find_structured_doc_record(snapshot, target))
+        })
+    });
+    let local_path = target_record
+        .map(|record| record.source_path.as_str())
+        .or(normalized_target.as_deref());
+    let is_doc = local_path.is_some_and(|path| path.ends_with(".md") || path.starts_with("docs/"));
+    let body_lines = if let Some(path) = local_path {
+        match render_plan_view_file_content(project_root, path) {
+            Ok(content) => content.lines().map(str::to_string).collect(),
+            Err(e) => vec![format!("Unable to load file: {}", e)],
+        }
+    } else {
+        vec![
+            format!("Target: {}", relation.target),
+            format!("Kind: {}", relation.kind),
+        ]
+    };
+    DocumentNavigatorEntry {
+        id: rel_id.clone(),
+        label: target_record
+            .map(|record| record.title.clone())
+            .unwrap_or_else(|| {
+                std::path::Path::new(local_path.unwrap_or(&relation.target))
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(&relation.target)
+                    .to_string()
+            }),
+        subtitle: Some(format!("{} -> {}", relation.kind, relation.target)),
+        preview: None,
+        group: DocumentNavigatorGroup::Related,
+        kind: if is_doc {
+            DocumentNavigatorEntryKind::Document
+        } else {
+            DocumentNavigatorEntryKind::File
+        },
+        disabled_reason: None,
+        body: DocumentNavigatorBody {
+            title: local_path.unwrap_or(&relation.target).to_string(),
+            subtitle: Some(relation.kind.clone()),
+            breadcrumbs: vec![doc_id.to_string(), "Related".to_string()],
+            kind: if is_doc {
+                DocumentNavigatorBodyKind::Markdown
+            } else {
+                DocumentNavigatorBodyKind::File
+            },
+            lines: body_lines,
+        },
+    }
+}
+
 fn build_related_doc_entries(
     project_root: &std::path::Path,
     snapshot: Option<&StructuredDocsSnapshot>,
@@ -5434,7 +6373,14 @@ fn build_related_doc_entries(
 
     let mut entries = Vec::new();
     for relation in &source_record.relations {
-        let Some(target_record) = find_structured_doc_record(snapshot, &relation.target) else {
+        let normalized_target = resolve_doc_relation_target_path(source_record, &relation.target);
+        let Some(target_record) =
+            find_structured_doc_record(snapshot, &relation.target).or_else(|| {
+                normalized_target
+                    .as_deref()
+                    .and_then(|target| find_structured_doc_record(snapshot, target))
+            })
+        else {
             continue;
         };
         if !known_ids.insert(target_record.source_path.clone()) {
@@ -5453,7 +6399,10 @@ fn build_related_doc_entries(
                 &target_record.source_path,
                 target_record.title.clone(),
                 Some(target_record.source_path.clone()),
-                vec![source_record.title.clone(), format!("Related via {}", relation.kind)],
+                vec![
+                    source_record.title.clone(),
+                    format!("Related via {}", relation.kind),
+                ],
                 DocumentNavigatorBodyKind::Markdown,
             ),
         });
@@ -5465,10 +6414,82 @@ fn find_structured_doc_record<'a>(
     snapshot: &'a StructuredDocsSnapshot,
     target: &str,
 ) -> Option<&'a StructuredDocumentRecord> {
-    snapshot
-        .records
-        .iter()
-        .find(|record| record.source_path == target || record.doc_id == target)
+    let normalized = normalize_relative_doc_target(target);
+    snapshot.records.iter().find(|record| {
+        record.doc_id == target
+            || record.source_path == target
+            || record.render.presentation_path == target
+            || record.slug == target
+            || record.source_path == normalized
+            || record.render.presentation_path == normalized
+    })
+}
+
+fn resolve_doc_relation_target_path(
+    source_record: &StructuredDocumentRecord,
+    target: &str,
+) -> Option<String> {
+    let target = target.split('#').next().unwrap_or(target).trim();
+    if target.is_empty() {
+        return Some(source_record.source_path.clone());
+    }
+    if target.starts_with("http://")
+        || target.starts_with("https://")
+        || target.starts_with("mailto:")
+        || target.starts_with("TASK-")
+        || target.contains(':')
+    {
+        return None;
+    }
+    let target_path = std::path::Path::new(target);
+    if target_path.is_absolute() || looks_repo_relative_doc_target(target) {
+        return Some(normalize_relative_doc_target(
+            target.trim_start_matches('/'),
+        ));
+    }
+    let base = std::path::Path::new(&source_record.source_path)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new(""));
+    Some(normalize_relative_doc_target(
+        &base.join(target_path).to_string_lossy(),
+    ))
+}
+
+fn looks_repo_relative_doc_target(target: &str) -> bool {
+    let Some(first) = std::path::Path::new(target)
+        .components()
+        .next()
+        .and_then(|component| match component {
+            std::path::Component::Normal(value) => value.to_str(),
+            _ => None,
+        })
+    else {
+        return false;
+    };
+    matches!(
+        first,
+        "docs" | "docs-data" | "crates" | "scripts" | "README.md" | "CHANGELOG.md" | "LICENSE"
+    )
+}
+
+fn normalize_relative_doc_target(path: &str) -> String {
+    let mut parts = Vec::new();
+    for component in std::path::Path::new(path).components() {
+        match component {
+            std::path::Component::Normal(value) => {
+                if let Some(value) = value.to_str() {
+                    parts.push(value.to_string());
+                }
+            }
+            std::path::Component::ParentDir => {
+                parts.pop();
+            }
+            std::path::Component::CurDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => {}
+        }
+    }
+    parts.join("/")
 }
 
 fn build_plan_link_picker_item(
@@ -5504,7 +6525,11 @@ fn build_plan_log_picker_item(task_id: &str, entry: &TaskLogEntry) -> OperatorPi
     OperatorPickerItem {
         id: format!("log-entry:{}", entry.seq),
         title: preview_text(&entry.summary, 80),
-        subtitle: Some(format!("#{} {}", entry.seq, task_log_kind_label(entry.kind))),
+        subtitle: Some(format!(
+            "#{} {}",
+            entry.seq,
+            task_log_kind_label(entry.kind)
+        )),
         badges: vec!["log".to_string()],
         preview: Some(render_plan_log_entry_detail(task_id, entry)),
         disabled_reason: None,
@@ -5516,7 +6541,10 @@ fn build_plan_list_picker_item(
     task: &PlannedTask,
     selected_task_id: Option<&str>,
 ) -> anyhow::Result<OperatorPickerItem> {
-    let mut badges = vec![task.priority.as_str().to_string(), task.status.as_str().to_string()];
+    let mut badges = vec![
+        task.priority.as_str().to_string(),
+        task.status.as_str().to_string(),
+    ];
     if Some(task.id.as_str()) == selected_task_id {
         badges.insert(0, "selected".to_string());
     }
@@ -5544,7 +6572,10 @@ fn build_plan_load_picker_item(
     OperatorPickerItem {
         id: format!("{}:{}", candidate.source_path, index),
         title: candidate.title.clone(),
-        subtitle: Some(format!("{} :: {}", candidate.source_path, candidate.source_key)),
+        subtitle: Some(format!(
+            "{} :: {}",
+            candidate.source_path, candidate.source_key
+        )),
         badges: vec![
             candidate.disposition.as_str().to_string(),
             candidate.adapter.as_str().to_string(),
@@ -5569,7 +6600,10 @@ fn join_or_none(values: &[String]) -> String {
     }
 }
 
-fn sync_plan_todo_projection(project_root: &std::path::Path, tasks: &[PlannedTask]) -> anyhow::Result<()> {
+fn sync_plan_todo_projection(
+    project_root: &std::path::Path,
+    tasks: &[PlannedTask],
+) -> anyhow::Result<()> {
     const START: &str = "<!-- omega-plan-sync:start -->";
     const END: &str = "<!-- omega-plan-sync:end -->";
     let generated = format!(
@@ -5635,11 +6669,16 @@ fn sync_plan_todo_projection(project_root: &std::path::Path, tasks: &[PlannedTas
     Ok(())
 }
 
-fn upsert_plan_projection_notes_block(sections: &mut Vec<StructuredDocumentSection>, generated: &str) {
+fn upsert_plan_projection_notes_block(
+    sections: &mut Vec<StructuredDocumentSection>,
+    generated: &str,
+) {
     const START: &str = "<!-- omega-plan-sync:start -->";
     const END: &str = "<!-- omega-plan-sync:end -->";
 
-    let notes = sections.iter_mut().find(|section| section.heading == "Notes");
+    let notes = sections
+        .iter_mut()
+        .find(|section| section.heading == "Notes");
     let notes = match notes {
         Some(section) => section,
         None => {
@@ -5653,14 +6692,17 @@ fn upsert_plan_projection_notes_block(sections: &mut Vec<StructuredDocumentSecti
     };
 
     let existing = notes.body_markdown.trim();
-    notes.body_markdown = if let (Some(start), Some(end)) = (existing.find(START), existing.find(END)) {
-        let end = end + END.len();
-        format!("{}{}{}", &existing[..start], generated, &existing[end..]).trim().to_string()
-    } else if existing.is_empty() {
-        generated.to_string()
-    } else {
-        format!("{}\n\n{}", generated, existing)
-    };
+    notes.body_markdown =
+        if let (Some(start), Some(end)) = (existing.find(START), existing.find(END)) {
+            let end = end + END.len();
+            format!("{}{}{}", &existing[..start], generated, &existing[end..])
+                .trim()
+                .to_string()
+        } else if existing.is_empty() {
+            generated.to_string()
+        } else {
+            format!("{}\n\n{}", generated, existing)
+        };
 }
 
 fn render_plan_list(tasks: &[PlannedTask], selected_task_id: Option<&str>, view: &str) -> String {
@@ -5863,11 +6905,13 @@ fn build_command_replay_entries(
         kind: SessionReplayEntryKind::CommandSection,
         title: Some(command_title_from_input(input)),
         body: body.to_string(),
-        state: Some(match state {
-            ResponseSectionState::Failed => "failed",
-            _ => "complete",
-        }
-        .to_string()),
+        state: Some(
+            match state {
+                ResponseSectionState::Failed => "failed",
+                _ => "complete",
+            }
+            .to_string(),
+        ),
     }]
 }
 
@@ -6033,10 +7077,7 @@ fn render_project_sessions(snapshot: &ProjectDetailSnapshot) -> String {
             project_session_status_label(session.status),
             session.turn_count,
             session.last_active_at,
-            session
-                .last_user_turn_preview
-                .as_deref()
-                .unwrap_or("none"),
+            session.last_user_turn_preview.as_deref().unwrap_or("none"),
         ));
     }
     body
@@ -6068,8 +7109,9 @@ fn build_session_picker_request(
 ) -> OperatorPickerRequest {
     let mut sessions = sessions.to_vec();
     sessions.sort_by(|left, right| {
-        session_picker_sort_key(left, active_session_id, prioritize_resume_ready)
-            .cmp(&session_picker_sort_key(right, active_session_id, prioritize_resume_ready))
+        session_picker_sort_key(left, active_session_id, prioritize_resume_ready).cmp(
+            &session_picker_sort_key(right, active_session_id, prioritize_resume_ready),
+        )
     });
 
     let detail_action = OperatorPickerAction {
@@ -6270,13 +7312,16 @@ fn load_session_ledger_info(
             )
         })
         .count();
-    let latest_checkpoint_summary = records.iter().rev().find_map(|record| match &record.record {
-        SessionContextRecordKind::CompressionCheckpoint { summary, .. } => {
-            Some(preview_text(summary, 120))
-        }
-        SessionContextRecordKind::WorkingSetSnapshot { .. }
-        | SessionContextRecordKind::ReplayEntry { .. } => None,
-    });
+    let latest_checkpoint_summary = records
+        .iter()
+        .rev()
+        .find_map(|record| match &record.record {
+            SessionContextRecordKind::CompressionCheckpoint { summary, .. } => {
+                Some(preview_text(summary, 120))
+            }
+            SessionContextRecordKind::WorkingSetSnapshot { .. }
+            | SessionContextRecordKind::ReplayEntry { .. } => None,
+        });
 
     Ok(SessionLedgerInfo {
         total_record_count: records.len(),
@@ -6354,7 +7399,9 @@ fn memory_readiness_from_diagnostics(
     }
 }
 
-pub(crate) fn build_turn_retention_signals(session_context: &SessionContext) -> TurnRetentionSignals {
+pub(crate) fn build_turn_retention_signals(
+    session_context: &SessionContext,
+) -> TurnRetentionSignals {
     let mut signals = TurnRetentionSignals::default();
 
     if let Some(plan_value) = session_context.step_outputs.get(PLAN_STEP_ID) {

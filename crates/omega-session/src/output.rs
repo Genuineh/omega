@@ -218,8 +218,10 @@ pub(crate) fn validate_workflow_step_output(
         }
         EXECUTE_STEP_ID => {
             let output = parse_feature_execute_output(value.clone())?;
-            if matches!(workflow_id, RESEARCH_WORKFLOW_ID | DEEP_RESEARCH_WORKFLOW_ID)
-                && !output.changed_paths.is_empty()
+            if matches!(
+                workflow_id,
+                RESEARCH_WORKFLOW_ID | DEEP_RESEARCH_WORKFLOW_ID
+            ) && !output.changed_paths.is_empty()
             {
                 anyhow::bail!(
                     "research execute output must keep changed_paths empty because the workflow is read-only"

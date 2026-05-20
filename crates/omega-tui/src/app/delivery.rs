@@ -1,6 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use omega_session::{ResponseSection, ResponseSectionKind, ResponseSectionMetadata, ResponseSectionState, SectionOrigin, ToolRunStatus, WorkflowRunRole};
+use omega_session::{
+    ResponseSection, ResponseSectionKind, ResponseSectionMetadata, ResponseSectionState,
+    SectionOrigin, ToolRunStatus, WorkflowRunRole,
+};
 
 use super::{App, MsgKind, Panel};
 
@@ -86,11 +89,13 @@ impl DeliverySummary {
         format!(
             "{} · {} · {} tok{} · {} llm · {} tools · {} skills · {} files",
             self.status.as_str(),
-            self.primary_model
-                .as_deref()
-                .unwrap_or("model unknown"),
+            self.primary_model.as_deref().unwrap_or("model unknown"),
             self.total_tokens(),
-            if self.token_stats_partial { " partial" } else { "" },
+            if self.token_stats_partial {
+                " partial"
+            } else {
+                ""
+            },
             self.llm_request_count,
             self.tool_call_count,
             self.loaded_skill_ids.len(),
@@ -144,11 +149,13 @@ impl App {
     }
 
     pub fn delivery_badge_text(&self) -> Option<String> {
-        self.delivery_panel_summary().map(|summary| summary.compact_badge())
+        self.delivery_panel_summary()
+            .map(|summary| summary.compact_badge())
     }
 
     pub fn delivery_token_badge_text(&self) -> Option<String> {
-        self.delivery_panel_summary().map(|summary| summary.token_badge())
+        self.delivery_panel_summary()
+            .map(|summary| summary.token_badge())
     }
 
     pub(super) fn refresh_delivery_panel(&mut self) {
@@ -294,7 +301,10 @@ impl App {
             .filter_map(|diagnostics| diagnostics.cache.as_ref())
             .filter_map(|cache| cache.cache_read_input_tokens)
             .sum::<u32>();
-        let token_stats_partial = self.step_diagnostics.iter().any(|diagnostics| diagnostics.cache.is_none());
+        let token_stats_partial = self
+            .step_diagnostics
+            .iter()
+            .any(|diagnostics| diagnostics.cache.is_none());
 
         DeliverySummary {
             turn_id,
@@ -396,12 +406,13 @@ fn build_delivery_panel_lines(summary: &DeliverySummary) -> Vec<String> {
     lines.push(format!(
         "tokens: {} total{}",
         summary.total_tokens(),
-        if summary.token_stats_partial { " (partial)" } else { "" }
+        if summary.token_stats_partial {
+            " (partial)"
+        } else {
+            ""
+        }
     ));
-    lines.push(format!(
-        "llm: {} requests",
-        summary.llm_request_count
-    ));
+    lines.push(format!("llm: {} requests", summary.llm_request_count));
     lines.push(format!(
         "tools: {} calls · {} unique · {} failed",
         summary.tool_call_count, summary.unique_tool_count, summary.failed_tool_count
@@ -475,7 +486,11 @@ pub(super) fn build_delivery_detail_lines(summary: &DeliverySummary) -> Vec<Stri
             summary.input_tokens,
             summary.cache_creation_input_tokens,
             summary.cache_read_input_tokens,
-            if summary.token_stats_partial { " (partial)" } else { "" }
+            if summary.token_stats_partial {
+                " (partial)"
+            } else {
+                ""
+            }
         ),
         format!("llm requests: {}", summary.llm_request_count),
         String::new(),
@@ -516,7 +531,9 @@ pub(super) fn build_delivery_detail_lines(summary: &DeliverySummary) -> Vec<Stri
     lines.push(String::new());
     lines.push(format!(
         "knowledge: document={} memory={} observations={}",
-        summary.document_search_count, summary.memory_search_count, summary.observation_search_count
+        summary.document_search_count,
+        summary.memory_search_count,
+        summary.observation_search_count
     ));
     lines.push(format!(
         "document queries: {}",

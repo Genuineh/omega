@@ -557,12 +557,15 @@ impl OperatorPickerShortcut {
 pub enum OperatorPickerOverlayBehavior {
     KeepOpen,
     CloseOverlay,
+    PushOverlay,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OperatorPickerIntent {
     OpenDetail,
-    SubmitSlashCommand { command_template: String },
+    SubmitSlashCommand {
+        command_template: String,
+    },
     RequestConfirmSlashCommand {
         title_template: String,
         message_template: String,
@@ -606,6 +609,7 @@ pub struct DocumentNavigatorBody {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DocumentNavigatorGroup {
     Context,
+    Design,
     Related,
     History,
 }
@@ -614,6 +618,7 @@ impl DocumentNavigatorGroup {
     pub fn label(self) -> &'static str {
         match self {
             Self::Context => "Context",
+            Self::Design => "Design",
             Self::Related => "Related",
             Self::History => "History",
         }
@@ -622,6 +627,7 @@ impl DocumentNavigatorGroup {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DocumentNavigatorEntryKind {
+    Summary,
     Document,
     File,
     Log,
@@ -631,6 +637,7 @@ pub enum DocumentNavigatorEntryKind {
 impl DocumentNavigatorEntryKind {
     pub fn label(self) -> &'static str {
         match self {
+            Self::Summary => "summary",
             Self::Document => "doc",
             Self::File => "file",
             Self::Log => "log",

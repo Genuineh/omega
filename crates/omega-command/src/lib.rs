@@ -161,7 +161,9 @@ pub trait CommandHintProvider: Send + Sync {
 pub enum CommandParseError {
     MissingSlash,
     EmptyCommand,
-    UnknownCommand { name: String },
+    UnknownCommand {
+        name: String,
+    },
     InvalidSubcommand {
         command: String,
         subcommand: String,
@@ -266,7 +268,10 @@ impl OmegaCommandRegistry {
             .iter()
             .filter(|descriptor| {
                 descriptor.name.starts_with(candidate)
-                    || descriptor.aliases.iter().any(|alias| alias.starts_with(candidate))
+                    || descriptor
+                        .aliases
+                        .iter()
+                        .any(|alias| alias.starts_with(candidate))
             })
             .collect()
     }
@@ -326,7 +331,12 @@ impl CommandHintProvider for OmegaCommandRegistry {
         }
 
         if tokens.len() == 1 && !trimmed.ends_with(' ') {
-            if descriptor.name == command_token || descriptor.aliases.iter().any(|alias| alias == command_token) {
+            if descriptor.name == command_token
+                || descriptor
+                    .aliases
+                    .iter()
+                    .any(|alias| alias == command_token)
+            {
                 return CommandHintResolution::Command {
                     command,
                     subcommands: descriptor
@@ -409,6 +419,11 @@ mod tests {
                     "Search indexed project documents",
                     Some("<text>"),
                 ),
+                OmegaCommandSubcommand::new(
+                    "view-result",
+                    "Open a document query result",
+                    Some("<query> <path>"),
+                ),
                 OmegaCommandSubcommand::new("health", "Check repository document health", None),
                 OmegaCommandSubcommand::new("sync", "Refresh document indexes", None),
                 OmegaCommandSubcommand::new(
@@ -425,6 +440,16 @@ mod tests {
                     "list",
                     "List tracked documents",
                     Some("[doc_type] [status]"),
+                ),
+                OmegaCommandSubcommand::new(
+                    "open",
+                    "Open a document in the navigator",
+                    Some("<doc-id>"),
+                ),
+                OmegaCommandSubcommand::new(
+                    "get",
+                    "Open a document detail navigator directly",
+                    Some("<doc-id>"),
                 ),
             ],
             "Manage indexed project documents",
@@ -453,10 +478,7 @@ mod tests {
     #[test]
     fn rejects_unknown_subcommand() {
         let error = registry().parse("/document nope").unwrap_err();
-        assert!(matches!(
-            error,
-            CommandParseError::InvalidSubcommand { .. }
-        ));
+        assert!(matches!(error, CommandParseError::InvalidSubcommand { .. }));
     }
 
     #[test]
@@ -481,7 +503,10 @@ mod tests {
                 args,
             } => {
                 assert_eq!(command.name, "document");
-                assert_eq!(subcommand.as_ref().map(|hint| hint.name.as_str()), Some("query"));
+                assert_eq!(
+                    subcommand.as_ref().map(|hint| hint.name.as_str()),
+                    Some("query")
+                );
                 assert_eq!(args, vec!["parser"]);
             }
             other => panic!("expected ready hint, got {other:?}"),

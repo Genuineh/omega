@@ -60,10 +60,7 @@ impl ResolvedToolSet {
             .iter()
             .map(|entry| entry.definition.clone())
             .collect();
-        let tool_manifests = entries
-            .into_iter()
-            .map(|entry| entry.manifest)
-            .collect();
+        let tool_manifests = entries.into_iter().map(|entry| entry.manifest).collect();
         Self {
             tool_names,
             tool_definitions,
@@ -302,7 +299,10 @@ mod tests {
 
         let resolved = catalog.resolve_for_step(&StepToolRequest::Inherit);
         assert_eq!(resolved.tool_names(), ["search_codebase"]);
-        assert_eq!(resolved.tool_manifests()[0].family, CoreToolFamily::KnowledgeAndGovernance);
+        assert_eq!(
+            resolved.tool_manifests()[0].family,
+            CoreToolFamily::KnowledgeAndGovernance
+        );
         assert_eq!(
             resolved.tool_manifests()[0].prompt.summary,
             "Ranked search over project knowledge"

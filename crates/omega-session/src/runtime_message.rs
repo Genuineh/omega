@@ -5,10 +5,9 @@ use omega_project::ProjectDetailSnapshot;
 
 use crate::runtime_ui::{
     OverlayRequest, ResponseSection, ResponseSectionDelta, ResponseSectionState, RuntimeUiEffect,
-    RuntimeUiEnvelope, RuntimeUiMessage, SessionRestoreSnapshot, SkillLoadSummary, StatusSlot, StatusValue,
-    StepDiagnostics,
-    StepSubflowStatus, ToolRun, ToolRunStatus, UiContent, UiMessageKind, UiPriority, UiSource,
-    UiTarget, WorkflowRunRole,
+    RuntimeUiEnvelope, RuntimeUiMessage, SessionRestoreSnapshot, SkillLoadSummary, StatusSlot,
+    StatusValue, StepDiagnostics, StepSubflowStatus, ToolRun, ToolRunStatus, UiContent,
+    UiMessageKind, UiPriority, UiSource, UiTarget, WorkflowRunRole,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -646,10 +645,7 @@ mod tests {
                     section_id: "turn-15:root:root:load-skills".to_string(),
                     summary: Box::new(SkillLoadSummary {
                         source_step_id: Some("select-skills".to_string()),
-                        recognized_skill_ids: vec![
-                            "docs-specs".to_string(),
-                            "plan".to_string()
-                        ],
+                        recognized_skill_ids: vec!["docs-specs".to_string(), "plan".to_string()],
                         loaded_skill_ids: vec!["docs-specs".to_string()],
                         ignored_skill_ids: vec!["plan".to_string()],
                         selection_reason: Some("spec-writing request".to_string()),

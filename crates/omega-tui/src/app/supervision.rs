@@ -99,7 +99,11 @@ fn build_knowledge_lines(snapshot: &ContextSupervisionSnapshot) -> Vec<String> {
         .as_ref()
         .map(|observations| observations.result_count as u64)
         .unwrap_or(0);
-    let doc_queries: u64 = document.operator_usage.iter().map(|usage| usage.count as u64).sum();
+    let doc_queries: u64 = document
+        .operator_usage
+        .iter()
+        .map(|usage| usage.count as u64)
+        .sum();
     let mem_queries = memory.totals.memory_query_count as u64;
     let max_hits = doc_hits.max(mem_hits).max(obs_hits).max(1);
 
@@ -128,7 +132,10 @@ fn build_knowledge_lines(snapshot: &ContextSupervisionSnapshot) -> Vec<String> {
         format!("  doc {} {}", compact_bar(doc_hits, max_hits, 6), doc_hits),
         format!("  mem {} {}", compact_bar(mem_hits, max_hits, 6), mem_hits),
         format!("  obs {} {}", compact_bar(obs_hits, max_hits, 6), obs_hits),
-        format!("queries: doc={} mem={} corrections={}", doc_queries, mem_queries, memory.totals.observation_correction_activity),
+        format!(
+            "queries: doc={} mem={} corrections={}",
+            doc_queries, mem_queries, memory.totals.observation_correction_activity
+        ),
     ];
 
     if let Some(hits) = document.current_hits.as_ref() {
@@ -143,7 +150,11 @@ fn build_knowledge_lines(snapshot: &ContextSupervisionSnapshot) -> Vec<String> {
     }
     if let Some(observations) = memory.current_observations.as_ref() {
         if let Some(hit) = observations.top_hits.first() {
-            lines.push(format!("obs lead: [{}] {}", hit.freshness.as_str(), hit.title));
+            lines.push(format!(
+                "obs lead: [{}] {}",
+                hit.freshness.as_str(),
+                hit.title
+            ));
         }
     }
 
@@ -161,15 +172,22 @@ fn build_knowledge_detail_lines(snapshot: &ContextSupervisionSnapshot) -> Vec<St
 
 fn build_document_lines(snapshot: &ContextSupervisionSnapshot) -> Vec<String> {
     let document = &snapshot.document;
-    let governance_status = governance_label(document.health_status, document.totals.governance_health);
-    let has_document_query_activity = document
-        .operator_usage
-        .iter()
-        .any(|usage| matches!(usage.operator.as_str(), "context_recall_planner" | "search_codebase"));
+    let governance_status =
+        governance_label(document.health_status, document.totals.governance_health);
+    let has_document_query_activity = document.operator_usage.iter().any(|usage| {
+        matches!(
+            usage.operator.as_str(),
+            "context_recall_planner" | "search_codebase"
+        )
+    });
     let mut lines = vec![
         format!(
             "status: {} ({})",
-            if document.enabled { "enabled" } else { "disabled" },
+            if document.enabled {
+                "enabled"
+            } else {
+                "disabled"
+            },
             document.readiness.as_str()
         ),
         format!(
@@ -309,18 +327,20 @@ fn build_memory_lines(snapshot: &ContextSupervisionSnapshot) -> Vec<String> {
     let mut lines = vec![
         format!(
             "status: {} ({})",
-            if memory.enabled { "enabled" } else { "disabled" },
+            if memory.enabled {
+                "enabled"
+            } else {
+                "disabled"
+            },
             memory.readiness.as_str()
         ),
         format!(
             "totals: archived_turns={} compactions={}",
-            memory.totals.total_turns_archived,
-            memory.totals.compactions_triggered
+            memory.totals.total_turns_archived, memory.totals.compactions_triggered
         ),
         format!(
             "selection: summaries={} tokens={}",
-            memory.totals.current_summary_count,
-            memory.totals.current_summary_tokens
+            memory.totals.current_summary_count, memory.totals.current_summary_tokens
         ),
         format!(
             "archive: count={} size={}",
@@ -329,8 +349,7 @@ fn build_memory_lines(snapshot: &ContextSupervisionSnapshot) -> Vec<String> {
         ),
         format!(
             "retention: accepted={} dropped={}",
-            memory.totals.retention_candidates_accepted,
-            memory.totals.retention_candidates_dropped
+            memory.totals.retention_candidates_accepted, memory.totals.retention_candidates_dropped
         ),
         format!(
             "queries: count={} mix={}",
@@ -409,7 +428,9 @@ fn build_memory_lines(snapshot: &ContextSupervisionSnapshot) -> Vec<String> {
                 lines.push(format!("  {}", hit.preview));
             }
         }
-        None => lines.push("memory query: no archived recall has populated supervision yet".to_string()),
+        None => {
+            lines.push("memory query: no archived recall has populated supervision yet".to_string())
+        }
     }
 
     match memory.current_observations.as_ref() {
@@ -448,7 +469,9 @@ fn build_memory_lines(snapshot: &ContextSupervisionSnapshot) -> Vec<String> {
                 lines.push(format!("  {}", hit.summary));
             }
         }
-        None => lines.push("observations: no project observation recall has populated supervision yet".to_string()),
+        None => lines.push(
+            "observations: no project observation recall has populated supervision yet".to_string(),
+        ),
     }
 
     lines
@@ -462,7 +485,11 @@ fn compact_bar(value: u64, max: u64, width: usize) -> String {
     }
     .min(width);
 
-    format!("{}{}", "█".repeat(filled), "░".repeat(width.saturating_sub(filled)))
+    format!(
+        "{}{}",
+        "█".repeat(filled),
+        "░".repeat(width.saturating_sub(filled))
+    )
 }
 
 fn format_kv_counts(counts: &std::collections::BTreeMap<String, impl std::fmt::Display>) -> String {
@@ -539,9 +566,15 @@ mod tests {
             memory: MemorySupervisionSnapshot::default(),
         });
 
-        assert!(lines.iter().any(|line| line.contains("status: enabled (uninitialized)")));
-        assert!(lines.iter().any(|line| line.contains("governance=pending_health_check")));
-        assert!(lines.iter().any(|line| line.contains("store note: disk bytes exist")));
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("status: enabled (uninitialized)")));
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("governance=pending_health_check")));
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("store note: disk bytes exist")));
     }
 
     #[test]

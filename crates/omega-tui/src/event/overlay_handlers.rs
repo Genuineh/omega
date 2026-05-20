@@ -128,6 +128,13 @@ pub(super) fn handle_overlay_key_event(
             KeyCode::Esc => {
                 app_guard.close_overlay();
             }
+            KeyCode::Char('l') if key.modifiers == KeyModifiers::CONTROL => {
+                if !app_guard.pop_overlay() {
+                    app_guard.set_status_notice("Returned to previous screen.");
+                } else {
+                    app_guard.set_status_notice("Returned to task list.");
+                }
+            }
             KeyCode::Tab => {
                 overlay.toggle_focus();
             }
@@ -215,9 +222,7 @@ pub(super) fn handle_overlay_key_event(
             KeyCode::Up | KeyCode::Char('k') if key.modifiers == KeyModifiers::NONE => {
                 overlay.move_selection_up();
             }
-            KeyCode::Down | KeyCode::Tab | KeyCode::Char('j')
-                if key.modifiers == KeyModifiers::NONE =>
-            {
+            KeyCode::Down | KeyCode::Char('j') if key.modifiers == KeyModifiers::NONE => {
                 overlay.move_selection_down();
             }
             KeyCode::Char('/') if key.modifiers == KeyModifiers::NONE => {
@@ -314,12 +319,12 @@ fn picker_action_for_key(
     overlay: &crate::overlay::PickerOverlay,
 ) -> Option<&omega_session::OperatorPickerAction> {
     match (key.code, key.modifiers) {
-        (KeyCode::Enter, KeyModifiers::NONE) => overlay
-            .action_for_shortcut(omega_session::OperatorPickerShortcut::Enter),
-        (KeyCode::Char(character), KeyModifiers::CONTROL) => overlay
-            .action_for_shortcut(omega_session::OperatorPickerShortcut::Ctrl(
-                character.to_ascii_lowercase(),
-            )),
+        (KeyCode::Enter, KeyModifiers::NONE) => {
+            overlay.action_for_shortcut(omega_session::OperatorPickerShortcut::Enter)
+        }
+        (KeyCode::Char(character), KeyModifiers::CONTROL) => overlay.action_for_shortcut(
+            omega_session::OperatorPickerShortcut::Ctrl(character.to_ascii_lowercase()),
+        ),
         _ => None,
     }
 }
@@ -379,10 +384,21 @@ fn execute_picker_action(
             let command = command_from_template(&command_template, selected_item.as_ref());
             {
                 let mut app_guard = app.lock().unwrap();
-                if action.overlay_behavior
-                    == omega_session::OperatorPickerOverlayBehavior::CloseOverlay
-                {
-                    app_guard.close_overlay();
+                match action.overlay_behavior {
+                    omega_session::OperatorPickerOverlayBehavior::CloseOverlay => {
+                        app_guard.close_overlay();
+                    }
+                    omega_session::OperatorPickerOverlayBehavior::PushOverlay => {
+                        if let Some(current) = app_guard.overlay.take() {
+                            if let OverlayState::Picker(picker) = &current {
+                                app_guard
+                                    .picker_selection_memory
+                                    .insert(picker.request.picker_id.clone(), picker.selected);
+                            }
+                            app_guard.overlay_stack.push(current);
+                        }
+                    }
+                    omega_session::OperatorPickerOverlayBehavior::KeepOpen => {}
                 }
                 app_guard.set_status_notice(format!("Running operator action: {command}"));
             }

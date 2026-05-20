@@ -6,14 +6,12 @@ use omega_session::{
     ExecuteProgressDiagnostics, HealthScore, OperatorPickerAction, OperatorPickerIntent,
     OperatorPickerItem, OperatorPickerOverlayBehavior, OperatorPickerRequest,
     OperatorPickerShortcut, OverlayRequest, ResponseSection, ResponseSectionDelta,
-    ResponseSectionKind, ResponseSectionMetadata, RuntimeUiEffect, RuntimeUiMessage,
-    SectionOrigin,
+    ResponseSectionKind, ResponseSectionMetadata, RuntimeUiEffect, RuntimeUiMessage, SectionOrigin,
     StepContextWrite, StepContextWriteKind, StepDiagnostics, StepInputDiagnostics, StepInputStatus,
     StepOutputAttemptKind, StepOutputContractMode, StepOutputDiagnostics,
     StepOutputRecoveryDecision, StepOutputStatus, StepSubflowRef, StepSubflowState,
     StepSubflowStatus, StepSummarySource, TokenCountSource, ToolCapabilityDiagnostics,
-    ToolRunDetail, UiContent,
-    UiMessageKind, UiSource, UiTarget, WorkflowRunRole,
+    ToolRunDetail, UiContent, UiMessageKind, UiSource, UiTarget, WorkflowRunRole,
 };
 use ratatui::layout::Rect;
 
@@ -108,10 +106,7 @@ fn sample_step_diagnostics() -> StepDiagnostics {
                     recovery_path: Some("deterministic_bundle".to_string()),
                     query: "memory query".to_string(),
                     result_count: 1,
-                    freshness_mix: std::collections::BTreeMap::from([(
-                        "fresh".to_string(),
-                        1,
-                    )]),
+                    freshness_mix: std::collections::BTreeMap::from([("fresh".to_string(), 1)]),
                     top_hits: vec![omega_session::ObservationRecallHitItem {
                         id: "obs-1".to_string(),
                         title: "Open thread: task-memory-query".to_string(),
@@ -578,7 +573,9 @@ fn project_panel_can_open_selected_task_detail_overlay() {
                         acceptance: vec!["overlay opens from project panel".to_string()],
                         depends_on: vec!["TASK-0001".to_string()],
                         design_links: vec!["docs/specs/omega-project-plan-system.md".to_string()],
-                        implementation_links: vec!["crates/omega-tui/src/app/project.rs".to_string()],
+                        implementation_links: vec![
+                            "crates/omega-tui/src/app/project.rs".to_string()
+                        ],
                         recent_logs: vec!["Opened project panel detail".to_string()],
                     }),
                     next_tasks: vec![omega_project::ProjectPlanTaskSummary {
@@ -591,7 +588,9 @@ fn project_panel_can_open_selected_task_detail_overlay() {
                         acceptance: vec!["overlay opens from project panel".to_string()],
                         depends_on: vec!["TASK-0001".to_string()],
                         design_links: vec!["docs/specs/omega-project-plan-system.md".to_string()],
-                        implementation_links: vec!["crates/omega-tui/src/app/project.rs".to_string()],
+                        implementation_links: vec![
+                            "crates/omega-tui/src/app/project.rs".to_string()
+                        ],
                         recent_logs: vec!["Opened project panel detail".to_string()],
                     }],
                     blocked_tasks: Vec::new(),
@@ -606,7 +605,10 @@ fn project_panel_can_open_selected_task_detail_overlay() {
     match app.overlay.as_ref() {
         Some(OverlayState::Detail(detail)) => {
             assert_eq!(detail.title, " Project Task ");
-            assert!(detail.lines.iter().any(|line| line.contains("task: TASK-0002")));
+            assert!(detail
+                .lines
+                .iter()
+                .any(|line| line.contains("task: TASK-0002")));
             assert!(detail
                 .lines
                 .iter()
@@ -800,20 +802,30 @@ fn restore_session_replaces_stale_runtime_state_with_snapshot_replay() {
     assert!(app.overlay.is_none());
     assert!(app.tool_runs.is_empty());
     assert!(app.step_subflows.is_empty());
-    assert!(app.output_msgs.iter().all(|message| !message.text.contains("old output")));
-    assert!(app.output_msgs.iter().any(|message| message.text.contains("restored prompt")));
-    assert!(app.output_msgs.iter().any(|message| message.text.contains("restored sessions")));
     assert!(app
         .output_msgs
         .iter()
-        .any(|message| message.text.contains("Context strategy: recent records=3, compression summaries=1, search hits=2.")));
+        .all(|message| !message.text.contains("old output")));
     assert!(app
         .output_msgs
         .iter()
-        .any(|message| message.text.contains("use search/detail to inspect older records")));
+        .any(|message| message.text.contains("restored prompt")));
+    assert!(app
+        .output_msgs
+        .iter()
+        .any(|message| message.text.contains("restored sessions")));
+    assert!(app.output_msgs.iter().any(|message| message
+        .text
+        .contains("Context strategy: recent records=3, compression summaries=1, search hits=2.")));
+    assert!(app.output_msgs.iter().any(|message| message
+        .text
+        .contains("use search/detail to inspect older records")));
     assert_eq!(app.log_lines, vec!["[tool] bash echo hi".to_string()]);
     assert_eq!(app.todo_lines, vec!["→ #1: Restored".to_string()]);
-    assert_eq!(app.response_state.selected(), Some(app.output_msgs.len().saturating_sub(1)));
+    assert_eq!(
+        app.response_state.selected(),
+        Some(app.output_msgs.len().saturating_sub(1))
+    );
 }
 
 #[test]
@@ -1248,9 +1260,7 @@ fn command_sections_render_in_response_panel() {
         turn_id,
         RuntimeUiEffect::AppendResponseSection {
             id: "turn-1:command".to_string(),
-            delta: ResponseSectionDelta::Text(
-                "Overall health: good\nTotal docs: 12".to_string(),
-            ),
+            delta: ResponseSectionDelta::Text("Overall health: good\nTotal docs: 12".to_string()),
         },
     ));
     app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
@@ -1771,9 +1781,18 @@ fn interrupt_turn_stops_streaming_reasoning_and_running_tool_styles() {
 
     app.interrupt_turn();
 
-    assert!(app.response_lines().iter().any(|line| line.contains("Reasoning failed  ✕")));
-    assert!(app.response_lines().iter().any(|line| line.contains("reasoning failed")));
-    assert!(!app.response_lines().iter().any(|line| line.contains("Reasoning live  ◉")));
+    assert!(app
+        .response_lines()
+        .iter()
+        .any(|line| line.contains("Reasoning failed  ✕")));
+    assert!(app
+        .response_lines()
+        .iter()
+        .any(|line| line.contains("reasoning failed")));
+    assert!(!app
+        .response_lines()
+        .iter()
+        .any(|line| line.contains("Reasoning live  ◉")));
     assert!(app
         .tool_runs
         .iter()
@@ -2062,8 +2081,7 @@ fn response_lines_include_knowledge_lane_for_section_summary() {
             "  scene feature".to_string(),
             "  knowledge".to_string(),
             "    document  [ready]  2 hits  ·  roadmap  ·  docs/TODO.md".to_string(),
-            "    memory  2 selected  ·  2 archived  ·  0 observations  ·  knowledge ui"
-                .to_string(),
+            "    memory  2 selected  ·  2 archived  ·  0 observations  ·  knowledge ui".to_string(),
         ]
     );
 }
@@ -2126,12 +2144,18 @@ fn response_lines_include_skill_lane_and_activation_opens_detail_overlay() {
     let response_lines = app.response_display_lines();
     let skill_line = response_lines
         .iter()
-        .position(|line| line.text.contains("skills  recognized=2 loaded=1 ignored=1"))
+        .position(|line| {
+            line.text
+                .contains("skills  recognized=2 loaded=1 ignored=1")
+        })
         .expect("skill lane line should exist");
 
     let activation = app.activate_response_item_at_line(skill_line);
 
-    assert_eq!(activation, Some(super::ResponseActivation::SkillLoadDetailOpened));
+    assert_eq!(
+        activation,
+        Some(super::ResponseActivation::SkillLoadDetailOpened)
+    );
     match app.overlay.as_ref() {
         Some(OverlayState::Detail(detail)) => {
             assert!(detail.title.contains("Routed Skills"));
@@ -2241,7 +2265,10 @@ fn activating_knowledge_summary_opens_detail_overlay() {
     match app.overlay.as_ref() {
         Some(OverlayState::Detail(detail)) => {
             assert_eq!(detail.title, " Document Knowledge ");
-            assert!(detail.lines.iter().any(|line| line == "reason: no promoted store version"));
+            assert!(detail
+                .lines
+                .iter()
+                .any(|line| line == "reason: no promoted store version"));
         }
         other => panic!("expected document knowledge detail overlay, got {other:?}"),
     }
@@ -2259,8 +2286,14 @@ fn activating_knowledge_summary_opens_detail_overlay() {
     match app.overlay.as_ref() {
         Some(OverlayState::Detail(detail)) => {
             assert_eq!(detail.title, " Memory Knowledge ");
-            assert!(detail.lines.iter().any(|line| line == "planned queries: knowledge ui | response overlay"));
-            assert!(detail.lines.iter().any(|line| line == "memory query: knowledge ui"));
+            assert!(detail
+                .lines
+                .iter()
+                .any(|line| line == "planned queries: knowledge ui | response overlay"));
+            assert!(detail
+                .lines
+                .iter()
+                .any(|line| line == "memory query: knowledge ui"));
             assert!(detail
                 .lines
                 .iter()
@@ -2339,8 +2372,12 @@ fn tool_lane_defaults_to_collapsed_for_six_or_more_tools_and_can_toggle() {
 
     let expanded_lines = app.response_lines();
     assert_eq!(expanded_lines[2], "  tools  6 total  collapse");
-    assert!(expanded_lines.iter().any(|line| line == "    tool_1  ●  arg-1 -> ok-1"));
-    assert!(expanded_lines.iter().any(|line| line == "    tool_6  ●  arg-6 -> ok-6"));
+    assert!(expanded_lines
+        .iter()
+        .any(|line| line == "    tool_1  ●  arg-1 -> ok-1"));
+    assert!(expanded_lines
+        .iter()
+        .any(|line| line == "    tool_6  ●  arg-6 -> ok-6"));
 
     let header_index = app
         .response_display_lines()
@@ -2540,9 +2577,7 @@ fn activating_subflow_header_opens_detail_overlay() {
     let selected_index = app
         .response_display_lines()
         .iter()
-        .position(|line| {
-            line.text == "  subflow  execute-2  #risk-2  Validate risk  ◉  repeat 1"
-        })
+        .position(|line| line.text == "  subflow  execute-2  #risk-2  Validate risk  ◉  repeat 1")
         .unwrap();
     app.response_state.select(Some(selected_index));
 
@@ -2730,8 +2765,7 @@ fn later_subflows_do_not_render_done_while_earlier_item_is_still_running() {
             "step  child:feature  Execute  ◉".to_string(),
             "  scene feature".to_string(),
             "  items 1/3 · current execute-1 · todo #plan-1".to_string(),
-            "  subflow  execute-1  #plan-1  Verify duplicated diagnostics path  ◉"
-                .to_string(),
+            "  subflow  execute-1  #plan-1  Verify duplicated diagnostics path  ◉".to_string(),
             "    …".to_string(),
             "  subflow  execute-2  #plan-2  Trace tool callback path  ◦".to_string(),
             "  subflow  execute-3  #plan-3  Compare archive paths  ◦".to_string(),
@@ -2878,7 +2912,10 @@ fn document_navigator_overlay_updates_in_place_for_same_request_id() {
     match app.overlay.as_ref() {
         Some(OverlayState::DocumentNavigator(overlay)) => {
             assert_eq!(overlay.request.active_entry_id, "src/navigator.rs");
-            assert_eq!(overlay.request.origin_label, "Task TASK-0001 linked artifacts (updated)");
+            assert_eq!(
+                overlay.request.origin_label,
+                "Task TASK-0001 linked artifacts (updated)"
+            );
         }
         other => panic!("expected document navigator overlay, got {other:?}"),
     }
@@ -3219,7 +3256,10 @@ fn final_answer_sections_are_assembled_before_line_projection() {
     assert_eq!(cards.len(), 1);
     assert_eq!(cards[0].sections.len(), 3);
     assert_eq!(cards[0].sections[0].kind, ResponseCardSectionKind::Meta);
-    assert_eq!(cards[0].sections[1].kind, ResponseCardSectionKind::ResultsSummary);
+    assert_eq!(
+        cards[0].sections[1].kind,
+        ResponseCardSectionKind::ResultsSummary
+    );
     assert_eq!(cards[0].sections[2].kind, ResponseCardSectionKind::Usage);
 }
 
@@ -3253,7 +3293,8 @@ fn report_section_headers_include_scanable_summaries() {
         RuntimeUiEffect::AppendResponseSection {
             id: "turn-100:child:chat:final".to_string(),
             delta: ResponseSectionDelta::Text(
-                "## Results Summary\n- First\n- Second\n\n## Optional Next Step\n1. Ship it".to_string(),
+                "## Results Summary\n- First\n- Second\n\n## Optional Next Step\n1. Ship it"
+                    .to_string(),
             ),
         },
     ));
@@ -3304,7 +3345,13 @@ fn markdown_tables_render_as_tabular_report_blocks() {
     ));
 
     let lines = app.response_lines();
-    assert!(lines.iter().any(|line| line.contains("Verification") && line.contains("2 rows")));
-    assert!(lines.iter().any(|line| line.contains("╭") && line.contains("┬")));
-    assert!(lines.iter().any(|line| line.contains("Pass rate") && line.contains("100%")));
+    assert!(lines
+        .iter()
+        .any(|line| line.contains("Verification") && line.contains("2 rows")));
+    assert!(lines
+        .iter()
+        .any(|line| line.contains("╭") && line.contains("┬")));
+    assert!(lines
+        .iter()
+        .any(|line| line.contains("Pass rate") && line.contains("100%")));
 }
