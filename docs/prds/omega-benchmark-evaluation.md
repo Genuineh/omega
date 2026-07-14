@@ -1,11 +1,13 @@
 ---
-content_revision: 120
+content_revision: 174
 created: 2026-04-16
-generation_id: gen_000046_r000120
-last_verified_commit: N/A
+generation_id: gen_000087_r000174
+language: bilingual
+last_verified_commit: d8c30e3e9e310ce38cffa965be4688ed55a87787
 owner: omega-team
-projection_version: 46
+projection_version: 87
 source_doc_id: "prd:docs-prds-omega-benchmark-evaluation"
+source_path: docs/prds/omega-benchmark-evaluation.md
 status: draft
 updated: 2026-04-16
 version: v0.1

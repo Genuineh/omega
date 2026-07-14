@@ -11,8 +11,11 @@ use omega_theme::RenderPalette as ColorScheme;
 use crate::app::{App, Panel};
 use crate::overlay::{
     overlay_area, ConfirmChoice, DocumentNavigatorFocus, DocumentNavigatorOverlay,
-    DocumentNavigatorRailItem, OverlayState,
+    DocumentNavigatorRailItem, OverlayState, StepDetailContent, StepDetailOverlay,
+    StepDetailRailKind, StepDetailRailItem, TurnDetailOverlay, TurnDetailSection,
 };
+use crate::render::chrome::Glyph;
+use crate::render::chrome::PanelTitle;
 
 pub(super) fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorScheme) {
     let Some(overlay) = app.overlay.as_ref() else {
@@ -68,7 +71,7 @@ pub(super) fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorSch
                 .unwrap_or((search.target_panel, 0));
             let panel_name = match panel {
                 Panel::Response => "Response",
-                Panel::SidebarRail => "Sidebar",
+                Panel::SidebarRail => PanelTitle::SIDEBAR,
                 Panel::Diagnostics => "Diagnostics",
                 Panel::Delivery => "Delivery",
                 Panel::Skills => "Skills",
@@ -104,8 +107,10 @@ pub(super) fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorSch
                 .style(Style::default().bg(colors.overlay_bg));
             let inner = padded_rect(block.inner(overlay_rect), 1, 1);
             frame.render_widget(block, overlay_rect);
-            let scroll = clamp_overlay_scroll(results.scroll, results.lines.len(), inner.height as usize);
-            let show_footer = should_show_overlay_footer(scroll, results.lines.len(), inner.height as usize);
+            let scroll =
+                clamp_overlay_scroll(results.scroll, results.lines.len(), inner.height as usize);
+            let show_footer =
+                should_show_overlay_footer(scroll, results.lines.len(), inner.height as usize);
             let [content_rect, footer_rect] = overlay_content_and_footer_rects(inner, show_footer);
             let items: Vec<ListItem> = results
                 .lines
@@ -122,7 +127,11 @@ pub(super) fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorSch
                 frame,
                 footer_rect,
                 colors,
-                overlay_scroll_footer_text(scroll, content_rect.height as usize, results.lines.len()),
+                overlay_scroll_footer_text(
+                    scroll,
+                    content_rect.height as usize,
+                    results.lines.len(),
+                ),
             );
         }
         OverlayState::Confirm(confirm) => {
@@ -173,8 +182,10 @@ pub(super) fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorSch
                 .style(Style::default().bg(colors.overlay_bg));
             let inner = padded_rect(block.inner(overlay_rect), 1, 1);
             frame.render_widget(block, overlay_rect);
-            let scroll = clamp_overlay_scroll(detail.scroll, detail.lines.len(), inner.height as usize);
-            let show_footer = should_show_overlay_footer(scroll, detail.lines.len(), inner.height as usize);
+            let scroll =
+                clamp_overlay_scroll(detail.scroll, detail.lines.len(), inner.height as usize);
+            let show_footer =
+                should_show_overlay_footer(scroll, detail.lines.len(), inner.height as usize);
             let [content_rect, footer_rect] = overlay_content_and_footer_rects(inner, show_footer);
             let items: Vec<ListItem> = detail
                 .lines
@@ -188,11 +199,21 @@ pub(super) fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorSch
                 content_rect,
             );
             render_overlay_footer(
-                frame,
+                 frame,
                 footer_rect,
                 colors,
-                overlay_scroll_footer_text(scroll, content_rect.height as usize, detail.lines.len()),
+                overlay_scroll_footer_text(
+                    scroll,
+                    content_rect.height as usize,
+                    detail.lines.len(),
+                ),
             );
+        }
+        OverlayState::StepDetail(step) => {
+            render_step_detail(frame, step, overlay_rect, colors);
+        }
+        OverlayState::TurnDetail(turn) => {
+            render_turn_detail(frame, turn, overlay_rect, colors);
         }
         OverlayState::DocumentNavigator(navigator) => {
             let block = Block::default()
@@ -206,7 +227,11 @@ pub(super) fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorSch
 
             let sections = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Length(1), Constraint::Min(1), Constraint::Length(1)])
+                .constraints([
+                    Constraint::Length(1),
+                    Constraint::Min(1),
+                    Constraint::Length(1),
+                ])
                 .split(inner);
             frame.render_widget(
                 Paragraph::new(navigator.request.origin_label.as_str()).style(
@@ -250,8 +275,11 @@ pub(super) fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorSch
             let rail_rows = build_document_navigator_rows(navigator, colors);
             if rail_rows.is_empty() {
                 frame.render_widget(
-                    Paragraph::new("No linked entries.")
-                        .style(Style::default().fg(colors.context_hint).bg(colors.overlay_bg)),
+                    Paragraph::new("No linked entries.").style(
+                        Style::default()
+                            .fg(colors.context_hint)
+                            .bg(colors.overlay_bg),
+                    ),
                     rail_inner,
                 );
             } else {
@@ -319,9 +347,17 @@ pub(super) fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorSch
             let inner = padded_rect(block.inner(overlay_rect), 1, 1);
             frame.render_widget(block, overlay_rect);
             let constraints = if picker.filter_enabled() {
-                [Constraint::Length(3), Constraint::Min(1), Constraint::Length(1)]
+                [
+                    Constraint::Length(3),
+                    Constraint::Min(1),
+                    Constraint::Length(1),
+                ]
             } else {
-                [Constraint::Min(1), Constraint::Length(1), Constraint::Length(0)]
+                [
+                    Constraint::Min(1),
+                    Constraint::Length(1),
+                    Constraint::Length(0),
+                ]
             };
             let sections = Layout::default()
                 .direction(Direction::Vertical)
@@ -346,8 +382,11 @@ pub(super) fn render_overlay(frame: &mut Frame, app: &mut App, colors: &ColorSch
 
             if picker.visible_items_len() == 0 {
                 frame.render_widget(
-                    Paragraph::new(picker.empty_state_text())
-                        .style(Style::default().fg(colors.context_hint).bg(colors.overlay_bg)),
+                    Paragraph::new(picker.empty_state_text()).style(
+                        Style::default()
+                            .fg(colors.context_hint)
+                            .bg(colors.overlay_bg),
+                    ),
                     list_rect,
                 );
             } else {
@@ -417,7 +456,11 @@ fn overlay_border_style(colors: &ColorScheme) -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
-fn padded_rect(rect: ratatui::layout::Rect, horizontal: u16, vertical: u16) -> ratatui::layout::Rect {
+fn padded_rect(
+    rect: ratatui::layout::Rect,
+    horizontal: u16,
+    vertical: u16,
+) -> ratatui::layout::Rect {
     let width_padding = horizontal.saturating_mul(2);
     let height_padding = vertical.saturating_mul(2);
     if rect.width <= width_padding || rect.height <= height_padding {
@@ -502,7 +545,13 @@ pub(super) fn overlay_hint_text(app: &App) -> &'static str {
         Some(OverlayState::Picker(_)) => {
             " Picker popup: ↑/↓/j/k move  Enter=Primary action  Ctrl-*=Actions  /=Filter  Esc=Close"
         }
+        Some(OverlayState::StepDetail(_)) => {
+            " Step detail: ↑/↓ rail nav  Enter=open tool  Esc=back"
+        }
         Some(OverlayState::InputPrompt(_)) => " Input prompt: type freely  Enter=Submit  Esc=Close",
+        Some(OverlayState::TurnDetail(_)) => {
+            " Turn detail: ↑/↓ scroll content  Esc=back"
+        }
         None => "",
     }
 }
@@ -514,7 +563,10 @@ fn render_overlay_input(
     colors: &ColorScheme,
 ) -> Vec<Span<'static>> {
     let chars: Vec<char> = value.chars().collect();
-    let mut spans = vec![Span::styled(prefix.to_string(), Style::default().fg(colors.input_text))];
+    let mut spans = vec![Span::styled(
+        prefix.to_string(),
+        Style::default().fg(colors.input_text),
+    )];
 
     if chars.is_empty() {
         spans.push(Span::styled(" ", Style::default().bg(colors.input_text)));
@@ -552,10 +604,7 @@ fn render_picker_item(
     } else {
         Style::default().fg(colors.text)
     };
-    let mut spans = vec![Span::styled(
-        if selected { "› " } else { "  " },
-        base_style,
-    )];
+    let mut spans = vec![Span::styled(if selected { "› " } else { "  " }, base_style)];
     spans.push(Span::styled(item.title.clone(), base_style));
 
     if let Some(subtitle) = item.subtitle.as_deref() {
@@ -626,10 +675,7 @@ fn render_document_navigator_rail_item(
     } else {
         Style::default().fg(colors.text)
     };
-    let mut spans = vec![Span::styled(
-        if selected { "> " } else { "  " },
-        base_style,
-    )];
+    let mut spans = vec![Span::styled(if selected { "> " } else { "  " }, base_style)];
     spans.push(Span::styled(item.label.clone(), base_style));
     spans.push(Span::styled(
         format!(" [{}]", item.kind.label()),
@@ -677,8 +723,14 @@ fn document_navigator_footer_text(
         DocumentNavigatorFocus::Rail => "rail",
         DocumentNavigatorFocus::Content => "content",
     };
-    let position = overlay_scroll_footer_text(scroll, viewport_height, total_lines)
-        .unwrap_or_else(|| format!("lines 1-{}/{}", total_lines.min(viewport_height), total_lines));
+    let position =
+        overlay_scroll_footer_text(scroll, viewport_height, total_lines).unwrap_or_else(|| {
+            format!(
+                "lines 1-{}/{}",
+                total_lines.min(viewport_height),
+                total_lines
+            )
+        });
     format!("Tab=Focus ({focus})  Enter=Open  Esc=Close  {position}")
 }
 
@@ -741,6 +793,424 @@ fn render_overlay_footer(
     );
 }
 
+// ---------------------------------------------------------------------------
+// T-55: StepDetailOverlay rendering
+// ---------------------------------------------------------------------------
+
+fn render_step_detail(
+    frame: &mut Frame,
+    step: &crate::overlay::StepDetailOverlay,
+    overlay_rect: ratatui::layout::Rect,
+    colors: &ColorScheme,
+) {
+    use crate::overlay::DocumentNavigatorFocus;
+
+    let block = Block::default()
+        .border_type(colors.overlay_border_type)
+        .title(step.title.as_str())
+        .borders(Borders::ALL)
+        .border_style(overlay_border_style(colors))
+        .style(Style::default().bg(colors.overlay_bg));
+    let inner = padded_rect(block.inner(overlay_rect), 1, 1);
+    frame.render_widget(block, overlay_rect);
+
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // subtitle / section id
+            Constraint::Min(1),    // rail + content
+            Constraint::Length(1), // footer
+        ])
+        .split(inner);
+
+    // Subtitle.
+    frame.render_widget(
+        Paragraph::new(format!(" section: {}", step.section_id)).style(
+            Style::default()
+                .fg(colors.context_hint)
+                .bg(colors.overlay_bg),
+        ),
+        sections[0],
+    );
+
+    // Rail + content panes.
+    let panes = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(24), Constraint::Min(1)])
+        .split(sections[1]);
+
+    let rail_block = Block::default()
+        .border_type(colors.overlay_border_type)
+        .title(if step.focus == DocumentNavigatorFocus::Rail {
+            " Detail * "
+        } else {
+            " Detail "
+        })
+        .borders(Borders::ALL)
+        .border_style(overlay_border_style(colors))
+        .style(Style::default().bg(colors.overlay_bg));
+    let content_title = step
+        .rail
+        .get(step.selected)
+        .map(|item| format!(" {} ", item.kind.label()))
+        .unwrap_or_else(|| " Content ".to_string());
+    let content_block = Block::default()
+        .border_type(colors.overlay_border_type)
+        .title(content_title)
+        .borders(Borders::ALL)
+        .border_style(overlay_border_style(colors))
+        .style(Style::default().bg(colors.overlay_bg));
+    let rail_inner = padded_rect(rail_block.inner(panes[0]), 1, 0);
+    let content_inner = padded_rect(content_block.inner(panes[1]), 1, 0);
+    frame.render_widget(rail_block, panes[0]);
+    frame.render_widget(content_block, panes[1]);
+
+    // Rail items.
+    let rail_rows: Vec<ListItem> = step
+        .rail
+        .iter()
+        .enumerate()
+        .map(|(i, item)| {
+            let selected = i == step.selected;
+            let marker = if selected { "> " } else { "  " };
+            let label_color = if selected {
+                colors.focus_border
+            } else {
+                colors.text
+            };
+            let style = Style::default().fg(label_color);
+            let mut spans = vec![
+                Span::styled(marker, style),
+                Span::styled(item.kind.label(), style.add_modifier(Modifier::BOLD)),
+            ];
+            if !item.count_label.is_empty() {
+                spans.push(Span::styled(
+                    format!(" {}", item.count_label),
+                    Style::default().fg(colors.context_hint),
+                ));
+            }
+            ListItem::new(Line::from(spans))
+        })
+        .collect();
+    if rail_rows.is_empty() {
+        frame.render_widget(
+            Paragraph::new("No detail available.").style(
+                Style::default()
+                    .fg(colors.context_hint)
+                    .bg(colors.overlay_bg),
+            ),
+            rail_inner,
+        );
+    } else {
+        let list = List::new(rail_rows)
+            .style(Style::default().bg(colors.overlay_bg));
+        frame.render_widget(list, rail_inner);
+    }
+
+    // Content lines. T-69 bug fix: use `active_content()` (i.e.
+    // `content_per_rail[selected]`) instead of the legacy
+    // `step.content` field. The legacy field was a snapshot of
+    // the initial selection; rail navigation never updated it,
+    // so the right pane appeared frozen.
+    let content_lines = step_detail_content_lines(step.active_content());
+    let total = content_lines.len();
+    let viewport = content_inner.height as usize;
+    let scroll = step.content_scroll.min(total.saturating_sub(viewport));
+    let visible: Vec<ListItem> = content_lines
+        .into_iter()
+        .skip(scroll)
+        .take(viewport)
+        .map(|s| {
+            ListItem::new(Line::from(Span::styled(
+                s,
+                Style::default().fg(colors.text).bg(colors.overlay_bg),
+            )))
+        })
+        .collect();
+    let list = List::new(visible)
+        .style(Style::default().bg(colors.overlay_bg));
+    frame.render_widget(list, content_inner);
+
+    // Footer.
+    let footer = if total > viewport {
+        let end = (scroll + viewport).min(total);
+        Some(format!(
+            "lines {}-{}/{}  ·  Esc=back  ↑/↓=rail  Enter=open tool",
+            scroll + 1,
+            end,
+            total
+        ))
+    } else {
+        Some("Esc=back  ↑/↓=rail  Enter=open tool".to_string())
+    };
+    render_overlay_footer(frame, sections[2], colors, footer);
+}
+
+/// Convert a `StepDetailContent` variant into a flat list of text
+/// lines for the content pane. The list is just `String`s — styling
+/// is applied at render time.
+fn step_detail_content_lines(
+    content: &crate::overlay::StepDetailContent,
+) -> Vec<String> {
+    use crate::overlay::StepDetailContent;
+    match content {
+        StepDetailContent::Tools(tools) => {
+            if tools.is_empty() {
+                return vec!["(no tool runs in this section)".to_string()];
+            }
+            let mut lines = Vec::new();
+            for (i, t) in tools.iter().enumerate() {
+                lines.push(format!(
+                    "# Tool {}: {} ({})",
+                    i + 1,
+                    t.name,
+                    t.status_label
+                ));
+                lines.push(format!("  invocation: {}", t.invocation_preview));
+                if let Some(result) = &t.result_preview {
+                    lines.push(format!("  result: {result}"));
+                }
+                lines.push(String::new());
+            }
+            lines
+        }
+        StepDetailContent::Subflows(subs) => {
+            if subs.is_empty() {
+                return vec!["(no subflows in this section)".to_string()];
+            }
+            let mut lines = Vec::new();
+            for s in subs {
+                let progress = match (s.current_index, s.total) {
+                    (Some(i), Some(t)) => format!("  ({}/{})", i, t),
+                    _ => String::new(),
+                };
+                lines.push(format!(
+                    "- {} ({}){progress}",
+                    s.label, s.status_label
+                ));
+            }
+            lines
+        }
+        StepDetailContent::Scene(scene) => match scene {
+            Some(s) => {
+                let mut lines = Vec::new();
+                if let Some(scene_id) = &s.scene_id {
+                    lines.push(format!("scene:    {scene_id}"));
+                }
+                if let Some(workflow_id) = &s.workflow_id {
+                    let role = s.workflow_role.as_deref().unwrap_or("unknown");
+                    lines.push(format!("workflow: {role}:{workflow_id}"));
+                }
+                if let Some(step_id) = &s.step_id {
+                    let label = s.step_label.as_deref().unwrap_or("");
+                    lines.push(format!("step:     {step_id} {label}"));
+                }
+                if lines.is_empty() {
+                    lines.push("(no scene metadata)".to_string());
+                }
+                lines
+            }
+            None => vec!["(no scene context for this section)".to_string()],
+        },
+        StepDetailContent::Output(lines) => {
+            if lines.is_empty() {
+                vec!["(no output text)".to_string()]
+            } else {
+                lines.clone()
+            }
+        }
+        StepDetailContent::Diagnostics(lines) => {
+            if lines.is_empty() {
+                vec!["(no diagnostics for this section)".to_string()]
+            } else {
+                lines.clone()
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// T-61: TurnDetailOverlay rendering
+// ---------------------------------------------------------------------------
+
+fn render_turn_detail(
+    frame: &mut Frame,
+    turn: &TurnDetailOverlay,
+    overlay_rect: ratatui::layout::Rect,
+    colors: &ColorScheme,
+) {
+    let block = Block::default()
+        .border_type(colors.overlay_border_type)
+        .title(turn.title.as_str())
+        .borders(Borders::ALL)
+        .border_style(overlay_border_style(colors))
+        .style(Style::default().bg(colors.overlay_bg));
+    let inner = padded_rect(block.inner(overlay_rect), 1, 1);
+    frame.render_widget(block, overlay_rect);
+
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // user text row
+            Constraint::Min(1),    // content
+            Constraint::Length(1), // footer
+        ])
+        .split(inner);
+
+        // User text row (1 line, prefixed with "▶ You").
+        let user_text_line = if turn.user_text.is_empty() {
+            Line::from("")
+        } else {
+            Line::from(vec![
+                Span::styled(
+                    format!("{} You  ", Glyph::BULLET),
+                    Style::default()
+                        .fg(colors.user_badge_fg)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(turn.user_text.clone(), Style::default().fg(colors.text)),
+            ])
+        };
+        frame.render_widget(
+            Paragraph::new(user_text_line).style(Style::default().bg(colors.overlay_bg)),
+            sections[0],
+        );
+
+    // Content area: each TurnDetailSection becomes a labelled
+    // block of body lines. Sections are stacked vertically.
+    let mut all_lines: Vec<Line<'static>> = Vec::new();
+    for section in &turn.sections {
+        all_lines.push(Line::from(Span::styled(
+            format!("── {} ", section.label),
+            Style::default()
+                .fg(colors.context_label)
+                .add_modifier(Modifier::BOLD),
+        )));
+        for body_line in &section.body {
+            all_lines.push(Line::from(Span::styled(
+                body_line.clone(),
+                Style::default().fg(colors.text).bg(colors.overlay_bg),
+            )));
+        }
+        all_lines.push(Line::from(""));
+    }
+    let total = all_lines.len();
+    let viewport = sections[1].height as usize;
+    let scroll = turn.scroll.min(total.saturating_sub(viewport));
+    let visible: Vec<ListItem> = all_lines
+        .into_iter()
+        .skip(scroll)
+        .take(viewport)
+        .map(|l| ListItem::new(l))
+        .collect();
+    let list = List::new(visible).style(Style::default().bg(colors.overlay_bg));
+    frame.render_widget(list, sections[1]);
+
+    // Footer.
+    let footer = if total > viewport {
+        let end = (scroll + viewport).min(total);
+        Some(format!(
+            "lines {}-{}/{}  ·  Esc=back  ↑/↓=scroll",
+            scroll + 1,
+            end,
+            total
+        ))
+    } else {
+        Some("Esc=back".to_string())
+    };
+    render_overlay_footer(frame, sections[2], colors, footer);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::overlay::{
+        OverlaySize, StepDetailContent, StepDetailOverlay, ToolRunSummary,
+    };
+    use crate::app::Panel;
+
+    fn empty_step_overlay(content: StepDetailContent) -> StepDetailOverlay {
+        StepDetailOverlay {
+            origin_panel: Panel::Response,
+            section_id: "test-section".into(),
+            title: "Test".into(),
+            rail: Vec::new(),
+            selected: 0,
+            focus: crate::overlay::DocumentNavigatorFocus::Rail,
+            content_per_rail: vec![content.clone()],
+            content,
+            content_scroll: 0,
+            dismiss_on_backdrop: true,
+        }
+    }
+
+    #[test]
+    fn tools_content_with_one_tool_includes_name_and_status() {
+        let content = StepDetailContent::Tools(vec![ToolRunSummary {
+            id: "t1".into(),
+            name: "search_knowledge".into(),
+            status_label: "complete".into(),
+            invocation_preview: "query=foo".into(),
+            result_preview: Some("3 hits".into()),
+        }]);
+        let lines = step_detail_content_lines(&content);
+        assert!(lines.iter().any(|l| l.contains("search_knowledge")));
+        assert!(lines.iter().any(|l| l.contains("complete")));
+        assert!(lines.iter().any(|l| l.contains("query=foo")));
+        assert!(lines.iter().any(|l| l.contains("3 hits")));
+    }
+
+    #[test]
+    fn tools_content_with_no_tools_shows_placeholder() {
+        let content = StepDetailContent::Tools(Vec::new());
+        let lines = step_detail_content_lines(&content);
+        assert_eq!(lines, vec!["(no tool runs in this section)"]);
+    }
+
+    #[test]
+    fn scene_content_with_no_data_shows_placeholder() {
+        let content = StepDetailContent::Scene(None);
+        let lines = step_detail_content_lines(&content);
+        assert_eq!(lines, vec!["(no scene context for this section)"]);
+    }
+
+    #[test]
+    fn scene_content_with_data_includes_fields() {
+        use crate::overlay::SceneContext;
+        let content = StepDetailContent::Scene(Some(SceneContext {
+            scene_id: Some("chat".into()),
+            workflow_id: Some("chat-1".into()),
+            workflow_role: Some("child".into()),
+            step_id: Some("step-1".into()),
+            step_label: Some("Report".into()),
+        }));
+        let lines = step_detail_content_lines(&content);
+        assert!(lines.iter().any(|l| l.contains("chat")));
+        assert!(lines.iter().any(|l| l.contains("child:chat-1")));
+        assert!(lines.iter().any(|l| l.contains("step-1")));
+    }
+
+    #[test]
+    fn output_content_passes_through_lines() {
+        let content = StepDetailContent::Output(vec!["line a".into(), "line b".into()]);
+        let lines = step_detail_content_lines(&content);
+        assert_eq!(lines, vec!["line a", "line b"]);
+    }
+
+    #[test]
+    fn empty_output_shows_placeholder() {
+        let content = StepDetailContent::Output(Vec::new());
+        let lines = step_detail_content_lines(&content);
+        assert_eq!(lines, vec!["(no output text)"]);
+    }
+
+    #[test]
+    fn step_detail_overlay_size_is_large() {
+        let overlay = empty_step_overlay(StepDetailContent::Diagnostics(Vec::new()));
+        assert_eq!(OverlayState::StepDetail(overlay).size(), OverlaySize::Large);
+    }
+}
+
 fn overlay_scroll_footer_text(
     scroll: usize,
     viewport_height: usize,
@@ -756,5 +1226,7 @@ fn overlay_scroll_footer_text(
         return None;
     }
 
-    Some(format!("lines {start}-{end}/{total_lines}  ·  mouse wheel or PgUp/PgDn"))
+    Some(format!(
+        "lines {start}-{end}/{total_lines}  ·  mouse wheel or PgUp/PgDn"
+    ))
 }

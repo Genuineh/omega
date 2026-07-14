@@ -379,12 +379,10 @@ impl Agent {
             return true;
         }
 
-        self.dispatcher
-            .manifest_for(name)
-            .is_some_and(|manifest| {
-                self.tool_definitions
-                    .iter()
-                    .any(|definition| definition.name == manifest.id)
-            })
+        self.dispatcher.manifest_for(name).is_some_and(|manifest| {
+            self.tool_definitions
+                .iter()
+                .any(|definition| definition.name == manifest.id)
+        })
     }
 }

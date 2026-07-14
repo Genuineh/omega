@@ -7,14 +7,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use omega_context::{
     ContextDiagnostics, ContextDocumentDiagnostics, ContextFacadeServices,
-    ContextMemoryDiagnostics, GovernanceEventSignal, OmegaContextFacade,
-    SessionHistoryHit, SessionHistoryQuery, SessionHistoryService,
+    ContextMemoryDiagnostics, GovernanceEventSignal, OmegaContextFacade, SessionHistoryHit,
+    SessionHistoryQuery, SessionHistoryService,
+};
+use omega_hpc_paths::{
+    OmegaProjectLayout, SESSION_RECORD_FILE, SESSION_REPLAY_LOG_SUFFIX, SESSION_SNAPSHOT_SUFFIX,
 };
 use omega_plan::{PlannedTaskStatus, ProjectPlanAccess, ProjectPlanStore};
-use omega_project_layout::{
-    OmegaProjectLayout, SESSION_RECORD_FILE, SESSION_REPLAY_LOG_SUFFIX,
-    SESSION_SNAPSHOT_SUFFIX,
-};
 use serde::{Deserialize, Serialize};
 
 const PROJECT_ID_LEN: usize = 12;
@@ -221,8 +220,12 @@ pub struct SessionContextRecord {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SessionContextRecordKind {
-    WorkingSetSnapshot { snapshot: ProjectSessionSnapshot },
-    ReplayEntry { entry: SessionReplayEntry },
+    WorkingSetSnapshot {
+        snapshot: ProjectSessionSnapshot,
+    },
+    ReplayEntry {
+        entry: SessionReplayEntry,
+    },
     CompressionCheckpoint {
         checkpoint_id: String,
         source_sequence_start: u64,
@@ -352,7 +355,10 @@ impl OmegaProjectHandle {
                 .title
                 .or_else(|| existing.as_ref().map(|entry| entry.title.clone()))
                 .unwrap_or_else(|| "Untitled Session".to_string()),
-            started_at: existing.as_ref().map(|entry| entry.started_at).unwrap_or(now),
+            started_at: existing
+                .as_ref()
+                .map(|entry| entry.started_at)
+                .unwrap_or(now),
             last_active_at: now,
             status: update.status,
             turn_count: update.turn_count,
@@ -366,8 +372,9 @@ impl OmegaProjectHandle {
         write_session_record(&session_path, &session)?;
         let legacy_path = self.legacy_session_path(&update.session_id);
         if legacy_path.exists() {
-            fs::remove_file(&legacy_path)
-                .with_context(|| format!("delete legacy session record {}", legacy_path.display()))?;
+            fs::remove_file(&legacy_path).with_context(|| {
+                format!("delete legacy session record {}", legacy_path.display())
+            })?;
         }
 
         let mut record = self.record.lock().unwrap();
@@ -421,7 +428,9 @@ impl OmegaProjectHandle {
                 }
 
                 let session = read_session_record(&path)?;
-                sessions.entry(session.session_id.clone()).or_insert(session);
+                sessions
+                    .entry(session.session_id.clone())
+                    .or_insert(session);
             }
         }
 
@@ -459,7 +468,12 @@ impl OmegaProjectHandle {
         let tasks = store.list_tasks(omega_plan::TaskListFilter::default())?;
         let current_tasks = tasks
             .iter()
-            .filter(|task| !matches!(task.status, PlannedTaskStatus::Done | PlannedTaskStatus::Archived))
+            .filter(|task| {
+                !matches!(
+                    task.status,
+                    PlannedTaskStatus::Done | PlannedTaskStatus::Archived
+                )
+            })
             .collect::<Vec<_>>();
         let blocked_tasks = current_tasks
             .iter()
@@ -484,7 +498,11 @@ impl OmegaProjectHandle {
             .transpose()?
             .flatten()
             .and_then(|snapshot| snapshot.selected_task_id)
-            .map(|task_id| store.get_task(&task_id).map(|task| task.map(|task| (task_id, task))))
+            .map(|task_id| {
+                store
+                    .get_task(&task_id)
+                    .map(|task| task.map(|task| (task_id, task)))
+            })
             .transpose()?
             .flatten();
         let selected_task_id = selected_task.as_ref().map(|(task_id, _)| task_id.clone());
@@ -534,7 +552,10 @@ impl OmegaProjectHandle {
         )
     }
 
-    pub fn load_session_snapshot(&self, session_id: &str) -> Result<Option<ProjectSessionSnapshot>> {
+    pub fn load_session_snapshot(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<ProjectSessionSnapshot>> {
         Ok(self
             .load_context_records(session_id)?
             .into_iter()
@@ -590,9 +611,13 @@ impl OmegaProjectHandle {
 
         let path = self.context_ledger_path(session_id);
         let existing = read_context_records_from_path(&path)?;
-        let mut next_sequence = existing.last().map(|record| record.sequence + 1).unwrap_or(1);
+        let mut next_sequence = existing
+            .last()
+            .map(|record| record.sequence + 1)
+            .unwrap_or(1);
         let mut bytes = if path.exists() {
-            fs::read(&path).with_context(|| format!("read session context ledger {}", path.display()))?
+            fs::read(&path)
+                .with_context(|| format!("read session context ledger {}", path.display()))?
         } else {
             Vec::new()
         };
@@ -626,7 +651,10 @@ impl OmegaProjectHandle {
         read_context_records_from_path(&path)
     }
 
-    pub fn migrate_legacy_session_artifacts(&self, session_id: &str) -> Result<LegacyMigrationResult> {
+    pub fn migrate_legacy_session_artifacts(
+        &self,
+        session_id: &str,
+    ) -> Result<LegacyMigrationResult> {
         let ledger_path = self.context_ledger_path(session_id);
         if ledger_path.exists() {
             return Ok(LegacyMigrationResult::default());
@@ -664,8 +692,9 @@ impl OmegaProjectHandle {
 
         let snapshot_path = self.legacy_snapshot_path(session_id);
         if snapshot_path.exists() {
-            fs::remove_file(&snapshot_path)
-                .with_context(|| format!("delete legacy session snapshot {}", snapshot_path.display()))?;
+            fs::remove_file(&snapshot_path).with_context(|| {
+                format!("delete legacy session snapshot {}", snapshot_path.display())
+            })?;
         }
         let replay_path = self.legacy_replay_log_path(session_id);
         if replay_path.exists() {
@@ -682,17 +711,22 @@ impl OmegaProjectHandle {
     pub fn delete_session_artifacts(&self, session_id: &str) -> Result<()> {
         let session_path = self.session_path(session_id);
         if session_path.exists() {
-            fs::remove_dir_all(session_path.parent().unwrap_or(&session_path)).with_context(|| {
-                format!(
-                    "delete session directory {}",
-                    session_path.parent().unwrap_or(&session_path).display()
-                )
-            })?;
+            fs::remove_dir_all(session_path.parent().unwrap_or(&session_path)).with_context(
+                || {
+                    format!(
+                        "delete session directory {}",
+                        session_path.parent().unwrap_or(&session_path).display()
+                    )
+                },
+            )?;
         }
         let legacy_session_path = self.legacy_session_path(session_id);
         if legacy_session_path.exists() {
             fs::remove_file(&legacy_session_path).with_context(|| {
-                format!("delete legacy session record {}", legacy_session_path.display())
+                format!(
+                    "delete legacy session record {}",
+                    legacy_session_path.display()
+                )
             })?;
         }
         let snapshot_path = self.legacy_snapshot_path(session_id);
@@ -757,20 +791,26 @@ impl OmegaProjectHandle {
         write_session_record(&self.session_path(session_id), &record)?;
         let legacy_path = self.legacy_session_path(session_id);
         if legacy_path.exists() {
-            fs::remove_file(&legacy_path)
-                .with_context(|| format!("delete legacy session record {}", legacy_path.display()))?;
+            fs::remove_file(&legacy_path).with_context(|| {
+                format!("delete legacy session record {}", legacy_path.display())
+            })?;
         }
         Ok(record)
     }
 
     fn session_resume_ready(&self, session_id: &str) -> Result<bool> {
-        Ok(self
-            .load_context_records(session_id)?
-            .iter()
-            .any(|record| matches!(record.record, SessionContextRecordKind::WorkingSetSnapshot { .. })))
+        Ok(self.load_context_records(session_id)?.iter().any(|record| {
+            matches!(
+                record.record,
+                SessionContextRecordKind::WorkingSetSnapshot { .. }
+            )
+        }))
     }
 
-    fn load_legacy_session_snapshot(&self, session_id: &str) -> Result<Option<ProjectSessionSnapshot>> {
+    fn load_legacy_session_snapshot(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<ProjectSessionSnapshot>> {
         let path = self.legacy_snapshot_path(session_id);
         if !path.exists() {
             return Ok(None);
@@ -845,16 +885,17 @@ impl SessionHistoryService for ProjectSessionHistoryService {
             return Ok(Vec::new());
         }
 
-        let mut hits = read_context_records_from_path(&self.context_ledger_path(&query.session_id))?
-            .into_iter()
-            .filter_map(|record| {
-                let searchable = session_history_search_text(&record);
-                query_terms
-                    .iter()
-                    .any(|term| searchable.contains(term))
-                    .then(|| (record.sequence, session_history_hit_from_record(&record)))
-            })
-            .collect::<Vec<_>>();
+        let mut hits =
+            read_context_records_from_path(&self.context_ledger_path(&query.session_id))?
+                .into_iter()
+                .filter_map(|record| {
+                    let searchable = session_history_search_text(&record);
+                    query_terms
+                        .iter()
+                        .any(|term| searchable.contains(term))
+                        .then(|| (record.sequence, session_history_hit_from_record(&record)))
+                })
+                .collect::<Vec<_>>();
 
         hits.sort_by(|left, right| right.0.cmp(&left.0));
         hits.truncate(query.max_results);
@@ -988,7 +1029,11 @@ fn read_project_name(root: &Path) -> Result<Option<String>> {
             .with_context(|| format!("read project config {}", toml_path.display()))?;
         let parsed: ProjectConfigToml = toml::from_str(&content)
             .with_context(|| format!("parse project config {}", toml_path.display()))?;
-        if parsed.name.as_deref().is_some_and(|value| !value.trim().is_empty()) {
+        if parsed
+            .name
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        {
             return Ok(parsed.name);
         }
     }
@@ -1003,9 +1048,8 @@ struct ProjectConfigToml {
 
 fn ensure_project_layout(root: &Path) -> Result<()> {
     let layout = OmegaProjectLayout::new(root.to_path_buf());
-    fs::create_dir_all(layout.sessions_dir()).with_context(|| {
-        format!("create project layout at {}", layout.state_root().display())
-    })?;
+    fs::create_dir_all(layout.sessions_dir())
+        .with_context(|| format!("create project layout at {}", layout.state_root().display()))?;
     Ok(())
 }
 
@@ -1025,7 +1069,8 @@ fn write_project_record(record: &ProjectRecord) -> Result<()> {
 }
 
 fn read_project_record(path: &Path) -> Result<ProjectRecord> {
-    let content = fs::read(path).with_context(|| format!("read project record {}", path.display()))?;
+    let content =
+        fs::read(path).with_context(|| format!("read project record {}", path.display()))?;
     serde_json::from_slice(&content)
         .with_context(|| format!("parse project record {}", path.display()))
 }
@@ -1064,7 +1109,8 @@ where
 }
 
 fn read_session_record(path: &Path) -> Result<ProjectSessionRef> {
-    let content = fs::read(path).with_context(|| format!("read session record {}", path.display()))?;
+    let content =
+        fs::read(path).with_context(|| format!("read session record {}", path.display()))?;
     serde_json::from_slice(&content)
         .with_context(|| format!("parse session record {}", path.display()))
 }
@@ -1096,7 +1142,12 @@ fn session_history_search_text(record: &SessionContextRecord) -> String {
             parts.extend(snapshot.step_summaries.iter().map(|summary| {
                 format!("{} {}", summary.title, summary.summary).to_ascii_lowercase()
             }));
-            parts.extend(snapshot.todo_items.iter().map(|item| item.text.to_ascii_lowercase()));
+            parts.extend(
+                snapshot
+                    .todo_items
+                    .iter()
+                    .map(|item| item.text.to_ascii_lowercase()),
+            );
             parts.join("\n")
         }
         SessionContextRecordKind::ReplayEntry { entry } => format!(
@@ -1123,7 +1174,10 @@ fn session_history_hit_from_record(record: &SessionContextRecord) -> SessionHist
         SessionContextRecordKind::WorkingSetSnapshot { snapshot } => {
             let mut lines = Vec::new();
             if let Some(latest_user_turn) = snapshot.latest_user_turn.as_deref() {
-                lines.push(format!("latest user turn: {}", preview_text(latest_user_turn, 180)));
+                lines.push(format!(
+                    "latest user turn: {}",
+                    preview_text(latest_user_turn, 180)
+                ));
             }
             lines.extend(snapshot.step_summaries.iter().take(2).map(|summary| {
                 format!("{}: {}", summary.title, preview_text(&summary.summary, 160))
@@ -1199,7 +1253,9 @@ fn read_context_records_from_path(path: &Path) -> Result<Vec<SessionContextRecor
 
 fn canonicalize_lossy(path: &Path) -> Result<PathBuf> {
     if path.exists() {
-        Ok(path.canonicalize().with_context(|| format!("canonicalize {}", path.display()))?)
+        Ok(path
+            .canonicalize()
+            .with_context(|| format!("canonicalize {}", path.display()))?)
     } else {
         Ok(path.to_path_buf())
     }
@@ -1222,7 +1278,7 @@ fn now_unix_seconds() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-    .as_millis() as u64
+        .as_millis() as u64
 }
 
 #[cfg(test)]
@@ -1249,8 +1305,13 @@ mod tests {
             .unwrap();
 
         assert_eq!(handle.root(), root.canonicalize().unwrap());
-        assert_eq!(handle.record().detection_kind, ProjectDetectionKind::CurrentFile);
-        assert!(OmegaProjectLayout::new(root.clone()).project_state_path().exists());
+        assert_eq!(
+            handle.record().detection_kind,
+            ProjectDetectionKind::CurrentFile
+        );
+        assert!(OmegaProjectLayout::new(root.clone())
+            .project_state_path()
+            .exists());
     }
 
     #[test]
@@ -1271,7 +1332,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(handle.root(), root.canonicalize().unwrap());
-        assert_eq!(handle.record().detection_kind, ProjectDetectionKind::Explicit);
+        assert_eq!(
+            handle.record().detection_kind,
+            ProjectDetectionKind::Explicit
+        );
     }
 
     #[test]
@@ -1313,7 +1377,10 @@ mod tests {
         let sessions = handle.list_sessions().unwrap();
         assert_eq!(sessions.len(), 2);
         assert_eq!(sessions[0].session_id, "session-b");
-        assert_eq!(handle.record().active_session_id.as_deref(), Some("session-b"));
+        assert_eq!(
+            handle.record().active_session_id.as_deref(),
+            Some("session-b")
+        );
         assert!(!sessions[0].resume_ready);
     }
 
@@ -1445,7 +1512,10 @@ mod tests {
 
         let snapshot = handle.load_session_snapshot("session-a").unwrap().unwrap();
         assert_eq!(snapshot.last_completed_turn_id, Some(2));
-        assert_eq!(snapshot.skill_routing.selected_skill_ids, vec!["review".to_string()]);
+        assert_eq!(
+            snapshot.skill_routing.selected_skill_ids,
+            vec!["review".to_string()]
+        );
 
         let replay = handle.load_replay_log("session-a").unwrap();
         assert_eq!(replay.len(), 1);
@@ -1617,11 +1687,7 @@ mod tests {
         let root = temp_dir.path().join("workspace");
         let layout = OmegaProjectLayout::new(root.clone());
         fs::create_dir_all(layout.config_root()).unwrap();
-        fs::write(
-            layout.project_manifest_path(),
-            "name = \"Omega Docs\"\n",
-        )
-        .unwrap();
+        fs::write(layout.project_manifest_path(), "name = \"Omega Docs\"\n").unwrap();
 
         let registry = ProjectRegistry::new();
         let handle = registry
@@ -1662,22 +1728,16 @@ mod tests {
             .unwrap();
 
         let store = omega_plan::ProjectPlanStore::open_or_scaffold(handle.root()).unwrap();
-        let mut selected = omega_plan::NewPlannedTask::simple(
-            "Selected task",
-            omega_plan::TaskPriority::P0,
-        );
+        let mut selected =
+            omega_plan::NewPlannedTask::simple("Selected task", omega_plan::TaskPriority::P0);
         selected.status = omega_plan::PlannedTaskStatus::Ready;
         let selected = store.create_task(selected).unwrap();
-        let mut blocked = omega_plan::NewPlannedTask::simple(
-            "Blocked task",
-            omega_plan::TaskPriority::P1,
-        );
+        let mut blocked =
+            omega_plan::NewPlannedTask::simple("Blocked task", omega_plan::TaskPriority::P1);
         blocked.status = omega_plan::PlannedTaskStatus::Blocked;
         store.create_task(blocked).unwrap();
-        let mut history = omega_plan::NewPlannedTask::simple(
-            "History task",
-            omega_plan::TaskPriority::P2,
-        );
+        let mut history =
+            omega_plan::NewPlannedTask::simple("History task", omega_plan::TaskPriority::P2);
         history.status = omega_plan::PlannedTaskStatus::Done;
         store.create_task(history).unwrap();
 
@@ -1706,8 +1766,14 @@ mod tests {
         assert_eq!(snapshot.plan.current_task_count, 2);
         assert_eq!(snapshot.plan.history_task_count, 1);
         assert_eq!(snapshot.plan.blocked_task_count, 1);
-        assert_eq!(snapshot.plan.selected_task_id.as_deref(), Some(selected.id.as_str()));
-        assert_eq!(snapshot.plan.selected_task_title.as_deref(), Some("Selected task"));
+        assert_eq!(
+            snapshot.plan.selected_task_id.as_deref(),
+            Some(selected.id.as_str())
+        );
+        assert_eq!(
+            snapshot.plan.selected_task_title.as_deref(),
+            Some("Selected task")
+        );
         assert_eq!(snapshot.plan.next_tasks[0].task_id, selected.id);
         assert_eq!(snapshot.plan.blocked_tasks[0].title, "Blocked task");
     }

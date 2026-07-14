@@ -29,12 +29,12 @@ pub use omega_context::{
 use omega_core::{
     Agent, CoreSharedTodoManager, DynLlmClient, Message, TodoItem, TodoManager, TodoStatus,
 };
-use omega_document::{
+use omega_hooks::HookHost;
+use omega_hpc_document::{
     DocType as StructuredDocType, DocumentMutationMode as StructuredDocumentMutationMode,
     DocumentOp as StructuredDocumentOp, OmegaDocument, StructuredDocsSnapshot,
     StructuredDocumentRecord, StructuredDocumentRelation, StructuredDocumentSection,
 };
-use omega_hooks::HookHost;
 use omega_plan::{
     NewPlannedTask, PlannedTask, PlannedTaskStatus, PlannedTaskUpdate, ProjectPlanAccess,
     ProjectPlanStore, SelectedProjectTaskContext, TaskActor, TaskArtifactKind, TaskArtifactLink,
@@ -6218,7 +6218,10 @@ fn build_doc_overview_body(
     lines.push(format!("# {}", record.title));
     lines.push(String::new());
     lines.push(format!("doc_id: {}", record.doc_id));
-    lines.push(format!("type: {}", structured_doc_type_label(record.doc_type)));
+    lines.push(format!(
+        "type: {}",
+        structured_doc_type_label(record.doc_type)
+    ));
     if let Some(status) = &record.status {
         lines.push(format!("status: {}", status));
     }

@@ -5,14 +5,14 @@ edition.workspace = true
 
 [features]
 default = []
-document-backend = ["dep:omega-document"]
+document-backend = ["dep:omega-hpc-document"]
 
 [dependencies]
 omega-client = { path = "../omega-client" }
-omega-document = { path = "../omega-document", optional = true }
-omega-memory = { path = "../omega-memory" }
+omega-hpc-document = { path = "../../omega-hpc/crates/omega-hpc-document", optional = true }
+omega-hpc-memory = { path = "../../omega-hpc/crates/omega-hpc-memory" }
 omega-plan = { path = "../omega-plan" }
-omega-project-layout = { path = "../omega-project-layout" }
+omega-hpc-paths = { path = "../../omega-hpc/crates/omega-hpc-paths" }
 omega-todo = { path = "../omega-todo" }
 omega-tools = { path = "../omega-tools" }
 omega-workflow = { path = "../omega-workflow" }

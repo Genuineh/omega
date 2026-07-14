@@ -1,8 +1,12 @@
 ---
-content_revision: 120
-generation_id: gen_000046_r000120
-projection_version: 46
+content_revision: 174
+generation_id: gen_000087_r000174
+language: bilingual
+last_verified_commit: d8c30e3e9e310ce38cffa965be4688ed55a87787
+projection_version: 87
 source_doc_id: "spec:docs-specs-omega-project-plan-system"
+source_path: docs/specs/omega-project-plan-system.md
+updated: 2026-06-03
 ---
 
 # Omega Project Plan System Specification
@@ -559,3 +563,7 @@ pub struct SelectedProjectTaskContext {
 - 2026-04-14: v0.3 — 实现收口修订：`/plan` command family 补齐 `migrate-todo`；selected-task restore 对 dangling id 显式 warning 并清空绑定；`ProjectDetailSnapshot.plan` 成为 Project panel / task overlay 的稳定 projection；task-bound turn 成功路径升级为 `delivery_attached`，失败/取消保持 `partial_delivery`；spec 中 ownership / delivery callback / TUI rendering 路径同步到当前实现。
 - 2026-04-13: v0.2 — 架构审查修订：新增独立 `omega-plan` crate 替代 `omega-tasks` 作为 plan store owner；新增 Implementation Contracts 章节，明确 plan store 初始化/生命周期、`spawn_turn` 注入（选型 C）、delivery log 回写回调链、单写入者并发范围；补充 `order_key` 分配规则与 task ID 格式；补充 schema_version 失败策略；补充 `Activity::Tasks` 前置扩展说明；明确首轮迁移映射方向；补充悬空 `selected_task_id` restore 处理；明确 `/plan send` 无 task 时 Error outcome；补充 `omega-project-layout` 常量作为 Task 4A 前置步骤；测试策略全面扩充；技术决策表新增 5 项。
 - 2026-04-13: v0.1 — 初版规格，定义 project-scoped 长期计划系统、`/plan` command family、selected task context、TUI 集成与 `docs/TODO.md` projection 边界。
+
+## Implementation Note
+
+The `omega-project-layout`, `omega-memory`, `omega-document`, and `omega-doc-cli` crates referenced in this spec moved to the `omega-hpc/` sub-workspace on 2026-06-02 and are now `omega-hpc-paths`, `omega-hpc-memory`, `omega-hpc-document`, and `omega-hpc-doc-cli` respectively. Public type and binary names are unchanged. See [`docs/specs/omega-hpc-extraction.md`](omega-hpc-extraction.md) for the full mapping and [`docs/decisions/007-omega-hpc-extraction.md`](../decisions/007-omega-hpc-extraction.md) for the architecture decision.

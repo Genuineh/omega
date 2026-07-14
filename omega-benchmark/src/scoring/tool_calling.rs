@@ -45,8 +45,15 @@ fn score_tool_calls(expected: &[ExpectedToolCall], output: &TargetOutput) -> Sco
     if expected.is_empty() {
         return ScoreResult {
             passed: actual.is_empty(),
-            breakdown: ScoreBreakdown::single("tool_selection_accuracy", if actual.is_empty() { 1.0 } else { 0.0 }),
-            failure_reason: if actual.is_empty() { None } else { Some("expected no tools but got calls".into()) },
+            breakdown: ScoreBreakdown::single(
+                "tool_selection_accuracy",
+                if actual.is_empty() { 1.0 } else { 0.0 },
+            ),
+            failure_reason: if actual.is_empty() {
+                None
+            } else {
+                Some("expected no tools but got calls".into())
+            },
         };
     }
 
@@ -63,10 +70,7 @@ fn score_tool_calls(expected: &[ExpectedToolCall], output: &TargetOutput) -> Sco
                 if arguments_match(&exp.arguments, &trace.arguments) {
                     arg_match_hits += 1;
                 } else {
-                    reasons.push(format!(
-                        "tool '{}': argument mismatch",
-                        exp.name
-                    ));
+                    reasons.push(format!("tool '{}': argument mismatch", exp.name));
                 }
             }
             None => {
@@ -93,7 +97,11 @@ fn score_tool_calls(expected: &[ExpectedToolCall], output: &TargetOutput) -> Sco
         }
     } else {
         // Single-tool case: parallel_call_validity is N/A but we report 1.0 if correct
-        if selection_hits == 1 && extraneous == 0 { 1.0 } else { 0.0 }
+        if selection_hits == 1 && extraneous == 0 {
+            1.0
+        } else {
+            0.0
+        }
     };
 
     let mut metrics = BTreeMap::new();
@@ -162,7 +170,9 @@ fn arguments_match(expected: &serde_json::Value, actual: &serde_json::Value) -> 
             if exp.len() != act.len() {
                 return false;
             }
-            exp.iter().zip(act.iter()).all(|(e, a)| arguments_match(e, a))
+            exp.iter()
+                .zip(act.iter())
+                .all(|(e, a)| arguments_match(e, a))
         }
         _ => expected == actual,
     }
@@ -210,8 +220,22 @@ mod tests {
 
         let result = ToolCallingScorer.score(&case, &output);
         assert!(result.passed);
-        assert_eq!(*result.breakdown.metrics.get("tool_selection_accuracy").unwrap(), 1.0);
-        assert_eq!(*result.breakdown.metrics.get("argument_exact_match").unwrap(), 1.0);
+        assert_eq!(
+            *result
+                .breakdown
+                .metrics
+                .get("tool_selection_accuracy")
+                .unwrap(),
+            1.0
+        );
+        assert_eq!(
+            *result
+                .breakdown
+                .metrics
+                .get("argument_exact_match")
+                .unwrap(),
+            1.0
+        );
     }
 
     #[test]
@@ -239,7 +263,14 @@ mod tests {
 
         let result = ToolCallingScorer.score(&case, &output);
         assert!(!result.passed);
-        assert_eq!(*result.breakdown.metrics.get("tool_selection_accuracy").unwrap(), 0.0);
+        assert_eq!(
+            *result
+                .breakdown
+                .metrics
+                .get("tool_selection_accuracy")
+                .unwrap(),
+            0.0
+        );
     }
 
     #[test]
@@ -257,7 +288,11 @@ mod tests {
         let result = ToolCallingScorer.score(&case, &output);
         assert!(result.passed);
         assert_eq!(
-            *result.breakdown.metrics.get("irrelevance_rejection_rate").unwrap(),
+            *result
+                .breakdown
+                .metrics
+                .get("irrelevance_rejection_rate")
+                .unwrap(),
             1.0
         );
     }
@@ -285,7 +320,10 @@ mod tests {
 
     #[test]
     fn argument_wildcard_matches_anything() {
-        assert!(arguments_match(&serde_json::json!(null), &serde_json::json!({"a": 1})));
+        assert!(arguments_match(
+            &serde_json::json!(null),
+            &serde_json::json!({"a": 1})
+        ));
     }
 
     #[test]

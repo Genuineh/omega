@@ -25,6 +25,7 @@ mod delivery;
 mod diagnostics;
 mod project;
 mod response;
+mod response_report;
 mod skills;
 mod supervision;
 mod text;
@@ -104,6 +105,35 @@ pub enum MsgKind {
     Command,
 }
 
+impl MsgKind {
+    /// T-67: does the data layer produce a formal card header
+    /// (a `is_header: true` `ResponseDisplayLine`) for this
+    /// kind?
+    pub fn has_card_header(&self) -> bool {
+        matches!(
+            self,
+            MsgKind::Step
+                | MsgKind::FinalAnswer
+                | MsgKind::Thinking
+                | MsgKind::Command
+                | MsgKind::Routing
+        )
+    }
+
+    /// T-69: is this kind "internal work" (Routing / Thinking
+    /// / Command / Separator)? Internal-work records are
+    /// NEVER shown in the chat log — they live in the popup
+    /// only. The chat log is reserved for user-facing content
+    /// (User, Agent, Error, Step, FinalAnswer) and the
+    /// "view details" prompt.
+    pub fn is_internal_work(&self) -> bool {
+        matches!(
+            self,
+            MsgKind::Routing | MsgKind::Thinking | MsgKind::Command | MsgKind::Separator
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Msg {
     pub kind: MsgKind,
@@ -164,6 +194,10 @@ pub enum ResponseLineAction {
     OpenSkillLoadDetail(String),
     OpenDocumentKnowledgeDetail(String),
     OpenMemoryKnowledgeDetail(String),
+    /// Open a `StepDetailOverlay` for a section (T-55/T-57). The
+    /// first String is the section id; the second is a human-readable
+    /// title for the overlay.
+    OpenStepDetail(String, String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -180,6 +214,8 @@ pub enum ResponseActivation {
     SkillLoadDetailOpened,
     DocumentKnowledgeDetailOpened,
     MemoryKnowledgeDetailOpened,
+    StepDetailOpened(String),
+    TurnDetailOpened(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -307,6 +343,13 @@ pub struct App {
     pub focused_panel: Panel,
     pub interaction_mode: InteractionMode,
     pub response_pinned: bool,
+    /// Number of chat turns currently in the response panel
+    /// (T-58: derived by `render_response_panel` from the line
+    /// stream). Used by T-60 hotkey navigation.
+    pub response_turn_count: usize,
+    /// 1-based index of the turn the user is currently focused
+    /// on (T-60). 0 means "follow latest" (auto-scroll).
+    pub response_turn_index: usize,
     pub diagnostics_pinned: bool,
     pub delivery_pinned: bool,
     pub skills_pinned: bool,
@@ -365,11 +408,29 @@ pub struct App {
     pub overlay_stack: Vec<OverlayState>,
     pub overlay_rect: Rect,
     pub cached_palette: Option<RenderPalette>,
+    /// Per-frame layout rectangles. Replaces the legacy `*_rect` fields
+    /// as the canonical layout source for the input path; see
+    /// `crates/omega-tui/src/render/frame.rs` and `docs/TODO.md` Task 39F.
+    /// `None` before the first render — readers should default to a
+    /// zero-area rectangle.
+    pub frame: Option<crate::render::Frame>,
     pub delivery_model_name: Option<String>,
     pub picker_selection_memory: std::collections::HashMap<String, usize>,
 }
 
 impl App {
+    /// Borrow the most recently rendered frame, if any. Event handlers
+    /// should prefer this over the legacy `app.*_rect` fields.
+    pub fn frame(&self) -> Option<&crate::render::Frame> {
+        self.frame.as_ref()
+    }
+
+    /// Store a freshly rendered frame. Called by `render()` once per
+    /// frame; do not call from event handlers.
+    pub fn set_frame(&mut self, frame: crate::render::Frame) {
+        self.frame = Some(frame);
+    }
+
     pub fn new() -> Self {
         Self {
             output_msgs: vec![],
@@ -404,6 +465,8 @@ impl App {
             focused_panel: Panel::Response,
             interaction_mode: InteractionMode::Normal,
             response_pinned: false,
+            response_turn_count: 0,
+            response_turn_index: 0,
             diagnostics_pinned: false,
             delivery_pinned: false,
             skills_pinned: false,
@@ -462,6 +525,7 @@ impl App {
             overlay_stack: Vec::new(),
             overlay_rect: Rect::default(),
             cached_palette: None,
+            frame: None,
             delivery_model_name: None,
             picker_selection_memory: std::collections::HashMap::new(),
         }
@@ -572,6 +636,7 @@ impl App {
             | (OverlayTarget::Confirm, Some(OverlayState::Confirm(_)))
             | (OverlayTarget::Detail, Some(OverlayState::Detail(_)))
             | (OverlayTarget::Detail, Some(OverlayState::DocumentNavigator(_)))
+            | (OverlayTarget::Detail, Some(OverlayState::StepDetail(_)))
             | (OverlayTarget::Picker, Some(OverlayState::Picker(_)))
             | (OverlayTarget::InputPrompt, Some(OverlayState::InputPrompt(_))) => {
                 self.close_overlay();
@@ -1719,6 +1784,288 @@ impl App {
         let tool_name = tool_run.tool_name.clone();
         self.open_detail_overlay(title, lines);
         Some(tool_name)
+    }
+
+    /// Build and push a `StepDetailOverlay` for the given section
+    /// id (T-57). The overlay is populated with the section's
+    /// tool runs, subflows, scene, output, and diagnostics (one
+    /// per rail category). The selected rail starts on Tools if
+    /// there are any, otherwise Subflows, otherwise Scene, etc.
+    pub fn open_step_detail_overlay(
+        &mut self,
+        section_id: &str,
+        title: String,
+    ) -> Option<String> {
+        use crate::overlay::{
+            SceneContext, StepDetailContent, StepDetailOverlay, StepDetailRailItem,
+            StepDetailRailKind, SubflowSummary, ToolRunSummary,
+        };
+
+        // Find the owning message so we can join related data.
+        let message = self
+            .output_msgs
+            .iter()
+            .find(|m| m.id.as_deref() == Some(section_id))
+            .cloned();
+
+        // Gather data from the App.
+        let tool_runs: Vec<ToolRunSummary> = self
+            .tool_runs
+            .iter()
+            .filter(|t| t.parent_section_id == section_id)
+            .map(|t| ToolRunSummary {
+                id: t.id.clone(),
+                name: t.tool_name.clone(),
+                status_label: match t.status {
+                    omega_session::ToolRunStatus::Running => "running".to_string(),
+                    omega_session::ToolRunStatus::Complete => "complete".to_string(),
+                    omega_session::ToolRunStatus::Failed => "failed".to_string(),
+                },
+                invocation_preview: t.invocation_preview.clone(),
+                result_preview: t.result_preview.clone(),
+            })
+            .collect();
+
+        // Subflows are joined by workflow_id + step_id, not by
+        // section_id directly. The section message's `workflow_id`
+        // and `title` (used as step_label) are the join keys.
+        let subflows: Vec<SubflowSummary> = if let Some(msg) = &message {
+            let join_workflow = msg.workflow_id.clone();
+            let join_step_label = msg.title.clone();
+            self.step_subflows
+                .iter()
+                .filter(|s| {
+                    join_workflow.as_deref() == Some(s.workflow_id.as_str())
+                        && join_step_label.as_deref() == Some(s.step_label.as_str())
+                })
+                .map(|s| SubflowSummary {
+                    id: s.subflow_id.clone(),
+                    label: s
+                        .item_label
+                        .clone()
+                        .unwrap_or_else(|| s.subflow_id.clone()),
+                    status_label: self.subflow_status_label_for(s.status).to_string(),
+                    current_index: Some(s.item_index),
+                    total: Some(s.item_total),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        let (scene, output) = match message.as_ref() {
+            Some(m) => {
+                let scene = SceneContext {
+                    scene_id: m.scene_id.clone(),
+                    workflow_id: m.workflow_id.clone(),
+                    workflow_role: m.workflow_role.map(|r| r.as_str().to_string()),
+                    step_id: None,
+                    step_label: m.title.clone(),
+                };
+                let output: Vec<String> =
+                    m.text.lines().map(|l| l.to_string()).collect();
+                (Some(scene), output)
+            }
+            None => (None, Vec::new()),
+        };
+        let diagnostics = self
+            .step_diagnostics
+            .iter()
+            .find(|d| d.id == section_id)
+            .map(|d| {
+                let mut lines = Vec::new();
+                lines.push(format!("id: {}", d.id));
+                lines.push(format!(
+                    "workflow: {} ({})",
+                    d.workflow_id,
+                    d.workflow_role.as_str()
+                ));
+                lines.push(format!(
+                    "step: {} ({} of {})",
+                    d.step_id, d.index, d.total
+                ));
+                if !d.step_label.is_empty() {
+                    lines.push(format!("step_label: {}", d.step_label));
+                }
+                if d.context.is_some() {
+                    lines.push("context: available".to_string());
+                }
+                if d.cache.is_some() {
+                    lines.push("cache: available".to_string());
+                }
+                lines
+            })
+            .unwrap_or_default();
+
+        // Build the rail.
+        let mut rail = Vec::new();
+        rail.push(StepDetailRailItem {
+            kind: StepDetailRailKind::Tools,
+            label: "Tools".into(),
+            count_label: format!("({})", tool_runs.len()),
+        });
+        rail.push(StepDetailRailItem {
+            kind: StepDetailRailKind::Subflows,
+            label: "Subflows".into(),
+            count_label: format!("({})", subflows.len()),
+        });
+        rail.push(StepDetailRailItem {
+            kind: StepDetailRailKind::Scene,
+            label: "Scene".into(),
+            count_label: if scene.is_some() { "(1)".into() } else { String::new() },
+        });
+        rail.push(StepDetailRailItem {
+            kind: StepDetailRailKind::Output,
+            label: "Output".into(),
+            count_label: if !output.is_empty() {
+                format!("({} lines)", output.len())
+            } else {
+                String::new()
+            },
+        });
+        rail.push(StepDetailRailItem {
+            kind: StepDetailRailKind::Diagnostics,
+            label: "Diagnostics".into(),
+            count_label: if !diagnostics.is_empty() {
+                format!("({} lines)", diagnostics.len())
+            } else {
+                String::new()
+            },
+        });
+
+        // Pick the initial selected rail item.
+        let selected = if !tool_runs.is_empty() {
+            0
+        } else if !subflows.is_empty() {
+            1
+        } else if scene.is_some() {
+            2
+        } else if !output.is_empty() {
+            3
+        } else {
+            4
+        };
+
+        // T-69 bug fix: build a content pane for every rail
+        // item so the right pane updates when the user navigates
+        // the rail. Previously only `Tools` was kept; the other
+        // four panes were discarded with `let _ = (...)`, so
+        // pressing Up/Down on the rail left the right pane
+        // stuck on the initial content.
+        let content_per_rail: Vec<StepDetailContent> = vec![
+            StepDetailContent::Tools(tool_runs),
+            StepDetailContent::Subflows(subflows),
+            StepDetailContent::Scene(scene),
+            StepDetailContent::Output(output),
+            StepDetailContent::Diagnostics(diagnostics),
+        ];
+        // The legacy `content` field is initialised to the
+        // selected pane (for back-compat with code that still
+        // reads it). Renderers should use `active_content()`
+        // or `content_per_rail[selected]` instead.
+        let content = content_per_rail
+            .get(selected)
+            .cloned()
+            .unwrap_or(StepDetailContent::Output(Vec::new()));
+
+        let overlay = StepDetailOverlay {
+            origin_panel: self.focused_panel,
+            section_id: section_id.to_string(),
+            title,
+            rail,
+            selected,
+            focus: crate::overlay::DocumentNavigatorFocus::Rail,
+            content_per_rail,
+            content,
+            content_scroll: 0,
+            dismiss_on_backdrop: true,
+        };
+        self.overlay = Some(OverlayState::StepDetail(overlay));
+        Some(section_id.to_string())
+    }
+
+    /// Build and push a `TurnDetailOverlay` for the given turn
+    /// index (T-61). The overlay flattens the turn's full content
+    /// (user msg + every Step/Thinking/Command/FinalAnswer sub-
+    /// record) into a single scrollable view. Returns `None` if
+    /// the turn index is out of range.
+    pub fn open_turn_detail_overlay(&mut self, turn_index: usize) -> Option<String> {
+        use crate::overlay::{TurnDetailOverlay, TurnDetailSection};
+        use crate::render::chat_turn::iter_turns;
+
+        let lines = self.response_display_lines();
+        let turns = iter_turns(&lines);
+        let turn = turns.get(turn_index.saturating_sub(1))?;
+
+        // Build the user text (skip orphan turns with empty user
+        // text; the overlay just shows the agent sections).
+        let user_text = turn.user_msg.text.trim().to_string();
+
+        // Build one TurnDetailSection per agent sub-record.
+        let mut sections: Vec<TurnDetailSection> = Vec::new();
+        for line in &turn.agent_msgs {
+            // Skip the suppressed FinalAnswer prelude (rendered
+            // as 0 rows by build_response_lines).
+            if line.kind == MsgKind::FinalAnswer
+                && !line.is_header
+                && !line.text.is_empty()
+                && line.text.chars().all(|c| c == '━')
+            {
+                continue;
+            }
+            let label = match (line.kind, line.is_header) {
+                (MsgKind::Step, true) => "Step".to_string(),
+                (MsgKind::FinalAnswer, true) => "Final Answer".to_string(),
+                (MsgKind::Thinking, true) => "Thinking".to_string(),
+                (MsgKind::Command, true) => "Command".to_string(),
+                (MsgKind::Step, false) => "Step (body)".to_string(),
+                (MsgKind::FinalAnswer, false) => "Final Answer (body)".to_string(),
+                (MsgKind::Thinking, false) => "Thinking (body)".to_string(),
+                (MsgKind::Command, false) => "Command (body)".to_string(),
+                (kind, _) => format!("{kind:?}"),
+            };
+            let body = vec![line.text.clone()];
+            sections.push(TurnDetailSection {
+                kind: line.kind,
+                label,
+                body,
+            });
+        }
+
+        let title = if user_text.is_empty() {
+            format!("Turn {turn_index} (orphan)")
+        } else {
+            let preview: String = user_text.chars().take(60).collect();
+            if user_text.chars().count() > 60 {
+                format!("Turn {turn_index}: {preview}…")
+            } else {
+                format!("Turn {turn_index}: {preview}")
+            }
+        };
+
+        let overlay = TurnDetailOverlay {
+            origin_panel: self.focused_panel,
+            turn_index,
+            title,
+            user_text,
+            sections,
+            scroll: 0,
+            dismiss_on_backdrop: true,
+        };
+        self.overlay = Some(OverlayState::TurnDetail(overlay));
+        Some(turn_index.to_string())
+    }
+
+    /// T-57 helper: convert `StepSubflowState` to a status label.
+    /// Mirrors `app::response::subflow_status_label` so the
+    /// overlay doesn't depend on that module's internals.
+    fn subflow_status_label_for(&self, status: omega_session::StepSubflowState) -> &'static str {
+        match status {
+            omega_session::StepSubflowState::Queued => "queued",
+            omega_session::StepSubflowState::Running => "running",
+            omega_session::StepSubflowState::Complete => "complete",
+            omega_session::StepSubflowState::Failed => "failed",
+        }
     }
 
     #[allow(dead_code)]

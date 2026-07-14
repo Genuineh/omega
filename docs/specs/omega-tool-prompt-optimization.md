@@ -1,15 +1,17 @@
 ---
-content_revision: 120
+content_revision: 174
 created: 2026-04-01
-generation_id: gen_000046_r000120
-last_verified_commit: N/A
+generation_id: gen_000087_r000174
+language: bilingual
+last_verified_commit: d8c30e3e9e310ce38cffa965be4688ed55a87787
 owner: omega-team
-projection_version: 46
-related_prds: []
+projection_version: 87
+related_prds: "[]"
 source_doc_id: "spec:docs-specs-omega-tool-prompt-optimization"
+source_path: docs/specs/omega-tool-prompt-optimization.md
 status: draft
-supersedes: []
-updated: 2026-04-01
+supersedes: "[]"
+updated: 2026-06-03
 ---
 
 # Omega Tool And Prompt Optimization Specification
@@ -1033,3 +1035,7 @@ Deferred (等存储 API 稳定):
 - 2026-04-01 (v0.3): 基于架构审查修正 11 项问题：明确 Manifest-wraps-Handler 集成方案、声明不改变 ToolHandler trait 签名、ToolContextProfile 改为声明式 request descriptor 并与 OmegaContextFacade 对齐、remediation 从 Option<String> 改为结构化 ToolRemediation 类型、UI effects 复用 RuntimeUiEffect enum 不另建体系、Permission 三层模型明确映射 StepToolRequest/ToolPolicyConfig/RuntimeApproval、九类 profile 只有 Core+Prompt 必填其余 Optional、补充 ToolIoProfile 字段定义、补充 web tools 基础设施开放问题、Storage Effects 降优先级等存储 API 稳定、新增 B0 轻量 prompt 任务允许与 manifest 并行推进。
 - 2026-04-01 (v0.2): 扩展为完整 tool system blueprint，新增九类统一能力框架、tool manifest 层、WebSearch/WebFetch/TodoWrite/FileEdit/AskUserQuestion/BashTool 蓝图，以及 UI/context/permission/storage/monitoring 联动设计。
 - 2026-04-01 (v0.1): 初版，聚焦 tool guidance、tool-family prompt layering、tool misuse remediation 与 selection diagnostics，目标是在不削弱现有契约的前提下提升 Omega 的 tool 使用质量与稳定性。
+
+## Implementation Note
+
+The `omega-project-layout`, `omega-memory`, `omega-document`, and `omega-doc-cli` crates referenced in this spec moved to the `omega-hpc/` sub-workspace on 2026-06-02 and are now `omega-hpc-paths`, `omega-hpc-memory`, `omega-hpc-document`, and `omega-hpc-doc-cli` respectively. Public type and binary names are unchanged. See [`docs/specs/omega-hpc-extraction.md`](omega-hpc-extraction.md) for the full mapping and [`docs/decisions/007-omega-hpc-extraction.md`](../decisions/007-omega-hpc-extraction.md) for the architecture decision.

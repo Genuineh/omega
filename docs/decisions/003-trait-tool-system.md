@@ -1,12 +1,15 @@
 ---
 adr_number: 003
 author: omega-team
-content_revision: 120
+content_revision: 174
 date: 2026-03-18
-generation_id: gen_000046_r000120
-projection_version: 46
-reviewed_by: []
+generation_id: gen_000087_r000174
+language: bilingual
+last_verified_commit: d8c30e3e9e310ce38cffa965be4688ed55a87787
+projection_version: 87
+reviewed_by: "[]"
 source_doc_id: "adr:docs-decisions-003-trait-tool-system"
+source_path: docs/decisions/003-trait-tool-system.md
 status: accepted
 ---
 

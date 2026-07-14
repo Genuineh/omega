@@ -20,9 +20,15 @@ fn minimax_config_with_custom_base_url() {
     assert_eq!(cfg.base_url, "https://example.com/api");
     assert_eq!(cfg.model, "model-x");
     assert_eq!(cfg.anthropic_version, ANTHROPIC_VERSION);
-    assert_eq!(cfg.request_throttle_interval, std::time::Duration::from_millis(100));
+    assert_eq!(
+        cfg.request_throttle_interval,
+        std::time::Duration::from_millis(100)
+    );
     assert_eq!(cfg.max_concurrent_requests, 1);
-    assert_eq!(cfg.rate_limit_retry_delay, std::time::Duration::from_secs(10));
+    assert_eq!(
+        cfg.rate_limit_retry_delay,
+        std::time::Duration::from_secs(10)
+    );
 }
 
 #[test]
@@ -96,9 +102,15 @@ fn from_env_accepts_anthropic_fallbacks() {
     assert_eq!(config.api_key, "anthropic-key");
     assert_eq!(config.model, "claude-compatible");
     assert_eq!(config.base_url, "https://anthropic.example.com");
-    assert_eq!(config.request_throttle_interval, std::time::Duration::from_millis(250));
+    assert_eq!(
+        config.request_throttle_interval,
+        std::time::Duration::from_millis(250)
+    );
     assert_eq!(config.max_concurrent_requests, 3);
-    assert_eq!(config.rate_limit_retry_delay, std::time::Duration::from_secs(15));
+    assert_eq!(
+        config.rate_limit_retry_delay,
+        std::time::Duration::from_secs(15)
+    );
 
     env::remove_var("ANTHROPIC_API_KEY");
     env::remove_var("ANTHROPIC_MODEL");

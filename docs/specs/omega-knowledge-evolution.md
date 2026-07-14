@@ -1,15 +1,17 @@
 ---
-content_revision: 120
+content_revision: 174
 created: 2026-04-07
-generation_id: gen_000046_r000120
-last_verified_commit: N/A
+generation_id: gen_000087_r000174
+language: bilingual
+last_verified_commit: d8c30e3e9e310ce38cffa965be4688ed55a87787
 owner: omega-team
-projection_version: 46
-related_prds: []
+projection_version: 87
+related_prds: "[]"
 source_doc_id: "spec:docs-specs-omega-knowledge-evolution"
+source_path: docs/specs/omega-knowledge-evolution.md
 status: active
-supersedes: []
-updated: 2026-04-07
+supersedes: "[]"
+updated: 2026-06-03
 version: v0.1
 ---
 
@@ -479,3 +481,7 @@ fallback 要求：
 2. observation synthesis 是否允许轻量模型参与，还是先用 heuristic + explicit signals 起步。
 3. Phase 4 planner 是否只作为 `omega-context` 内部 helper，还是最终升级为 facade public API。
 4. Recall rewrite fallback 是否需要按 step type 设单独 budget / trigger policy，还是统一由 `omega-context` 内部阈值控制。
+
+## Implementation Note
+
+The `omega-project-layout`, `omega-memory`, `omega-document`, and `omega-doc-cli` crates referenced in this spec moved to the `omega-hpc/` sub-workspace on 2026-06-02 and are now `omega-hpc-paths`, `omega-hpc-memory`, `omega-hpc-document`, and `omega-hpc-doc-cli` respectively. Public type and binary names are unchanged. See [`docs/specs/omega-hpc-extraction.md`](omega-hpc-extraction.md) for the full mapping and [`docs/decisions/007-omega-hpc-extraction.md`](../decisions/007-omega-hpc-extraction.md) for the architecture decision.

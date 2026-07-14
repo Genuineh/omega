@@ -1,20 +1,22 @@
 ---
 archived: true
 archived_date: 2026-03-20
-content_revision: 120
+content_revision: 174
 created: 2026-03-19
-generation_id: gen_000046_r000120
+generation_id: gen_000087_r000174
+language: bilingual
+last_verified_commit: d8c30e3e9e310ce38cffa965be4688ed55a87787
 owner: omega-team
-projection_version: 46
+projection_version: 87
 reason: omega-repl path retired; interaction model converged to omega-tui single entry
-related_prds: []
+related_prds: "[]"
 replaced_by:
   - docs/specs/omega-runtime-ui-message-contract.md
   - docs/archive/omega-tui-non-ui-extraction.md
 source_doc_id: "archive:docs-archive-omega-interaction-layer-refactor"
+source_path: docs/archive/omega-interaction-layer-refactor.md
 status: superseded
-supersedes:
-  - "docs/specs/omega-agent-impl-plan.md#task-15"
+supersedes: "\\\\\\\\\\\\\\\\n  - \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\"docs/specs/omega-agent-impl-plan.md#task-15\\\\\\\\\\\\\\\\"
 updated: 2026-03-20
 ---
 

@@ -1,0 +1,10 @@
+[package]
+name = "omega-hpc-memory"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+omega-hpc-paths = { path = "../omega-hpc-paths" }

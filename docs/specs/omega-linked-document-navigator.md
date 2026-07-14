@@ -1,14 +1,16 @@
 ---
-content_revision: 120
+content_revision: 174
 created: 2026-04-17
-generation_id: gen_000046_r000120
-last_verified_commit: N/A
+generation_id: gen_000087_r000174
+language: bilingual
+last_verified_commit: d8c30e3e9e310ce38cffa965be4688ed55a87787
 owner: omega-team
-projection_version: 46
-related_prds: []
+projection_version: 87
+related_prds: "[]"
 source_doc_id: "spec:docs-specs-omega-linked-document-navigator"
+source_path: docs/specs/omega-linked-document-navigator.md
 status: draft
-updated: 2026-04-17
+updated: 2026-06-03
 ---
 
 # Omega Linked Document Navigator Overlay Specification
@@ -150,3 +152,7 @@ in-place 刷新规则：
 ## Change Log
 
 - 2026-04-17: 初版规格，定义 `/plan` 与 `/document` 共用的 linked document navigator overlay、typed runtime contract、两列交互模型与分阶段 rollout。
+
+## Implementation Note
+
+The `omega-project-layout`, `omega-memory`, `omega-document`, and `omega-doc-cli` crates referenced in this spec moved to the `omega-hpc/` sub-workspace on 2026-06-02 and are now `omega-hpc-paths`, `omega-hpc-memory`, `omega-hpc-document`, and `omega-hpc-doc-cli` respectively. Public type and binary names are unchanged. See [`docs/specs/omega-hpc-extraction.md`](omega-hpc-extraction.md) for the full mapping and [`docs/decisions/007-omega-hpc-extraction.md`](../decisions/007-omega-hpc-extraction.md) for the architecture decision.

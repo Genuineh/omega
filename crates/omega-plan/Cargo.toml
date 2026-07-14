@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-omega-project-layout = { path = "../omega-project-layout" }
+omega-hpc-paths = { path = "../../omega-hpc/crates/omega-hpc-paths" }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

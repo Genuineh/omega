@@ -1,18 +1,20 @@
 ---
-content_revision: 120
+content_revision: 174
 created: 2026-04-14
-generation_id: gen_000046_r000120
-last_verified_commit: N/A
+generation_id: gen_000087_r000174
+language: bilingual
+last_verified_commit: d8c30e3e9e310ce38cffa965be4688ed55a87787
 owner: omega-team
-projection_version: 46
+projection_version: 87
 related_prds:
   - docs/specs/omega-structured-document-system.md
   - docs/specs/omega-document-cli.md
   - docs/specs/omega-project-plan-docs-data-convergence.md
 source_doc_id: "spec:docs-specs-omega-document-projection-versioning"
+source_path: docs/specs/omega-document-projection-versioning.md
 status: active
-supersedes: []
-updated: 2026-04-15
+supersedes: "[]"
+updated: 2026-06-03
 ---
 
 # Omega Document Projection Versioning Specification
@@ -154,3 +156,7 @@ generated `docs/*.md` frontmatter 或稳定 header metadata 应可表达：
 
 - 2026-04-15: v0.2 — `Task 19J` completed: manifest/render-state/generated docs now share a concrete revision contract, and `omega-doc render|validate|get|doctor` all consume that linkage.
 - 2026-04-14: v0.1 — 初版规格，定义 docs-data 与 generated docs 的 projection version contract，作为 CLI-first docs workflow cutover 的前置条件。
+
+## Implementation Note
+
+The `omega-project-layout`, `omega-memory`, `omega-document`, and `omega-doc-cli` crates referenced in this spec moved to the `omega-hpc/` sub-workspace on 2026-06-02 and are now `omega-hpc-paths`, `omega-hpc-memory`, `omega-hpc-document`, and `omega-hpc-doc-cli` respectively. Public type and binary names are unchanged. See [`docs/specs/omega-hpc-extraction.md`](omega-hpc-extraction.md) for the full mapping and [`docs/decisions/007-omega-hpc-extraction.md`](../decisions/007-omega-hpc-extraction.md) for the architecture decision.

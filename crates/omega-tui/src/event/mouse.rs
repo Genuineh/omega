@@ -41,9 +41,17 @@ pub(super) fn handle_mouse_event(mouse: MouseEvent, app: &Arc<Mutex<App>>) {
     match mouse.kind {
         MouseEventKind::Down(MouseButton::Left) => {
             let in_input = mouse.column >= app_guard.input_rect.x
-                && mouse.column < app_guard.input_rect.x.saturating_add(app_guard.input_rect.width)
+                && mouse.column
+                    < app_guard
+                        .input_rect
+                        .x
+                        .saturating_add(app_guard.input_rect.width)
                 && mouse.row >= app_guard.input_rect.y
-                && mouse.row < app_guard.input_rect.y.saturating_add(app_guard.input_rect.height);
+                && mouse.row
+                    < app_guard
+                        .input_rect
+                        .y
+                        .saturating_add(app_guard.input_rect.height);
             if in_input {
                 app_guard.clear_text_selection();
                 return;
@@ -135,43 +143,41 @@ pub(super) fn handle_mouse_event(mouse: MouseEvent, app: &Arc<Mutex<App>>) {
                 return;
             }
 
-            let click_response_line = app_guard
-                .text_selection
-                .as_ref()
-                .and_then(|selection| {
-                    if selection.panel != Panel::Response {
-                        return None;
-                    }
-                    let point =
-                        app_guard.panel_text_point_at(Panel::Response, mouse.column, mouse.row)?;
-                    (point == selection.anchor).then_some(point.line_index)
-                });
-            let click_sidebar_line = app_guard
-                .text_selection
-                .as_ref()
-                .and_then(|selection| match selection.panel {
-                    Panel::Diagnostics
-                    | Panel::Delivery
-                    | Panel::Skills
-                    | Panel::Project
-                    | Panel::Document
-                    | Panel::Memory
-                    | Panel::Todo
-                    | Panel::Logs => {
-                        let point = app_guard.panel_text_point_at(
-                            selection.panel,
-                            mouse.column,
-                            mouse.row,
-                        )?;
-                        let display_index = app_guard.wrapped_panel_line_index_at(
-                            selection.panel,
-                            mouse.column,
-                            mouse.row,
-                        )?;
-                        (point == selection.anchor).then_some((selection.panel, display_index))
-                    }
-                    Panel::Response | Panel::SidebarRail => None,
-                });
+            let click_response_line = app_guard.text_selection.as_ref().and_then(|selection| {
+                if selection.panel != Panel::Response {
+                    return None;
+                }
+                let point =
+                    app_guard.panel_text_point_at(Panel::Response, mouse.column, mouse.row)?;
+                (point == selection.anchor).then_some(point.line_index)
+            });
+            let click_sidebar_line =
+                app_guard
+                    .text_selection
+                    .as_ref()
+                    .and_then(|selection| match selection.panel {
+                        Panel::Diagnostics
+                        | Panel::Delivery
+                        | Panel::Skills
+                        | Panel::Project
+                        | Panel::Document
+                        | Panel::Memory
+                        | Panel::Todo
+                        | Panel::Logs => {
+                            let point = app_guard.panel_text_point_at(
+                                selection.panel,
+                                mouse.column,
+                                mouse.row,
+                            )?;
+                            let display_index = app_guard.wrapped_panel_line_index_at(
+                                selection.panel,
+                                mouse.column,
+                                mouse.row,
+                            )?;
+                            (point == selection.anchor).then_some((selection.panel, display_index))
+                        }
+                        Panel::Response | Panel::SidebarRail => None,
+                    });
 
             if let Some(text) = app_guard.finish_mouse_selection(mouse.column, mouse.row) {
                 app_guard.set_status_notice(format!(
@@ -222,9 +228,17 @@ pub(super) fn handle_mouse_event(mouse: MouseEvent, app: &Arc<Mutex<App>>) {
         }
         MouseEventKind::ScrollUp => {
             let in_input = mouse.column >= app_guard.input_rect.x
-                && mouse.column < app_guard.input_rect.x.saturating_add(app_guard.input_rect.width)
+                && mouse.column
+                    < app_guard
+                        .input_rect
+                        .x
+                        .saturating_add(app_guard.input_rect.width)
                 && mouse.row >= app_guard.input_rect.y
-                && mouse.row < app_guard.input_rect.y.saturating_add(app_guard.input_rect.height);
+                && mouse.row
+                    < app_guard
+                        .input_rect
+                        .y
+                        .saturating_add(app_guard.input_rect.height);
             if in_input {
                 app_guard.scroll_input_up(3);
             } else {
@@ -234,9 +248,17 @@ pub(super) fn handle_mouse_event(mouse: MouseEvent, app: &Arc<Mutex<App>>) {
         }
         MouseEventKind::ScrollDown => {
             let in_input = mouse.column >= app_guard.input_rect.x
-                && mouse.column < app_guard.input_rect.x.saturating_add(app_guard.input_rect.width)
+                && mouse.column
+                    < app_guard
+                        .input_rect
+                        .x
+                        .saturating_add(app_guard.input_rect.width)
                 && mouse.row >= app_guard.input_rect.y
-                && mouse.row < app_guard.input_rect.y.saturating_add(app_guard.input_rect.height);
+                && mouse.row
+                    < app_guard
+                        .input_rect
+                        .y
+                        .saturating_add(app_guard.input_rect.height);
             if in_input {
                 app_guard.scroll_input_down(3);
             } else {
@@ -252,12 +274,8 @@ fn response_activation_notice(activation: Option<ResponseActivation>) -> Option<
     match activation {
         Some(ResponseActivation::ThinkingCollapsed) => Some("Thinking collapsed.".to_string()),
         Some(ResponseActivation::ThinkingExpanded) => Some("Thinking expanded.".to_string()),
-        Some(ResponseActivation::CommandCollapsed) => {
-            Some("Command output collapsed.".to_string())
-        }
-        Some(ResponseActivation::CommandExpanded) => {
-            Some("Command output expanded.".to_string())
-        }
+        Some(ResponseActivation::CommandCollapsed) => Some("Command output collapsed.".to_string()),
+        Some(ResponseActivation::CommandExpanded) => Some("Command output expanded.".to_string()),
         Some(ResponseActivation::ToolLaneCollapsed) => Some("Tool lane collapsed.".to_string()),
         Some(ResponseActivation::ToolLaneExpanded) => Some("Tool lane expanded.".to_string()),
         Some(ResponseActivation::ToolDetailOpened(tool_name)) => {
@@ -277,6 +295,12 @@ fn response_activation_notice(activation: Option<ResponseActivation>) -> Option<
         }
         Some(ResponseActivation::MemoryKnowledgeDetailOpened) => {
             Some("Opened memory knowledge detail overlay.".to_string())
+        }
+        Some(ResponseActivation::StepDetailOpened(_)) => {
+            Some("Opened step detail overlay.".to_string())
+        }
+        Some(ResponseActivation::TurnDetailOpened(_)) => {
+            Some("Opened turn detail overlay.".to_string())
         }
         None => None,
     }

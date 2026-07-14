@@ -11,8 +11,8 @@ use crate::constants::{
     DEFAULT_SELECT_SKILLS_PROMPT_PATH, DEFAULT_SELECT_SKILLS_SCHEMA_PATH,
     DEFAULT_SELECT_WORKFLOW_PROMPT_PATH, EXECUTE_STEP_ID, EXPLORE_STEP_ID,
     FEATURE_NON_EXECUTE_BLOCKED_GROUP, FEATURE_WORKFLOW_ID, PLAN_STEP_ID, REPORT_STEP_ID,
-    RESEARCH_WORKFLOW_ID, ROOT_ROUTING_BLOCKED_GROUP, ROOT_WORKFLOW_ID,
-    SCENE_RECOGNITION_STEP_ID, SELECT_SKILLS_STEP_ID, SELECT_WORKFLOW_STEP_ID,
+    RESEARCH_WORKFLOW_ID, ROOT_ROUTING_BLOCKED_GROUP, ROOT_WORKFLOW_ID, SCENE_RECOGNITION_STEP_ID,
+    SELECT_SKILLS_STEP_ID, SELECT_WORKFLOW_STEP_ID,
 };
 use crate::model::{
     DataFormat, OutputRecoveryMode, StepInputContract, StepLoopContract, StepLoopMode,
@@ -648,12 +648,14 @@ impl BuiltinWorkflowStepId {
     pub(crate) fn default_tool_request(self, tool_policy: &ToolPolicyConfig) -> StepToolRequest {
         match self {
             Self::Execute => StepToolRequest::Inherit,
-            Self::SceneRecognition | Self::SelectWorkflow | Self::SelectSkills => StepToolRequest::Block(
-                tool_policy
-                    .group_items(ROOT_ROUTING_BLOCKED_GROUP)
-                    .unwrap_or(&[])
-                    .to_vec(),
-            ),
+            Self::SceneRecognition | Self::SelectWorkflow | Self::SelectSkills => {
+                StepToolRequest::Block(
+                    tool_policy
+                        .group_items(ROOT_ROUTING_BLOCKED_GROUP)
+                        .unwrap_or(&[])
+                        .to_vec(),
+                )
+            }
             Self::Chat => StepToolRequest::Block(
                 tool_policy
                     .group_items(CHAT_BLOCKED_GROUP)

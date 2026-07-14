@@ -1114,10 +1114,20 @@ mod tests {
         d.register_alias("echo_alias", "echo").unwrap();
 
         assert!(d.has_tool("echo_alias"));
-        assert_eq!(d.dispatch("echo_alias", json!({"text": "aliased"})).unwrap().output, "aliased");
+        assert_eq!(
+            d.dispatch("echo_alias", json!({"text": "aliased"}))
+                .unwrap()
+                .output,
+            "aliased"
+        );
         assert_eq!(d.to_schemas().len(), 1);
         assert_eq!(d.tool_names(), vec!["echo"]);
-        assert_eq!(d.manifest_for("echo_alias").expect("alias manifest metadata").id, "echo");
+        assert_eq!(
+            d.manifest_for("echo_alias")
+                .expect("alias manifest metadata")
+                .id,
+            "echo"
+        );
     }
 
     #[test]
@@ -1281,7 +1291,10 @@ mod tests {
         assert_eq!(result.error_kind, Some(ToolErrorKind::Execution));
         let remediation = result.remediation.expect("remediation should be attached");
         assert_eq!(remediation.kind, ToolRemediationKind::RetryOrFallback);
-        assert_eq!(remediation.alternative_tools, vec!["read_file", "grep_search"]);
+        assert_eq!(
+            remediation.alternative_tools,
+            vec!["read_file", "grep_search"]
+        );
         assert!(remediation.recoverable);
     }
 

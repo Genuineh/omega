@@ -1,9 +1,9 @@
 ---
-content_revision: 120
-generation_id: gen_000046_r000120
-last_verified_commit: N/A
+content_revision: 174
+generation_id: gen_000087_r000174
+last_verified_commit: d8c30e3e9e310ce38cffa965be4688ed55a87787
 owner: omega-team
-projection_version: 46
+projection_version: 87
 source_doc_id: "readme:docs-readme"
 status: active
 updated: 2026-04-15

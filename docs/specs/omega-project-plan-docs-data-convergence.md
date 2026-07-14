@@ -1,18 +1,20 @@
 ---
-content_revision: 120
+content_revision: 174
 created: 2026-04-14
-generation_id: gen_000046_r000120
-last_verified_commit: N/A
+generation_id: gen_000087_r000174
+language: bilingual
+last_verified_commit: d8c30e3e9e310ce38cffa965be4688ed55a87787
 owner: omega-team
-projection_version: 46
+projection_version: 87
 related_prds:
   - docs/specs/omega-project-plan-system.md
   - docs/specs/omega-structured-document-system.md
   - docs/specs/omega-command-system.md
 source_doc_id: "spec:docs-specs-omega-project-plan-docs-data-convergence"
+source_path: docs/specs/omega-project-plan-docs-data-convergence.md
 status: active
-supersedes: []
-updated: 2026-04-15
+supersedes: "[]"
+updated: 2026-06-03
 ---
 
 # Omega Project Plan Docs-Data Convergence Specification
@@ -138,3 +140,7 @@ updated: 2026-04-15
 
 - 2026-04-15: v0.2 — 移除了剩余 `.omega/plans/` compatibility/import layer；当前 runtime、layout 与 generated docs 统一把 `docs-data/tasks/*` 视为唯一 project plan persistence 路径。
 - 2026-04-14: v0.1 — 初版 follow-up 规格，定义把 `/plan` canonical persistence 从 `.omega/plans/` 收口到 `docs-data/` 的目标、边界和 Task 4H ~ 4K rollout。
+
+## Implementation Note
+
+The `omega-project-layout`, `omega-memory`, `omega-document`, and `omega-doc-cli` crates referenced in this spec moved to the `omega-hpc/` sub-workspace on 2026-06-02 and are now `omega-hpc-paths`, `omega-hpc-memory`, `omega-hpc-document`, and `omega-hpc-doc-cli` respectively. Public type and binary names are unchanged. See [`docs/specs/omega-hpc-extraction.md`](omega-hpc-extraction.md) for the full mapping and [`docs/decisions/007-omega-hpc-extraction.md`](../decisions/007-omega-hpc-extraction.md) for the architecture decision.

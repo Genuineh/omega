@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+omega-hpc-document = { path = "../../omega-hpc/crates/omega-hpc-document" }
 omega-tools = { path = "../omega-tools" }
 serde.workspace = true
 serde_json.workspace = true

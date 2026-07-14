@@ -1,15 +1,17 @@
 ---
 audience: developers
-content_revision: 120
+content_revision: 174
 created: 2026-03-18
-generation_id: gen_000046_r000120
-last_verified_commit: N/A
+generation_id: gen_000087_r000174
+language: bilingual
+last_verified_commit: d8c30e3e9e310ce38cffa965be4688ed55a87787
 level: intermediate
 owner: omega-team
-projection_version: 46
+projection_version: 87
 source_doc_id: "guide:docs-guide-omega-dev-guide"
+source_path: docs/guide/omega-dev-guide.md
 status: active
-updated: 2026-04-13
+updated: 2026-06-03
 ---
 
 # Omega 开发指南
@@ -90,10 +92,19 @@ cargo run -p omega-app --features document-backend
 |-------|----------|
 | `omega-context` | 对外统一上下文 facade，组装 prompt-facing context、document/memory recall 与 session-ledger history hits |
 | `omega-project` | project root、session catalog、`/project` command ownership，以及 `.omega/` / `.omega-state/` layout ownership |
-| `omega-memory` | repo-wide 长期记忆 archive、summary ranking 与 compaction |
-| `omega-document` | 文件治理、索引、检索与文档工具后端 |
-| `omega-todo` | todo 工具与快照模型 |
+| `omega-todo` | todo 工具与快照模型（数据模型 `TodoItem` / `TodoStatus` 等下沉在 `omega-hpc-document`，本 crate 是 re-export + tool handler 薄层） |
 | `omega-tasks` | 持久化任务层预留 |
+
+### omega-hpc 子 workspace
+
+独立的 `omega-hpc/` 子 Cargo workspace，通过 `path = "../../omega-hpc/crates/omega-hpc-*"` 依赖，承载持久记忆 + 项目理解 + 快速检索底座。详见 `docs/specs/omega-hpc-extraction.md`、`docs/decisions/007-omega-hpc-extraction.md`、`omega-hpc/README.md`。
+
+| Crate | 当前职责 |
+|-------|----------|
+| `omega-hpc-paths` | `OmegaProjectLayout` 与 `STORE_*_PATH` / `MEMORY_*_PATH` / `DOCS_DATA_*_PATH` 等路径 const；`omega-project-layout` 的新家 |
+| `omega-hpc-memory` | repo-wide 长期记忆 archive、summary ranking 与 compaction；`omega-memory` 的新家 |
+| `omega-hpc-document` | 文件治理、索引、检索、文档工具后端；`omega-document` 的新家；`omega-doc` 二进制与 `OmegaDocument` / `OmegaContextFacade` 等公开 API 保持不变 |
+| `omega-hpc-doc-cli` | `omega-doc` CLI 实现（`render` / `validate` / `extract` / `doctor` / `get` / `query` 等）；`omega-doc-cli` 的新家 |
 
 ### 工具与扩展层
 
@@ -183,7 +194,7 @@ TUI 中的默认入口已经切到 overlay-first：
 
 应用启动现在默认停在 runtime-only `Unbound` 状态：不会自动创建 session，也不会自动恢复上次 active session。首条真实用户消息会 lazy-create 并绑定一个新 session；显式 `/session new` 也会创建并绑定新 session；显式 `/session resume` 才会绑定并恢复旧 session。`project record.active_session_id` 现在只作为最近选择提示和 picker 排序线索，不再驱动启动自动恢复。
 
-session restore 不会重放旧 workflow step 或 tool run。当前恢复链路已经改为通过 `omega-compression` 读取 `session.context.jsonl` 的 projection：默认按 `400k` token budget 做近期优先装载，并为 TUI hydration 投影可见 replay records；老的 `<session-id>.snapshot.json` / `<session-id>.log.jsonl` 若存在，会在首次读取时自动迁移到 canonical ledger。实际 prompt assembly 现在也会消费两类 ledger-derived surface：一类是 checkpoint / truncation 的 `<session_ledger_context>` note，另一类是基于 canonical ledger historical search 命中的 `<session_history_hits>`。与之对应，`omega-memory` 的 archive query 已退回 repo-wide long-term recall aid，不再承担 session-local history 的主链路语义。恢复后的 notice 与 direct `/session resume <id>` 结果会显式展示 `recent records / compression summaries / search hits` 的装配统计；`/session info <session-id>` 也会显示 canonical ledger 是否存在、record/replay/snapshot/checkpoint 计数与最新 checkpoint 摘要。后续 recall/rerank 质量与更深层 checkpoint retrieval 继续作为独立 follow-up 推进，不再属于 Task 17 baseline。
+session restore 不会重放旧 workflow step 或 tool run。当前恢复链路已经改为通过 `omega-compression` 读取 `session.context.jsonl` 的 projection：默认按 `400k` token budget 做近期优先装载，并为 TUI hydration 投影可见 replay records；老的 `<session-id>.snapshot.json` / `<session-id>.log.jsonl` 若存在，会在首次读取时自动迁移到 canonical ledger。实际 prompt assembly 现在也会消费两类 ledger-derived surface：一类是 checkpoint / truncation 的 `<session_ledger_context>` note，另一类是基于 canonical ledger historical search 命中的 `<session_history_hits>`。与之对应，`omega-hpc-memory` 的 archive query 已退回 repo-wide long-term recall aid，不再承担 session-local history 的主链路语义。恢复后的 notice 与 direct `/session resume <id>` 结果会显式展示 `recent records / compression summaries / search hits` 的装配统计；`/session info <session-id>` 也会显示 canonical ledger 是否存在、record/replay/snapshot/checkpoint 计数与最新 checkpoint 摘要。后续 recall/rerank 质量与更深层 checkpoint retrieval 继续作为独立 follow-up 推进，不再属于 Task 17 baseline。
 
 ### 格式化与静态检查
 
@@ -286,3 +297,7 @@ export OMEGA_MINIMAX_API_KEY="your-api-key"
 - 技术规格文档: docs/specs/omega-agent-spec.md
 - ADR 文档: docs/decisions/
 - TODO 跟踪: docs/TODO.md
+
+## Implementation Note
+
+The `omega-project-layout`, `omega-memory`, `omega-document`, and `omega-doc-cli` crates referenced in this guide moved to the `omega-hpc/` sub-workspace on 2026-06-02 and are now `omega-hpc-paths`, `omega-hpc-memory`, `omega-hpc-document`, and `omega-hpc-doc-cli` respectively. Public type and binary names are unchanged. See [`docs/specs/omega-hpc-extraction.md`](../specs/omega-hpc-extraction.md) for the full mapping and [`docs/decisions/007-omega-hpc-extraction.md`](../decisions/007-omega-hpc-extraction.md) for the architecture decision.

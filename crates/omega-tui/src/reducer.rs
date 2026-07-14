@@ -94,15 +94,13 @@ impl TuiUpdateReducer {
             RuntimeUiEffect::ReplacePanel { target, content } => {
                 Self::replace_panel(app, turn_id, target, content)
             }
-            RuntimeUiEffect::OpenDiffPreview { diff } => {
-                app.open_detail_overlay(" Diff Preview ", diff.lines().map(str::to_string).collect())
-            }
+            RuntimeUiEffect::OpenDiffPreview { diff } => app
+                .open_detail_overlay(" Diff Preview ", diff.lines().map(str::to_string).collect()),
             RuntimeUiEffect::RequestInput { prompt } => {
                 app.open_input_prompt_overlay(" Question ", prompt)
             }
-            RuntimeUiEffect::OpenWebResultView { title, content } => {
-                app.open_search_results_overlay(&title, content.lines().map(str::to_string).collect())
-            }
+            RuntimeUiEffect::OpenWebResultView { title, content } => app
+                .open_search_results_overlay(&title, content.lines().map(str::to_string).collect()),
             RuntimeUiEffect::RequestToolApproval { message } => {
                 app.open_runtime_confirm_overlay(message)
             }
@@ -315,6 +313,8 @@ pub fn session_status_from_status(value: StatusValue) -> Option<SessionStatusSum
             recognized_scene_id,
             selected_workflow_id,
         })),
-        StatusValue::Hidden | StatusValue::WorkflowStep { .. } | StatusValue::ProjectSelection { .. } => None,
+        StatusValue::Hidden
+        | StatusValue::WorkflowStep { .. }
+        | StatusValue::ProjectSelection { .. } => None,
     }
 }

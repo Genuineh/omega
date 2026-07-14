@@ -69,8 +69,7 @@ impl<'a> CaseRunner<'a> {
         let mut results = Vec::new();
 
         for suite_id in registry.suite_ids() {
-            if !self.config.suite_filter.is_empty()
-                && !self.config.suite_filter.contains(&suite_id)
+            if !self.config.suite_filter.is_empty() && !self.config.suite_filter.contains(&suite_id)
             {
                 continue;
             }

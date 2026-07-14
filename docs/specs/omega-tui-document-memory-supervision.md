@@ -1,15 +1,17 @@
 ---
-content_revision: 120
+content_revision: 174
 created: 2026-04-02
-generation_id: gen_000046_r000120
-last_verified_commit: N/A
+generation_id: gen_000087_r000174
+language: bilingual
+last_verified_commit: d8c30e3e9e310ce38cffa965be4688ed55a87787
 owner: omega-team
-projection_version: 46
-related_prds: []
+projection_version: 87
+related_prds: "[]"
 source_doc_id: "spec:docs-specs-omega-tui-document-memory-supervision"
+source_path: docs/specs/omega-tui-document-memory-supervision.md
 status: draft
-supersedes: []
-updated: 2026-04-07
+supersedes: "[]"
+updated: 2026-06-03
 ---
 
 # Omega TUI Document And Memory Supervision Specification
@@ -459,3 +461,7 @@ StateMessage::StepKnowledgeSummary {
 ### Change Log
 - 2026-04-02: 初版规格，定义 `Document Supervision` / `Memory Supervision` 专门监管面板、typed hit-summary contract 与 TODO 拆分方向。
 - 2026-04-07: v0.2 — 新增 Response integration rule、`StepKnowledgeSummary` projection、knowledge summary lane、detail overlay browse 规则，以及 `Task 11F-5 ~ 11F-7` 后续拆分。
+
+## Implementation Note
+
+The `omega-project-layout`, `omega-memory`, `omega-document`, and `omega-doc-cli` crates referenced in this spec moved to the `omega-hpc/` sub-workspace on 2026-06-02 and are now `omega-hpc-paths`, `omega-hpc-memory`, `omega-hpc-document`, and `omega-hpc-doc-cli` respectively. Public type and binary names are unchanged. See [`docs/specs/omega-hpc-extraction.md`](omega-hpc-extraction.md) for the full mapping and [`docs/decisions/007-omega-hpc-extraction.md`](../decisions/007-omega-hpc-extraction.md) for the architecture decision.

@@ -1,14 +1,17 @@
 ---
 baseline: omega-benchmark/baselines/run-20260417-040256.json
-content_revision: 120
+content_revision: 174
 created: 2026-04-17
 endpoint: "https://api.minimaxi.com/anthropic"
-generation_id: gen_000046_r000120
+generation_id: gen_000087_r000174
+language: bilingual
+last_verified_commit: d8c30e3e9e310ce38cffa965be4688ed55a87787
 model: MiniMax-M2.5
 owner: omega-team
-projection_version: 46
+projection_version: 87
 run_id: run-20260417-040256
-source_doc_id: "guide:benchmark-report-20260417"
+source_doc_id: "guide:docs-guide-benchmark-report-20260417"
+source_path: docs/guide/benchmark-report-20260417.md
 status: active
 updated: 2026-04-17
 ---

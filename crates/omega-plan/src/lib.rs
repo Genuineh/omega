@@ -4,7 +4,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use omega_project_layout::OmegaProjectLayout;
+use omega_hpc_paths::OmegaProjectLayout;
 use serde::{Deserialize, Serialize};
 
 pub const PLAN_SCHEMA_VERSION: u32 = 1;

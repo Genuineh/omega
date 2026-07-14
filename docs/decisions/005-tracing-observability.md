@@ -1,13 +1,16 @@
 ---
 adr_number: 005
 author: omega-team
-content_revision: 120
+content_revision: 174
 date: 2026-03-18
-generation_id: gen_000046_r000120
-projection_version: 46
+generation_id: gen_000087_r000174
+language: bilingual
+last_verified_commit: d8c30e3e9e310ce38cffa965be4688ed55a87787
+projection_version: 87
 related_prd: docs/archive/observability-logging.md
-reviewed_by: []
+reviewed_by: "[]"
 source_doc_id: "adr:docs-decisions-005-tracing-observability"
+source_path: docs/decisions/005-tracing-observability.md
 status: accepted
 ---
 

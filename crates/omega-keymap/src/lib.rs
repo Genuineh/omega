@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use omega_project_layout::{OmegaProjectLayout, KEYMAP_CONFIG_PATH};
+use omega_hpc_paths::{OmegaProjectLayout, KEYMAP_CONFIG_PATH};
 use serde::Deserialize;
 
 pub const DEFAULT_KEYMAP_PATH: &str = KEYMAP_CONFIG_PATH;
@@ -490,10 +490,11 @@ impl KeymapManager {
     pub fn load_from_file(path: &Path) -> Result<Self> {
         let raw = fs::read_to_string(path)
             .with_context(|| format!("failed to read keymap file {}", path.display()))?;
-        let builtin = Self::parse_keymap_file(DEFAULT_KEYMAP_TOML)
-            .expect("builtin keymap file should parse");
-        let custom = Self::parse_keymap_file(&raw)
-            .map_err(|error| anyhow::anyhow!("failed to parse keymap file {}: {error}", path.display()))?;
+        let builtin =
+            Self::parse_keymap_file(DEFAULT_KEYMAP_TOML).expect("builtin keymap file should parse");
+        let custom = Self::parse_keymap_file(&raw).map_err(|error| {
+            anyhow::anyhow!("failed to parse keymap file {}: {error}", path.display())
+        })?;
         let merged = merge_keymap_files(builtin, custom);
 
         Self::compile_keymap(merged, KeymapSource::File(path.to_path_buf())).map_err(|error| {

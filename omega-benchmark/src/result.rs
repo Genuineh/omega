@@ -103,11 +103,26 @@ impl RunSummary {
     ) -> Self {
         let timestamp = chrono::Utc::now().to_rfc3339();
         let total_cases = results.len();
-        let passed = results.iter().filter(|r| r.status == CaseStatus::Pass).count();
-        let failed = results.iter().filter(|r| r.status == CaseStatus::Fail).count();
-        let errors = results.iter().filter(|r| r.status == CaseStatus::Error).count();
-        let timeouts = results.iter().filter(|r| r.status == CaseStatus::Timeout).count();
-        let skipped = results.iter().filter(|r| r.status == CaseStatus::Skipped).count();
+        let passed = results
+            .iter()
+            .filter(|r| r.status == CaseStatus::Pass)
+            .count();
+        let failed = results
+            .iter()
+            .filter(|r| r.status == CaseStatus::Fail)
+            .count();
+        let errors = results
+            .iter()
+            .filter(|r| r.status == CaseStatus::Error)
+            .count();
+        let timeouts = results
+            .iter()
+            .filter(|r| r.status == CaseStatus::Timeout)
+            .count();
+        let skipped = results
+            .iter()
+            .filter(|r| r.status == CaseStatus::Skipped)
+            .count();
         let total_latency_ms: u64 = results.iter().map(|r| r.latency_ms).sum();
         let total_tokens: u64 = results.iter().map(|r| r.total_tokens).sum();
 
@@ -131,8 +146,14 @@ impl RunSummary {
             .into_iter()
             .map(|(suite_id, cases)| {
                 let case_count = cases.len();
-                let s_passed = cases.iter().filter(|r| r.status == CaseStatus::Pass).count();
-                let s_failed = cases.iter().filter(|r| r.status == CaseStatus::Fail).count();
+                let s_passed = cases
+                    .iter()
+                    .filter(|r| r.status == CaseStatus::Pass)
+                    .count();
+                let s_failed = cases
+                    .iter()
+                    .filter(|r| r.status == CaseStatus::Fail)
+                    .count();
                 let s_scored: Vec<f64> = cases
                     .iter()
                     .filter_map(|r| r.score.as_ref().map(|s| s.total))

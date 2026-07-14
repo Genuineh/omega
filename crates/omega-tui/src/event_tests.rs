@@ -4,15 +4,14 @@ use omega_core::DynLlmClient;
 use omega_keymap::{InteractionMode, KeymapManager};
 use omega_project::ProjectDetectionKind;
 use omega_session::{
-    ConversationMessage, DocumentNavigatorBody, DocumentNavigatorBodyKind,
-    DocumentNavigatorEntry, DocumentNavigatorEntryKind, DocumentNavigatorGroup,
-    DocumentNavigatorRequest, OperatorPickerAction, OperatorPickerIntent, OperatorPickerItem,
-    OperatorPickerOverlayBehavior, OperatorPickerRequest, OperatorPickerShortcut,
-    ResponseSectionKind, ResponseSectionState, RuntimeMessage, RuntimeUiEffect,
-    RuntimeUiEnvelope, StateMessage, WorkflowRunRole,
+    ConversationMessage, DocumentNavigatorBody, DocumentNavigatorBodyKind, DocumentNavigatorEntry,
+    DocumentNavigatorEntryKind, DocumentNavigatorGroup, DocumentNavigatorRequest,
+    OperatorPickerAction, OperatorPickerIntent, OperatorPickerItem, OperatorPickerOverlayBehavior,
+    OperatorPickerRequest, OperatorPickerShortcut, ResponseSectionKind, ResponseSectionState,
+    RuntimeMessage, RuntimeUiEffect, RuntimeUiEnvelope, StateMessage, WorkflowRunRole,
 };
-use omega_theme::OmegaTheme;
 use omega_test_support::persistent_test_root;
+use omega_theme::OmegaTheme;
 use omega_workflow::LoadedWorkflowCatalog;
 use ratatui::{backend::TestBackend, Terminal};
 use std::time::Duration;
@@ -258,7 +257,9 @@ fn typing_slash_command_updates_command_hint() {
     ]);
 
     let hint = harness.inspect(|app| app.command_hint.clone());
-    assert!(hint.as_deref().is_some_and(|value| value.contains("/document")));
+    assert!(hint
+        .as_deref()
+        .is_some_and(|value| value.contains("/document")));
 }
 
 #[test]
@@ -462,7 +463,10 @@ fn mouse_click_on_collapsed_reasoning_toggles_expand() {
         .find(|message| message.id.as_deref() == Some("thinking-1"))
         .unwrap();
     assert!(!thinking.collapsed);
-    assert_eq!(app_guard.status_notice.as_deref(), Some("Thinking expanded."));
+    assert_eq!(
+        app_guard.status_notice.as_deref(),
+        Some("Thinking expanded.")
+    );
 }
 
 #[test]
@@ -506,7 +510,10 @@ fn mouse_click_on_bottom_status_opens_delivery_detail() {
     match app_guard.overlay.as_ref() {
         Some(crate::overlay::OverlayState::Detail(detail)) => {
             assert_eq!(detail.title, " Task Delivery ");
-            assert!(detail.lines.iter().any(|line| line.contains("model: gpt-5.4")));
+            assert!(detail
+                .lines
+                .iter()
+                .any(|line| line.contains("model: gpt-5.4")));
         }
         other => panic!("expected delivery detail overlay, got {other:?}"),
     }
@@ -522,8 +529,10 @@ fn mouse_click_on_bottom_status_opens_project_detail_when_project_slot_present()
     let app = Arc::new(Mutex::new(App::new()));
     {
         let mut app_guard = app.lock().unwrap();
-        app_guard
-            .set_status_slot(omega_session::StatusSlot::Project, session.project_status_value().unwrap());
+        app_guard.set_status_slot(
+            omega_session::StatusSlot::Project,
+            session.project_status_value().unwrap(),
+        );
         app_guard.bottom_status_rect = ratatui::layout::Rect::new(0, 20, 120, 1);
     }
 
@@ -556,7 +565,10 @@ fn mouse_click_on_bottom_status_opens_project_detail_when_project_slot_present()
             assert_eq!(detail.title, " Project ");
             assert!(detail.lines.iter().any(|line| line.contains("project_id:")));
             assert!(detail.lines.iter().any(|line| line.contains("sessions:")));
-            assert!(detail.lines.iter().any(|line| line.contains(&root.display().to_string())));
+            assert!(detail
+                .lines
+                .iter()
+                .any(|line| line.contains(&root.display().to_string())));
         }
         other => panic!("expected project detail overlay, got {other:?}"),
     }
@@ -573,10 +585,7 @@ fn mouse_click_on_sidebar_child_panel_selects_item() {
     {
         let mut app_guard = app.lock().unwrap();
         app_guard.todo_rect = ratatui::layout::Rect::new(60, 1, 20, 8);
-        app_guard.todo_lines = vec![
-            "○ first item".to_string(),
-            "→ active item".to_string(),
-        ];
+        app_guard.todo_lines = vec!["○ first item".to_string(), "→ active item".to_string()];
         app_guard.todo_displayed_count = 2;
     }
 
@@ -611,10 +620,7 @@ fn mouse_click_on_sidebar_child_panel_header_focuses_panel() {
     {
         let mut app_guard = app.lock().unwrap();
         app_guard.todo_rect = ratatui::layout::Rect::new(60, 1, 20, 8);
-        app_guard.todo_lines = vec![
-            "○ first item".to_string(),
-            "→ active item".to_string(),
-        ];
+        app_guard.todo_lines = vec!["○ first item".to_string(), "→ active item".to_string()];
         app_guard.todo_displayed_count = 2;
     }
 
@@ -686,9 +692,7 @@ fn mouse_click_on_sidebar_more_lines_hint_focuses_panel() {
     {
         let mut app_guard = app.lock().unwrap();
         app_guard.todo_rect = ratatui::layout::Rect::new(60, 1, 20, 10);
-        app_guard.todo_lines = (0..10)
-            .map(|index| format!("○ item {index}"))
-            .collect();
+        app_guard.todo_lines = (0..10).map(|index| format!("○ item {index}")).collect();
         app_guard.todo_displayed_count = 7;
     }
 
@@ -838,7 +842,10 @@ fn response_panel_jk_and_enter_expand_selected_reasoning() {
         .find(|message| message.id.as_deref() == Some("thinking-1"))
         .unwrap();
     assert!(!thinking.collapsed);
-    assert_eq!(app_guard.status_notice.as_deref(), Some("Thinking expanded."));
+    assert_eq!(
+        app_guard.status_notice.as_deref(),
+        Some("Thinking expanded.")
+    );
 }
 
 #[test]
@@ -1028,7 +1035,10 @@ fn leader_jk_enters_insert_mode_while_turn_running() {
 
     let app_guard = app.lock().unwrap();
     assert_eq!(app_guard.interaction_mode, InteractionMode::Insert);
-    assert!(app_guard.status_notice.as_deref().is_some_and(|notice| notice.contains("Mode: Insert")));
+    assert!(app_guard
+        .status_notice
+        .as_deref()
+        .is_some_and(|notice| notice.contains("Mode: Insert")));
 }
 
 #[test]
@@ -1640,7 +1650,10 @@ fn picker_enter_opens_selected_item_detail_overlay() {
     match app_guard.overlay.as_ref() {
         Some(OverlayState::Detail(detail)) => {
             assert!(detail.title.contains("Session Alpha"));
-            assert!(detail.lines.iter().any(|line| line.contains("session-alpha")));
+            assert!(detail
+                .lines
+                .iter()
+                .any(|line| line.contains("session-alpha")));
         }
         other => panic!("expected detail overlay, got {other:?}"),
     }
@@ -1666,7 +1679,10 @@ fn picker_filter_reduces_visible_items() {
             assert!(picker.filter_mode);
             assert_eq!(picker.filter_query, "be");
             assert_eq!(picker.visible_items_len(), 1);
-            assert_eq!(picker.selected_item().map(|item| item.id.as_str()), Some("session-beta"));
+            assert_eq!(
+                picker.selected_item().map(|item| item.id.as_str()),
+                Some("session-beta")
+            );
         }
         other => panic!("expected picker overlay, got {other:?}"),
     }
@@ -1691,7 +1707,10 @@ fn document_navigator_keys_switch_active_entry_and_scroll_content() {
     match app_guard.overlay.as_ref() {
         Some(OverlayState::DocumentNavigator(overlay)) => {
             assert_eq!(overlay.request.active_entry_id, "src/navigator.rs");
-            assert_eq!(overlay.focus, crate::overlay::DocumentNavigatorFocus::Content);
+            assert_eq!(
+                overlay.focus,
+                crate::overlay::DocumentNavigatorFocus::Content
+            );
             assert_eq!(overlay.content_scroll, 1);
             assert_eq!(
                 overlay.history_entry_ids,
@@ -1788,7 +1807,10 @@ fn picker_enter_submits_plan_view_file_and_opens_document_navigator_overlay() {
     let app_guard = app.lock().unwrap();
     match app_guard.overlay.as_ref() {
         Some(OverlayState::DocumentNavigator(overlay)) => {
-            assert_eq!(overlay.request.navigator_id, "plan-view-file:docs/specs/navigator.md");
+            assert_eq!(
+                overlay.request.navigator_id,
+                "plan-view-file:docs/specs/navigator.md"
+            );
             assert_eq!(overlay.request.active_entry_id, "docs/specs/navigator.md");
             assert!(overlay
                 .request
@@ -1854,17 +1876,19 @@ fn picker_confirm_shortcut_opens_confirm_overlay_and_runs_command_after_confirma
 
     loop {
         let envelope = rx.recv_timeout(Duration::from_secs(2)).unwrap();
-        if matches!(&envelope.message, RuntimeMessage::State(StateMessage::TurnFinished)) {
+        if matches!(
+            &envelope.message,
+            RuntimeMessage::State(StateMessage::TurnFinished)
+        ) {
             break;
         }
     }
 
     let app_guard = app.lock().unwrap();
     assert!(app_guard.overlay.is_none());
-    assert!(app_guard
-        .output_msgs
-        .iter()
-        .any(|message| message.text.contains("> /session delete session-alpha --picker")));
+    assert!(app_guard.output_msgs.iter().any(|message| message
+        .text
+        .contains("> /session delete session-alpha --picker")));
 }
 
 fn sample_operator_picker_request() -> OperatorPickerRequest {

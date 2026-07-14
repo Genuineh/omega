@@ -33,3 +33,11 @@ learn/hindsight/**
 .fastembed_cache/**
 **/.fastembed_cache/**
 
+# Build / nix output that lives outside the top-level `target/` glob:
+# - omega-hpc sub-workspace has its own `target/` (12 GB+ of dependency artifacts)
+# - `result` is the nix flake build symlink (often points into /nix/store)
+# - `node_modules/**` is defensive for any future JS tooling
+omega-hpc/target/**
+**/result/**
+**/node_modules/**
+

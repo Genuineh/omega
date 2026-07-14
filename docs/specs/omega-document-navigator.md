@@ -1,9 +1,12 @@
 ---
-content_revision: 122
-generation_id: gen_000046_r000122
+content_revision: 174
+generation_id: gen_000087_r000174
+language: en
+last_verified_commit: 152deb1818837dc5c3e7575c7010dc965eef2c38
 owner: omega-team
-projection_version: 46
-source_doc_id: "spec:omega-document-navigator"
+projection_version: 87
+source_doc_id: "spec:docs-specs-omega-document-navigator"
+source_path: docs/specs/omega-document-navigator.md
 status: draft
 updated: 2026-04-24
 ---
@@ -171,3 +174,7 @@ The resolver returns a `ResolvedDocument` containing both the `StructuredDocumen
 - `omega-session`: new picker/navigator request builders, updated command handlers
 - `omega-tui`: no new overlay types needed — reuses `PickerOverlay`, `DocumentNavigatorOverlay`, and overlay routing stack
 - `omega-document`: no changes needed — existing `FileRecord`, `StructuredDocumentRecord`, and search APIs are sufficient
+
+## Implementation Note
+
+The `omega-project-layout`, `omega-memory`, `omega-document`, and `omega-doc-cli` crates referenced in this spec moved to the `omega-hpc/` sub-workspace on 2026-06-02 and are now `omega-hpc-paths`, `omega-hpc-memory`, `omega-hpc-document`, and `omega-hpc-doc-cli` respectively. Public type and binary names are unchanged. See [`docs/specs/omega-hpc-extraction.md`](omega-hpc-extraction.md) for the full mapping and [`docs/decisions/007-omega-hpc-extraction.md`](../decisions/007-omega-hpc-extraction.md) for the architecture decision.

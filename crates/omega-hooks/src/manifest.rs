@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use omega_project_layout::{OmegaProjectLayout, HOOK_SOURCE_DIR_PATH};
+use omega_hpc_paths::{OmegaProjectLayout, HOOK_SOURCE_DIR_PATH};
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_HOOKS_DIR: &str = HOOK_SOURCE_DIR_PATH;
@@ -144,10 +144,7 @@ fn resolve_artifact_path(root: &Path, hook_id: &str, artifact: &Path) -> PathBuf
         return artifact.to_path_buf();
     }
 
-    if artifact
-        .to_string_lossy()
-        .starts_with("builtin:")
-    {
+    if artifact.to_string_lossy().starts_with("builtin:") {
         return artifact.to_path_buf();
     }
 
@@ -164,7 +161,8 @@ mod tests {
     #[test]
     fn relative_hook_artifacts_resolve_under_state_root() {
         let root = std::env::temp_dir().join("omega-hooks-layout-test");
-        let artifact_path = resolve_artifact_path(&root, "sample-hook", std::path::Path::new("libsample.so"));
+        let artifact_path =
+            resolve_artifact_path(&root, "sample-hook", std::path::Path::new("libsample.so"));
 
         assert_eq!(
             artifact_path,
@@ -185,6 +183,9 @@ mod tests {
         .unwrap();
 
         let entry = HookManifestEntry::load(&root, &manifest_path).unwrap();
-        assert_eq!(entry.artifact_path, std::path::PathBuf::from("builtin:sample-hook"));
+        assert_eq!(
+            entry.artifact_path,
+            std::path::PathBuf::from("builtin:sample-hook")
+        );
     }
 }

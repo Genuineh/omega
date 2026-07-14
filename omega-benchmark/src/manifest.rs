@@ -57,11 +57,22 @@ pub struct BenchmarkCase {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ExpectedOutcome {
-    ExactMatch { value: String },
-    QuasiExactMatch { value: String, tolerance: Option<String> },
-    ToolCalls { calls: Vec<ExpectedToolCall> },
-    SchemaValid { schema: serde_json::Value },
-    JudgePass { rubric: String },
+    ExactMatch {
+        value: String,
+    },
+    QuasiExactMatch {
+        value: String,
+        tolerance: Option<String>,
+    },
+    ToolCalls {
+        calls: Vec<ExpectedToolCall>,
+    },
+    SchemaValid {
+        schema: serde_json::Value,
+    },
+    JudgePass {
+        rubric: String,
+    },
     NoToolCall,
 }
 

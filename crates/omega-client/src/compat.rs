@@ -274,9 +274,50 @@ fn content_block_to_anthropic(block: ContentBlock, cache_control: bool) -> Anthr
             is_error,
         } => AnthropicContentBlock::ToolResult {
             tool_use_id,
-            content,
+            // T-73: Anthropic's `tool_result.content` field
+            // only accepts a string OR an array of content
+            // blocks. When omega's `ToolResult::as_content_value`
+            // returns a `Value::Object` (i.e. an error result
+            // with `error_kind` / `remediation` / `metadata` /
+            // `preview` / `truncated` set), passing the object
+            // directly to Anthropic causes the provider to
+            // reject the request with `invalid tool_result
+            // content (2013)`. Sanitize the content at this
+            // boundary: strings and arrays pass through
+            // unchanged; any other shape (object / number /
+            // bool / null) is serialised to a JSON string so
+            // the provider accepts it.
+            content: sanitize_tool_result_content_for_anthropic(content),
             is_error,
         },
+    }
+}
+
+/// Sanitise an omega `tool_result.content` value into a shape
+/// the Anthropic Messages API accepts. Strings and arrays
+/// pass through unchanged; objects, numbers, booleans, and
+/// nulls are serialised to a JSON string. See T-73.
+fn sanitize_tool_result_content_for_anthropic(
+    content: serde_json::Value,
+) -> serde_json::Value {
+    use serde_json::Value;
+    match content {
+        Value::String(_) => content,
+        Value::Array(_) => content,
+        // Null and primitive scalars → human-readable string.
+        Value::Null => Value::String(String::new()),
+        other @ (Value::Bool(_) | Value::Number(_)) => {
+            Value::String(other.to_string())
+        }
+        // Object → compact JSON string. The omega-internal
+        // `Value::Object` representation (full `ToolResult`
+        // struct, used by the recovery loop) is preserved
+        // upstream of this conversion; we just emit a string
+        // for Anthropic so the provider accepts the request.
+        Value::Object(_) => Value::String(
+            serde_json::to_string(&content)
+                .unwrap_or_else(|_| content.to_string()),
+        ),
     }
 }
 
@@ -360,6 +401,96 @@ fn anthropic_stream_event_to_chat_event(event: AnthropicStreamEvent) -> ChatEven
                     cache_read_input_tokens: usage.cache_read_input_tokens,
                 }),
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod t73_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn t73_string_content_passes_through() {
+        let v = json!("hello world");
+        let out = sanitize_tool_result_content_for_anthropic(v.clone());
+        assert_eq!(out, v);
+    }
+
+    #[test]
+    fn t73_array_content_passes_through() {
+        let v = json!([{"type": "text", "text": "hi"}]);
+        let out = sanitize_tool_result_content_for_anthropic(v.clone());
+        assert_eq!(out, v);
+    }
+
+    #[test]
+    fn t73_object_content_becomes_json_string() {
+        // The trigger of the 2013 error: an error
+        // ToolResult whose `as_content_value()` returned the
+        // full struct (a JSON object) instead of a string.
+        let v = json!({
+            "output": "Error: blocked",
+            "preview": null,
+            "metadata": {},
+            "truncated": false,
+            "error_kind": "policy",
+            "remediation": null
+        });
+        let out = sanitize_tool_result_content_for_anthropic(v);
+        // The output must be a string (not an object) so
+        // Anthropic accepts it.
+        match &out {
+            serde_json::Value::String(s) => {
+                assert!(s.contains("policy"));
+                assert!(s.contains("Error: blocked"));
+            }
+            other => panic!("expected Value::String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn t73_null_content_becomes_empty_string() {
+        let v = serde_json::Value::Null;
+        let out = sanitize_tool_result_content_for_anthropic(v);
+        assert_eq!(out, json!(""));
+    }
+
+    #[test]
+    fn t73_number_content_becomes_string() {
+        let v = json!(42);
+        let out = sanitize_tool_result_content_for_anthropic(v);
+        assert_eq!(out, json!("42"));
+    }
+
+    #[test]
+    fn t73_tool_result_block_with_error_kind_serializes_to_string_for_anthropic() {
+        // End-to-end: take an error ToolResult from omega's
+        // internal helpers, convert it to Anthropic's wire
+        // format, and verify the `content` field is a string
+        // (not an object). This is the exact path that
+        // caused the 2013 invalid_request_error.
+        let block = ContentBlock::ToolResult {
+            tool_use_id: "tool-1".to_string(),
+            content: json!({
+                "output": "Error: blocked by policy",
+                "preview": "blocked",
+                "metadata": {"k": "v"},
+                "truncated": false,
+                "error_kind": "policy",
+                "remediation": null
+            }),
+            is_error: Some(true),
+        };
+        let anthropic = content_block_to_anthropic(block, false);
+        match anthropic {
+            AnthropicContentBlock::ToolResult { content, .. } => {
+                assert!(
+                    matches!(content, serde_json::Value::String(_)),
+                    "Anthropic-bound content must be a string; got {:?}", content
+                );
+            }
+            other => panic!("expected ToolResult, got {:?}", other),
         }
     }
 }

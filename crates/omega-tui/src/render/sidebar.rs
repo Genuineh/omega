@@ -9,6 +9,7 @@ use ratatui::{
 use omega_theme::RenderPalette as ColorScheme;
 
 use crate::app::{wrap_text_segments, App, Panel};
+use crate::render::component::{FocusState, Panel as PanelChrome};
 use crate::sidebar::SidebarSection;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,7 +99,12 @@ pub(super) fn render_sidebar_rail(
         spans.push(Span::styled(text, style));
     }
 
-    let scroll_x = sidebar_rail_scroll_offset(&sections, &item_widths, app.sidebar.rail_selection, area.width as usize);
+    let scroll_x = sidebar_rail_scroll_offset(
+        &sections,
+        &item_widths,
+        app.sidebar.rail_selection,
+        area.width as usize,
+    );
     frame.render_widget(
         Paragraph::new(Line::from(spans))
             .style(Style::default().bg(colors.sidebar_rail_bg))
@@ -129,7 +135,9 @@ fn sidebar_rail_scroll_offset(
     let selected_width = item_widths[selected_index];
     let selected_end = selected_start + selected_width;
 
-    selected_end.saturating_sub(viewport_width).min(selected_start)
+    selected_end
+        .saturating_sub(viewport_width)
+        .min(selected_start)
 }
 
 fn sidebar_rail_item_width(section: SidebarSection, count: &str) -> usize {
@@ -221,8 +229,13 @@ pub(super) fn render_sidebar_body(
             let diagnostics_title = app.diagnostics_panel_title();
             let diagnostics_inner_w = (rect.width as usize).saturating_sub(2).max(1);
             let app_ref: &App = &*app;
-            let diagnostics_items =
-                render_sidebar_items(app_ref, Panel::Diagnostics, diagnostics_inner_w, rect.height, colors);
+            let diagnostics_items = render_sidebar_items(
+                app_ref,
+                Panel::Diagnostics,
+                diagnostics_inner_w,
+                rect.height,
+                colors,
+            );
             let diagnostics_total = diagnostics_items.len();
             app.diagnostics_displayed_count = diagnostics_total;
             if !app.diagnostics_pinned && diagnostics_total > 0 {
@@ -230,12 +243,12 @@ pub(super) fn render_sidebar_body(
             }
             let diagnostics_list = List::new(diagnostics_items)
                 .block(
-                    Block::default()
-                        .border_type(colors.panel_border_type)
-                        .title(styled_title(&diagnostics_title, focused, colors))
-                        .borders(Borders::ALL)
-                        .border_style(sidebar_section_border_style(focused, colors))
-                        .style(Style::default().bg(colors.sidebar_bg)),
+                    PanelChrome::new(styled_title(&diagnostics_title, focused, colors))
+                        .focus(FocusState::new(focused))
+                        .with_bg(colors.sidebar_bg)
+                        .with_border_colors(colors.focus_border, colors.section_outline)
+                        .with_title_colors(colors.title_fg, colors.section_header_fg)
+                        .block(),
                 )
                 .highlight_style(Style::default())
                 .style(section_body_style(focused, colors));
@@ -255,7 +268,8 @@ pub(super) fn render_sidebar_body(
             let title = app.delivery_panel_title();
             let inner_w = (rect.width as usize).saturating_sub(2).max(1);
             let app_ref: &App = &*app;
-            let items = render_sidebar_items(app_ref, Panel::Delivery, inner_w, rect.height, colors);
+            let items =
+                render_sidebar_items(app_ref, Panel::Delivery, inner_w, rect.height, colors);
             let total = items.len();
             app.delivery_displayed_count = total;
             if !app.delivery_pinned && total > 0 {
@@ -263,12 +277,12 @@ pub(super) fn render_sidebar_body(
             }
             let list = List::new(items)
                 .block(
-                    Block::default()
-                        .border_type(colors.panel_border_type)
-                        .title(styled_title(&title, focused, colors))
-                        .borders(Borders::ALL)
-                        .border_style(sidebar_section_border_style(focused, colors))
-                        .style(Style::default().bg(colors.sidebar_bg)),
+                    PanelChrome::new(styled_title(&title, focused, colors))
+                        .focus(FocusState::new(focused))
+                        .with_bg(colors.sidebar_bg)
+                        .with_border_colors(colors.focus_border, colors.section_outline)
+                        .with_title_colors(colors.title_fg, colors.section_header_fg)
+                        .block(),
                 )
                 .highlight_style(Style::default())
                 .style(section_body_style(focused, colors));
@@ -296,12 +310,12 @@ pub(super) fn render_sidebar_body(
             }
             let list = List::new(items)
                 .block(
-                    Block::default()
-                        .border_type(colors.panel_border_type)
-                        .title(styled_title(&title, focused, colors))
-                        .borders(Borders::ALL)
-                        .border_style(sidebar_section_border_style(focused, colors))
-                        .style(Style::default().bg(colors.sidebar_bg)),
+                    PanelChrome::new(styled_title(&title, focused, colors))
+                        .focus(FocusState::new(focused))
+                        .with_bg(colors.sidebar_bg)
+                        .with_border_colors(colors.focus_border, colors.section_outline)
+                        .with_title_colors(colors.title_fg, colors.section_header_fg)
+                        .block(),
                 )
                 .highlight_style(Style::default())
                 .style(section_body_style(focused, colors));
@@ -354,7 +368,8 @@ pub(super) fn render_sidebar_body(
             let title = app.knowledge_panel_title();
             let inner_w = (rect.width as usize).saturating_sub(2).max(1);
             let app_ref: &App = &*app;
-            let items = render_sidebar_items(app_ref, Panel::Document, inner_w, rect.height, colors);
+            let items =
+                render_sidebar_items(app_ref, Panel::Document, inner_w, rect.height, colors);
             let total = items.len();
             app.document_displayed_count = total;
             if !app.document_pinned && total > 0 {
@@ -388,7 +403,8 @@ pub(super) fn render_sidebar_body(
             let todo_title = app.todo_panel_title();
             let todo_inner_w = (rect.width as usize).saturating_sub(2).max(1);
             let app_ref: &App = &*app;
-            let todo_items = render_sidebar_items(app_ref, Panel::Todo, todo_inner_w, rect.height, colors);
+            let todo_items =
+                render_sidebar_items(app_ref, Panel::Todo, todo_inner_w, rect.height, colors);
             let todo_total = todo_items.len();
             app.todo_displayed_count = todo_total;
             if !app.todo_pinned && todo_total > 0 {
@@ -421,7 +437,8 @@ pub(super) fn render_sidebar_body(
             let logs_title = app.logs_panel_title();
             let logs_inner_w = (rect.width as usize).saturating_sub(2).max(1);
             let app_ref: &App = &*app;
-            let log_items = render_sidebar_items(app_ref, Panel::Logs, logs_inner_w, rect.height, colors);
+            let log_items =
+                render_sidebar_items(app_ref, Panel::Logs, logs_inner_w, rect.height, colors);
             let logs_total = log_items.len();
             app.logs_displayed_count = logs_total;
             if !app.logs_pinned && logs_total > 0 {
@@ -583,7 +600,11 @@ fn sidebar_view_anchor(app: &App, expanded: &[SidebarSection]) -> Option<Sidebar
 
     focused
         .filter(|section| expanded.contains(section))
-        .or_else(|| expanded.contains(&app.sidebar.rail_selection).then_some(app.sidebar.rail_selection))
+        .or_else(|| {
+            expanded
+                .contains(&app.sidebar.rail_selection)
+                .then_some(app.sidebar.rail_selection)
+        })
 }
 
 fn sidebar_section_weight(app: &App, section: SidebarSection) -> u32 {
@@ -675,30 +696,43 @@ fn selected_sidebar_item_index(app: &App, panel: Panel) -> Option<usize> {
     }
 }
 
-fn wrapped_sidebar_display_lines(app: &App, panel: Panel, width: usize, height: u16) -> Vec<WrappedSidebarLine> {
+fn wrapped_sidebar_display_lines(
+    app: &App,
+    panel: Panel,
+    width: usize,
+    height: u16,
+) -> Vec<WrappedSidebarLine> {
     sidebar_display_lines(app, panel, height)
         .into_iter()
         .flat_map(|line| {
-            wrap_text_segments(&line.text, width)
-                .into_iter()
-                .map(move |(source_column_start, segment)| WrappedSidebarLine {
+            wrap_text_segments(&line.text, width).into_iter().map(
+                move |(source_column_start, segment)| WrappedSidebarLine {
                     source_line_index: line.source_line_index,
                     source_column_start,
                     text: segment,
                     kind: line.kind,
-                })
+                },
+            )
         })
         .collect()
 }
 
-fn sidebar_display_lines(app: &App, panel: Panel, available_height: u16) -> Vec<SidebarDisplayLine> {
+fn sidebar_display_lines(
+    app: &App,
+    panel: Panel,
+    available_height: u16,
+) -> Vec<SidebarDisplayLine> {
     let raw_lines = app.panel_lines(panel);
     let focused = app.focused_panel == panel;
     let preview_limit = sidebar_preview_limit(panel, focused);
     // Suppress overflow hint when the panel is tall enough to show all lines without truncation.
     let inner_h = available_height.saturating_sub(2) as usize;
     let fits_in_height = inner_h > 0 && raw_lines.len() <= inner_h;
-    let effective_limit = if fits_in_height { usize::MAX } else { preview_limit };
+    let effective_limit = if fits_in_height {
+        usize::MAX
+    } else {
+        preview_limit
+    };
     let mut visible = Vec::new();
 
     for (index, text) in raw_lines.iter().enumerate() {
@@ -752,7 +786,9 @@ fn sidebar_preview_text(text: &str, kind: SidebarLineKind, focused: bool) -> Str
         SidebarLineKind::Metric | SidebarLineKind::StatusOk | SidebarLineKind::StatusWarn => 34,
         SidebarLineKind::StatusError => 30,
         SidebarLineKind::Codeish | SidebarLineKind::LogTool => 38,
-        SidebarLineKind::TodoActive | SidebarLineKind::TodoPending | SidebarLineKind::TodoDone => 34,
+        SidebarLineKind::TodoActive | SidebarLineKind::TodoPending | SidebarLineKind::TodoDone => {
+            34
+        }
         SidebarLineKind::EmptyState
         | SidebarLineKind::Summary
         | SidebarLineKind::Meta
@@ -776,9 +812,12 @@ fn truncate_sidebar_preview(text: &str, max_chars: usize) -> String {
 
 fn sidebar_overflow_hint(panel: Panel, hidden_lines: usize) -> String {
     let action = match panel {
-        Panel::Diagnostics | Panel::Delivery | Panel::Skills | Panel::Project | Panel::Document | Panel::Memory => {
-            "focus panel for detail"
-        }
+        Panel::Diagnostics
+        | Panel::Delivery
+        | Panel::Skills
+        | Panel::Project
+        | Panel::Document
+        | Panel::Memory => "focus panel for detail",
         Panel::Todo | Panel::Logs => "focus panel to scroll",
         _ => "open for more",
     };
@@ -836,16 +875,25 @@ fn classify_summary_like_line(trimmed: &str) -> SidebarLineKind {
     if trimmed.starts_with("… ") {
         return SidebarLineKind::Hint;
     }
-    if trimmed.starts_with("planned ") || trimmed.starts_with("rewrite ") || trimmed.starts_with("reason:") {
+    if trimmed.starts_with("planned ")
+        || trimmed.starts_with("rewrite ")
+        || trimmed.starts_with("reason:")
+    {
         return SidebarLineKind::Meta;
     }
-    if trimmed.starts_with("hits:") || trimmed.starts_with("activity:") || trimmed.starts_with("usage:") {
+    if trimmed.starts_with("hits:")
+        || trimmed.starts_with("activity:")
+        || trimmed.starts_with("usage:")
+    {
         return SidebarLineKind::SectionLabel;
     }
     if let Some((label, value)) = trimmed.split_once(':') {
         let lower_label = label.to_ascii_lowercase();
         let lower_value = value.trim().to_ascii_lowercase();
-        if lower_label.contains("status") || lower_label.contains("health") || lower_label.contains("freshness") {
+        if lower_label.contains("status")
+            || lower_label.contains("health")
+            || lower_label.contains("freshness")
+        {
             return classify_status_value(&lower_value);
         }
         if lower_label.contains("totals")
@@ -872,7 +920,10 @@ fn classify_summary_like_line(trimmed: &str) -> SidebarLineKind {
                 SidebarLineKind::Summary
             };
         }
-        if lower_label.contains("reason") || lower_label.contains("rewrite") || lower_label.contains("recovery") {
+        if lower_label.contains("reason")
+            || lower_label.contains("rewrite")
+            || lower_label.contains("recovery")
+        {
             return SidebarLineKind::Meta;
         }
         if lower_value.chars().any(|ch| ch.is_ascii_digit()) {
@@ -1028,8 +1079,12 @@ mod tests {
         let lines = sidebar_display_lines(&app, Panel::Delivery, 0);
 
         assert_eq!(lines.len(), 7);
-        assert!(lines.last().is_some_and(|line| line.kind == SidebarLineKind::Hint));
-        assert!(lines.last().is_some_and(|line| line.text.contains("focus panel for detail")));
+        assert!(lines
+            .last()
+            .is_some_and(|line| line.kind == SidebarLineKind::Hint));
+        assert!(lines
+            .last()
+            .is_some_and(|line| line.text.contains("focus panel for detail")));
     }
 
     #[test]
@@ -1037,7 +1092,8 @@ mod tests {
         let mut app = App::new();
         app.focused_panel = Panel::Response;
         app.delivery_lines = vec![
-            "active task: prepare a very long implementation summary for the first scan".to_string(),
+            "active task: prepare a very long implementation summary for the first scan"
+                .to_string(),
         ];
 
         let lines = sidebar_display_lines(&app, Panel::Delivery, 0);
@@ -1048,10 +1104,22 @@ mod tests {
 
     #[test]
     fn sidebar_line_taxonomy_distinguishes_status_metric_and_empty_lines() {
-        assert_eq!(classify_sidebar_line(Panel::Delivery, "status: enabled (ready)"), SidebarLineKind::StatusOk);
-        assert_eq!(classify_sidebar_line(Panel::Skills, "loaded: 3"), SidebarLineKind::Metric);
-        assert_eq!(classify_sidebar_line(Panel::Document, "No knowledge supervision snapshot yet."), SidebarLineKind::EmptyState);
-        assert_eq!(classify_sidebar_line(Panel::Logs, "[tool] cargo test"), SidebarLineKind::LogTool);
+        assert_eq!(
+            classify_sidebar_line(Panel::Delivery, "status: enabled (ready)"),
+            SidebarLineKind::StatusOk
+        );
+        assert_eq!(
+            classify_sidebar_line(Panel::Skills, "loaded: 3"),
+            SidebarLineKind::Metric
+        );
+        assert_eq!(
+            classify_sidebar_line(Panel::Document, "No knowledge supervision snapshot yet."),
+            SidebarLineKind::EmptyState
+        );
+        assert_eq!(
+            classify_sidebar_line(Panel::Logs, "[tool] cargo test"),
+            SidebarLineKind::LogTool
+        );
     }
 
     #[test]
@@ -1091,8 +1159,7 @@ mod tests {
         ];
         let widths = vec![7, 8, 8, 8, 7, 7];
 
-        let offset =
-            sidebar_rail_scroll_offset(&sections, &widths, SidebarSection::Knowledge, 16);
+        let offset = sidebar_rail_scroll_offset(&sections, &widths, SidebarSection::Knowledge, 16);
 
         assert_eq!(offset, 15);
     }

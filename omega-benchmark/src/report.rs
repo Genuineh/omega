@@ -68,7 +68,9 @@ impl ReportStore {
     /// Save a run summary.
     pub fn save_summary(&self, summary: &RunSummary) -> anyhow::Result<PathBuf> {
         std::fs::create_dir_all(&self.runs_dir)?;
-        let path = self.runs_dir.join(format!("{}-summary.json", summary.run_id));
+        let path = self
+            .runs_dir
+            .join(format!("{}-summary.json", summary.run_id));
         let json = serde_json::to_string_pretty(summary)?;
         std::fs::write(&path, json)?;
         Ok(path)
@@ -91,11 +93,7 @@ impl ReportStore {
 
         let mut entries: Vec<_> = std::fs::read_dir(&self.baselines_dir)?
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path()
-                    .extension()
-                    .map_or(false, |ext| ext == "json")
-            })
+            .filter(|e| e.path().extension().map_or(false, |ext| ext == "json"))
             .collect();
 
         if entries.is_empty() {
@@ -241,7 +239,10 @@ mod tests {
 
     #[test]
     fn detects_improvement() {
-        let store = ReportStore::new(PathBuf::from("/tmp/test-runs"), PathBuf::from("/tmp/test-baselines"));
+        let store = ReportStore::new(
+            PathBuf::from("/tmp/test-runs"),
+            PathBuf::from("/tmp/test-baselines"),
+        );
         let baseline = make_summary("run-001", 0.7, 0.7);
         let current = make_summary("run-002", 0.85, 0.85);
         let diff = store.compare(&current, &baseline);
@@ -251,7 +252,10 @@ mod tests {
 
     #[test]
     fn detects_regression() {
-        let store = ReportStore::new(PathBuf::from("/tmp/test-runs"), PathBuf::from("/tmp/test-baselines"));
+        let store = ReportStore::new(
+            PathBuf::from("/tmp/test-runs"),
+            PathBuf::from("/tmp/test-baselines"),
+        );
         let baseline = make_summary("run-001", 0.9, 0.9);
         let current = make_summary("run-002", 0.75, 0.75);
         let diff = store.compare(&current, &baseline);
@@ -261,7 +265,10 @@ mod tests {
 
     #[test]
     fn detects_unchanged() {
-        let store = ReportStore::new(PathBuf::from("/tmp/test-runs"), PathBuf::from("/tmp/test-baselines"));
+        let store = ReportStore::new(
+            PathBuf::from("/tmp/test-runs"),
+            PathBuf::from("/tmp/test-baselines"),
+        );
         let baseline = make_summary("run-001", 0.8, 0.8);
         let current = make_summary("run-002", 0.8, 0.8);
         let diff = store.compare(&current, &baseline);
@@ -270,7 +277,10 @@ mod tests {
 
     #[test]
     fn format_diff_produces_output() {
-        let store = ReportStore::new(PathBuf::from("/tmp/test-runs"), PathBuf::from("/tmp/test-baselines"));
+        let store = ReportStore::new(
+            PathBuf::from("/tmp/test-runs"),
+            PathBuf::from("/tmp/test-baselines"),
+        );
         let baseline = make_summary("run-001", 0.7, 0.7);
         let current = make_summary("run-002", 0.85, 0.85);
         let diff = store.compare(&current, &baseline);

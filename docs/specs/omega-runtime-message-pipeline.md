@@ -1,12 +1,14 @@
 ---
-content_revision: 120
+content_revision: 174
 created: 2026-03-26
-generation_id: gen_000046_r000120
-last_verified_commit: N/A
+generation_id: gen_000087_r000174
+language: bilingual
+last_verified_commit: d8c30e3e9e310ce38cffa965be4688ed55a87787
 owner: omega-team
-projection_version: 46
-related_prds: []
+projection_version: 87
+related_prds: "[]"
 source_doc_id: "spec:docs-specs-omega-runtime-message-pipeline"
+source_path: docs/specs/omega-runtime-message-pipeline.md
 status: implemented
 supersedes:
   - docs/specs/omega-runtime-event-presentation-boundary.md (v0.1)

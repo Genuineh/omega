@@ -7,5 +7,5 @@ edition.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 toml.workspace = true
-omega-project-layout = { path = "../omega-project-layout" }
+omega-hpc-paths = { path = "../../omega-hpc/crates/omega-hpc-paths" }
 omega-tools-builtin = { path = "../omega-tools-builtin" }

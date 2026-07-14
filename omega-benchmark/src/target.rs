@@ -1,5 +1,5 @@
-use crate::manifest::BenchmarkCase;
 use crate::config::RunConfig;
+use crate::manifest::BenchmarkCase;
 use crate::result::ToolTraceEntry;
 
 use std::sync::Arc;
@@ -27,11 +27,7 @@ pub struct TargetOutput {
 /// structured output without depending on TUI or any specific UI surface.
 pub trait BenchmarkTarget {
     /// Execute a single benchmark case and collect results.
-    fn execute(
-        &self,
-        case: &BenchmarkCase,
-        config: &RunConfig,
-    ) -> anyhow::Result<TargetOutput>;
+    fn execute(&self, case: &BenchmarkCase, config: &RunConfig) -> anyhow::Result<TargetOutput>;
 }
 
 /// Stub target for development and offline scoring.
@@ -41,11 +37,7 @@ pub trait BenchmarkTarget {
 pub struct StubTarget;
 
 impl BenchmarkTarget for StubTarget {
-    fn execute(
-        &self,
-        _case: &BenchmarkCase,
-        _config: &RunConfig,
-    ) -> anyhow::Result<TargetOutput> {
+    fn execute(&self, _case: &BenchmarkCase, _config: &RunConfig) -> anyhow::Result<TargetOutput> {
         Ok(TargetOutput {
             response: None,
             tool_trace: Vec::new(),
@@ -85,11 +77,7 @@ impl OmegaTarget {
 }
 
 impl BenchmarkTarget for OmegaTarget {
-    fn execute(
-        &self,
-        case: &BenchmarkCase,
-        config: &RunConfig,
-    ) -> anyhow::Result<TargetOutput> {
+    fn execute(&self, case: &BenchmarkCase, config: &RunConfig) -> anyhow::Result<TargetOutput> {
         let start = std::time::Instant::now();
 
         let runtime = tokio::runtime::Runtime::new()?;
@@ -120,13 +108,11 @@ impl BenchmarkTarget for OmegaTarget {
             recorder.runtime_bridge(),
         )?;
 
-        let timeout = Duration::from_secs(
-            config.effective_timeout(case.timeout_secs).unwrap_or(120),
-        );
+        let timeout =
+            Duration::from_secs(config.effective_timeout(case.timeout_secs).unwrap_or(120));
 
-        let messages = std::panic::catch_unwind(|| {
-            recorder.wait_for_turn_finished_messages(turn_id, timeout)
-        });
+        let messages =
+            std::panic::catch_unwind(|| recorder.wait_for_turn_finished_messages(turn_id, timeout));
 
         let messages = match messages {
             Ok(msgs) => msgs,
@@ -200,11 +186,7 @@ impl ScriptedTarget {
 }
 
 impl BenchmarkTarget for ScriptedTarget {
-    fn execute(
-        &self,
-        case: &BenchmarkCase,
-        config: &RunConfig,
-    ) -> anyhow::Result<TargetOutput> {
+    fn execute(&self, case: &BenchmarkCase, config: &RunConfig) -> anyhow::Result<TargetOutput> {
         let responses = self
             .scripts
             .get(&case.id)
@@ -246,13 +228,11 @@ impl BenchmarkTarget for ScriptedTarget {
             recorder.runtime_bridge(),
         )?;
 
-        let timeout = Duration::from_secs(
-            config.effective_timeout(case.timeout_secs).unwrap_or(30),
-        );
+        let timeout =
+            Duration::from_secs(config.effective_timeout(case.timeout_secs).unwrap_or(30));
 
-        let messages = std::panic::catch_unwind(|| {
-            recorder.wait_for_turn_finished_messages(turn_id, timeout)
-        });
+        let messages =
+            std::panic::catch_unwind(|| recorder.wait_for_turn_finished_messages(turn_id, timeout));
 
         let messages = match messages {
             Ok(msgs) => msgs,
@@ -283,16 +263,11 @@ impl BenchmarkTarget for ScriptedTarget {
 }
 
 /// Extract tool trace entries from recorded runtime messages.
-fn extract_tool_trace(
-    messages: &[omega_session::RuntimeMessageEnvelope],
-) -> Vec<ToolTraceEntry> {
+fn extract_tool_trace(messages: &[omega_session::RuntimeMessageEnvelope]) -> Vec<ToolTraceEntry> {
     messages
         .iter()
         .filter_map(|envelope| match &envelope.message {
-            RuntimeMessage::Conversation(ConversationMessage::CompleteToolRun {
-                id,
-                status,
-            }) => {
+            RuntimeMessage::Conversation(ConversationMessage::CompleteToolRun { id, status }) => {
                 // Find the matching BeginToolRun to get tool_name
                 let begin = messages.iter().find_map(|e| match &e.message {
                     RuntimeMessage::Conversation(ConversationMessage::BeginToolRun {
@@ -300,9 +275,7 @@ fn extract_tool_trace(
                     }) if tool_run.id == *id => Some(tool_run),
                     _ => None,
                 });
-                let tool_name = begin
-                    .map(|tr| tr.tool_name.clone())
-                    .unwrap_or_default();
+                let tool_name = begin.map(|tr| tr.tool_name.clone()).unwrap_or_default();
                 Some(ToolTraceEntry {
                     tool_name,
                     arguments: serde_json::Value::Null,
@@ -322,9 +295,7 @@ fn extract_tool_trace(
 /// `ConversationMessage::AppendSection`. Both are captured here so offline
 /// scripted runs (which emit AppendSection) and live runs (which emit Text
 /// for the assembled final reply) both produce a non-None response.
-fn extract_response_text(
-    messages: &[omega_session::RuntimeMessageEnvelope],
-) -> Option<String> {
+fn extract_response_text(messages: &[omega_session::RuntimeMessageEnvelope]) -> Option<String> {
     use omega_session::{RuntimeContentKind, RuntimeSource};
 
     let mut parts = Vec::new();
@@ -392,11 +363,7 @@ impl RecordedTarget {
 }
 
 impl BenchmarkTarget for RecordedTarget {
-    fn execute(
-        &self,
-        case: &BenchmarkCase,
-        _config: &RunConfig,
-    ) -> anyhow::Result<TargetOutput> {
+    fn execute(&self, case: &BenchmarkCase, _config: &RunConfig) -> anyhow::Result<TargetOutput> {
         match self.records.get(&case.id) {
             Some(rec) => Ok(TargetOutput {
                 response: rec.response.clone(),

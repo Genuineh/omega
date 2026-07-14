@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use omega_tools::{ToolErrorKind, ToolHandler, ToolResult};
 use regex::Regex;
-use reqwest::Client;
 use reqwest::header::CONTENT_TYPE;
+use reqwest::Client;
 use serde_json::{json, Value};
 use std::future::Future;
 use std::time::Duration;
@@ -331,11 +331,8 @@ fn request_error_result(tool_name: &str, error: reqwest::Error, metadata: Value)
     } else {
         ToolErrorKind::Execution
     };
-    ToolResult::error(
-        format!("{tool_name} request failed: {error}"),
-        error_kind,
-    )
-    .with_metadata(metadata)
+    ToolResult::error(format!("{tool_name} request failed: {error}"), error_kind)
+        .with_metadata(metadata)
 }
 
 fn parse_search_results(body: &str, max_results: usize) -> Vec<WebSearchResult> {
@@ -356,9 +353,17 @@ fn parse_search_results(body: &str, max_results: usize) -> Vec<WebSearchResult> 
             let snippet_window_end = (match_end + 600).min(body.len());
             let snippet_window = &body[match_end..snippet_window_end];
             let title = collapse_whitespace(&strip_html(&decode_html_entities(
-                captures.name("title").map(|value| value.as_str()).unwrap_or(""),
+                captures
+                    .name("title")
+                    .map(|value| value.as_str())
+                    .unwrap_or(""),
             )));
-            let url = decode_html_entities(captures.name("url").map(|value| value.as_str()).unwrap_or(""));
+            let url = decode_html_entities(
+                captures
+                    .name("url")
+                    .map(|value| value.as_str())
+                    .unwrap_or(""),
+            );
             let snippet_capture = snippet_regex.captures(snippet_window);
             let snippet = collapse_whitespace(&strip_html(&decode_html_entities(
                 snippet_capture
@@ -368,10 +373,14 @@ fn parse_search_results(body: &str, max_results: usize) -> Vec<WebSearchResult> 
                             .name("snippet_a")
                             .or_else(|| captures.name("snippet_div"))
                     })
-                        .map(|value| value.as_str())
-                        .unwrap_or(""),
-                    )));
-            WebSearchResult { title, url, snippet }
+                    .map(|value| value.as_str())
+                    .unwrap_or(""),
+            )));
+            WebSearchResult {
+                title,
+                url,
+                snippet,
+            }
         })
         .filter(|result| !result.title.is_empty() && !result.url.is_empty())
         .collect()
@@ -393,7 +402,11 @@ fn render_search_output(query: &str, results: &[WebSearchResult]) -> String {
     lines.join("\n")
 }
 
-fn summarize_response(body: &str, content_type: &str, max_chars: usize) -> (Option<String>, String, bool) {
+fn summarize_response(
+    body: &str,
+    content_type: &str,
+    max_chars: usize,
+) -> (Option<String>, String, bool) {
     if content_type.contains("html") || content_type.contains("xml") {
         let title = extract_title(body);
         let text = html_to_text(body);
@@ -463,8 +476,8 @@ fn truncate_chars(text: &str, max_chars: usize) -> (String, bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_title, html_to_text, parse_search_results, WebFetchHandler};
     use super::WebSearchHandler;
+    use super::{extract_title, html_to_text, parse_search_results, WebFetchHandler};
     use omega_tools::ToolHandler;
     use serde_json::json;
 
@@ -503,7 +516,10 @@ mod tests {
             .execute_v2(json!({"url": "file:///tmp/test"}))
             .unwrap();
 
-        assert_eq!(result.error_kind, Some(omega_tools::ToolErrorKind::Validation));
+        assert_eq!(
+            result.error_kind,
+            Some(omega_tools::ToolErrorKind::Validation)
+        );
     }
 
     #[test]

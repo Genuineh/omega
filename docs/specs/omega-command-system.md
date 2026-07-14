@@ -1,18 +1,20 @@
 ---
-content_revision: 120
+content_revision: 174
 created: 2026-04-02
-generation_id: gen_000046_r000120
-last_verified_commit: N/A
+generation_id: gen_000087_r000174
+language: bilingual
+last_verified_commit: d8c30e3e9e310ce38cffa965be4688ed55a87787
 owner: omega-team
-projection_version: 46
+projection_version: 87
 related_prds:
   - docs/specs/omega-context-management.md
   - docs/specs/omega-tool-prompt-optimization.md
   - docs/specs/omega-tui-document-memory-supervision.md
 source_doc_id: "spec:docs-specs-omega-command-system"
+source_path: docs/specs/omega-command-system.md
 status: draft
-supersedes: []
-updated: 2026-04-03
+supersedes: "[]"
+updated: 2026-06-03
 ---
 
 # Omega Command System Specification
@@ -627,3 +629,7 @@ command result 可以同时镜像到 Activity 或 Overlay，但只要用户可�
 - 2026-04-02: v0.3 — 收窄 command source 到 builtin + tool-extension；删去 workflow/prompt-macro 当前范围；把 slash hint mode 与 `ResponseSectionKind::Command` 特殊展示提升为 Phase 1 基线；明确 command 结果必须进入 Response panel 的 typed section 通路。
 - 2026-04-02: v0.2 — 根据架构审查（8 项 findings）全面修订：CommandHandler trait 与 executor 边界分离（HIGH-1）；slash 检测改为两分支 + dispatch 通道方案（HIGH-2）；OmegaCommandOutcome::Overlay 增加 OverlayTarget，新增 CommandActivity variant（HIGH-3）；autocomplete 推迟到 Phase 2（HIGH-4）；新增 subcommand 字段（MEDIUM-5）；init/sync 语义明确区分（MEDIUM-6）；is_hidden 改为 is_enabled fn 指针（MEDIUM-7）；新增 MockCommandHandler 测试接缝（LOW-8）。
 - 2026-04-02: v0.1 初版规格创建，完成 Claude command system 参考分析，并将 `/document` 定义为 Omega 首个 command family。
+
+## Implementation Note
+
+The `omega-project-layout`, `omega-memory`, `omega-document`, and `omega-doc-cli` crates referenced in this spec moved to the `omega-hpc/` sub-workspace on 2026-06-02 and are now `omega-hpc-paths`, `omega-hpc-memory`, `omega-hpc-document`, and `omega-hpc-doc-cli` respectively. Public type and binary names are unchanged. See [`docs/specs/omega-hpc-extraction.md`](omega-hpc-extraction.md) for the full mapping and [`docs/decisions/007-omega-hpc-extraction.md`](../decisions/007-omega-hpc-extraction.md) for the architecture decision.

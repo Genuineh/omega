@@ -8,7 +8,7 @@ omega-command = { path = "../omega-command" }
 omega-compression = { path = "../omega-compression" }
 omega-context = { path = "../omega-context" }
 omega-core = { path = "../omega-core" }
-omega-document = { path = "../omega-document" }
+omega-hpc-document = { path = "../../omega-hpc/crates/omega-hpc-document" }
 omega-hooks = { path = "../omega-hooks" }
 omega-plan = { path = "../omega-plan" }
 omega-project = { path = "../omega-project" }

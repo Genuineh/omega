@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use omega_core::default_bash_allowed_commands;
-use omega_project_layout::{OmegaProjectLayout, MODEL_CONFIG_PATH};
+use omega_hpc_paths::{OmegaProjectLayout, MODEL_CONFIG_PATH};
 use serde::Deserialize;
 
 pub const DEFAULT_MODEL_CONFIG_PATH: &str = MODEL_CONFIG_PATH;

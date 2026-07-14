@@ -285,17 +285,35 @@ pub(super) fn handle_overlay_key_event(
                     overlay.cursor_pos += 1;
                 }
             }
-            KeyCode::Home => {
-                overlay.cursor_pos = 0;
-            }
-            KeyCode::End => {
-                overlay.cursor_pos = overlay.value.chars().count();
-            }
             KeyCode::Backspace => {
-                delete_char_before(&mut overlay.value, &mut overlay.cursor_pos);
+                if overlay.cursor_pos > 0 {
+                    let prev = overlay
+                        .value
+                        .chars()
+                        .nth(overlay.cursor_pos - 1)
+                        .expect("cursor_pos in range");
+                    let prev_len = prev.len_utf8();
+                    overlay.value.replace_range(
+                        overlay.cursor_pos - prev_len..overlay.cursor_pos,
+                        "",
+                    );
+                    overlay.cursor_pos -= prev_len;
+                }
             }
             KeyCode::Delete => {
-                delete_char_at(&mut overlay.value, overlay.cursor_pos);
+                let count = overlay.value.chars().count();
+                if overlay.cursor_pos < count {
+                    let next = overlay
+                        .value
+                        .chars()
+                        .nth(overlay.cursor_pos)
+                        .expect("cursor_pos in range");
+                    let next_len = next.len_utf8();
+                    overlay.value.replace_range(
+                        overlay.cursor_pos..overlay.cursor_pos + next_len,
+                        "",
+                    );
+                }
             }
             KeyCode::Enter => {
                 let value = overlay.value.clone();
@@ -306,6 +324,48 @@ pub(super) fn handle_overlay_key_event(
                 if key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT =>
             {
                 insert_char(&mut overlay.value, &mut overlay.cursor_pos, character);
+            }
+            _ => {}
+        },
+        OverlayState::StepDetail(overlay) => match key.code {
+            KeyCode::Esc => {
+                app_guard.close_overlay();
+            }
+            KeyCode::Up => {
+                // T-69: rail navigation now uses the bounded
+                // helper so the right pane's content updates
+                // automatically via `content_per_rail[selected]`.
+                overlay.move_rail(-1);
+            }
+            KeyCode::Down => {
+                overlay.move_rail(1);
+            }
+            KeyCode::Enter => {
+                // If the selected rail item is Tools and there is a
+                // tool, open the existing DetailOverlay for it. Other
+                // rail items have no further drill-down (T-55 keeps
+                // the tool drill-down as the only nested overlay).
+                if let Some(item) = overlay.rail.get(overlay.selected) {
+                    if matches!(item.kind, crate::overlay::StepDetailRailKind::Tools) {
+                        // T-57 will wire the actual tool id; for now
+                        // we just close on Enter.
+                        app_guard.close_overlay();
+                    }
+                }
+            }
+            _ => {}
+        },
+        OverlayState::TurnDetail(overlay) => match key.code {
+            KeyCode::Esc => {
+                app_guard.close_overlay();
+            }
+            KeyCode::Up => {
+                if overlay.scroll > 0 {
+                    overlay.scroll -= 1;
+                }
+            }
+            KeyCode::Down => {
+                overlay.scroll = overlay.scroll.saturating_add(1);
             }
             _ => {}
         },

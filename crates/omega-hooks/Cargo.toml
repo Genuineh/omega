@@ -6,7 +6,7 @@ edition.workspace = true
 [dependencies]
 anyhow.workspace = true
 libloading.workspace = true
-omega-project-layout = { path = "../omega-project-layout" }
+omega-hpc-paths = { path = "../../omega-hpc/crates/omega-hpc-paths" }
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true

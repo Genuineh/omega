@@ -47,11 +47,18 @@ fn score_exact(expected: &str, output: &TargetOutput) -> ScoreResult {
     let response = output.response.as_deref().unwrap_or("");
     let matched = normalize(response) == normalize(expected);
     let task_complete = !response.is_empty();
-    let evidence = if output.tool_trace.is_empty() { 0.5 } else { 1.0 };
+    let evidence = if output.tool_trace.is_empty() {
+        0.5
+    } else {
+        1.0
+    };
 
     let mut metrics = BTreeMap::new();
     metrics.insert("exact_match".into(), if matched { 1.0 } else { 0.0 });
-    metrics.insert("task_completion".into(), if task_complete { 1.0 } else { 0.0 });
+    metrics.insert(
+        "task_completion".into(),
+        if task_complete { 1.0 } else { 0.0 },
+    );
     metrics.insert("evidence_completeness".into(), evidence);
 
     ScoreResult {
@@ -90,10 +97,9 @@ fn score_quasi_exact(
 
     // Numeric tolerance check
     if let Some(tol_str) = tolerance {
-        if let (Ok(exp_num), Ok(resp_num)) = (
-            norm_expected.parse::<f64>(),
-            norm_response.parse::<f64>(),
-        ) {
+        if let (Ok(exp_num), Ok(resp_num)) =
+            (norm_expected.parse::<f64>(), norm_response.parse::<f64>())
+        {
             if let Ok(tol) = tol_str.parse::<f64>() {
                 if (exp_num - resp_num).abs() <= tol {
                     return make_quasi_result(true, 0.9, output, None);
@@ -122,11 +128,18 @@ fn make_quasi_result(
 ) -> ScoreResult {
     let response = output.response.as_deref().unwrap_or("");
     let task_complete = !response.is_empty();
-    let evidence = if output.tool_trace.is_empty() { 0.5 } else { 1.0 };
+    let evidence = if output.tool_trace.is_empty() {
+        0.5
+    } else {
+        1.0
+    };
 
     let mut metrics = BTreeMap::new();
     metrics.insert("quasi_exact_match".into(), quasi_score);
-    metrics.insert("task_completion".into(), if task_complete { 1.0 } else { 0.0 });
+    metrics.insert(
+        "task_completion".into(),
+        if task_complete { 1.0 } else { 0.0 },
+    );
     metrics.insert("evidence_completeness".into(), evidence);
 
     ScoreResult {
@@ -142,7 +155,10 @@ fn score_judge_stub(rubric: &str, output: &TargetOutput) -> ScoreResult {
     let task_complete = !response.is_empty();
 
     let mut metrics = BTreeMap::new();
-    metrics.insert("task_completion".into(), if task_complete { 1.0 } else { 0.0 });
+    metrics.insert(
+        "task_completion".into(),
+        if task_complete { 1.0 } else { 0.0 },
+    );
     metrics.insert("judge_score".into(), 0.0); // placeholder
 
     ScoreResult {
@@ -162,7 +178,11 @@ fn score_completion_only(output: &TargetOutput) -> ScoreResult {
     ScoreResult {
         passed: complete,
         breakdown: ScoreBreakdown::single("task_completion", if complete { 1.0 } else { 0.0 }),
-        failure_reason: if complete { None } else { Some("no response produced".into()) },
+        failure_reason: if complete {
+            None
+        } else {
+            Some("no response produced".into())
+        },
     }
 }
 

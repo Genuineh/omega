@@ -1,19 +1,22 @@
 ---
 archived: 2026-04-02
-content_revision: 120
+content_revision: 174
 created: 2026-03-19
-generation_id: gen_000046_r000120
+generation_id: gen_000087_r000174
+language: bilingual
+last_verified_commit: d8c30e3e9e310ce38cffa965be4688ed55a87787
 owner: omega-team
-projection_version: 46
+projection_version: 87
 related_prds:
   - docs/archive/observability-logging.md
 source_doc_id: "archive:docs-archive-omega-tui-non-ui-extraction"
+source_path: docs/archive/omega-tui-non-ui-extraction.md
 status: archived
 superseded_by:
   - docs/specs/omega-app-package.md
   - docs/specs/omega-runtime-ui-message-contract.md
   - docs/specs/omega-agent-impl-plan/task-15-interaction-foundation.md
-supersedes: []
+supersedes: "[]"
 updated: 2026-04-02
 ---
 

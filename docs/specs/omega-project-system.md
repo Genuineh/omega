@@ -1,19 +1,21 @@
 ---
-content_revision: 120
+content_revision: 174
 created: 2026-04-09
-generation_id: gen_000046_r000120
-last_verified_commit: N/A
+generation_id: gen_000087_r000174
+language: bilingual
+last_verified_commit: d8c30e3e9e310ce38cffa965be4688ed55a87787
 owner: omega-team
-projection_version: 46
+projection_version: 87
 related_prds:
   - docs/specs/omega-context-management.md
   - docs/specs/omega-command-system.md
   - docs/specs/omega-tui-document-memory-supervision.md
   - docs/specs/omega-app-package.md
 source_doc_id: "spec:docs-specs-omega-project-system"
+source_path: docs/specs/omega-project-system.md
 status: active
-supersedes: []
-updated: 2026-04-09
+supersedes: "[]"
+updated: 2026-06-03
 ---
 
 # Omega Project System Specification
@@ -430,3 +432,7 @@ overlay 至少展示：
 
 - 2026-04-09: 首次新增 `omega-project` 规格，定义 project-owned document/memory/session boundary、`/project` command family 和底部状态栏 project segment。
 - 2026-04-09: 规格同步到已实现基线：新增 `omega-project` crate、project-aware `AgentSession`、`/project` commands、底部 project badge 与 detail overlay，并记录当前 phase 对 `session_id` 复用和状态栏点击行为的实现语义。
+
+## Implementation Note
+
+The `omega-project-layout`, `omega-memory`, `omega-document`, and `omega-doc-cli` crates referenced in this spec moved to the `omega-hpc/` sub-workspace on 2026-06-02 and are now `omega-hpc-paths`, `omega-hpc-memory`, `omega-hpc-document`, and `omega-hpc-doc-cli` respectively. Public type and binary names are unchanged. See [`docs/specs/omega-hpc-extraction.md`](omega-hpc-extraction.md) for the full mapping and [`docs/decisions/007-omega-hpc-extraction.md`](../decisions/007-omega-hpc-extraction.md) for the architecture decision.

@@ -1,11 +1,10 @@
+use omega_project::ProjectDetailSnapshot;
 use omega_session::{
     ContextSupervisionSnapshot, OverlayRequest, ResponseSection, ResponseSectionDelta,
-    ResponseSectionState, RuntimeUiEffect, RuntimeUiEnvelope, SessionRestoreSnapshot, SessionRoutingStatus,
-    SkillLoadSummary, StatusSlot, StatusValue, StepDiagnostics, StepKnowledgeSummary,
-    StepSubflowStatus, ToolRun,
-    ToolRunStatus, WorkflowStepStatus,
+    ResponseSectionState, RuntimeUiEffect, RuntimeUiEnvelope, SessionRestoreSnapshot,
+    SessionRoutingStatus, SkillLoadSummary, StatusSlot, StatusValue, StepDiagnostics,
+    StepKnowledgeSummary, StepSubflowStatus, ToolRun, ToolRunStatus, WorkflowStepStatus,
 };
-use omega_project::ProjectDetailSnapshot;
 
 use crate::app::{App, MsgKind};
 use crate::reducer::TuiUpdateReducer;
@@ -28,11 +27,7 @@ pub trait TuiSurface {
     fn upsert_diagnostics(&mut self, diagnostics: StepDiagnostics);
     fn set_context_supervision(&mut self, snapshot: ContextSupervisionSnapshot);
     fn upsert_skill_load_summary(&mut self, section_id: String, summary: SkillLoadSummary);
-    fn upsert_step_knowledge_summary(
-        &mut self,
-        section_id: String,
-        summary: StepKnowledgeSummary,
-    );
+    fn upsert_step_knowledge_summary(&mut self, section_id: String, summary: StepKnowledgeSummary);
     fn upsert_step_subflow(&mut self, subflow: StepSubflowStatus);
     fn add_activity_line(&mut self, line: String);
     fn show_overlay(&mut self, request: OverlayRequest);
@@ -148,11 +143,7 @@ impl TuiSurface for TuiEngine<'_> {
         self.app.upsert_skill_load_summary(section_id, summary);
     }
 
-    fn upsert_step_knowledge_summary(
-        &mut self,
-        section_id: String,
-        summary: StepKnowledgeSummary,
-    ) {
+    fn upsert_step_knowledge_summary(&mut self, section_id: String, summary: StepKnowledgeSummary) {
         self.app.upsert_step_knowledge_summary(section_id, summary);
     }
 

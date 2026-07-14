@@ -95,6 +95,31 @@ pub(super) fn handle_key_event(
                     app_guard.move_response_selection_down();
                     return Ok(false);
                 }
+                // T-60: turn-level navigation. Home / End / G / g
+                // jump to the oldest / latest turn; n / p step
+                // through turns.
+                KeyCode::End | KeyCode::Char('G') => {
+                    app_guard.jump_response_to_latest_turn();
+                    app_guard.set_status_notice("Jumped to latest turn.");
+                    return Ok(false);
+                }
+                KeyCode::Home | KeyCode::Char('g') => {
+                    app_guard.jump_response_to_oldest_turn();
+                    app_guard.set_status_notice("Jumped to oldest turn.");
+                    return Ok(false);
+                }
+                KeyCode::Char('n') => {
+                    if app_guard.jump_response_to_next_turn() {
+                        app_guard.set_status_notice("Jumped to next turn.");
+                    }
+                    return Ok(false);
+                }
+                KeyCode::Char('p') => {
+                    if app_guard.jump_response_to_prev_turn() {
+                        app_guard.set_status_notice("Jumped to previous turn.");
+                    }
+                    return Ok(false);
+                }
                 KeyCode::Enter | KeyCode::Char('x') | KeyCode::Right => {
                     let notice = match app_guard.activate_selected_response_item() {
                         Some(ResponseActivation::ThinkingCollapsed) => "Thinking collapsed.",
@@ -133,6 +158,16 @@ pub(super) fn handle_key_event(
                         Some(ResponseActivation::MemoryKnowledgeDetailOpened) => {
                             app_guard
                                 .set_status_notice("Opened memory knowledge detail overlay.");
+                            return Ok(false);
+                        }
+                        Some(ResponseActivation::StepDetailOpened(_)) => {
+                            app_guard
+                                .set_status_notice("Opened step detail overlay.");
+                            return Ok(false);
+                        }
+                        Some(ResponseActivation::TurnDetailOpened(_)) => {
+                            app_guard
+                                .set_status_notice("Opened turn detail overlay.");
                             return Ok(false);
                         }
                         None if app_guard.show_thinking => {

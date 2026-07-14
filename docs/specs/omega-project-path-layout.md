@@ -1,19 +1,21 @@
 ---
-content_revision: 120
+content_revision: 174
 created: 2026-04-11
-generation_id: gen_000046_r000120
-last_verified_commit: N/A
+generation_id: gen_000087_r000174
+language: bilingual
+last_verified_commit: d8c30e3e9e310ce38cffa965be4688ed55a87787
 owner: omega-team
-projection_version: 46
+projection_version: 87
 related_prds:
   - docs/specs/omega-project-system.md
   - docs/specs/omega-session-resume.md
   - docs/specs/omega-context-management.md
   - docs/specs/omega-app-package.md
 source_doc_id: "spec:docs-specs-omega-project-path-layout"
+source_path: docs/specs/omega-project-path-layout.md
 status: active
-supersedes: []
-updated: 2026-04-13
+supersedes: "[]"
+updated: 2026-06-03
 ---
 
 # Omega Project Path Layout Specification
@@ -279,3 +281,7 @@ hook source 与 hook runtime artifact 必须停止共用一个根目录：
 
 - 2026-04-13: Marked implemented after introducing `omega-project-layout`, migrating runtime state to `.omega-state/`, keeping config/source under `.omega/`, and splitting hook source vs artifact roots.
 - 2026-04-11: Initial spec for splitting repo-local `.omega/` config/source assets from generated `.omega-state/` project state.
+
+## Implementation Note
+
+The `omega-project-layout`, `omega-memory`, `omega-document`, and `omega-doc-cli` crates referenced in this spec moved to the `omega-hpc/` sub-workspace on 2026-06-02 and are now `omega-hpc-paths`, `omega-hpc-memory`, `omega-hpc-document`, and `omega-hpc-doc-cli` respectively. Public type and binary names are unchanged. See [`docs/specs/omega-hpc-extraction.md`](omega-hpc-extraction.md) for the full mapping and [`docs/decisions/007-omega-hpc-extraction.md`](../decisions/007-omega-hpc-extraction.md) for the architecture decision.

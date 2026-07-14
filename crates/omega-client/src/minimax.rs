@@ -149,7 +149,9 @@ fn env_duration_millis(names: &[&str], default: Duration) -> Result<Duration, Cl
             }
             Err(env::VarError::NotPresent) => continue,
             Err(error) => {
-                return Err(ClientError::Config(format!("failed to read {name}: {error}")));
+                return Err(ClientError::Config(format!(
+                    "failed to read {name}: {error}"
+                )));
             }
         }
     }
@@ -161,17 +163,21 @@ fn env_usize(names: &[&str], default: usize) -> Result<usize, ClientError> {
     for name in names {
         match env::var(name) {
             Ok(value) => {
-                let parsed = value
-                    .parse::<usize>()
-                    .map_err(|_| ClientError::Config(format!("{name} must be a positive integer")))?;
+                let parsed = value.parse::<usize>().map_err(|_| {
+                    ClientError::Config(format!("{name} must be a positive integer"))
+                })?;
                 if parsed == 0 {
-                    return Err(ClientError::Config(format!("{name} must be greater than 0")));
+                    return Err(ClientError::Config(format!(
+                        "{name} must be greater than 0"
+                    )));
                 }
                 return Ok(parsed);
             }
             Err(env::VarError::NotPresent) => continue,
             Err(error) => {
-                return Err(ClientError::Config(format!("failed to read {name}: {error}")));
+                return Err(ClientError::Config(format!(
+                    "failed to read {name}: {error}"
+                )));
             }
         }
     }

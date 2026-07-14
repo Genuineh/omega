@@ -44,7 +44,13 @@ pub fn run(config: TuiLaunchConfig) -> anyhow::Result<()> {
     let app = Arc::new(Mutex::new(App::new()));
     {
         let mut app_guard = app.lock().unwrap();
-        initialize_startup_app(&mut app_guard, &session, show_thinking, keymap_source, &startup_warnings);
+        initialize_startup_app(
+            &mut app_guard,
+            &session,
+            show_thinking,
+            keymap_source,
+            &startup_warnings,
+        );
     }
     let (tx, rx) = mpsc::channel::<RuntimeMessageEnvelope>();
     let mut terminal = TerminalGuard::enter()?;
@@ -143,8 +149,8 @@ mod tests {
     use omega_session::{
         ActivityTarget, ResponseSection, ResponseSectionDelta, ResponseSectionKind,
         ResponseSectionMetadata, ResponseSectionState, RuntimeUiEffect, RuntimeUiEnvelope,
-        RuntimeUiMessage, StatusSlot, StatusValue, UiContent, UiMessageKind, UiSource, UiTarget,
-        SectionOrigin, WorkflowRunRole,
+        RuntimeUiMessage, SectionOrigin, StatusSlot, StatusValue, UiContent, UiMessageKind,
+        UiSource, UiTarget, WorkflowRunRole,
     };
 
     fn workflow_metadata(

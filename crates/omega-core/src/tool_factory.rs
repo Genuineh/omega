@@ -4,10 +4,9 @@ use omega_context::{ContextFacadeServices, ContextToolRegistry, OmegaContextFaca
 use omega_skills::LoadSkillHandler;
 use omega_todo::{SharedTodoManager, TodoManager, TodoReadHandler, TodoWriteHandler};
 use omega_tools::{
-    MemoryScopeLevel, ToolContextProfile, ToolDispatcher, ToolFamily, ToolHandler,
-    ToolIoProfile, ToolManifest, ToolObservabilityProfile, ToolOutputFormat,
-    ToolPermissionProfile, ToolPromptProfile, ToolStability, ToolStorageProfile,
-    ToolUiProfile, TruncationStrategy,
+    MemoryScopeLevel, ToolContextProfile, ToolDispatcher, ToolFamily, ToolHandler, ToolIoProfile,
+    ToolManifest, ToolObservabilityProfile, ToolOutputFormat, ToolPermissionProfile,
+    ToolPromptProfile, ToolStability, ToolStorageProfile, ToolUiProfile, TruncationStrategy,
 };
 use omega_tools_builtin::{
     default_bash_allowed_commands as builtin_default_bash_allowed_commands,
@@ -525,9 +524,7 @@ fn register_default_manifest(dispatcher: &mut ToolDispatcher, handler: Box<dyn T
 
 fn attach_capability_profiles(manifest: ToolManifest) -> ToolManifest {
     match manifest.id.as_str() {
-        "apply_patch" | "create_file" | "edit_file" | "write_file" => {
-            file_edit_profiles(manifest)
-        }
+        "apply_patch" | "create_file" | "edit_file" | "write_file" => file_edit_profiles(manifest),
         "todo" | "todo_write" => todo_profiles(manifest),
         "todo_read" => todo_read_profiles(manifest),
         "web_search" | "web_fetch" => web_profiles(manifest),
@@ -871,7 +868,14 @@ fn manifest(
     stability: ToolStability,
     prompt: ToolPromptProfile,
 ) -> ToolManifest {
-    ToolManifest::new(handler.name().to_string(), display_name, family, stability, prompt, handler)
+    ToolManifest::new(
+        handler.name().to_string(),
+        display_name,
+        family,
+        stability,
+        prompt,
+        handler,
+    )
 }
 
 fn prompt(

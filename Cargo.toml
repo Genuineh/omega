@@ -1,17 +1,15 @@
 [workspace]
+exclude = ["omega-hpc"]
 members = [
     "omega-benchmark",
     "crates/omega-app",
     "crates/omega-client",
     "crates/omega-command",
-    "crates/omega-doc-cli",
-    "crates/omega-document",
     "crates/omega-hooks",
     "crates/omega-message",
     "crates/omega-tasks",
     "crates/omega-plan",
     "crates/omega-skills",
-    "crates/omega-project-layout",
     "crates/omega-worktree",
     "crates/omega-keymap",
     "crates/omega-theme",
@@ -22,7 +20,6 @@ members = [
     "crates/omega-subagent",
     "crates/omega-compression",
     "crates/omega-context",
-    "crates/omega-memory",
     "crates/omega-background",
     "crates/omega-team",
     "crates/omega-core",

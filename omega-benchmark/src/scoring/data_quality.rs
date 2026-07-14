@@ -207,7 +207,10 @@ mod tests {
         let output = make_output(r#"{"name": "Alice", "age": 30}"#);
         let result = DataQualityScorer.score(&case, &output);
         assert!(result.passed);
-        assert_eq!(*result.breakdown.metrics.get("schema_validity").unwrap(), 1.0);
+        assert_eq!(
+            *result.breakdown.metrics.get("schema_validity").unwrap(),
+            1.0
+        );
     }
 
     #[test]

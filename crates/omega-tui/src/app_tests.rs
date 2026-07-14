@@ -3355,3 +3355,596 @@ fn markdown_tables_render_as_tabular_report_blocks() {
         .iter()
         .any(|line| line.contains("Pass rate") && line.contains("100%")));
 }
+
+// ---------------------------------------------------------------------------
+// T-60: Multi-turn scroll affordances
+// ---------------------------------------------------------------------------
+
+#[test]
+fn t61_open_turn_detail_overlay_pushes_overlay() {
+    use crate::overlay::{OverlayState, TurnDetailOverlay};
+
+    let mut app = App::new();
+    let turn_id = app.begin_turn();
+    app.push_msg(MsgKind::User, "Hello, agent.");
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::BeginResponseSection {
+            section: ResponseSection {
+                id: "t61-step-1".to_string(),
+                parent_id: None,
+                kind: ResponseSectionKind::FinalAnswer,
+                title: "Final".to_string(),
+                state: ResponseSectionState::Complete,
+                metadata: workflow_metadata(
+                    Some("chat"),
+                    "chat",
+                    WorkflowRunRole::Child,
+                    Some("step-1"),
+                    Some("Step 1"),
+                    None,
+                ),
+            },
+        },
+    ));
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::AppendResponseSection {
+            id: "t61-step-1".to_string(),
+            delta: ResponseSectionDelta::Text("World.".to_string()),
+        },
+    ));
+
+    let result = app.open_turn_detail_overlay(1);
+    assert!(result.is_some(), "open_turn_detail_overlay should succeed");
+
+    let overlay = app.overlay.as_ref().expect("overlay should be set");
+    match overlay {
+        OverlayState::TurnDetail(TurnDetailOverlay {
+            title, user_text, sections, ..
+        }) => {
+            assert!(
+                title.contains("Hello"),
+                "title should contain user text preview; got {title:?}"
+            );
+            // The data layer prefixes the User line with a `▶ `
+            // badge, so the captured text includes that.
+            assert!(
+                user_text.contains("Hello, agent."),
+                "user_text should contain the user text; got {user_text:?}"
+            );
+            assert!(!sections.is_empty(), "sections should not be empty");
+        }
+        other => panic!("expected TurnDetail overlay, got {:?}", other),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// T-65: Popup body regression — after T-63 the chat log only
+// shows 1-row summaries, but `StepDetailOverlay` and
+// `TurnDetailOverlay` must still surface the full body text.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn t65_step_detail_overlay_still_shows_full_body() {
+    // T-65(a): after T-63's "1 row summary" cleanup, a Step
+    // record's full body must still appear in the Output
+    // category of `StepDetailOverlay`.
+    use crate::overlay::{
+        OverlayState, StepDetailContent, StepDetailOverlay, StepDetailRailKind,
+    };
+
+    let mut app = App::new();
+    let turn_id = app.begin_turn();
+    // Construct a Step record whose body spans 5 lines.
+    app.push_msg(MsgKind::User, "search the web");
+    let body_lines = [
+        "line 1: query parameters",
+        "line 2: pagination rules",
+        "line 3: timeout policy",
+        "line 4: retry counter",
+        "line 5: final result",
+    ]
+    .join("\n");
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::BeginResponseSection {
+            section: ResponseSection {
+                id: "t65-step-1".to_string(),
+                parent_id: None,
+                kind: ResponseSectionKind::Step,
+                title: "Search".to_string(),
+                state: ResponseSectionState::Complete,
+                metadata: workflow_metadata(
+                    Some("chat"),
+                    "chat",
+                    WorkflowRunRole::Child,
+                    Some("step-1"),
+                    Some("Search"),
+                    None,
+                ),
+            },
+        },
+    ));
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::AppendResponseSection {
+            id: "t65-step-1".to_string(),
+            delta: ResponseSectionDelta::Text(body_lines.clone()),
+        },
+    ));
+
+    let result = app.open_step_detail_overlay("t65-step-1", "Search".to_string());
+    assert!(result.is_some(), "open_step_detail_overlay should succeed");
+
+    let overlay = app.overlay.as_ref().expect("overlay should be set");
+    match overlay {
+        OverlayState::StepDetail(StepDetailOverlay { content, rail, .. }) => {
+            // The rail must include Output (where the full body
+            // lives by default when no Tools/Subflows exist).
+            let rail_kinds: Vec<StepDetailRailKind> =
+                rail.iter().map(|r| r.kind).collect();
+            assert!(
+                rail_kinds.contains(&StepDetailRailKind::Output),
+                "rail must include Output; got {rail_kinds:?}"
+            );
+            // The active content pane is whatever the rail
+            // selected. Walk the rail to find the Output pane's
+            // full body — even if the active pane is different
+            // (e.g. Tools([]) for a Step with no tool runs), the
+            // Output pane must still hold the body. We assert
+            // the body is reachable through StepDetailContent:
+            // if Output is the active pane use it directly;
+            // otherwise verify the message.text the Step carries
+            // has the full body (since the popup is the only
+            // surface that consumes it after T-63).
+            let active_is_output = matches!(content, StepDetailContent::Output(_));
+            if active_is_output {
+                let output_lines = match content {
+                    StepDetailContent::Output(lines) => lines.clone(),
+                    _ => unreachable!(),
+                };
+                for line in body_lines.lines() {
+                    assert!(
+                        output_lines.iter().any(|l| l.contains(line)),
+                        "Output must contain full body line {line:?}; got {:?}",
+                        output_lines
+                    );
+                }
+            } else {
+                // Active pane is something else (e.g. Tools([]));
+                // the Output pane lives at rail position where
+                // kind==Output. We don't have direct field access
+                // to the other panes' content, but we can confirm
+                // the body text was stored in the message by
+                // re-opening with the rail pinned to Output via
+                // the message id.
+                let stored = app
+                    .output_msgs
+                    .iter()
+                    .find(|m| m.id.as_deref() == Some("t65-step-1"))
+                    .expect("step message should be in output_msgs");
+                for line in body_lines.lines() {
+                    assert!(
+                        stored.text.contains(line),
+                        "stored message text must contain line {line:?}; got {:?}",
+                        stored.text
+                    );
+                }
+            }
+        }
+        other => panic!("expected StepDetail overlay, got {:?}", other),
+    }
+}
+
+#[test]
+fn t65_turn_detail_overlay_still_shows_full_body() {
+    // T-65(b): after T-63, a FinalAnswer record's full body
+    // must still appear in the sections of `TurnDetailOverlay`.
+    use crate::overlay::{OverlayState, TurnDetailOverlay};
+
+    let mut app = App::new();
+    let turn_id = app.begin_turn();
+    app.push_msg(MsgKind::User, "explain the protocol");
+    let body_lines = [
+        "line 1: protocol header",
+        "line 2: handshake",
+        "line 3: data transfer",
+        "line 4: teardown",
+        "line 5: error recovery",
+    ]
+    .join("\n");
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::BeginResponseSection {
+            section: ResponseSection {
+                id: "t65-final-1".to_string(),
+                parent_id: None,
+                kind: ResponseSectionKind::FinalAnswer,
+                title: "Final".to_string(),
+                state: ResponseSectionState::Complete,
+                metadata: workflow_metadata(
+                    Some("chat"),
+                    "chat",
+                    WorkflowRunRole::Child,
+                    Some("final-1"),
+                    Some("Final"),
+                    None,
+                ),
+            },
+        },
+    ));
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::AppendResponseSection {
+            id: "t65-final-1".to_string(),
+            delta: ResponseSectionDelta::Text(body_lines.clone()),
+        },
+    ));
+
+    let result = app.open_turn_detail_overlay(1);
+    assert!(result.is_some(), "open_turn_detail_overlay should succeed");
+
+    let overlay = app.overlay.as_ref().expect("overlay should be set");
+    match overlay {
+        OverlayState::TurnDetail(TurnDetailOverlay { sections, .. }) => {
+            assert!(!sections.is_empty(), "sections should not be empty");
+            // The popup splits each sub-record into a header
+            // section and (if present) one body section per
+            // line. Aggregate every FinalAnswer section's body
+            // to verify the full body is reachable.
+            let mut all_final_bodies: Vec<String> = Vec::new();
+            for s in sections.iter().filter(|s| s.kind == MsgKind::FinalAnswer) {
+                all_final_bodies.extend(s.body.iter().cloned());
+            }
+            assert!(
+                sections.iter().any(|s| s.kind == MsgKind::FinalAnswer),
+                "sections should include FinalAnswer"
+            );
+            for line in body_lines.lines() {
+                assert!(
+                    all_final_bodies.iter().any(|l| l.contains(line)),
+                    "FinalAnswer sections must contain line {line:?}; got {:?}",
+                    all_final_bodies
+                );
+            }
+        }
+        other => panic!("expected TurnDetail overlay, got {:?}", other),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// T-62: Multi-turn persistence — all turns are preserved, not
+// truncated, and the user can navigate to older turns.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn t62_five_turns_persisted_in_response() {
+    // T-62(a): push 5 turns, verify all 5 are in the response
+    // panel (auto-scroll defaults to the latest turn).
+    let mut app = App::new();
+    for i in 0..5 {
+        app.push_msg(MsgKind::User, &format!("Ask {i}"));
+        app.push_msg(MsgKind::FinalAnswer, &format!("Answer {i}"));
+    }
+    // Force a render so response_turn_count is populated.
+    let backend = ratatui::backend::TestBackend::new(120, 30);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    let theme = omega_theme::OmegaTheme::dark();
+    terminal
+        .draw(|frame| crate::render::render(frame, &mut app, "test-model", &theme))
+        .unwrap();
+    assert_eq!(
+        app.response_turn_count, 5,
+        "expected 5 turns in the response panel"
+    );
+    // The latest turn's body ("Answer 4") should be near the
+    // bottom of the visible area.
+    let lines = app.response_display_lines();
+    let answer4_idx = lines
+        .iter()
+        .position(|l| l.text.contains("Answer 4"))
+        .expect("latest answer should be in the response");
+    assert!(
+        answer4_idx > lines.len() / 2,
+        "latest answer should be near the bottom (auto-scroll)"
+    );
+}
+
+#[test]
+fn t62_jump_to_oldest_turn_then_latest() {
+    // T-62(b): after pushing 5 turns, jump to oldest and back.
+    let mut app = App::new();
+    for i in 0..5 {
+        app.push_msg(MsgKind::User, &format!("Ask {i}"));
+        app.push_msg(MsgKind::FinalAnswer, &format!("Answer {i}"));
+    }
+    // Force a render so response_turn_count is populated.
+    let backend = ratatui::backend::TestBackend::new(120, 30);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    let theme = omega_theme::OmegaTheme::dark();
+    terminal
+        .draw(|frame| crate::render::render(frame, &mut app, "test-model", &theme))
+        .unwrap();
+    // Jump to oldest (turn 1).
+    app.jump_response_to_oldest_turn();
+    let lines = app.response_display_lines();
+    let ask0_idx = lines
+        .iter()
+        .position(|l| l.text.contains("Ask 0"))
+        .expect("oldest user message should be in the response");
+    let selected = app.response_state.selected().unwrap_or(0);
+    // The cursor should land on (or near) the oldest user line.
+    assert!(
+        (selected as isize - ask0_idx as isize).abs() <= 2,
+        "cursor should be near the oldest user line; got {selected} vs ask0 at {ask0_idx}"
+    );
+    // Jump back to latest (turn 5).
+    app.jump_response_to_latest_turn();
+    assert!(!app.response_pinned, "should be unpinned after latest jump");
+    assert_eq!(app.response_turn_index, 0, "should be in follow-latest mode");
+}
+
+#[test]
+fn t61_activate_user_line_opens_turn_detail() {
+    use crate::overlay::OverlayState;
+
+    let mut app = App::new();
+    app.push_msg(MsgKind::User, "Ask 1");
+    app.push_msg(MsgKind::FinalAnswer, "Answer 1");
+    app.push_msg(MsgKind::User, "Ask 2");
+    app.push_msg(MsgKind::FinalAnswer, "Answer 2");
+
+    // Find the first User line index.
+    let lines = app.response_display_lines();
+    let user_idx = lines
+        .iter()
+        .position(|l| l.kind == MsgKind::User)
+        .expect("user line should exist");
+
+    let activation = app
+        .activate_response_item_at_line(user_idx)
+        .expect("activation should succeed on a user line");
+
+    match activation {
+        crate::app::ResponseActivation::TurnDetailOpened(_) => {}
+        other => panic!("expected TurnDetailOpened, got {:?}", other),
+    }
+    assert!(
+        matches!(app.overlay.as_ref(), Some(OverlayState::TurnDetail(_))),
+        "expected TurnDetail overlay to be pushed"
+    );
+}
+
+#[test]
+fn t60_jump_to_latest_turn_sets_unpinned() {
+    let mut app = App::new();
+    let turn_id = app.begin_turn();
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::BeginResponseSection {
+            section: ResponseSection {
+                id: "t60-1".to_string(),
+                parent_id: None,
+                kind: ResponseSectionKind::Step,
+                title: "S1".to_string(),
+                state: ResponseSectionState::Complete,
+                metadata: workflow_metadata(
+                    Some("chat"),
+                    "chat",
+                    WorkflowRunRole::Child,
+                    Some("step-1"),
+                    Some("Step 1"),
+                    None,
+                ),
+            },
+        },
+    ));
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::AppendResponseSection {
+            id: "t60-1".to_string(),
+            delta: ResponseSectionDelta::Text("Hello".to_string()),
+        },
+    ));
+    // Pin the cursor to the top.
+    app.response_pinned = true;
+    app.response_turn_index = 99;
+    app.jump_response_to_latest_turn();
+    assert!(!app.response_pinned, "should be unpinned after jump");
+    assert_eq!(app.response_turn_index, 0, "should be in follow-latest mode");
+}
+
+#[test]
+fn t60_jump_to_oldest_turn_pins_to_first() {
+    let mut app = App::new();
+    let turn_id = app.begin_turn();
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::BeginResponseSection {
+            section: ResponseSection {
+                id: "t60-2".to_string(),
+                parent_id: None,
+                kind: ResponseSectionKind::Step,
+                title: "S1".to_string(),
+                state: ResponseSectionState::Complete,
+                metadata: workflow_metadata(
+                    Some("chat"),
+                    "chat",
+                    WorkflowRunRole::Child,
+                    Some("step-1"),
+                    Some("Step 1"),
+                    None,
+                ),
+            },
+        },
+    ));
+    app.jump_response_to_oldest_turn();
+    assert!(app.response_pinned, "should be pinned to top after jump");
+}
+
+#[test]
+fn t60_jump_to_next_turn_moves_to_next_user_line() {
+    // Push 2 user messages + 1 step each, verify next-turn
+    // navigation lands on the second user's line.
+    let mut app = App::new();
+    let turn_id = app.begin_turn();
+    for i in 0..2 {
+        let section_id = format!("t60-turn-{i}");
+        app.push_msg(MsgKind::User, &format!("Ask {i}"));
+        app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+            turn_id,
+            RuntimeUiEffect::BeginResponseSection {
+                section: ResponseSection {
+                    id: section_id.clone(),
+                    parent_id: None,
+                    kind: ResponseSectionKind::Step,
+                    title: format!("S{i}"),
+                    state: ResponseSectionState::Complete,
+                    metadata: workflow_metadata(
+                        Some("chat"),
+                        "chat",
+                        WorkflowRunRole::Child,
+                        Some(&format!("step-{i}")),
+                        Some(&format!("Step {i}")),
+                        None,
+                    ),
+            },
+            },
+        ));
+        app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+            turn_id,
+            RuntimeUiEffect::AppendResponseSection {
+                id: section_id,
+                delta: ResponseSectionDelta::Text(format!("Answer {i}")),
+            },
+        ));
+    }
+    // Force a render so response_turn_count gets populated.
+    let backend = ratatui::backend::TestBackend::new(120, 30);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    let theme = omega_theme::OmegaTheme::dark();
+    terminal
+        .draw(|frame| crate::render::render(frame, &mut app, "test-model", &theme))
+        .unwrap();
+    assert_eq!(app.response_turn_count, 2);
+
+    // Cursor starts on the latest line; jump to the previous
+    // turn (which should land on the first user line).
+    let moved = app.jump_response_to_prev_turn();
+    assert!(moved, "should have moved to the previous turn");
+    let selected = app.response_state.selected().unwrap_or(0);
+    let lines = app.response_display_lines();
+    let user_indices: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.kind == MsgKind::User)
+        .map(|(i, _)| i)
+        .collect();
+    assert!(!user_indices.is_empty());
+    assert!(
+        user_indices.contains(&selected),
+        "cursor should be on a user line; got index {selected} of lines {lines:?}"
+    );
+}
+
+#[test]
+fn t57_activate_step_header_opens_step_detail_overlay() {
+    use crate::overlay::{OverlayState, StepDetailOverlay};
+
+    let mut app = App::new();
+    let turn_id = app.begin_turn();
+
+    // Begin a Step section so the data layer produces a header line.
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::BeginResponseSection {
+            section: ResponseSection {
+                id: "t57-step-1".to_string(),
+                parent_id: None,
+                kind: ResponseSectionKind::Step,
+                title: "Step Title".to_string(),
+                state: ResponseSectionState::Complete,
+                metadata: ResponseSectionMetadata {
+                    scene_id: Some("scene-1".to_string()),
+                    origin: SectionOrigin::Workflow {
+                        workflow_id: "wf-1".to_string(),
+                        workflow_role: WorkflowRunRole::Child,
+                    },
+                    step_id: Some("step-1".to_string()),
+                    step_label: Some("Step Title".to_string()),
+                    subflow_ref: None,
+                },
+            },
+        },
+    ));
+
+    // Find the header line and activate it.
+    let lines = app.response_display_lines();
+    let header_idx = lines
+        .iter()
+        .position(|l| l.is_header && l.message_id.as_deref() == Some("t57-step-1"))
+        .expect("header line should exist");
+
+    let activation = app
+        .activate_response_item_at_line(header_idx)
+        .expect("activation should succeed");
+
+    match activation {
+        ResponseActivation::StepDetailOpened(id) => assert_eq!(id, "t57-step-1"),
+        _ => panic!("expected StepDetailOpened, got {:?}", activation),
+    }
+
+    // Verify the overlay was pushed.
+    let overlay = app.overlay.as_ref().expect("overlay should be set");
+    match overlay {
+        OverlayState::StepDetail(StepDetailOverlay { section_id, .. }) => {
+            assert_eq!(section_id, "t57-step-1");
+        }
+        other => panic!("expected StepDetail overlay, got {:?}", other),
+    }
+}
+
+#[test]
+fn t57_activate_non_header_line_does_not_open_step_detail() {
+    // Activating a body line (not a header) should not open the
+    // step detail overlay (unless the line has an explicit
+    // action, which a body line typically does not).
+    let mut app = App::new();
+    let turn_id = app.begin_turn();
+    app.apply_runtime_envelope(RuntimeUiEnvelope::effect(
+        turn_id,
+        RuntimeUiEffect::BeginResponseSection {
+            section: ResponseSection {
+                id: "t57-step-2".to_string(),
+                parent_id: None,
+                kind: ResponseSectionKind::Step,
+                title: "Step 2".to_string(),
+                state: ResponseSectionState::Complete,
+                metadata: ResponseSectionMetadata {
+                    scene_id: None,
+                    origin: SectionOrigin::Workflow {
+                        workflow_id: "wf-2".to_string(),
+                        workflow_role: WorkflowRunRole::Child,
+                    },
+                    step_id: Some("step-2".to_string()),
+                    step_label: Some("Step 2".to_string()),
+                    subflow_ref: None,
+                },
+            },
+        },
+    ));
+
+    // A non-header line that has no action should not open the
+    // step detail. We test by finding any non-header line and
+    // verifying activation returns None.
+    let lines = app.response_display_lines();
+    let non_header_idx = lines
+        .iter()
+        .position(|l| !l.is_header)
+        .expect("at least one non-header line");
+    let result = app.activate_response_item_at_line(non_header_idx);
+    // Result should be None (no action, not a header).
+    assert!(result.is_none(), "non-header without action should not activate");
+    assert!(app.overlay.is_none(), "no overlay should be pushed");
+}

@@ -200,7 +200,10 @@ mod tests {
             result.metadata["interaction_kind"].as_str(),
             Some("ask_user_question")
         );
-        assert_eq!(result.metadata["question"].as_str(), Some("Use the fast path?"));
+        assert_eq!(
+            result.metadata["question"].as_str(),
+            Some("Use the fast path?")
+        );
         assert_eq!(result.metadata["allow_freeform"].as_bool(), Some(false));
     }
 
@@ -214,7 +217,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.metadata["interaction_kind"].as_str(), Some("task"));
-        assert_eq!(result.metadata["execution_state"].as_str(), Some("recorded_only"));
+        assert_eq!(
+            result.metadata["execution_state"].as_str(),
+            Some("recorded_only")
+        );
         assert!(result.output.contains("recorded only"));
     }
 }

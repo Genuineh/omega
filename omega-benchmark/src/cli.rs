@@ -115,10 +115,7 @@ fn cmd_list(args: &[String]) -> CliOutput {
     }
 
     let mut out = String::new();
-    out.push_str(&format!(
-        "Registered suites ({}):\n\n",
-        registry.len()
-    ));
+    out.push_str(&format!("Registered suites ({}):\n\n", registry.len()));
 
     for id in registry.suite_ids() {
         if let Some(suite) = registry.get(&id) {
@@ -241,10 +238,7 @@ fn cmd_run(args: &[String]) -> CliOutput {
     let runner = CaseRunner::new(target, &config);
 
     let results = runner.run_all(&registry);
-    let run_id = format!(
-        "run-{}",
-        chrono::Utc::now().format("%Y%m%d-%H%M%S")
-    );
+    let run_id = format!("run-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S"));
     let suite_track_map = registry.suite_track_map();
     let summary = RunSummary::from_results(
         run_id.clone(),
@@ -316,10 +310,7 @@ fn cmd_compare(args: &[String]) -> CliOutput {
     let run_id = &args[0];
     let state_dir = resolve_state_dir();
     let baselines_dir = resolve_baselines_dir(args);
-    let report = ReportStore::new(
-        state_dir.join("benchmark").join("runs"),
-        baselines_dir,
-    );
+    let report = ReportStore::new(state_dir.join("benchmark").join("runs"), baselines_dir);
 
     // Load the run summary
     let run_path = state_dir
@@ -407,10 +398,7 @@ fn cmd_save_baseline(args: &[String]) -> CliOutput {
     let run_id = &args[0];
     let state_dir = resolve_state_dir();
     let baselines_dir = resolve_baselines_dir(args);
-    let report = ReportStore::new(
-        state_dir.join("benchmark").join("runs"),
-        baselines_dir,
-    );
+    let report = ReportStore::new(state_dir.join("benchmark").join("runs"), baselines_dir);
 
     let run_path = state_dir
         .join("benchmark")

@@ -1,0 +1,31 @@
+name: doc-sync
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**/*.md"
+      - "docs-data/**"
+      - "crates/**"
+      - "omega-hpc/crates/**"
+  pull_request:
+    paths:
+      - "docs/**/*.md"
+      - "docs-data/**"
+
+jobs:
+  doc-sync:
+    name: doc / code sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run doc-sync check
+        run: bash scripts/docs/doc-sync.sh
+      - name: Run spec lint
+        run: bash scripts/docs/spec-lint.sh

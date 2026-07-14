@@ -1,7 +1,6 @@
 use omega_session::{
     ConversationMessage, OverlayRequest, RuntimeContentKind, RuntimeMessage, RuntimeSource,
-    StateMessage,
-    StepSubflowState, StepSubflowStatus,
+    StateMessage, StepSubflowState, StepSubflowStatus,
 };
 use omega_tui::{RuntimeMessagePolicy, TuiSurface};
 
@@ -68,9 +67,7 @@ fn apply_state(surface: &mut dyn TuiSurface, message: StateMessage) {
         }),
         StateMessage::ShowOverlay { request } => surface.show_overlay(request),
         StateMessage::Diagnostics { diagnostics } => surface.upsert_diagnostics(*diagnostics),
-        StateMessage::ContextSupervision { snapshot } => {
-            surface.set_context_supervision(*snapshot)
-        }
+        StateMessage::ContextSupervision { snapshot } => surface.set_context_supervision(*snapshot),
         StateMessage::SkillLoadSummary {
             section_id,
             summary,
@@ -154,13 +151,12 @@ mod tests {
         ContextMemoryDiagnostics, ContextStoreDiagnostics, ConversationMessage, HealthScore,
         OverlayRequest, OverlayTarget, ResponseSection, ResponseSectionDelta, ResponseSectionKind,
         ResponseSectionMetadata, ResponseSectionState, RuntimeMessageEnvelope, RuntimeSource,
-        SectionOrigin,
-        SessionRoutingStatus, StateMessage, StepContextWrite, StepContextWriteKind,
+        SectionOrigin, SessionRoutingStatus, StateMessage, StepContextWrite, StepContextWriteKind,
         StepDiagnostics, StepInputDiagnostics, StepInputStatus, StepOutputAttemptKind,
         StepOutputContractMode, StepOutputDiagnostics, StepOutputRecoveryDecision,
         StepOutputStatus, StepSubflowState, StepSubflowStatus, StepSummarySource,
-        SupervisionReadiness, ToolRun, ToolRunDetail, ToolRunStatus, UiContent,
-        WorkflowRunRole, WorkflowStepStatus,
+        SupervisionReadiness, ToolRun, ToolRunDetail, ToolRunStatus, UiContent, WorkflowRunRole,
+        WorkflowStepStatus,
     };
     use omega_tui::{apply_runtime_message_with_policy, TuiSurface};
 
@@ -682,7 +678,10 @@ mod tests {
         );
 
         assert!(stale_applied);
-        assert_eq!(surface.ops, vec![SurfaceOp::RestoreSession("session-restored".to_string())]);
+        assert_eq!(
+            surface.ops,
+            vec![SurfaceOp::RestoreSession("session-restored".to_string())]
+        );
     }
 
     #[test]
@@ -818,10 +817,7 @@ mod tests {
         assert_eq!(
             surface.ops,
             vec![
-                SurfaceOp::ShowOverlay(
-                    OverlayTarget::Detail,
-                    "--- a/file\n+++ b/file".to_string(),
-                ),
+                SurfaceOp::ShowOverlay(OverlayTarget::Detail, "--- a/file\n+++ b/file".to_string(),),
                 SurfaceOp::ShowOverlay(
                     OverlayTarget::Confirm,
                     "workspace_write approval required".to_string(),

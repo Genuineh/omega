@@ -307,7 +307,9 @@ fn provider_request_gate(
         config.max_concurrent_requests,
     );
     let registry = GATES.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut registry = registry.lock().expect("provider gate registry mutex poisoned");
+    let mut registry = registry
+        .lock()
+        .expect("provider gate registry mutex poisoned");
     registry
         .entry(key)
         .or_insert_with(|| Arc::new(ProviderRequestGate::new(config)))

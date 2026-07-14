@@ -1,5 +1,5 @@
-use ratatui::style::{Modifier, Style};
 use omega_theme::RenderPalette as ColorScheme;
+use ratatui::style::{Modifier, Style};
 
 /// A styled text fragment within a single display line.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -12,13 +12,13 @@ pub struct StyledSpan {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MdLineKind {
     Normal,
-    Heading(u8),      // 1, 2, or 3
-    ListItem(u8),     // nesting depth (0-based)
+    Heading(u8),  // 1, 2, or 3
+    ListItem(u8), // nesting depth (0-based)
     HorizontalRule,
-    CodeBlockStart,   // ```lang
-    CodeBlockBody,    // inside code block
-    CodeBlockEnd,     // closing ```
-    BlankLine,        // empty paragraph separator
+    CodeBlockStart, // ```lang
+    CodeBlockBody,  // inside code block
+    CodeBlockEnd,   // closing ```
+    BlankLine,      // empty paragraph separator
 }
 
 /// A parsed Markdown line with styled spans.
@@ -125,7 +125,11 @@ pub fn parse_markdown_lines(text: &str, base_style: Style, colors: &ColorScheme)
                 2 => colors.heading_2_fg,
                 _ => colors.heading_3_fg,
             };
-            let mut spans = parse_inline_spans(content, Style::default().fg(fg).add_modifier(Modifier::BOLD), colors);
+            let mut spans = parse_inline_spans(
+                content,
+                Style::default().fg(fg).add_modifier(Modifier::BOLD),
+                colors,
+            );
             // Ensure BOLD on all spans for headings
             for span in &mut spans {
                 span.style = span.style.add_modifier(Modifier::BOLD);
@@ -179,7 +183,10 @@ pub fn parse_markdown_lines(text: &str, base_style: Style, colors: &ColorScheme)
 
 fn push_blank_if_needed(result: &mut Vec<MdLine>, base_style: Style) {
     if result.is_empty()
-        || matches!(result.last().map(|line| line.kind), Some(MdLineKind::BlankLine))
+        || matches!(
+            result.last().map(|line| line.kind),
+            Some(MdLineKind::BlankLine)
+        )
     {
         return;
     }
@@ -230,7 +237,10 @@ fn parse_list_item(line: &str) -> Option<(u8, &str)> {
     let trimmed = stripped.trim_start();
 
     // Unordered: - or *
-    if let Some(rest) = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")) {
+    if let Some(rest) = trimmed
+        .strip_prefix("- ")
+        .or_else(|| trimmed.strip_prefix("* "))
+    {
         return Some((depth, rest.trim()));
     }
 
@@ -254,7 +264,10 @@ fn parse_inline_spans(text: &str, base_style: Style, colors: &ColorScheme) -> Ve
             '`' => {
                 // Inline code
                 if !buf.is_empty() {
-                    spans.push(StyledSpan { text: buf.clone(), style: base_style });
+                    spans.push(StyledSpan {
+                        text: buf.clone(),
+                        style: base_style,
+                    });
                     buf.clear();
                 }
                 chars.next(); // consume `
@@ -271,7 +284,9 @@ fn parse_inline_spans(text: &str, base_style: Style, colors: &ColorScheme) -> Ve
                 if closed && !code.is_empty() {
                     spans.push(StyledSpan {
                         text: code,
-                        style: Style::default().fg(colors.inline_code_fg).bg(colors.inline_code_bg),
+                        style: Style::default()
+                            .fg(colors.inline_code_fg)
+                            .bg(colors.inline_code_bg),
                     });
                 } else {
                     // Unclosed backtick: treat as literal
@@ -286,7 +301,10 @@ fn parse_inline_spans(text: &str, base_style: Style, colors: &ColorScheme) -> Ve
                     // Bold: **text**
                     chars.next(); // consume second *
                     if !buf.is_empty() {
-                        spans.push(StyledSpan { text: buf.clone(), style: base_style });
+                        spans.push(StyledSpan {
+                            text: buf.clone(),
+                            style: base_style,
+                        });
                         buf.clear();
                     }
                     let mut bold_text = String::new();
@@ -316,7 +334,10 @@ fn parse_inline_spans(text: &str, base_style: Style, colors: &ColorScheme) -> Ve
                 } else {
                     // Italic: *text*
                     if !buf.is_empty() {
-                        spans.push(StyledSpan { text: buf.clone(), style: base_style });
+                        spans.push(StyledSpan {
+                            text: buf.clone(),
+                            style: base_style,
+                        });
                         buf.clear();
                     }
                     let mut italic_text = String::new();
@@ -348,11 +369,17 @@ fn parse_inline_spans(text: &str, base_style: Style, colors: &ColorScheme) -> Ve
     }
 
     if !buf.is_empty() {
-        spans.push(StyledSpan { text: buf, style: base_style });
+        spans.push(StyledSpan {
+            text: buf,
+            style: base_style,
+        });
     }
 
     if spans.is_empty() {
-        spans.push(StyledSpan { text: String::new(), style: base_style });
+        spans.push(StyledSpan {
+            text: String::new(),
+            style: base_style,
+        });
     }
 
     spans
@@ -436,7 +463,8 @@ mod tests {
     fn code_blocks_gain_spacing_from_neighboring_paragraphs() {
         let colors = test_colors();
         let base = Style::default();
-        let lines = parse_markdown_lines("before\n```rust\nfn main() {}\n```\nafter", base, &colors);
+        let lines =
+            parse_markdown_lines("before\n```rust\nfn main() {}\n```\nafter", base, &colors);
 
         assert!(matches!(lines[0].kind, MdLineKind::Normal));
         assert!(matches!(lines[1].kind, MdLineKind::BlankLine));

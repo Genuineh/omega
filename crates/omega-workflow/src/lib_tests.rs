@@ -4,10 +4,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use super::{
     LoadedWorkflow, LoadedWorkflowCatalog, OutputRecoveryMode, SceneCatalog, StepInputContract,
     StepLoopContract, StepLoopMode, StepOutputContract, StepSkillRequest, StepToolRequest,
-    WorkflowDefinition, WorkflowPrompts, WorkflowSource, CHAT_WORKFLOW_ID,
-    DEEP_RESEARCH_SCENE_ID, DEEP_RESEARCH_WORKFLOW_ID,
-    DEFAULT_EXECUTE_SCHEMA_PATH, DEFAULT_EXPLORE_SCHEMA_PATH, DEFAULT_HOOKS_DIR,
-    DEFAULT_HOOK_MANIFEST_FILE, DEFAULT_PLAN_SCHEMA_PATH, DEFAULT_SCENES_PATH,
+    WorkflowDefinition, WorkflowPrompts, WorkflowSource, CHAT_WORKFLOW_ID, DEEP_RESEARCH_SCENE_ID,
+    DEEP_RESEARCH_WORKFLOW_ID, DEFAULT_EXECUTE_SCHEMA_PATH, DEFAULT_EXPLORE_SCHEMA_PATH,
+    DEFAULT_HOOKS_DIR, DEFAULT_HOOK_MANIFEST_FILE, DEFAULT_PLAN_SCHEMA_PATH, DEFAULT_SCENES_PATH,
     DEFAULT_WORKFLOW_PATH, EXECUTE_STEP_ID, EXPLORE_STEP_ID, FEATURE_SCENE_ID, FEATURE_WORKFLOW_ID,
     PLAN_STEP_ID, REPORT_STEP_ID, RESEARCH_SCENE_ID, RESEARCH_WORKFLOW_ID, ROOT_WORKFLOW_ID,
     SELECT_SKILLS_STEP_ID,
@@ -76,7 +75,12 @@ fn default_deep_research_workflow_keeps_four_stage_read_only_flow() {
             .enabled_steps()
             .map(|step| step.id.as_str())
             .collect::<Vec<_>>(),
-        vec![EXPLORE_STEP_ID, PLAN_STEP_ID, EXECUTE_STEP_ID, REPORT_STEP_ID]
+        vec![
+            EXPLORE_STEP_ID,
+            PLAN_STEP_ID,
+            EXECUTE_STEP_ID,
+            REPORT_STEP_ID
+        ]
     );
 
     let steps = workflow.enabled_steps().collect::<Vec<_>>();
@@ -116,12 +120,14 @@ fn builtin_explore_and_plan_prompts_include_structured_field_guidance() {
             .contains("objective, key_findings, constraints, risks, and affected_paths")));
     assert!(prompts
         .prompt_for(EXPLORE_STEP_ID)
-        .is_some_and(|prompt| prompt.contains("Do not conclude that the workspace is empty from a single glob result")));
+        .is_some_and(|prompt| prompt
+            .contains("Do not conclude that the workspace is empty from a single glob result")));
     assert!(prompts
         .prompt_for(PLAN_STEP_ID)
         .is_some_and(|prompt| prompt.contains("Set `goal` to the overall outcome")));
-    assert!(prompts.prompt_for(PLAN_STEP_ID).is_some_and(|prompt| prompt
-        .contains("Return exactly one JSON object and nothing else.")));
+    assert!(prompts
+        .prompt_for(PLAN_STEP_ID)
+        .is_some_and(|prompt| prompt.contains("Return exactly one JSON object and nothing else.")));
     assert!(prompts
         .prompt_for(PLAN_STEP_ID)
         .is_some_and(|prompt| prompt.contains("Do not write a report")));

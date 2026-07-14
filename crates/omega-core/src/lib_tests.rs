@@ -354,13 +354,22 @@ fn search_and_document_tools_surface_backend_disabled_error_by_default() {
     let search = dispatcher
         .dispatch("search_codebase", serde_json::json!({"query": "omega"}))
         .unwrap();
-    assert_eq!(search.error_kind, Some(omega_tools::ToolErrorKind::Execution));
+    assert_eq!(
+        search.error_kind,
+        Some(omega_tools::ToolErrorKind::Execution)
+    );
     assert!(search.output.contains("document backend"));
 
     let manage = dispatcher
-        .dispatch("manage_document", serde_json::json!({"action": "health_check"}))
+        .dispatch(
+            "manage_document",
+            serde_json::json!({"action": "health_check"}),
+        )
         .unwrap();
-    assert_eq!(manage.error_kind, Some(omega_tools::ToolErrorKind::Execution));
+    assert_eq!(
+        manage.error_kind,
+        Some(omega_tools::ToolErrorKind::Execution)
+    );
     assert!(manage.output.contains("document backend"));
 }
 
@@ -495,7 +504,11 @@ fn default_tools_expose_manifest_metadata() {
         .find(|manifest| manifest.id == "apply_patch")
         .expect("apply_patch manifest should exist");
     assert_eq!(patch.family, omega_tools::ToolFamily::Editing);
-    assert!(patch.prompt.prefer_over.iter().any(|tool| tool == "edit_file"));
+    assert!(patch
+        .prompt
+        .prefer_over
+        .iter()
+        .any(|tool| tool == "edit_file"));
     assert_eq!(
         patch
             .permissions
@@ -504,16 +517,20 @@ fn default_tools_expose_manifest_metadata() {
             .permission_class,
         "workspace_write"
     );
-    assert!(patch
-        .permissions
-        .as_ref()
-        .expect("file edit permission profile")
-        .requires_approval);
-    assert!(patch
-        .storage
-        .as_ref()
-        .expect("file edit storage profile")
-        .produces_artifact);
+    assert!(
+        patch
+            .permissions
+            .as_ref()
+            .expect("file edit permission profile")
+            .requires_approval
+    );
+    assert!(
+        patch
+            .storage
+            .as_ref()
+            .expect("file edit storage profile")
+            .produces_artifact
+    );
     assert!(patch
         .ui
         .as_ref()
@@ -526,11 +543,12 @@ fn default_tools_expose_manifest_metadata() {
         .iter()
         .find(|manifest| manifest.id == "todo_write")
         .expect("todo_write manifest should exist");
-    assert!(todo
-        .storage
-        .as_ref()
-        .expect("todo storage profile")
-        .writes_todo);
+    assert!(
+        todo.storage
+            .as_ref()
+            .expect("todo storage profile")
+            .writes_todo
+    );
 
     let search = manifests
         .iter()

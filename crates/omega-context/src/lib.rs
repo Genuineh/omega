@@ -6,44 +6,41 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::Result;
 #[cfg(feature = "document-backend")]
 use anyhow::Context;
-use omega_plan::SelectedProjectTaskContext;
+use anyhow::Result;
+pub use document_model::{
+    ArchiveTrigger, DocType, DocumentActivitySummary, DocumentHealthReport, DocumentHealthStatus,
+    DocumentMutationMode, DocumentOp, DocumentOpResult, DocumentOperatorUsage,
+    DocumentStoreVersion, FileRecord, FileStatus, FileType, HealthScore, MetadataUpdate,
+    ScanResult, SearchFilter, SearchMode, SearchQuery, SearchResult, SortField,
+    StructuredDocRelationRecord, StructuredDocsExtractionReport, StructuredDocsManifest,
+    StructuredDocsRenderState, StructuredDocsValidationIssue, StructuredDocsValidationReport,
+    StructuredDocumentRecord, StructuredDocumentRelation, StructuredDocumentRender,
+    StructuredDocumentSection, TodoOp, TodoOpResult,
+};
 use omega_client::{
     ChatRequest, ContentBlock, Message, MessageContent, PromptCacheControl, Role, SystemBlock,
     ToolDefinition,
 };
 #[cfg(feature = "document-backend")]
-use omega_document::OmegaDocument;
-use omega_project_layout::{OmegaProjectLayout, STORE_MANIFEST_PATH, STORE_TANTIVY_DIR_PATH};
-pub use document_model::{
-    ArchiveTrigger, DocType, DocumentActivitySummary, DocumentHealthReport,
-    DocumentHealthStatus, DocumentMutationMode, DocumentOp, DocumentOperatorUsage,
-    DocumentOpResult, DocumentStoreVersion, FileRecord, FileStatus, FileType, HealthScore,
-    MetadataUpdate, ScanResult, SearchFilter, SearchMode, SearchQuery, SearchResult,
-    SortField, StructuredDocRelationRecord,
-    StructuredDocumentRecord, StructuredDocumentRelation, StructuredDocumentRender,
-    StructuredDocumentSection, StructuredDocsExtractionReport, StructuredDocsManifest,
-    StructuredDocsRenderState, StructuredDocsValidationIssue,
-    StructuredDocsValidationReport, TodoOp, TodoOpResult,
-};
-pub use omega_memory::StepSummary as ContextStepSummary;
-pub use omega_memory::{
-    GovernanceEventSignal, MemoryQuery, MemoryQueryHit, ObservationFreshness, ObservationQuery,
-    ProjectObservation, RetentionProfile, TurnRetentionSignals,
-};
-use omega_memory::{
+use omega_hpc_document::OmegaDocument;
+pub use omega_hpc_memory::StepSummary as ContextStepSummary;
+use omega_hpc_memory::{
     rank_summary_candidates, should_trigger_context_compaction, ArchivedTurnInput,
     LocalMemoryStore, MemoryStoreStats, StepContextHint,
 };
-use omega_tools::{
-    ToolErrorKind, ToolFamily, ToolHandler, ToolManifestMetadata, ToolResult,
+pub use omega_hpc_memory::{
+    GovernanceEventSignal, MemoryQuery, MemoryQueryHit, ObservationFreshness, ObservationQuery,
+    ProjectObservation, RetentionProfile, TurnRetentionSignals,
 };
+use omega_hpc_paths::OmegaProjectLayout;
+use omega_plan::SelectedProjectTaskContext;
+use omega_tools::{ToolErrorKind, ToolFamily, ToolHandler, ToolManifestMetadata, ToolResult};
 use omega_workflow::{DataFormat, StepOutputContract};
-use serde::{Deserialize, Serialize};
 #[cfg(feature = "document-backend")]
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -781,7 +778,9 @@ impl OmegaContextFacade {
         request.memory_hits = recall.memory_hits;
         request.observation_hits = recall.observations;
         request.session_history_hits = recall.session_history_hits;
-        let mut assembled = self.assembler.assemble_step_context(request, token_counter)?;
+        let mut assembled = self
+            .assembler
+            .assemble_step_context(request, token_counter)?;
         assembled.document_summary = recall.document_summary;
         self.sync_memory_snapshot();
         Ok(assembled)
@@ -1106,7 +1105,7 @@ impl MemoryService for LocalMemoryService {
     fn compact_context(&self, policy: CompactionPolicy) -> Result<CompactionResult> {
         let changed = self
             .store
-            .compact_archived_turns(omega_memory::MAX_UNCOMPACTED_SUMMARIES)?;
+            .compact_archived_turns(omega_hpc_memory::MAX_UNCOMPACTED_SUMMARIES)?;
         Ok(CompactionResult {
             trigger: policy.trigger,
             changed,
@@ -1254,7 +1253,7 @@ impl KnowledgeQueryService for LocalKnowledgeQueryService {
         #[cfg(feature = "document-backend")]
         {
             let query = convert_to_backend(query)?;
-            let results: Vec<omega_document::SearchResult> = self.documents.search(query)?;
+            let results: Vec<omega_hpc_document::SearchResult> = self.documents.search(query)?;
             return convert_from_backend(results);
         }
 
@@ -1551,8 +1550,7 @@ impl ContextDiagnosticsProvider for LocalDiagnostics {
         state.memory.total_turns_archived = snapshot.total_turns_archived;
         state.memory.retention_candidates_accepted = snapshot.retention_candidates_accepted;
         state.memory.retention_candidates_dropped = snapshot.retention_candidates_dropped;
-        state.memory.dropped_candidates_by_profile =
-            snapshot.dropped_candidates_by_profile.clone();
+        state.memory.dropped_candidates_by_profile = snapshot.dropped_candidates_by_profile.clone();
         state.memory.memory_query_count = snapshot.memory_query_count;
         state.memory.memory_query_hit_mix = snapshot.memory_query_hit_mix.clone();
         state.memory.observation_count = snapshot.observation_count;
@@ -1625,11 +1623,7 @@ fn trim_observations_for_budget(
     let mut selected = Vec::new();
     let mut used_tokens = 0_u32;
     for observation in observations {
-        let cost = estimate_tokens(&format!(
-            "{}\n{}",
-            observation.title,
-            observation.summary
-        ));
+        let cost = estimate_tokens(&format!("{}\n{}", observation.title, observation.summary));
         if !selected.is_empty() && used_tokens.saturating_add(cost) > max_tokens {
             break;
         }
@@ -1687,7 +1681,7 @@ fn collect_related_paths(
     }
     for hit in memory_hits {
         for evidence in &hit.evidence_refs {
-            if let omega_memory::RetentionEvidenceRef::ChangedPath { path } = evidence {
+            if let omega_hpc_memory::RetentionEvidenceRef::ChangedPath { path } = evidence {
                 paths.insert(path.clone());
             }
         }
@@ -1729,7 +1723,14 @@ fn build_recall_query_bundle(request: &StepContextRequest) -> RecallQueryBundle 
 
     let structured_anchors = extract_structured_input_strings(request.structured_input.as_ref());
     if !structured_anchors.is_empty() {
-        keyword_queries.push(structured_anchors.iter().take(3).cloned().collect::<Vec<_>>().join(" "));
+        keyword_queries.push(
+            structured_anchors
+                .iter()
+                .take(3)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
         for anchor in &structured_anchors {
             path_hints.extend(extract_path_hints(anchor));
             doc_type_hints.extend(infer_doc_type_hints(anchor));
@@ -1860,7 +1861,9 @@ fn extract_summary_anchors(summary: &ContextStepSummary) -> Vec<String> {
 
 fn extract_path_hints(text: &str) -> Vec<String> {
     text.split_whitespace()
-        .map(|part| part.trim_matches(|ch: char| matches!(ch, ',' | ':' | ';' | ')' | '(' | '[' | ']')))
+        .map(|part| {
+            part.trim_matches(|ch: char| matches!(ch, ',' | ':' | ';' | ')' | '(' | '[' | ']'))
+        })
         .filter(|part| {
             part.contains('/')
                 || part.contains("::")
@@ -1954,7 +1957,13 @@ fn preview_text(text: &str, limit: usize) -> String {
     if trimmed.chars().count() <= limit {
         return trimmed.to_string();
     }
-    format!("{}...", trimmed.chars().take(limit.saturating_sub(3)).collect::<String>())
+    format!(
+        "{}...",
+        trimmed
+            .chars()
+            .take(limit.saturating_sub(3))
+            .collect::<String>()
+    )
 }
 
 fn current_unix_timestamp() -> u64 {
@@ -2074,9 +2083,11 @@ impl ToolHandler for SearchCodebaseHandler {
 
         let input: SearchCodebaseInput = serde_json::from_value(input)
             .map_err(|error| anyhow::anyhow!("invalid search_codebase input: {error}"))?;
-        self.facade
-            .diagnostics
-            .record_document_usage("search_codebase", "builtin_tool", &format!("query={}", input.query));
+        self.facade.diagnostics.record_document_usage(
+            "search_codebase",
+            "builtin_tool",
+            &format!("query={}", input.query),
+        );
         let scan = self.facade.query.scan_workspace()?;
         self.facade.diagnostics.record_document_scan(&scan);
         let query = SearchQuery {
@@ -2518,7 +2529,8 @@ fn build_step_system_blocks(
         );
     }
 
-    let session_history_context = render_session_history_hits_context(&request.session_history_hits);
+    let session_history_context =
+        render_session_history_hits_context(&request.session_history_hits);
     if !session_history_context.trim().is_empty() {
         blocks.push(
             SystemBlock::text(session_history_context)
@@ -2739,9 +2751,14 @@ pub fn render_visible_tools(step: &ContextStep, tool_manifests: &[ToolManifestMe
         .map(|manifest| manifest.id.as_str())
         .collect::<Vec<_>>();
 
-    let mut lines = vec![format!("Visible tools: {}", tool_names.join(", ")), "Tool strategy:".to_string()];
+    let mut lines = vec![
+        format!("Visible tools: {}", tool_names.join(", ")),
+        "Tool strategy:".to_string(),
+    ];
     lines.push("Global:".to_string());
-    lines.push("- Prefer the narrowest structured tool that fits the task and step goal.".to_string());
+    lines.push(
+        "- Prefer the narrowest structured tool that fits the task and step goal.".to_string(),
+    );
     lines.push("- Prefer read-only inspection or knowledge tools for exploration; switch to editing tools only when the step explicitly needs workspace changes.".to_string());
     lines.push("- Use escape-hatch tools only after the structured tools and their guidance have been ruled out.".to_string());
 
@@ -2777,12 +2794,20 @@ fn render_family_tool_strategy(tool_manifests: &[ToolManifestMetadata]) -> Vec<S
             }
 
             let (label, summary) = family_strategy_copy(family);
-            Some(format!("- {} [{}]: {}", label, family_tools.join(", "), summary))
+            Some(format!(
+                "- {} [{}]: {}",
+                label,
+                family_tools.join(", "),
+                summary
+            ))
         })
         .collect()
 }
 
-fn render_step_tool_hints(step: &ContextStep, tool_manifests: &[ToolManifestMetadata]) -> Vec<String> {
+fn render_step_tool_hints(
+    step: &ContextStep,
+    tool_manifests: &[ToolManifestMetadata],
+) -> Vec<String> {
     let families = tool_manifests
         .iter()
         .map(|manifest| manifest.family.as_str())
@@ -2830,10 +2855,16 @@ fn render_tool_prompt_section(manifest: &ToolManifestMetadata) -> Vec<String> {
         lines.push(format!("  avoid when: {rule}"));
     }
     if !manifest.prompt.prefer_over.is_empty() {
-        lines.push(format!("  prefer over: {}", manifest.prompt.prefer_over.join(", ")));
+        lines.push(format!(
+            "  prefer over: {}",
+            manifest.prompt.prefer_over.join(", ")
+        ));
     }
     if !manifest.prompt.fallback_to.is_empty() {
-        lines.push(format!("  fallback to: {}", manifest.prompt.fallback_to.join(", ")));
+        lines.push(format!(
+            "  fallback to: {}",
+            manifest.prompt.fallback_to.join(", ")
+        ));
     }
     lines
 }
@@ -2942,9 +2973,12 @@ fn render_stable_session_context(session: &ContextSession) -> String {
         }
         if !selected_task.recent_logs.is_empty() {
             lines.push("recent_logs:".to_string());
-            lines.extend(selected_task.recent_logs.iter().map(|entry| {
-                format!("- #{} {:?}: {}", entry.seq, entry.kind, entry.summary)
-            }));
+            lines.extend(
+                selected_task
+                    .recent_logs
+                    .iter()
+                    .map(|entry| format!("- #{} {:?}: {}", entry.seq, entry.kind, entry.summary)),
+            );
         }
         sections.push(format!(
             "<selected_project_task>\n{}\n</selected_project_task>",
@@ -3007,7 +3041,10 @@ fn render_document_hits_context(document_hits: &[SearchResult]) -> String {
         .map(|hit| format!("- {}\n{}", hit.path, preview_text(&hit.preview, 220)))
         .collect::<Vec<_>>()
         .join("\n\n");
-    format!("<planner_document_hits>\n{}\n</planner_document_hits>", lines)
+    format!(
+        "<planner_document_hits>\n{}\n</planner_document_hits>",
+        lines
+    )
 }
 
 fn render_memory_hits_context(memory_hits: &[MemoryQueryHit]) -> String {
@@ -3224,7 +3261,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use omega_client::{ChatRequest, ContentBlock, Message, ToolDefinition};
-    use omega_project_layout::{STORE_MANIFEST_PATH, STORE_TANTIVY_DIR_PATH};
+    use omega_hpc_paths::{STORE_MANIFEST_PATH, STORE_TANTIVY_DIR_PATH};
     use omega_tools::{ToolFamily, ToolManifestMetadata, ToolPromptProfile};
     use omega_workflow::{DataFormat, OutputRecoveryMode};
 
@@ -3236,8 +3273,8 @@ mod tests {
         ContextExecuteItem, ContextRouting, ContextSession, ContextStep, ContextTokenCounter,
         ContextWorkflowRole, DefaultContextAssembler, DocumentHealthReport, HealthScore,
         LocalMemoryService, MemoryService, OmegaContextFacade, OutputRepairContextRequest,
-        OutputRepairFailure, RecallBudgetConfig, ScanResult, SessionHistoryHit,
-        StepContextRequest, TurnData, TurnRetentionSignals,
+        OutputRepairFailure, RecallBudgetConfig, ScanResult, SessionHistoryHit, StepContextRequest,
+        TurnData, TurnRetentionSignals,
     };
 
     struct FixedTokenCounter;
@@ -3350,8 +3387,12 @@ mod tests {
             .with_family(ToolFamily::EscapeHatch)
             .with_prompt_profile(ToolPromptProfile {
                 summary: "Run a shell command when structured tools do not fit.".to_string(),
-                when_to_use: vec!["the exact shell command or its output is the artifact you need".to_string()],
-                when_not_to_use: vec!["a structured read or edit tool already covers the task".to_string()],
+                when_to_use: vec![
+                    "the exact shell command or its output is the artifact you need".to_string(),
+                ],
+                when_not_to_use: vec![
+                    "a structured read or edit tool already covers the task".to_string()
+                ],
                 prefer_over: vec![],
                 fallback_to: vec!["read_file".to_string()],
                 examples: vec![],
@@ -3389,17 +3430,30 @@ mod tests {
         when_not_to_use: &[&str],
         fallback_to: &[&str],
     ) -> ToolManifestMetadata {
-        ToolManifestMetadata::legacy(name, format!("{name} description"), serde_json::json!({"type": "object"}))
-            .with_family(family)
-            .with_prompt_profile(ToolPromptProfile {
-                summary: summary.to_string(),
-                when_to_use: when_to_use.iter().map(|value| (*value).to_string()).collect(),
-                when_not_to_use: when_not_to_use.iter().map(|value| (*value).to_string()).collect(),
-                prefer_over: Vec::new(),
-                fallback_to: fallback_to.iter().map(|value| (*value).to_string()).collect(),
-                examples: Vec::new(),
-                anti_patterns: Vec::new(),
-            })
+        ToolManifestMetadata::legacy(
+            name,
+            format!("{name} description"),
+            serde_json::json!({"type": "object"}),
+        )
+        .with_family(family)
+        .with_prompt_profile(ToolPromptProfile {
+            summary: summary.to_string(),
+            when_to_use: when_to_use
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect(),
+            when_not_to_use: when_not_to_use
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect(),
+            prefer_over: Vec::new(),
+            fallback_to: fallback_to
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect(),
+            examples: Vec::new(),
+            anti_patterns: Vec::new(),
+        })
     }
 
     #[test]
@@ -3494,7 +3548,9 @@ mod tests {
         assert!(rendered.contains("Workspace inspection [batch, grep_search]"));
         assert!(rendered.contains("Step hints:"));
         assert!(rendered.contains("This execute slice is read-only at the tool layer"));
-        assert!(rendered.contains("- bash [Escape hatch | stable]: Run shell commands as a fallback."));
+        assert!(
+            rendered.contains("- bash [Escape hatch | stable]: Run shell commands as a fallback.")
+        );
         assert!(rendered.contains("  fallback to: read_file"));
     }
 
@@ -3534,9 +3590,13 @@ mod tests {
         assert!(rendered.contains("Knowledge and governance [search_codebase]"));
         assert!(rendered.contains("Editing [apply_patch]"));
         assert!(rendered.contains("Planning [todo]"));
-        assert!(rendered.contains("- apply_patch [Editing | stable]: Apply a targeted patch to an existing file."));
+        assert!(rendered.contains(
+            "- apply_patch [Editing | stable]: Apply a targeted patch to an existing file."
+        ));
         assert!(rendered.contains("  avoid when: the file does not exist yet"));
-        assert!(rendered.contains("- search_codebase [Knowledge and governance | stable]: Run ranked repository search."));
+        assert!(rendered.contains(
+            "- search_codebase [Knowledge and governance | stable]: Run ranked repository search."
+        ));
     }
 
     #[test]
@@ -3875,7 +3935,10 @@ mod tests {
         assert!(!queries.is_empty());
         assert!(queries.iter().any(|query| query.contains("fix this bug")));
         assert!(queries.iter().any(|query| query.contains("Inspect")));
-        assert!(queries.iter().any(|query| query.contains("goal")) || queries.iter().any(|query| query.contains("fix")));
+        assert!(
+            queries.iter().any(|query| query.contains("goal"))
+                || queries.iter().any(|query| query.contains("fix"))
+        );
         assert!(
             !bundle.concept_queries.is_empty()
                 || !bundle.path_hints.is_empty()
@@ -3930,10 +3993,7 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&root);
         let memory = LocalMemoryService::new(root.clone());
-        let long_summary = format!(
-            "old-head {} old-tail",
-            "detail ".repeat(120)
-        );
+        let long_summary = format!("old-head {} old-tail", "detail ".repeat(120));
 
         for turn_id in 1..=6 {
             memory
@@ -3942,12 +4002,7 @@ mod tests {
                     turn_id,
                     workflow_id: "feature".to_string(),
                     user_intent: format!("archive turn {turn_id}"),
-                    summaries: vec![context_summary(
-                        "feature",
-                        "plan",
-                        "Plan",
-                        &long_summary,
-                    )],
+                    summaries: vec![context_summary("feature", "plan", "Plan", &long_summary)],
                     signals: TurnRetentionSignals::default(),
                 })
                 .unwrap();

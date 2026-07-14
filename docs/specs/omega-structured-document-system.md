@@ -1,19 +1,21 @@
 ---
-content_revision: 120
+content_revision: 174
 created: 2026-04-14
-generation_id: gen_000046_r000120
-last_verified_commit: N/A
+generation_id: gen_000087_r000174
+language: bilingual
+last_verified_commit: d8c30e3e9e310ce38cffa965be4688ed55a87787
 owner: omega-team
-projection_version: 46
+projection_version: 87
 related_prds:
   - docs/specs/omega-context-management.md
   - docs/specs/omega-command-system.md
   - docs/specs/omega-project-plan-system.md
   - docs/specs/omega-project-system.md
 source_doc_id: "spec:docs-specs-omega-structured-document-system"
+source_path: docs/specs/omega-structured-document-system.md
 status: active
-supersedes: []
-updated: 2026-04-15
+supersedes: "[]"
+updated: 2026-06-03
 ---
 
 # Omega Structured Document System Specification
@@ -379,3 +381,7 @@ renderer 从 `docs-data/` 生成 `docs/`，最少承担以下职责：
 - 2026-04-14: v0.3 — `Task 19E ~ 19F` completed: document-related `.claude` skills now follow structured docs v2, `docs-data/tasks/doc-tasks.jsonl` exists as canonical task ledger, and the current `docs/` tree has been migrated and regenerated from `docs-data/`.
 - 2026-04-14: v0.2 — `Task 19A ~ 19D` completed and moved to baseline: `docs-data/` layout, structured record/task/relation schema, `manage_document` structured actions, `/document render|validate|extract`, and parity-first extraction/validation are implemented.
 - 2026-04-14: v0.1 — 初版规格，定义 structured document system v2：`docs-data/` data layer、generated `docs/` presentation layer、`omega-plan` 驱动的文档任务 contract、mandatory docs tools、skill migration，以及“现有 docs 最后迁移”的 rollout 原则。
+
+## Implementation Note
+
+The `omega-project-layout`, `omega-memory`, `omega-document`, and `omega-doc-cli` crates referenced in this spec moved to the `omega-hpc/` sub-workspace on 2026-06-02 and are now `omega-hpc-paths`, `omega-hpc-memory`, `omega-hpc-document`, and `omega-hpc-doc-cli` respectively. Public type and binary names are unchanged. See [`docs/specs/omega-hpc-extraction.md`](omega-hpc-extraction.md) for the full mapping and [`docs/decisions/007-omega-hpc-extraction.md`](../decisions/007-omega-hpc-extraction.md) for the architecture decision.

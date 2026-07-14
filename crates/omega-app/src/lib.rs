@@ -206,7 +206,10 @@ mod tests {
 
         let updated = apply_provider_pacing_overrides(config, &overrides);
 
-        assert_eq!(updated.request_throttle_interval, Duration::from_millis(250));
+        assert_eq!(
+            updated.request_throttle_interval,
+            Duration::from_millis(250)
+        );
         assert_eq!(updated.max_concurrent_requests, 3);
         assert_eq!(updated.rate_limit_retry_delay, Duration::from_secs(12));
     }
@@ -218,7 +221,8 @@ mod tests {
             .with_max_concurrent_requests(2)
             .with_rate_limit_retry_delay(Duration::from_secs(9));
 
-        let updated = apply_provider_pacing_overrides(config.clone(), &ProviderPacingConfig::default());
+        let updated =
+            apply_provider_pacing_overrides(config.clone(), &ProviderPacingConfig::default());
 
         assert_eq!(updated, config);
     }

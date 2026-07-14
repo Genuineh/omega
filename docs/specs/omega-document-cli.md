@@ -1,18 +1,20 @@
 ---
-content_revision: 120
+content_revision: 174
 created: 2026-04-14
-generation_id: gen_000046_r000120
-last_verified_commit: N/A
+generation_id: gen_000087_r000174
+language: bilingual
+last_verified_commit: d8c30e3e9e310ce38cffa965be4688ed55a87787
 owner: omega-team
-projection_version: 46
+projection_version: 87
 related_prds:
   - docs/specs/omega-structured-document-system.md
   - docs/specs/omega-command-system.md
   - docs/specs/omega-project-plan-system.md
 source_doc_id: "spec:docs-specs-omega-document-cli"
+source_path: docs/specs/omega-document-cli.md
 status: draft
-supersedes: []
-updated: 2026-04-15
+supersedes: "[]"
+updated: 2026-06-03
 ---
 
 # Omega Document CLI Specification
@@ -311,3 +313,7 @@ CLI-first workflow 需要同步给 agent guidance：
 - 2026-04-15: v0.3 — `Task 19G ~ 19H` completed: the `omega-doc-cli` crate now ships the foundation commands plus id-based query and mutation commands, and the cutover example reuses the shared backend helper.
 - 2026-04-14: v0.2 — extended the CLI plan to cover id-based query, mutation surface, CLI-first skills/AGENTS guidance, and the docs/docs-data version contract required for a full workflow cutover.
 - 2026-04-14: v0.1 — 初版规格，规划一个 repository-external structured docs CLI，复用 `omega-document` backend 为 shell/CI 提供 `render` / `validate` / `extract` / `cutover` / `doctor`。
+
+## Implementation Note
+
+The `omega-project-layout`, `omega-memory`, `omega-document`, and `omega-doc-cli` crates referenced in this spec moved to the `omega-hpc/` sub-workspace on 2026-06-02 and are now `omega-hpc-paths`, `omega-hpc-memory`, `omega-hpc-document`, and `omega-hpc-doc-cli` respectively. Public type and binary names are unchanged. See [`docs/specs/omega-hpc-extraction.md`](omega-hpc-extraction.md) for the full mapping and [`docs/decisions/007-omega-hpc-extraction.md`](../decisions/007-omega-hpc-extraction.md) for the architecture decision.

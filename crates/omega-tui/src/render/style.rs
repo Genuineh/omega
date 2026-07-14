@@ -14,7 +14,8 @@ pub(super) fn response_line_style(line: &ResponseDisplayLine, colors: &ColorSche
         MsgKind::Routing => {
             if line.is_header {
                 response_header_style(
-                    line.response_state.unwrap_or(ResponseSectionState::Complete),
+                    line.response_state
+                        .unwrap_or(ResponseSectionState::Complete),
                     colors,
                 )
             } else if is_response_meta_line(line) {
@@ -41,7 +42,8 @@ pub(super) fn response_line_style(line: &ResponseDisplayLine, colors: &ColorSche
                 }
             } else if line.is_header {
                 response_header_style(
-                    line.response_state.unwrap_or(ResponseSectionState::Complete),
+                    line.response_state
+                        .unwrap_or(ResponseSectionState::Complete),
                     colors,
                 )
             } else if is_response_subflow_line(line) {
@@ -70,7 +72,8 @@ pub(super) fn response_line_style(line: &ResponseDisplayLine, colors: &ColorSche
                 }
             } else if line.is_header {
                 response_header_style(
-                    line.response_state.unwrap_or(ResponseSectionState::Complete),
+                    line.response_state
+                        .unwrap_or(ResponseSectionState::Complete),
                     colors,
                 )
             } else if line.text.chars().all(|ch| ch == '━') {
@@ -99,7 +102,8 @@ pub(super) fn response_line_style(line: &ResponseDisplayLine, colors: &ColorSche
                 }
             } else if line.is_header {
                 response_header_style(
-                    line.response_state.unwrap_or(ResponseSectionState::Complete),
+                    line.response_state
+                        .unwrap_or(ResponseSectionState::Complete),
                     colors,
                 )
             } else if is_response_meta_line(line) {
@@ -152,13 +156,17 @@ fn is_response_subflow_line(line: &ResponseDisplayLine) -> bool {
 
 fn response_subflow_style(line: &ResponseDisplayLine, colors: &ColorScheme) -> Style {
     if line.text.contains("  ✕") {
-        Style::default().fg(colors.error_message).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(colors.error_message)
+            .add_modifier(Modifier::BOLD)
     } else if line.text.contains("  ◉") {
         Style::default()
             .fg(colors.status_running_fg)
             .add_modifier(Modifier::BOLD)
     } else if line.text.contains("  ●") {
-        Style::default().fg(colors.status_idle_fg).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(colors.status_idle_fg)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(colors.muted_meta_fg)
     }
@@ -222,13 +230,17 @@ pub(super) fn response_status_symbol_style(
 
     if is_response_subflow_line(line) {
         return Some(if line.text.contains("  ✕") {
-            Style::default().fg(colors.error_message).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(colors.error_message)
+                .add_modifier(Modifier::BOLD)
         } else if line.text.contains("  ◉") {
             Style::default()
                 .fg(colors.status_running_fg)
                 .add_modifier(Modifier::BOLD | Modifier::SLOW_BLINK)
         } else if line.text.contains("  ●") {
-            Style::default().fg(colors.status_idle_fg).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(colors.status_idle_fg)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(colors.muted_meta_fg)
         });
@@ -254,11 +266,9 @@ fn thinking_summary_style(state: ResponseSectionState, colors: &ColorScheme) -> 
 fn thinking_body_style(state: ResponseSectionState, colors: &ColorScheme) -> Style {
     match state {
         ResponseSectionState::Failed => Style::default().fg(colors.error_message),
-        ResponseSectionState::Streaming | ResponseSectionState::Complete => {
-            Style::default()
-                .fg(colors.thinking_body_fg)
-                .add_modifier(Modifier::DIM)
-        }
+        ResponseSectionState::Streaming | ResponseSectionState::Complete => Style::default()
+            .fg(colors.thinking_body_fg)
+            .add_modifier(Modifier::DIM),
     }
 }
 

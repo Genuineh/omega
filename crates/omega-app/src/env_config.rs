@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use omega_project_layout::{OmegaProjectLayout, ENV_CONFIG_PATH};
+use omega_hpc_paths::{OmegaProjectLayout, ENV_CONFIG_PATH};
 use serde::Deserialize;
 
 pub const DEFAULT_ENV_CONFIG_PATH: &str = ENV_CONFIG_PATH;

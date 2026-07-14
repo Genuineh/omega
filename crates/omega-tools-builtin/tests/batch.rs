@@ -58,8 +58,11 @@ fn batch_handler_rejects_too_many_requests() {
 #[test]
 fn batch_handler_accepts_json_string_requests_payload() {
     let root = temp_root();
-    fs::write(root.path().join("Cargo.toml"), "[package]\nname = \"demo\"\n")
-        .expect("file should be created");
+    fs::write(
+        root.path().join("Cargo.toml"),
+        "[package]\nname = \"demo\"\n",
+    )
+    .expect("file should be created");
 
     let handler = BatchHandler::new(root_path(&root));
     let result = handler

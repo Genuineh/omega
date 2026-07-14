@@ -1,16 +1,16 @@
-pub const DEFAULT_WORKFLOW_PATH: &str = omega_project_layout::LEGACY_WORKFLOW_CONFIG_PATH;
-pub const DEFAULT_SCENES_PATH: &str = omega_project_layout::SCENES_CONFIG_PATH;
-pub const DEFAULT_WORKFLOWS_DIR: &str = omega_project_layout::WORKFLOWS_DIR_PATH;
-pub const DEFAULT_HOOKS_DIR: &str = omega_project_layout::HOOK_SOURCE_DIR_PATH;
+pub const DEFAULT_WORKFLOW_PATH: &str = omega_hpc_paths::LEGACY_WORKFLOW_CONFIG_PATH;
+pub const DEFAULT_SCENES_PATH: &str = omega_hpc_paths::SCENES_CONFIG_PATH;
+pub const DEFAULT_WORKFLOWS_DIR: &str = omega_hpc_paths::WORKFLOWS_DIR_PATH;
+pub const DEFAULT_HOOKS_DIR: &str = omega_hpc_paths::HOOK_SOURCE_DIR_PATH;
 pub const DEFAULT_HOOK_MANIFEST_FILE: &str = "Hook.toml";
 pub const DEFAULT_ROOT_WORKFLOW_PATH: &str = ".omega/workflows/root.toml";
 pub const DEFAULT_CHAT_WORKFLOW_PATH: &str = ".omega/workflows/chat.toml";
 pub const DEFAULT_RESEARCH_WORKFLOW_PATH: &str = ".omega/workflows/research.toml";
 pub const DEFAULT_DEEP_RESEARCH_WORKFLOW_PATH: &str = ".omega/workflows/deep-research.toml";
 pub const DEFAULT_FEATURE_WORKFLOW_PATH: &str = ".omega/workflows/feature.toml";
-pub const DEFAULT_STEP_PROMPT_DIR: &str = omega_project_layout::STEP_PROMPT_DIR_PATH;
-pub const DEFAULT_STEP_SCHEMA_DIR: &str = omega_project_layout::STEP_SCHEMA_DIR_PATH;
-pub const DEFAULT_MODEL_CONFIG_PATH: &str = omega_project_layout::MODEL_CONFIG_PATH;
+pub const DEFAULT_STEP_PROMPT_DIR: &str = omega_hpc_paths::STEP_PROMPT_DIR_PATH;
+pub const DEFAULT_STEP_SCHEMA_DIR: &str = omega_hpc_paths::STEP_SCHEMA_DIR_PATH;
+pub const DEFAULT_MODEL_CONFIG_PATH: &str = omega_hpc_paths::MODEL_CONFIG_PATH;
 
 pub const ROOT_WORKFLOW_ID: &str = "root";
 pub const CHAT_WORKFLOW_ID: &str = "chat";

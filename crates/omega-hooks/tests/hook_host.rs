@@ -1,11 +1,11 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use omega_project_layout::OmegaProjectLayout;
 use omega_hooks::{
     HookAdvanceOutcome, HookDispatchInput, HookEventKind, HookHost, HookSessionContextSnapshot,
     HookStepKey, HookTodoSnapshot, HookWorkflowRole, DEFAULT_HOOKS_DIR, DEFAULT_HOOK_MANIFEST_FILE,
 };
+use omega_hpc_paths::OmegaProjectLayout;
 use omega_test_support::persistent_test_root;
 
 #[test]

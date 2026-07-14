@@ -1,0 +1,39 @@
+[workspace]
+members = [
+    "crates/omega-hpc-paths",
+    "crates/omega-hpc-memory",
+    "crates/omega-hpc-document",
+    "crates/omega-hpc-doc-cli",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Omega Team"]
+license = "MIT"
+
+[workspace.dependencies]
+anyhow = "1"
+blake3 = "1"
+fastembed = "5.13"
+futures-util = "0.3"
+globset = "0.4"
+lancedb = "0.27"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+tantivy = "0.22"
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+toml = "0.8"
+walkdir = "2"
+arrow-array = "57"
+arrow-schema = "57"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

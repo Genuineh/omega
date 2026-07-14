@@ -1,15 +1,17 @@
 ---
-content_revision: 120
+content_revision: 174
 created: 2026-03-27
-generation_id: gen_000046_r000120
-last_verified_commit: N/A
+generation_id: gen_000087_r000174
+language: bilingual
+last_verified_commit: d8c30e3e9e310ce38cffa965be4688ed55a87787
 owner: omega-team
-projection_version: 46
-related_prds: []
+projection_version: 87
+related_prds: "[]"
 source_doc_id: "spec:docs-specs-omega-context-management"
+source_path: docs/specs/omega-context-management.md
 status: active
-supersedes: []
-updated: 2026-04-03
+supersedes: "[]"
+updated: 2026-06-03
 ---
 
 # Omega Context Management Specification
@@ -1358,3 +1360,7 @@ replacement_must_backlink = true
 - 2026-03-27 v0.2: 重大修订：(1) omega-context 作为唯一对外 facade，omega-memory / omega-document 不直接暴露；(2) 接入 LanceDB 嵌入式向量数据库 + tantivy 全文检索，支持多维复合查询；(3) 新增 Document Governance Engine，基于规则的文档生命周期管理（对齐 AGENTS.md docs skill）；(4) 新增 Observability/Monitoring 章节、TUI Integration 章节、完整 Testing Strategy。
 - 2026-03-27 v0.3: 根据架构评审优化：(1) 将根因修复前移到 Phase 1，避免向量/治理基础设施先于 execute 修复；(2) 用聚焦接口 + `OmegaContextFacade` 替代单一 god trait；(3) 明确 `FileStore` 为真源、tantivy/LanceDB 为派生索引，并加入 revision 一致性协议；(4) `manage_document` 改为 check/plan/apply staged 模式；(5) 默认禁用启动期 embedding，并改为后台索引。
 - 2026-04-03 v0.4: `.omega/.storeignore` 已调整为 store-level 排除规则：匹配路径在扫描阶段直接跳过，不进入 `FileStore` manifest、tantivy 或 LanceDB；`/document init|sync` 还会暴露 ignored/indexed/embedded 样本，帮助解释本次处理范围。
+
+## Implementation Note
+
+The `omega-project-layout`, `omega-memory`, `omega-document`, and `omega-doc-cli` crates referenced in this spec moved to the `omega-hpc/` sub-workspace on 2026-06-02 and are now `omega-hpc-paths`, `omega-hpc-memory`, `omega-hpc-document`, and `omega-hpc-doc-cli` respectively. Public type and binary names are unchanged. See [`docs/specs/omega-hpc-extraction.md`](omega-hpc-extraction.md) for the full mapping and [`docs/decisions/007-omega-hpc-extraction.md`](../decisions/007-omega-hpc-extraction.md) for the architecture decision.

@@ -10,36 +10,99 @@ use ratatui::{
 use omega_keymap::InteractionMode;
 use omega_theme::{OmegaTheme, RenderPalette as ColorScheme};
 
-use crate::app::{App, Panel, ResponseDisplayLine};
+use crate::app::{App, MsgKind, Panel, ResponseDisplayLine};
+use crate::render::frame::Frame as RenderedFrame;
 use crate::render::markdown::StyledSpan;
 
+use super::chrome::{PanelTitle, panel_title_with_focus, panel_title_with_focus_suffix};
+use super::component::{FocusState, Panel as PanelChrome};
 use super::overlay::render_overlay;
+use super::response_card::{blank_list_item, render_response_line};
 use super::sidebar::{render_sidebar_body, render_sidebar_rail};
 use super::status::{bottom_status_line, input_context_line, input_info_line};
-use super::style::{response_line_style, response_status_symbol_style};
 
 const INPUT_PROMPT_PREFIX: &str = " > ";
 const INPUT_CONTINUATION_PREFIX: &str = "   ";
 
+/// Below this terminal width (in cells), the sidebar is hidden entirely.
+/// The status bar still surfaces a "Sidebar hidden" hint so the user
+/// knows the panel is reachable via the keymap.
+const MIN_TERM_WIDTH_FOR_SIDEBAR: u16 = 60;
+
+/// Below this terminal width, the sidebar takes 30% of horizontal space.
+/// Above it, the sidebar takes 34%.
+const MIN_TERM_WIDTH_FOR_WIDE_SIDEBAR: u16 = 100;
+const SIDEBAR_PCT_NARROW: u16 = 30;
+const SIDEBAR_PCT_WIDE: u16 = 34;
+
+/// Vertical layout: bottom status bar is one row; above the response
+/// panel sits the input context bar (2 rows) and the input shell
+/// (9 rows total including its border).
+const STATUS_BAR_HEIGHT: u16 = 1;
+const INPUT_CONTEXT_HEIGHT: u16 = 2;
+const INPUT_SHELL_HEIGHT: u16 = 9;
+const FULL_PERCENTAGE: u16 = 100;
+
+/// Spinner glyphs for the bottom status bar. Picked for legibility at
+/// small sizes; the sequence advances once per render tick.
+const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+/// Top-level render entry point. Splits the frame into a status bar and
+/// the main area, then dispatches each panel to its own `render_*` function.
+/// Each helper is responsible for one panel and writes both the visible
+/// chrome and the panel's `*_rect` field on `App` so event handlers can
+/// route clicks and focus correctly.
 pub(crate) fn render(frame: &mut Frame, app: &mut App, model_name: &str, theme: &OmegaTheme) {
     let colors = theme.render_palette();
     app.cached_palette = Some(colors);
     app.remember_delivery_model_name(model_name);
 
+    let frame_layout = compute_frame_layout(frame.area(), app);
+    write_panel_rects(app, &frame_layout);
+    app.set_frame(RenderedFrame::from_layout(&frame_layout));
+
+    render_status_bar(frame, app, model_name, &colors, frame_layout.status_rect);
+    render_response_panel(frame, app, &colors, frame_layout.response_rect);
+    render_sidebar_panel(frame, app, &colors, frame_layout.sidebar_rect);
+    render_input_area(
+        frame,
+        app,
+        &colors,
+        frame_layout.input_shell_rect,
+        frame_layout.input_context_rect,
+        frame_layout.sidebar_visible,
+    );
+    app.normalize_focus();
+    render_overlay(frame, app, &colors);
+}
+
+/// Layout areas computed once per frame. All `*_rect` fields on `App` are
+/// derived from this struct; pulling the layout maths into one place
+/// keeps the dispatch in `render()` readable.
+pub(crate) struct FrameLayout {
+    pub(crate) status_rect: Rect,
+    pub(crate) response_rect: Rect,
+    pub(crate) input_context_rect: Rect,
+    pub(crate) input_shell_rect: Rect,
+    pub(crate) sidebar_rect: Rect,
+    pub(crate) sidebar_visible: bool,
+}
+
+fn compute_frame_layout(area: Rect, app: &App) -> FrameLayout {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(1)])
-        .split(frame.area());
+        .constraints([Constraint::Min(0), Constraint::Length(STATUS_BAR_HEIGHT)])
+        .split(area);
 
-    let term_width = frame.area().width;
-    let sidebar_pct: u16 = if term_width < 60 || app.sidebar.shell_collapsed {
+    let term_width = area.width;
+    let sidebar_pct: u16 = if term_width < MIN_TERM_WIDTH_FOR_SIDEBAR || app.sidebar.shell_collapsed {
         0
-    } else if term_width < 100 {
-        30
+    } else if term_width < MIN_TERM_WIDTH_FOR_WIDE_SIDEBAR {
+        SIDEBAR_PCT_NARROW
     } else {
-        34
+        SIDEBAR_PCT_WIDE
     };
-    let resp_pct = 100 - sidebar_pct;
+    let resp_pct = FULL_PERCENTAGE - sidebar_pct;
 
     let main_chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -53,137 +116,365 @@ pub(crate) fn render(frame: &mut Frame, app: &mut App, model_name: &str, theme: 
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(0),
-            Constraint::Length(2),
-            Constraint::Length(9),
+            Constraint::Length(INPUT_CONTEXT_HEIGHT),
+            Constraint::Length(INPUT_SHELL_HEIGHT),
         ])
         .split(main_chunks[0]);
 
-    app.response_rect = left_chunks[0];
-    app.input_context_rect = left_chunks[1];
+    let sidebar_visible = main_chunks[1].width > 0 && main_chunks[1].height > 0;
+
+    FrameLayout {
+        status_rect: chunks[1],
+        response_rect: left_chunks[0],
+        input_context_rect: left_chunks[1],
+        input_shell_rect: left_chunks[2],
+        sidebar_rect: main_chunks[1],
+        sidebar_visible,
+    }
+}
+
+fn write_panel_rects(app: &mut App, layout: &FrameLayout) {
+    app.response_rect = layout.response_rect;
+    app.input_context_rect = layout.input_context_rect;
     app.input_gap_rect = Rect::default();
     app.input_rect = Rect::default();
     app.input_info_rect = Rect::default();
-    app.sidebar_rect = main_chunks[1];
+    app.sidebar_rect = layout.sidebar_rect;
     app.sidebar_rail_rect = Rect::default();
     app.todo_rect = Rect::default();
     app.delivery_rect = Rect::default();
     app.document_rect = Rect::default();
     app.memory_rect = Rect::default();
     app.logs_rect = Rect::default();
-    app.bottom_status_rect = chunks[1];
+    app.bottom_status_rect = layout.status_rect;
     app.normalize_mode();
+}
 
-    const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-    let status = Paragraph::new(bottom_status_line(app, model_name, SPINNER_FRAMES, &colors))
+fn render_status_bar(
+    frame: &mut Frame,
+    app: &App,
+    model_name: &str,
+    colors: &ColorScheme,
+    rect: Rect,
+) {
+    let status = Paragraph::new(bottom_status_line(app, model_name, SPINNER_FRAMES, colors))
         .style(Style::default().fg(colors.text).bg(colors.status_bar_bg));
-    frame.render_widget(status, chunks[1]);
+    frame.render_widget(status, rect);
+}
 
-    let response_border = panel_border_style(app.focused_panel == Panel::Response, &colors);
-    let sidebar_border = panel_border_style(app.focused_panel == Panel::SidebarRail, &colors);
+fn render_response_panel(
+    frame: &mut Frame,
+    app: &mut App,
+    colors: &ColorScheme,
+    rect: Rect,
+) {
+    use crate::render::chat_turn::iter_turns;
+    use crate::render::flex::{FlexContainer, FlexDirection, FlexSize};
 
-    let response_title = if app.focused_panel == Panel::Response {
-        " Agent Response ◆ "
-    } else {
-        " Agent Response "
-    };
-    let app_ref: &App = &*app;
-    let resp_inner_w = (left_chunks[0].width as usize).saturating_sub(2).max(1);
-    let response_lines = app_ref.response_display_lines();
-    let output_items: Vec<ListItem> = response_lines
+    let response_focused = app.focused_panel == Panel::Response;
+    let response_title = panel_title_with_focus(PanelTitle::RESPONSE, response_focused);
+
+    let resp_inner_w = (rect.width as usize).saturating_sub(2).max(1);
+    let response_lines = app.response_display_lines();
+
+    // Build ChatTurns: each turn is 1 user message + N agent
+    // response records. The outer FlexContainer stacks turns with
+    // gap=2 (T-58), so turn boundaries are visually wider than
+    // internal kind changes. Each ChatTurn internally uses
+    // gap=1 between its sub-units (the per-kind gap).
+    let response_panel_chrome = PanelChrome::new(response_title)
+        .focus(FocusState::new(response_focused))
+        .with_bg(colors.panel_bg)
+        .with_border_colors(colors.focus_border, colors.border_dim)
+        .with_title_colors(colors.title_fg, colors.context_hint);
+    let response_block = response_panel_chrome.block();
+    let inner = response_block.inner(rect);
+    frame.render_widget(response_block, rect);
+
+    // T-70: use `iter_turns_with_offsets` so each turn knows
+    // its source-line offset (the index in `response_lines()`
+    // where its `user_msg` lives). This is required by the
+    // mouse-selection callback: the new chat log drops many
+    // internal-work lines (Routing / Thinking / etc.), so
+    // display rows don't map 1:1 to source lines, and the
+    // callback needs the source index for each sub-unit.
+    use crate::render::chat_turn::iter_turns_with_offsets;
+    let turns_with_offsets = iter_turns_with_offsets(&response_lines);
+    let turn_count = turns_with_offsets.len();
+
+    // Each ChatTurn renders itself with `FlexSize::Fill` so it
+    // takes whatever space the outer container has left. The
+    // outer container's gap=2 separates turns with 2 blank rows
+    // (T-58). Total visible lines is computed approximately for
+    // `response_displayed_count` and the auto-scroll anchor; the
+    // actual rendering is driven by the FlexContainer math, not
+    // by this estimate.
+    let mut total_lines: usize = 0;
+    let mut children: Vec<crate::render::flex::FlexChild> = Vec::new();
+    let inner_height = (rect.height as usize).saturating_sub(2);
+    // T-70: pre-compute the per-source-line char-count vector
+    // (used as the upper bound when looking up the selection
+    // range for a source line). This is done once outside the
+    // turn render closure so the closure doesn't need to
+    // borrow `app` immutably.
+    let source_line_lens: Vec<usize> = response_lines
         .iter()
-        .enumerate()
-        .flat_map(|(line_index, line)| {
-            let fallback_style = response_line_style(line, &colors);
-            let selection = app_ref.selection_range_for_segment(
-                Panel::Response,
-                line_index,
-                0,
-                line.text.chars().count(),
-            );
-            let source_spans = response_display_spans(line, fallback_style, &colors);
-            let selected_spans = apply_selection_to_styled_spans(&source_spans, selection);
-
-            wrap_styled_spans(&selected_spans, resp_inner_w)
-                .into_iter()
-                .map(|wrapped_spans| {
-                    let ratatui_spans: Vec<Span<'static>> = wrapped_spans
-                        .into_iter()
-                        .map(|span| Span::styled(span.text, span.style))
-                        .collect();
-                    ListItem::new(Line::from(ratatui_spans))
-                })
-                .collect::<Vec<_>>()
-        })
+        .map(|l| l.text.chars().count())
         .collect();
-    let resp_total = output_items.len();
-    app.response_displayed_count = resp_total;
-    if !app.response_pinned && resp_total > 0 {
-        app.response_state.select(Some(resp_total - 1));
-    }
-    let output_list = List::new(output_items)
-        .block(
-            Block::default()
-                .border_type(colors.panel_border_type)
-                .title(Line::styled(
-                    response_title,
-                    panel_title_style(
-                        app.focused_panel == Panel::Response,
-                        colors.title_fg,
-                        colors.context_hint,
-                        colors.panel_bg,
-                    ),
-                ))
-                .borders(Borders::ALL)
-                .border_style(response_border)
-                .style(Style::default().bg(colors.panel_bg)),
-        )
-        .highlight_style(Style::default())
-        .style(panel_content_style(
-            app.focused_panel == Panel::Response,
-            colors.text,
-            colors.panel_bg,
-        ));
-    frame.render_stateful_widget(output_list, left_chunks[0], &mut app.response_state);
-
-    if app.sidebar_rect.width > 0 && app.sidebar_rect.height > 0 {
-        let sidebar_title = if app.focused_panel == Panel::SidebarRail {
-            "Sidebar ◆"
+    for turn_with_offset in turns_with_offsets {
+        let mut turn = turn_with_offset.turn;
+        let source_offset = turn_with_offset.source_offset;
+        // T-69: compute the turn's exact height. The chat log
+        // is a compact summary, not a content dump. Rules:
+        // - User bubble: 1 or 2 rows.
+        // - Internal-work records (Routing / Thinking / Command
+        //   / Separator): dropped.
+        // - Step records: show only while Streaming; completed
+        //   Steps are dropped.
+        // - FinalAnswer: 1 row (with body preview).
+        // - Agent / Error: 1 row (first body line only).
+        // - After FinalAnswer, if the turn produced trace
+        //   content (any Step / Thinking / Routing / Command
+        //   record), add a 1-row "view details" hint.
+        let user_text_nonempty = !turn.user_msg.text.trim().is_empty();
+        // T-72: the user bubble body can wrap to multiple
+        // rows. Account for the wrapped height.
+        let mut turn_height: usize = if user_text_nonempty {
+            // 1 row for the title + wrapped rows for the body.
+            1 + {
+                let body_line_chars: usize = turn
+                    .user_msg
+                    .text
+                    .chars()
+                    .count();
+                // Body line is `"  {text}"` (2-char indent).
+                let body_w = resp_inner_w.saturating_sub(2).max(1);
+                let total_chars = body_line_chars + 2;
+                total_chars.div_ceil(body_w).max(1)
+            }
         } else {
-            "Sidebar"
+            1
         };
-        let sidebar_block = Block::default()
-            .border_type(colors.panel_border_type)
-            .title(Line::styled(
-                sidebar_title,
-                panel_title_style(
-                    app.focused_panel == Panel::SidebarRail,
-                    colors.title_fg,
-                    colors.context_hint,
-                    colors.sidebar_bg,
-                ),
-            ))
-            .borders(Borders::ALL)
-            .border_style(sidebar_border)
-            .style(Style::default().bg(colors.sidebar_bg));
-        let sidebar_inner = sidebar_block.inner(app.sidebar_rect);
-        frame.render_widget(sidebar_block, app.sidebar_rect);
-
-        let sidebar_chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)])
-            .split(sidebar_inner);
-        app.sidebar_rail_rect = sidebar_chunks[0];
-
-        render_sidebar_rail(frame, app, &colors, sidebar_chunks[0]);
-        frame.render_widget(
-            Paragraph::new("").style(Style::default().bg(colors.sidebar_bg)),
-            sidebar_chunks[1],
-        );
-        render_sidebar_body(frame, app, &colors, sidebar_chunks[2]);
+        let mut prev_rendered_kind: Option<MsgKind> = if user_text_nonempty {
+            Some(MsgKind::User)
+        } else {
+            None
+        };
+        let mut has_trace = false;
+        let mut has_active_step = false;
+        let mut has_final_answer = false;
+        for (line_idx, line) in turn.agent_msgs.iter().enumerate() {
+            // Track for the "view details" hint.
+            if !matches!(line.kind, MsgKind::User | MsgKind::FinalAnswer)
+                && !line.kind.is_internal_work()
+                && line.is_header
+            {
+                has_trace = true;
+            }
+            if line.kind == MsgKind::Step && line.is_header {
+                let is_streaming = line
+                    .response_state
+                    .map(|s| matches!(s, omega_session::ResponseSectionState::Streaming))
+                    .unwrap_or(false);
+                if is_streaming {
+                    has_active_step = true;
+                }
+            }
+            if line.kind == MsgKind::FinalAnswer && line.is_header {
+                has_final_answer = true;
+            }
+            // T-69: drop internal-work records.
+            if line.kind.is_internal_work() {
+                continue;
+            }
+            // Drop body lines for card-header kinds.
+            if !line.is_header && line.kind.has_card_header() {
+                continue;
+            }
+            // T-69: drop Step records that are explicitly
+            // complete or failed. Steps with no state set
+            // (test data) or state = Streaming are kept.
+            if line.kind == MsgKind::Step
+                && line.is_header
+                && line
+                    .response_state
+                    .map(|s| {
+                        matches!(
+                            s,
+                            omega_session::ResponseSectionState::Complete
+                                | omega_session::ResponseSectionState::Failed
+                        )
+                    })
+                    .unwrap_or(false)
+            {
+                continue;
+            }
+            // For body-only kinds (Agent / Error), only count
+            // the FIRST body line.
+            let is_first_body = !line.is_header
+                && !line.kind.has_card_header()
+                && turn.agent_msgs[..line_idx]
+                    .iter()
+                    .all(|l| l.kind != line.kind || l.is_header);
+            if !line.is_header && !is_first_body {
+                continue;
+            }
+            if let Some(prev) = prev_rendered_kind {
+                if prev != line.kind {
+                    turn_height += 1; // kind-change gap
+                }
+            }
+            // T-72: compute the wrapped height of this line.
+            // Card-header summaries are already truncated to
+            // `inner_w`, so they wrap to 1 row. Body-only
+            // lines (Agent / Error) may be longer than
+            // `inner_w` and wrap to multiple rows.
+            let line_chars: usize = if line.is_header || line.kind.has_card_header() {
+                // The summary line, after truncation, is
+                // at most `resp_inner_w` chars.
+                resp_inner_w
+            } else {
+                line.text.chars().count()
+            };
+            let wrap_h = line_chars.div_ceil(resp_inner_w.max(1)).max(1);
+            turn_height += wrap_h;
+            prev_rendered_kind = Some(line.kind);
+        }
+        // T-69: "view details" hint. +1 gap + 1 hint row.
+        if has_trace && has_final_answer && !has_active_step {
+            turn_height += 2;
+        }
+        total_lines += turn_height;
+        let colors_value: ColorScheme = *colors;
+        // T-70: pre-compute the selection ranges for every
+        // source line in this turn (user line at
+        // `source_offset`, agent lines at
+        // `source_offset + 1 + j` for j in 0..agent_msgs.len()).
+        // The selection is consulted inside the render closure
+        // so we capture a static slice (no `app` borrow).
+        let mut turn_selections: Vec<Option<(usize, usize)>> =
+            Vec::with_capacity(1 + turn.agent_msgs.len());
+        // User line selection.
+        let user_text_len = source_line_lens
+            .get(source_offset)
+            .copied()
+            .unwrap_or(0);
+        turn_selections.push(app.selection_range_for_segment(
+            Panel::Response,
+            source_offset,
+            0,
+            user_text_len,
+        ));
+        // Agent line selections.
+        for j in 0..turn.agent_msgs.len() {
+            let source_line_index = source_offset + 1 + j;
+            let text_len = source_line_lens
+                .get(source_line_index)
+                .copied()
+                .unwrap_or(0);
+            turn_selections.push(app.selection_range_for_segment(
+                Panel::Response,
+                source_line_index,
+                0,
+                text_len,
+            ));
+        }
+        let selections_for_turn = turn_selections;
+        children.push(crate::render::flex::FlexChild::length(
+            FlexSize::Length(turn_height as u16),
+            move |frame, rect| {
+                let mut t = turn;
+                t.render(
+                    frame,
+                    rect,
+                    resp_inner_w,
+                    &colors_value,
+                    source_offset,
+                    &mut |source_line_index: usize| -> Option<(usize, usize)> {
+                        // Map a source-line index (which is
+                        // `source_offset` for the user line or
+                        // `source_offset + 1 + j` for agent
+                        // line j) to the pre-computed
+                        // selection range. The closure captures
+                        // `selections_for_turn` (a `Vec`) and
+                        // `source_offset` (a `usize`).
+                        if source_line_index < source_offset {
+                            return None;
+                        }
+                        let idx = source_line_index - source_offset;
+                        selections_for_turn.get(idx).copied().flatten()
+                    },
+                );
+            },
+        ));
     }
-    // normalize_focus after sidebar rects are fully populated (or zeroed if sidebar hidden)
-    app.normalize_focus();
 
+    // Update the turn count for hotkey navigation (T-60 will
+    // hook into this). We add a tiny fudge for the gap=2 between
+    // turns so the displayed total includes the visible rhythm.
+    if turn_count > 0 {
+        total_lines += (turn_count - 1) * 2;
+    }
+    app.response_turn_count = turn_count;
+    app.response_displayed_count = total_lines;
+    if !app.response_pinned && total_lines > 0 {
+        app.response_state.select(Some(total_lines - 1));
+    }
+
+    // Build the outer Flex container with gap=2 (turn-level gap)
+    // and render it into the inner rect.
+    let mut container = FlexContainer::new(FlexDirection::Column)
+        .gap(2)
+        .children(children);
+    container.render(frame, inner);
+}
+
+fn render_sidebar_panel(
+    frame: &mut Frame,
+    app: &mut App,
+    colors: &ColorScheme,
+    rect: Rect,
+) {
+    if rect.width == 0 || rect.height == 0 {
+        return;
+    }
+    let sidebar_focused = app.focused_panel == Panel::SidebarRail;
+    let sidebar_title = panel_title_with_focus_suffix(PanelTitle::SIDEBAR, sidebar_focused);
+    let sidebar_panel = PanelChrome::new(sidebar_title)
+        .focus(FocusState::new(sidebar_focused))
+        .with_bg(colors.sidebar_bg)
+        .with_border_colors(colors.focus_border, colors.border_dim)
+        .with_title_colors(colors.title_fg, colors.context_hint);
+    let sidebar_block = sidebar_panel.block();
+    let sidebar_inner = sidebar_block.inner(rect);
+    frame.render_widget(sidebar_block, rect);
+
+    let sidebar_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
+        .split(sidebar_inner);
+    app.sidebar_rail_rect = sidebar_chunks[0];
+
+    render_sidebar_rail(frame, app, colors, sidebar_chunks[0]);
+    frame.render_widget(
+        Paragraph::new("").style(Style::default().bg(colors.sidebar_bg)),
+        sidebar_chunks[1],
+    );
+    render_sidebar_body(frame, app, colors, sidebar_chunks[2]);
+}
+
+fn render_input_area(
+    frame: &mut Frame,
+    app: &mut App,
+    colors: &ColorScheme,
+    shell_rect: Rect,
+    context_rect: Rect,
+    sidebar_visible: bool,
+) {
     let input_border_color = match app.interaction_mode {
         InteractionMode::Normal => colors.mode_normal_fg,
         InteractionMode::Insert => colors.mode_insert_fg,
@@ -193,9 +484,8 @@ pub(crate) fn render(frame: &mut Frame, app: &mut App, model_name: &str, theme: 
         .borders(Borders::ALL)
         .border_style(Style::default().fg(input_border_color))
         .style(Style::default().bg(colors.input_bg));
-    let input_shell_rect = left_chunks[2];
-    let input_inner = input_shell.inner(input_shell_rect);
-    frame.render_widget(input_shell, input_shell_rect);
+    let input_inner = input_shell.inner(shell_rect);
+    frame.render_widget(input_shell, shell_rect);
 
     let input_chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -213,82 +503,23 @@ pub(crate) fn render(frame: &mut Frame, app: &mut App, model_name: &str, theme: 
         height: input_chunks[2].height,
     };
 
-    let input = Paragraph::new(input_viewport_lines(app, &colors))
+    let input = Paragraph::new(input_viewport_lines(app, colors))
         .style(Style::default().fg(colors.text).bg(colors.input_bg));
     frame.render_widget(input, app.input_rect);
 
-    let context = Paragraph::new(input_context_line(app, main_chunks[1].width == 0, &colors))
+    let context = Paragraph::new(input_context_line(app, !sidebar_visible, colors))
         .wrap(Wrap { trim: false })
         .style(Style::default().fg(colors.text).bg(colors.context_bar_bg));
-    frame.render_widget(context, left_chunks[1]);
+    frame.render_widget(context, context_rect);
 
     let input_info = Paragraph::new(input_info_line(
         app,
         SPINNER_FRAMES,
-        &colors,
+        colors,
         app.input_info_rect.width as usize,
     ))
     .style(Style::default().fg(colors.text).bg(colors.input_bg));
     frame.render_widget(input_info, app.input_info_rect);
-
-    render_overlay(frame, app, &colors);
-}
-
-fn wrap_styled_spans(spans: &[StyledSpan], width: usize) -> Vec<Vec<StyledSpan>> {
-    if width == 0 {
-        return vec![spans.to_vec()];
-    }
-    if spans.is_empty() {
-        return vec![Vec::new()];
-    }
-
-    let mut lines: Vec<Vec<StyledSpan>> = Vec::new();
-    let mut current_line: Vec<StyledSpan> = Vec::new();
-    let mut current_width = 0usize;
-
-    for span in spans {
-        if span.text.is_empty() {
-            if current_line.is_empty() {
-                current_line.push(span.clone());
-            }
-            continue;
-        }
-
-        let chars: Vec<char> = span.text.chars().collect();
-        let mut start = 0usize;
-        while start < chars.len() {
-            if current_width == width {
-                lines.push(current_line);
-                current_line = Vec::new();
-                current_width = 0;
-            }
-
-            let take = (width - current_width).min(chars.len() - start);
-            let text: String = chars[start..start + take].iter().collect();
-            current_line.push(StyledSpan {
-                text,
-                style: span.style,
-            });
-            current_width += take;
-            start += take;
-
-            if current_width == width {
-                lines.push(current_line);
-                current_line = Vec::new();
-                current_width = 0;
-            }
-        }
-    }
-
-    if current_line.is_empty() {
-        if lines.is_empty() {
-            lines.push(Vec::new());
-        }
-    } else {
-        lines.push(current_line);
-    }
-
-    lines
 }
 
 pub(super) fn input_viewport_lines(app: &App, colors: &ColorScheme) -> Vec<Line<'static>> {
@@ -303,18 +534,10 @@ pub(super) fn input_viewport_lines(app: &App, colors: &ColorScheme) -> Vec<Line<
     let lines = build_input_lines(app, colors, content_width);
     let start = app.input_viewport_top(lines.len());
 
-    lines
-        .into_iter()
-        .skip(start)
-        .take(visible_height)
-        .collect()
+    lines.into_iter().skip(start).take(visible_height).collect()
 }
 
-fn build_input_lines(
-    app: &App,
-    colors: &ColorScheme,
-    content_width: usize,
-) -> Vec<Line<'static>> {
+fn build_input_lines(app: &App, colors: &ColorScheme, content_width: usize) -> Vec<Line<'static>> {
     let prompt_style = Style::default().fg(colors.input_text);
     let text_style = match app.interaction_mode {
         InteractionMode::Normal => Style::default().fg(colors.input_placeholder),
@@ -454,116 +677,6 @@ fn append_input_cell(
     *current_width += 1;
 }
 
-fn response_display_spans(
-    line: &ResponseDisplayLine,
-    fallback_style: Style,
-    colors: &ColorScheme,
-) -> Vec<StyledSpan> {
-    if !line.spans.is_empty() {
-        return line.spans.clone();
-    }
-
-    let Some((start, end)) = find_status_symbol_range(&line.text) else {
-        return vec![StyledSpan {
-            text: line.text.clone(),
-            style: fallback_style,
-        }];
-    };
-    let Some(symbol_style) = response_status_symbol_style(line, colors) else {
-        return vec![StyledSpan {
-            text: line.text.clone(),
-            style: fallback_style,
-        }];
-    };
-
-    let mut spans = Vec::new();
-    if start > 0 {
-        spans.push(StyledSpan {
-            text: line.text[..start].to_string(),
-            style: fallback_style,
-        });
-    }
-    spans.push(StyledSpan {
-        text: line.text[start..end].to_string(),
-        style: symbol_style,
-    });
-    if end < line.text.len() {
-        spans.push(StyledSpan {
-            text: line.text[end..].to_string(),
-            style: fallback_style,
-        });
-    }
-    spans
-}
-
-fn find_status_symbol_range(text: &str) -> Option<(usize, usize)> {
-    for symbol in ["◉", "●", "✕", "◦"] {
-        for (start, _) in text.match_indices(symbol) {
-            let end = start + symbol.len();
-            let before = &text[..start];
-            let after = &text[end..];
-            if before.ends_with("  ") && (after.is_empty() || after.starts_with("  ")) {
-                return Some((start, end));
-            }
-        }
-    }
-    None
-}
-
-fn apply_selection_to_styled_spans(
-    spans: &[StyledSpan],
-    selection: Option<(usize, usize)>,
-) -> Vec<StyledSpan> {
-    let Some((selection_start, selection_end)) = selection else {
-        return spans.to_vec();
-    };
-    if selection_start >= selection_end {
-        return spans.to_vec();
-    }
-
-    let mut output = Vec::new();
-    let mut current = 0usize;
-    for span in spans {
-        let span_len = span.text.chars().count();
-        let span_start = current;
-        let span_end = current + span_len;
-        current = span_end;
-
-        if span_len == 0 {
-            output.push(span.clone());
-            continue;
-        }
-        if selection_end <= span_start || selection_start >= span_end {
-            output.push(span.clone());
-            continue;
-        }
-
-        let local_start = selection_start.saturating_sub(span_start).min(span_len);
-        let local_end = selection_end.saturating_sub(span_start).min(span_len);
-        let chars: Vec<char> = span.text.chars().collect();
-
-        if local_start > 0 {
-            output.push(StyledSpan {
-                text: chars[..local_start].iter().collect(),
-                style: span.style,
-            });
-        }
-        if local_start < local_end {
-            output.push(StyledSpan {
-                text: chars[local_start..local_end].iter().collect(),
-                style: span.style.add_modifier(Modifier::REVERSED),
-            });
-        }
-        if local_end < span_len {
-            output.push(StyledSpan {
-                text: chars[local_end..].iter().collect(),
-                style: span.style,
-            });
-        }
-    }
-    output
-}
-
 fn panel_border_style(selected: bool, colors: &ColorScheme) -> Style {
     if selected {
         Style::default()
@@ -590,7 +703,11 @@ fn panel_title_style(
     }
 }
 
-fn panel_content_style(selected: bool, fg: ratatui::style::Color, bg: ratatui::style::Color) -> Style {
+fn panel_content_style(
+    selected: bool,
+    fg: ratatui::style::Color,
+    bg: ratatui::style::Color,
+) -> Style {
     let style = Style::default().fg(fg).bg(bg);
     if selected {
         style

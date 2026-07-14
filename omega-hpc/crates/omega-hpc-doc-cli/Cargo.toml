@@ -1,0 +1,18 @@
+[package]
+name = "omega-hpc-doc-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "omega-doc"
+path = "src/main.rs"
+
+[dependencies]
+omega-hpc-document = { path = "../omega-hpc-document" }
+omega-hpc-paths = { path = "../omega-hpc-paths" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

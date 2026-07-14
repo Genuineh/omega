@@ -8,10 +8,17 @@ use omega_theme::RenderPalette as ColorScheme;
 
 use crate::app::{project_badge_text, App, Panel, SessionRoutingSummary, SessionStatusSummary};
 
+use super::chrome::Glyph;
 use super::overlay::overlay_hint_text;
 
 const INPUT_INFO_ORBIT_COLUMNS: [usize; 8] = [2, 4, 4, 4, 2, 0, 0, 0];
-const INPUT_INFO_ORBIT_GLYPHS: [char; 5] = ['●', '◉', '◎', '○', '·'];
+const INPUT_INFO_ORBIT_GLYPHS: [char; 5] = [
+    Glyph::COMPLETE,
+    Glyph::RUNNING,
+    '◎',
+    Glyph::PENDING,
+    Glyph::BULLET,
+];
 
 pub(super) fn input_context_text(app: &App, sidebar_hidden: bool) -> String {
     if app.overlay_active() {
@@ -138,9 +145,7 @@ pub(super) fn input_info_line(
         ),
         Span::styled(
             " ".repeat(filler.max(1)),
-            Style::default()
-                .fg(colors.text)
-                .bg(colors.input_bg),
+            Style::default().fg(colors.text).bg(colors.input_bg),
         ),
     ];
 
@@ -335,11 +340,7 @@ fn bottom_status_segments(
         }
     };
 
-    BottomStatusSegments {
-        mode,
-        flow,
-        aux,
-    }
+    BottomStatusSegments { mode, flow, aux }
 }
 
 fn input_state_icon_text(app: &App) -> String {
@@ -369,14 +370,19 @@ fn running_input_state_glyph(tick: u8) -> char {
 fn running_input_state_spans(tick: u8, colors: &ColorScheme) -> Vec<Span<'static>> {
     running_input_state_cells(tick)
         .into_iter()
-        .map(|character| Span::styled(character.to_string(), running_input_state_style(character, colors)))
+        .map(|character| {
+            Span::styled(
+                character.to_string(),
+                running_input_state_style(character, colors),
+            )
+        })
         .collect()
 }
 
 fn running_input_state_style(character: char, colors: &ColorScheme) -> Style {
     let base = Style::default().bg(colors.input_bg);
     match character {
-        '●' | '◉' => base
+        Glyph::COMPLETE | Glyph::RUNNING => base
             .fg(colors.status_running_fg)
             .add_modifier(Modifier::BOLD),
         '◎' => base.fg(colors.status_running_fg),

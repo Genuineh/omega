@@ -1,17 +1,20 @@
 ---
 archived: 2026-04-02
-content_revision: 120
+content_revision: 174
 created: 2026-03-18
-generation_id: gen_000046_r000120
+generation_id: gen_000087_r000174
+language: bilingual
+last_verified_commit: d8c30e3e9e310ce38cffa965be4688ed55a87787
 owner: omega-team
-projection_version: 46
-related_prds: []
+projection_version: 87
+related_prds: "[]"
 source_doc_id: "archive:docs-archive-observability-logging"
+source_path: docs/archive/observability-logging.md
 status: archived
 superseded_by:
   - docs/decisions/005-tracing-observability.md
   - docs/guide/omega-dev-guide.md
-supersedes: []
+supersedes: "[]"
 updated: 2026-04-02
 ---
 

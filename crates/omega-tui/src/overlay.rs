@@ -84,6 +84,160 @@ pub enum DocumentNavigatorFocus {
     Content,
 }
 
+/// One item in the rail of a `StepDetailOverlay` (T-55). The rail
+/// shows the categories of detail the user can drill into: Tools,
+/// Subflows, Scene, Output, Diagnostics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepDetailRailItem {
+    pub kind: StepDetailRailKind,
+    pub label: String,
+    pub count_label: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepDetailRailKind {
+    Tools,
+    Subflows,
+    Scene,
+    Output,
+    Diagnostics,
+}
+
+impl StepDetailRailKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Tools => "Tools",
+            Self::Subflows => "Subflows",
+            Self::Scene => "Scene",
+            Self::Output => "Output",
+            Self::Diagnostics => "Diagnostics",
+        }
+    }
+}
+
+/// A summarised tool run entry for the Tools rail content.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolRunSummary {
+    pub id: String,
+    pub name: String,
+    pub status_label: String,
+    pub invocation_preview: String,
+    pub result_preview: Option<String>,
+}
+
+/// A summarised subflow entry for the Subflows rail content.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubflowSummary {
+    pub id: String,
+    pub label: String,
+    pub status_label: String,
+    pub current_index: Option<usize>,
+    pub total: Option<usize>,
+}
+
+/// Scene context for the Scene rail content.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SceneContext {
+    pub scene_id: Option<String>,
+    pub workflow_id: Option<String>,
+    pub workflow_role: Option<String>,
+    pub step_id: Option<String>,
+    pub step_label: Option<String>,
+}
+
+/// The structured-detail overlay for one step unit (T-55). Mirrors
+/// `DocumentNavigatorOverlay`'s Rail + Content pattern but is
+/// purpose-built for response-panel sections.
+///
+/// T-69 bug fix: `content` was a single `StepDetailContent` snapshot
+/// set at popup open time. When the user navigates the rail (Up/Down
+/// changes `selected`), the right pane was stuck on whatever the
+/// first rail item pointed to. We now store ALL rail content in
+/// `content_per_rail` (parallel to `rail`) and the render picks
+/// the active one via `content_per_rail[selected]`. The legacy
+/// `content` field is kept for back-compat but is no longer used
+/// at render time — use `content_per_rail[selected]` instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepDetailOverlay {
+    pub origin_panel: Panel,
+    pub section_id: String,
+    pub title: String,
+    pub rail: Vec<StepDetailRailItem>,
+    pub selected: usize,
+    pub focus: DocumentNavigatorFocus,
+    /// One `StepDetailContent` per rail item, in the same order.
+    /// The active content is `content_per_rail[selected]`.
+    pub content_per_rail: Vec<StepDetailContent>,
+    /// Legacy single-content field. Populated at open time with
+    /// `content_per_rail[selected]` (the initial selection). New
+    /// code should use `content_per_rail[selected]` instead.
+    pub content: StepDetailContent,
+    pub content_scroll: usize,
+    pub dismiss_on_backdrop: bool,
+}
+
+impl StepDetailOverlay {
+    /// Return a reference to the active content pane (the one
+    /// matching `selected`).
+    pub fn active_content(&self) -> &StepDetailContent {
+        self.content_per_rail
+            .get(self.selected)
+            .unwrap_or(&self.content)
+    }
+
+    /// Move the rail selection by `delta` (positive = down,
+    /// negative = up), clamped to the rail bounds. The next
+    /// `active_content()` call will return the new selection's
+    /// content.
+    pub fn move_rail(&mut self, delta: i32) {
+        if self.rail.is_empty() {
+            return;
+        }
+        let len = self.rail.len() as i32;
+        let cur = self.selected as i32;
+        let next = (cur + delta).clamp(0, len - 1);
+        self.selected = next as usize;
+    }
+}
+
+/// The content pane of a `StepDetailOverlay`, polymorphic over the
+/// 5 rail categories. Each variant holds the data needed to render
+/// its content section.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StepDetailContent {
+    Tools(Vec<ToolRunSummary>),
+    Subflows(Vec<SubflowSummary>),
+    Scene(Option<SceneContext>),
+    Output(Vec<String>),
+    Diagnostics(Vec<String>),
+}
+
+/// One section in a `TurnDetailOverlay` (T-61). A turn's full
+/// content is flattened into a list of these sections — one per
+/// sub-record (user message, Step, FinalAnswer, Thinking, etc.) —
+/// shown in chronological order in the content pane.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnDetailSection {
+    pub kind: crate::app::MsgKind,
+    pub label: String,
+    pub body: Vec<String>,
+}
+
+/// Aggregated, turn-level detail overlay (T-61). Shows all of a
+/// turn's content (user msg + every Step/Thinking/Command/
+/// FinalAnswer) in a single scrollable view, in contrast to
+/// `StepDetailOverlay` which is a per-section drill-down.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnDetailOverlay {
+    pub origin_panel: Panel,
+    pub turn_index: usize,
+    pub title: String,
+    pub user_text: String,
+    pub sections: Vec<TurnDetailSection>,
+    pub scroll: usize,
+    pub dismiss_on_backdrop: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DocumentNavigatorRailItem {
     pub id: String,
@@ -128,7 +282,11 @@ impl DocumentNavigatorOverlay {
             .iter()
             .any(|entry| entry.id == request.active_entry_id)
         {
-            if request.entries.iter().any(|entry| entry.id == previous_active) {
+            if request
+                .entries
+                .iter()
+                .any(|entry| entry.id == previous_active)
+            {
                 request.active_entry_id = previous_active.clone();
             } else {
                 request.active_entry_id = request
@@ -365,9 +523,12 @@ impl PickerOverlay {
             self.request.primary_action.shortcut.hint_label(),
             self.request.primary_action.label
         )];
-        hints.extend(self.request.secondary_actions.iter().map(|action| {
-            format!("{}={}", action.shortcut.hint_label(), action.label)
-        }));
+        hints.extend(
+            self.request
+                .secondary_actions
+                .iter()
+                .map(|action| format!("{}={}", action.shortcut.hint_label(), action.label)),
+        );
         if self.request.filter_enabled {
             hints.push("/=Filter".to_string());
         }
@@ -453,6 +614,8 @@ pub enum OverlayState {
     DocumentNavigator(DocumentNavigatorOverlay),
     Picker(PickerOverlay),
     InputPrompt(InputPromptOverlay),
+    StepDetail(StepDetailOverlay),
+    TurnDetail(TurnDetailOverlay),
 }
 
 impl OverlayState {
@@ -465,6 +628,8 @@ impl OverlayState {
             Self::DocumentNavigator(overlay) => overlay.origin_panel,
             Self::Picker(overlay) => overlay.origin_panel,
             Self::InputPrompt(overlay) => overlay.origin_panel,
+            Self::StepDetail(overlay) => overlay.origin_panel,
+            Self::TurnDetail(overlay) => overlay.origin_panel,
         }
     }
 
@@ -477,6 +642,8 @@ impl OverlayState {
             Self::DocumentNavigator(_) => OverlaySize::Large,
             Self::Picker(_) => OverlaySize::Medium,
             Self::InputPrompt(_) => OverlaySize::Small,
+            Self::StepDetail(_) => OverlaySize::Large,
+            Self::TurnDetail(_) => OverlaySize::Large,
         }
     }
 
@@ -489,6 +656,8 @@ impl OverlayState {
             Self::DocumentNavigator(overlay) => overlay.dismiss_on_backdrop,
             Self::Picker(overlay) => overlay.dismiss_on_backdrop,
             Self::InputPrompt(overlay) => overlay.dismiss_on_backdrop,
+            Self::StepDetail(overlay) => overlay.dismiss_on_backdrop,
+            Self::TurnDetail(overlay) => overlay.dismiss_on_backdrop,
         }
     }
 }

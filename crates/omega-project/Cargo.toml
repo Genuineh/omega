@@ -14,4 +14,4 @@ tempfile.workspace = true
 toml.workspace = true
 omega-context = { path = "../omega-context" }
 omega-plan = { path = "../omega-plan" }
-omega-project-layout = { path = "../omega-project-layout" }
+omega-hpc-paths = { path = "../../omega-hpc/crates/omega-hpc-paths" }
